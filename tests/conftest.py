@@ -27,6 +27,96 @@ def _guarded_connect(self: socket.socket, address: Any) -> Any:
 socket.socket.connect = _guarded_connect  # type: ignore[method-assign]
 
 
+# Tiny random models of other architecture families, built locally like the GPT-2 one. Shapes are
+# deliberately not square: TransformerLens 4.0 centers a square unembedding (d_vocab == d_model)
+# along the wrong axis, which no real model has.
+TINY_ARCHITECTURES: dict[str, dict[str, Any]] = {
+    # Llama family (also Mistral, SmolLM): RMSNorm, rotary, gated MLP, grouped-query attention.
+    "llama": {
+        "model_type": "llama",
+        "num_key_value_heads": 2,
+    },
+    # Pythia: attention and MLP read the same residual stream (parallel blocks).
+    "gpt_neox": {
+        "model_type": "gpt_neox",
+        "use_parallel_residual": True,
+        "rotary_pct": 0.25,
+    },
+    # Qwen 2: biases on the query, key and value projections.
+    "qwen2": {"model_type": "qwen2", "num_key_value_heads": 2},
+    # Gemma 2: normalization before and after each sublayer, and soft-capped logits.
+    "gemma2": {
+        "model_type": "gemma2",
+        "num_key_value_heads": 2,
+        "head_dim": 12,
+        "query_pre_attn_scalar": 12,
+        "sliding_window": 16,
+    },
+    # OLMo 2: normalization after each sublayer only.
+    "olmo2": {"model_type": "olmo2", "num_key_value_heads": 2},
+}
+
+
+def _tiny_bpe_tokenizer() -> Any:
+    """A byte-level BPE trained on the IOI vocabulary, so every name is one token. Unlike a
+    word-level vocabulary, every model family's tokenizer class can rebuild it from its files."""
+    from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers
+    from transformers import PreTrainedTokenizerFast
+
+    from logogram.ioi import NAMES, OBJECTS, PLACES, TEMPLATES
+
+    words: set[str] = {",", ".", "Hello", "world"}
+    for template in TEMPLATES:
+        for word in template.text.replace(",", " , ").split():
+            if not word.startswith("{"):
+                words.add(word)
+    words |= set(NAMES) | set(PLACES) | set(OBJECTS)
+    corpus = [form for word in sorted(words) for form in (word, " " + word)]
+    tok_model = Tokenizer(models.BPE())
+    tok_model.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+    tok_model.decoder = decoders.ByteLevel()
+    trainer = trainers.BpeTrainer(
+        vocab_size=4000,
+        special_tokens=["<|endoftext|>"],
+        initial_alphabet=pre_tokenizers.ByteLevel.alphabet(),
+        show_progress=False,
+    )
+    tok_model.train_from_iterator(corpus, trainer)
+    return PreTrainedTokenizerFast(
+        tokenizer_object=tok_model,
+        bos_token="<|endoftext|>",
+        eos_token="<|endoftext|>",
+        pad_token="<|endoftext|>",
+    )
+
+
+def build_tiny_architecture(folder: Path, arch: str) -> None:
+    import torch
+    from transformers import AutoConfig, AutoModelForCausalLM
+
+    tokenizer = _tiny_bpe_tokenizer()
+    options = dict(TINY_ARCHITECTURES[arch])
+    model_type = options.pop("model_type")
+    config = AutoConfig.for_model(
+        model_type,
+        vocab_size=len(tokenizer),
+        hidden_size=48,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        intermediate_size=96,
+        max_position_embeddings=64,
+        initializer_range=0.3,
+        bos_token_id=0,
+        eos_token_id=0,
+        pad_token_id=0,
+        **options,
+    )
+    torch.manual_seed(0)
+    model = AutoModelForCausalLM.from_config(config).eval()
+    tokenizer.save_pretrained(folder)
+    model.save_pretrained(folder)
+
+
 def _build_tiny_model(folder: Path) -> None:
     import torch
     from tokenizers import Tokenizer, decoders, models, pre_tokenizers
@@ -89,6 +179,36 @@ def tiny_backend(tiny_model_dir: Path) -> Any:
     return TransformerLensBackend.from_bridge(
         bridge, model_id="tiny-gpt2", revision="test", dtype="float32", process_weights=True
     )
+
+
+@pytest.fixture(scope="session")
+def arch_backend(tmp_path_factory: pytest.TempPathFactory) -> Any:
+    """``arch_backend(name, process_weights=True)``: a backend for a tiny model of that family."""
+    from logogram.backends.transformer_lens import TransformerLensBackend, boot_local
+    from logogram.runner import configure_determinism
+
+    folders: dict[str, Path] = {}
+    backends: dict[tuple[str, bool], Any] = {}
+
+    def get(arch: str, process_weights: bool = True) -> Any:
+        if arch not in folders:
+            folders[arch] = tmp_path_factory.mktemp(f"tiny-{arch}")
+            build_tiny_architecture(folders[arch], arch)
+        key = (arch, process_weights)
+        if key not in backends:
+            configure_determinism()
+            bridge = boot_local(folders[arch], device="cpu", dtype="float32")
+            backends[key] = TransformerLensBackend.from_bridge(
+                bridge,
+                model_id=f"tiny-{arch}",
+                revision="test",
+                dtype="float32",
+                process_weights=process_weights,
+            )
+        return backends[key]
+
+    get.folder = lambda arch: (get(arch), folders[arch])[1]  # type: ignore[attr-defined]
+    return get
 
 
 @pytest.fixture

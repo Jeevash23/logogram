@@ -52,19 +52,82 @@ from logogram.system import SystemReport
 
 log = logging.getLogger(__name__)
 
+# Starting points that load through TransformerLens and fit an ordinary machine. Every model is
+# checked again when it loads (backends/transformer_lens.check_model); only GPT-2 small has been
+# run end to end with the bundled example.
 MODEL_PRESETS = [
     {
         "id": "openai-community/gpt2",
         "label": "GPT-2 small",
-        "detail": "124M parameters · 12 layers × 12 heads · tested",
+        "detail": "124M · the model the IOI example was made for",
         "tested": True,
+        "gated": False,
+    },
+    {
+        "id": "openai-community/gpt2-medium",
+        "label": "GPT-2 medium",
+        "detail": "355M · 24 layers",
+        "tested": False,
+        "gated": False,
+    },
+    {
+        "id": "EleutherAI/pythia-160m",
+        "label": "Pythia 160M",
+        "detail": "Attention and MLP in parallel · training checkpoints as revisions, like step3000",
+        "tested": False,
+        "gated": False,
+    },
+    {
+        "id": "EleutherAI/pythia-410m",
+        "label": "Pythia 410M",
+        "detail": "Attention and MLP in parallel · training checkpoints as revisions",
+        "tested": False,
+        "gated": False,
+    },
+    {
+        "id": "HuggingFaceTB/SmolLM2-135M",
+        "label": "SmolLM2 135M",
+        "detail": "Llama architecture, small enough for a CPU",
+        "tested": False,
+        "gated": False,
+    },
+    {
+        "id": "Qwen/Qwen2.5-0.5B",
+        "label": "Qwen2.5 0.5B",
+        "detail": "No beginning-of-sequence token",
+        "tested": False,
+        "gated": False,
+    },
+    {
+        "id": "allenai/OLMo-2-0425-1B",
+        "label": "OLMo 2 1B",
+        "detail": "Normalization after each sublayer",
+        "tested": False,
+        "gated": False,
+    },
+    {
+        "id": "meta-llama/Llama-3.2-1B",
+        "label": "Llama 3.2 1B",
+        "detail": "Gated: request access on Hugging Face first",
+        "tested": False,
+        "gated": True,
+    },
+    {
+        "id": "google/gemma-2-2b",
+        "label": "Gemma 2 2B",
+        "detail": "Gated: request access on Hugging Face first · soft-capped logits",
+        "tested": False,
+        "gated": True,
     },
 ]
 MODEL_SUGGESTIONS = [
-    "openai-community/gpt2-medium",
-    "EleutherAI/pythia-160m",
-    "EleutherAI/pythia-410m",
-    "Qwen/Qwen2.5-0.5B",
+    *(p["id"] for p in MODEL_PRESETS),
+    "EleutherAI/pythia-70m",
+    "EleutherAI/pythia-1b",
+    "HuggingFaceTB/SmolLM2-360M",
+    "Qwen/Qwen3-0.6B-Base",
+    "google/gemma-3-270m",
+    "microsoft/phi-1_5",
 ]
 
 
@@ -489,13 +552,14 @@ def create_app(
     @app.post("/api/models/estimate", response_model=M.EstimateOut)
     def estimate(body: EstimateRequest) -> dict[str, Any]:
         from logogram.backends import hub
-        from logogram.backends.transformer_lens import resolve_device
+        from logogram.backends.transformer_lens import architecture_support, resolve_device
         from logogram.system import estimate_memory
 
         device = resolve_device(body.device)
         repo = hub.resolve(body.id, body.revision)
         config = hub.fetch_config(body.id, repo.revision)
         arch = hub.read_architecture(config)
+        support_note = architecture_support(arch.architecture)
         n_params = repo.n_params
         if n_params is None:
             weights = sum(s for f, s in repo.files if f.endswith(".safetensors"))
@@ -529,6 +593,8 @@ def create_app(
             "download_bytes": download,
             "total_bytes": sum(s for _, s in repo.files),
             "gated": repo.gated,
+            "supported": support_note is None,
+            "support_note": support_note,
             "estimate": est.to_dict(),
         }
 

@@ -91,8 +91,26 @@ export function ExploreView() {
 
 interface Node { x: number; y: number; w: number; h: number; label: string; detail?: string; sel?: Selection }
 
+/** How a layer's computation is drawn. The residual additions are measured when a model loads
+ * (backends/transformer_lens.check_model); only GPT-2's normalization placement is also known. */
+type Flow = "pre_norm" | "sequential" | "parallel" | "inventory";
+
+export function flowOf(structure: string): Flow {
+  if (structure === "sequential_pre_norm") return "pre_norm";
+  if (structure === "sequential" || structure === "parallel") return structure;
+  return "inventory";
+}
+
+const FLOW_TEXT: Record<Flow, string> = {
+  pre_norm: "Residual connections show this model's computation order.",
+  sequential: "Attention and then the MLP are each added to the residual stream, as measured when the model loaded.",
+  parallel: "Attention and the MLP both read the residual stream entering the layer, and both are added to it, as measured when the model loaded.",
+  inventory: "Component inventory: the order of computation couldn't be verified for this model.",
+};
+
 function geometry(arch: Architecture, layer: number, width: number) {
-  const sequential = arch.structure === "sequential_pre_norm";
+  const flow = flowOf(arch.structure);
+  const norms = flow === "pre_norm";
   const spine = 21;
   const x = Math.max(66, width * .19), w = Math.max(80, width - x - 10);
   const columns = Math.min(12, arch.nHeads, Math.max(2, Math.floor(w / 57)));
@@ -101,19 +119,19 @@ function geometry(arch: Architecture, layer: number, width: number) {
   const nodes: Node[] = [];
   const add = (y: number, label: string, kind: "resid_pre" | "resid_mid" | "resid_post") => nodes.push({ x: 9, y, w: width - 18, h: 29, label, sel: { layer, part: "resid", kind } });
   add(8, "Residual in", "resid_pre");
-  if (sequential) nodes.push({ x, y: 67, w, h: 31, label: "Layer norm" });
-  const headsY = sequential ? 140 : 88;
+  if (norms) nodes.push({ x, y: 67, w, h: 31, label: "Layer norm" });
+  const headsY = norms ? 140 : 88;
   for (let h = 0; h < arch.nHeads; h++) nodes.push({ x: x + h % columns * pitch + 2, y: headsY + Math.floor(h / columns) * 51, w: pitch - 6, h: 43, label: `H${h}`, sel: { layer, part: "head", head: h } });
   const attentionY = headsY + rows * 51 + 28;
   nodes.push({ x, y: attentionY, w, h: 46, label: "Attention output", detail: "Combined heads · output projection", sel: { layer, part: "attn" } });
   const midY = attentionY + 77;
   if (arch.siteKinds.includes("resid_mid")) add(midY, "Residual after attention", "resid_mid");
-  if (sequential) nodes.push({ x, y: midY + 58, w, h: 31, label: "Layer norm" });
-  const mlpY = midY + (sequential ? 113 : 62);
+  if (norms) nodes.push({ x, y: midY + 58, w, h: 31, label: "Layer norm" });
+  const mlpY = midY + (norms ? 113 : 62);
   if (arch.siteKinds.includes("mlp_out")) nodes.push({ x, y: mlpY, w, h: 58, label: "MLP output", detail: arch.dMlp && arch.dModel ? `${count(arch.dModel)} → ${count(arch.dMlp)} → ${count(arch.dModel)}` : "Feed-forward component", sel: { layer, part: "mlp" } });
   const postY = mlpY + 89;
   add(postY, "Residual out", "resid_post");
-  return { nodes, height: postY + 45, spine, branch: x + w / 2, attentionY, midY, mlpY, headsY, sequential };
+  return { nodes, height: postY + 45, spine, branch: x + w / 2, right: x + w, attentionY, midY, mlpY, headsY, flow };
 }
 
 function LayerDiagram({ arch, layer }: { arch: Architecture; layer: number }) {
@@ -140,11 +158,18 @@ function LayerDiagram({ arch, layer }: { arch: Architecture; layer: number }) {
       ctx.font = font(colors, size, muted ? 450 : 560); ctx.fillStyle = muted ? colors.muted : colors.text; ctx.textAlign = align; ctx.textBaseline = "middle"; ctx.fillText(label, x, y);
     };
     const path = (points: number[][]) => { ctx.beginPath(); ctx.strokeStyle = colors.line; ctx.lineWidth = 1.3; points.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.stroke(); };
-    if (geo.sequential) {
-      const { spine, branch, attentionY, midY, mlpY } = geo;
+    if (geo.flow !== "inventory") {
+      const { spine, branch, right, attentionY, midY, mlpY } = geo;
       path([[spine, 38], [spine, geo.height - 27]]);
       path([[spine, 47], [branch, 47], [branch, attentionY + 62], [spine, attentionY + 62]]);
-      path([[spine, midY + 40], [branch, midY + 40], [branch, mlpY + 76], [spine, mlpY + 76]]);
+      if (geo.flow === "parallel") {
+        // The MLP reads the residual stream entering the layer, before attention is added: the
+        // same wire as attention's, continued past it.
+        path([[branch, 47], [right + 6, 47], [right + 6, mlpY + 29], [right, mlpY + 29]]);
+        path([[branch, mlpY + 58], [branch, mlpY + 76], [spine, mlpY + 76]]);
+      } else {
+        path([[spine, midY + 40], [branch, midY + 40], [branch, mlpY + 76], [spine, mlpY + 76]]);
+      }
       for (const y of [attentionY + 62, mlpY + 76]) {
         ctx.beginPath(); ctx.arc(spine, y, 7, 0, 2 * Math.PI); ctx.fillStyle = colors.surface; ctx.fill(); ctx.stroke();
         text("+", spine, y, 12, true);
@@ -178,10 +203,10 @@ function LayerDiagram({ arch, layer }: { arch: Architecture; layer: number }) {
   const interactive = geo.nodes.filter(node => node.sel && arch.siteKinds.includes(siteFromSelection(node.sel, node.sel.kind).kind));
   return <>
     <div ref={host} className={s.diagram} style={{ minHeight: geo.height }}>
-      <canvas ref={canvas} role="img" aria-label={`Layer ${layer}: ${arch.nHeads} attention heads, residual sites, attention output and MLP output.${geo.sequential ? " Residual connections show this model's computation order." : " Component inventory; computation order is not inferred for this architecture."}`} />
+      <canvas ref={canvas} role="img" aria-label={`Layer ${layer}: ${arch.nHeads} attention heads, residual sites, attention output and MLP output. ${FLOW_TEXT[geo.flow]}`} />
       {interactive.map((node, i) => { const sel = selectionFor(node) as Selection; const data = componentMeasurement(run.sites, run.results, sel); return <button key={componentLabel(sel)} type="button" className={s.hit} style={{ left: node.x, top: node.y, width: node.w, height: node.h }} aria-label={`${componentLabel(sel)}: ${data ? `${metric} ${signed(siteValue(data, metric), 3)}` : "no single measurement at this position"}`} aria-pressed={sameSelection(sel, selection)} onClick={() => select(sel)} onKeyDown={e => onKey(e, i)} />; })}
     </div>
-    <p className={s.hint}>{geo.sequential ? "Residual additions connect the attention and MLP branches. " : "Component inventory. Load a model with a validated block layout to see its computation flow. "}Select a component to inspect it. Cells show a single measured site; choose a position in Evidence when a component has several.</p>
+    <p className={s.hint}>{FLOW_TEXT[geo.flow]} Select a component to inspect it. Cells show a single measured site; choose a position in Evidence when a component has several.</p>
     {overlay === "data" && <Legend bound={bound} hasFlags={false} flagCount={0} />}
   </>;
 }

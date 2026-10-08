@@ -9,6 +9,7 @@ import type {
   FolderListing,
   IOITemplate,
   Job,
+  ModelPreset,
   ModelStatus,
   ProjectInfo,
   PromptRecord,
@@ -149,7 +150,7 @@ export const api = {
 
   presets: () =>
     get<{
-      presets: { id: string; label: string; detail: string; tested: boolean }[];
+      presets: ModelPreset[];
       suggestions: string[];
     }>("/api/models/presets"),
   estimate: (body: { id: string; revision?: string | null; dtype: Dtype; device: Device }) =>

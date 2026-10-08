@@ -104,8 +104,8 @@ The workbench has three workspaces:
   and layer predictions. The atlas uses the model's real dimensions. Double-click a component
   to open its layer, or choose **Layer explorer** and use the layer rail. The cutaway exposes
   residual inputs and outputs, individual head outputs, the combined attention output, and the
-  MLP. GPT-2 shows its validated pre-norm residual connections; other architectures show a
-  component inventory without inferring their computation order.
+  MLP, connected the way the model was measured to add them when it loaded (one after the
+  other, or both from the same input); GPT-2 also shows its layer norms.
 * **Experiment** contains prompts, baseline checks, the intervention form, and the complete
   spec. Select a token, choose components, and press **Add to experiment**. The staging tray
   keeps exact sites and positions. **Configure experiment** preserves the source run's
@@ -127,13 +127,13 @@ validated block layout, so saved runs can be explored without loading weights.
 
 ### Layer predictions
 
-**Layer predictions** implements a final-norm logit lens for GPT-2: project each layer's
-`resid_post` at the chosen token through the loaded model's final normalization and vocabulary
-projection, including biases, then apply softmax. The normalization is recomputed at every
+**Layer predictions** implements a final-norm logit lens: project each layer's `resid_post` at
+the chosen token through the loaded model's final normalization and vocabulary projection,
+including biases and the logit soft-capping some models apply, then apply softmax. The normalization is recomputed at every
 layer, following the distinction explained in the [TransformerLens lens documentation](https://transformerlensorg.github.io/TransformerLens/content/backward_lens.html).
 Intermediate projections are descriptive diagnostics, not causal measurements or calibrated
-early predictions. No trained lens is fitted. Other architectures are explicitly unsupported
-for this diagnostic until their normalization and projection are validated.
+early predictions. No trained lens is fitted. The diagnostic is offered only for models whose
+final normalization and projection reproduce their own output when they load (see Models).
 
 Choose clean or corrupt input, a prompt, a last-token or indexed position, and 1–20 top tokens,
 then press **Measure predictions**. BOS handling, dataset limit and hash, model revision,
@@ -360,9 +360,31 @@ Logogram's version number and nothing else.
 
 ## Models
 
-GPT-2 small is the tested model. Other models that TransformerLens supports can be loaded by
-Hugging Face id on a best-effort basis; before loading, Logogram estimates the memory needed
-(weights, activations and a margin) against what is free and says whether it fits.
+TransformerLens 4 loads well over a hundred architectures, and Logogram works with the
+decoder-only language models among them: GPT-2, Pythia, Llama, Mistral, SmolLM, Qwen, Gemma,
+OLMo, Phi and more. The model dialog lists starting points, and any other Hugging Face id can be
+typed in. Before downloading, Logogram checks that TransformerLens supports the architecture and
+estimates the memory needed (weights, activations and a margin) against what is free.
+
+Rather than trusting a list, Logogram checks every model when it loads, on a short fixed input:
+
+* TransformerLens's version of the model must predict what the original model predicts. If weight
+  processing changes the predictions, loading with processed weights is refused.
+* It measures how each layer adds attention and the MLP to the residual stream: one after the
+  other (sequential), or both from the same input (parallel, as in Pythia, GPT-J and Phi). Only
+  sequential layers have a residual stream between attention and MLP (`resid_mid`), and the layer
+  explorer draws what was measured.
+* Layer predictions are offered when the final normalization and unembedding, with any logit
+  soft-capping, reproduce the model's output.
+
+GPT-2 small is the model the bundled example was made for, and the one run end to end with real
+weights. The test suite runs the sanity checks on tiny random models of the Llama, Pythia, Qwen 2,
+Gemma 2 and OLMo 2 families without downloading anything. Pythia publishes checkpoints from
+throughout training as revisions (`step1000` to `step143000`), so an experiment can be rerun at
+several points of training.
+
+Some tokenizers, such as Qwen's, have no beginning-of-sequence token. Logogram then runs prompts
+without one, and the spec records it. Answers and distractors must still be single tokens.
 
 ## Development
 
@@ -409,9 +431,9 @@ that commit, builds the wheel and source distribution, and uploads them to PyPI 
 Publishing, so no token is stored anywhere. PyPI never accepts the same version twice.
 
 Before tagging, manually check a first GPT-2 download, cancel and retry it, then run the example
-on each supported compute backend. CPU and CUDA are
-covered by local development checks; MPS still needs a check on Apple Silicon. Models other than
-GPT-2 small remain best effort.
+on each supported compute backend. CPU and CUDA are covered by local development checks; MPS
+still needs a check on Apple Silicon. Other model families are checked when they load and in the
+tiny-model tests, but not yet run end to end with their real weights.
 
 Model access goes through `logogram.backends.base.ModelBackend`. TransformerLens is the only
 backend today; remote execution and other libraries can be added behind the same interface.

@@ -16,12 +16,14 @@ def main() -> None:
     import uvicorn
 
     import logogram.project as projects
-    from conftest import _build_tiny_model, make_spec
+    from conftest import _build_tiny_model, build_tiny_architecture, make_spec
     from logogram.backends.transformer_lens import TransformerLensBackend, boot_local
     from logogram.datasets import write_dataset
     from logogram.ioi import generate_ioi
     from logogram.runner import configure_determinism, run_spec
 
+    # Another tiny architecture family from conftest.TINY_ARCHITECTURES, for checking by eye.
+    arch = os.environ.get("LOGOGRAM_FIXTURE_ARCH", "gpt2")
     with tempfile.TemporaryDirectory(prefix="logogram-browser-") as temporary:
         root = Path(temporary)
         projects.config_dir = lambda: root / "config"
@@ -31,11 +33,14 @@ def main() -> None:
 
         folder = root / "model"
         folder.mkdir()
-        _build_tiny_model(folder)
+        if arch == "gpt2":
+            _build_tiny_model(folder)
+        else:
+            build_tiny_architecture(folder, arch)
         configure_determinism()
         backend = TransformerLensBackend.from_bridge(
             boot_local(folder, device="cpu", dtype="float32"),
-            model_id="tiny-gpt2",
+            model_id=f"tiny-{arch}",
             revision="test",
             dtype="float32",
             process_weights=True,
@@ -44,6 +49,7 @@ def main() -> None:
         write_dataset(project.dataset_file("ioi.jsonl"), generate_ioi(8, seed=0))
         spec = make_spec(
             name="Without BOS",
+            model={"id": f"tiny-{arch}", "revision": "test", "device": "cpu"},
             tokenization={"prepend_bos": False},
             dataset={"path": "datasets/ioi.jsonl", "limit": 5},
             execution={"batch_size": 2},

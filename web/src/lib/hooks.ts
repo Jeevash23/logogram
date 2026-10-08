@@ -24,6 +24,19 @@ const MODEL_NAMES: Record<string, string> = {
   "openai-community/gpt2-medium": "GPT-2 medium",
   "openai-community/gpt2-large": "GPT-2 large",
   "openai-community/gpt2-xl": "GPT-2 XL",
+  "EleutherAI/pythia-70m": "Pythia 70M",
+  "EleutherAI/pythia-160m": "Pythia 160M",
+  "EleutherAI/pythia-410m": "Pythia 410M",
+  "EleutherAI/pythia-1b": "Pythia 1B",
+  "HuggingFaceTB/SmolLM2-135M": "SmolLM2 135M",
+  "HuggingFaceTB/SmolLM2-360M": "SmolLM2 360M",
+  "Qwen/Qwen2.5-0.5B": "Qwen2.5 0.5B",
+  "Qwen/Qwen3-0.6B-Base": "Qwen3 0.6B",
+  "allenai/OLMo-2-0425-1B": "OLMo 2 1B",
+  "meta-llama/Llama-3.2-1B": "Llama 3.2 1B",
+  "google/gemma-2-2b": "Gemma 2 2B",
+  "google/gemma-3-270m": "Gemma 3 270M",
+  "microsoft/phi-1_5": "Phi-1.5",
 };
 
 export function modelName(id: string | null | undefined): string {

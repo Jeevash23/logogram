@@ -713,6 +713,11 @@ export const useStore = create<Store>((set, get) => ({
         const now = model.info;
         if (now?.id !== before?.id || now?.revision !== before?.revision || now?.dtype !== before?.dtype || now?.process_weights !== before?.process_weights || now?.device !== before?.device) {
           set({ baselines: {}, tokenPosition: null, ...(!get().activeRunId ? { stagedSites: [], headPins: [], selection: null } : {}) });
+          if (now?.extra?.bos === false && get().form.prependBos) {
+            // The spec says so too: the checkbox shows it, and the run records it.
+            set((st) => ({ form: { ...st.form, prependBos: false } }));
+            get().notify(`${now.id} has no beginning-of-sequence token, so prompts now start without one.`);
+          }
           void get().reloadDataset();
         }
         break;

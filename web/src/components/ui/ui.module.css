@@ -181,7 +181,7 @@
   white-space: nowrap;
 }
 
-.segment:hover:not(:disabled) {
+.segment:hover:not(:disabled):not([aria-checked="true"]) {
   color: var(--text);
 }
 

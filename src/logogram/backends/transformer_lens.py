@@ -9,6 +9,7 @@ import logging
 import threading
 import warnings
 from collections.abc import Callable
+from dataclasses import asdict, dataclass
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,10 @@ HOOKS: dict[str, str] = {
 PATTERN_HOOK = "blocks.{layer}.attn.hook_pattern"
 
 DTYPES = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
+
+# Load-time checks compare numbers, so a short fixed input is enough. The tolerance is relative to
+# the largest value compared, and allows for the rounding of each precision.
+CHECK_TOLERANCE = {"float32": 1e-4, "float16": 2e-2, "bfloat16": 5e-2}
 
 
 def hook_name(kind: str, layer: int) -> str:
@@ -96,6 +101,118 @@ def _patch_hook(patch: Patch) -> Callable[..., torch.Tensor]:
     return fn
 
 
+@dataclass
+class ModelChecks:
+    """What Logogram measured about a model when it loaded (see :func:`check_model`)."""
+
+    tolerance: float
+    # Largest change in the log-probabilities against the original model (relative to their range).
+    function: float
+    # "sequential" (attention, then MLP, each added to the residual stream), "parallel" (both read
+    # the same residual and are added together) or "components" (neither could be verified).
+    structure: str
+    # Largest error in the residual additions of that structure, if one was verified.
+    residual: float | None
+    # Error of the final-norm logit lens at the last layer against the model's output, if defined.
+    lens: float | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def _probe_tokens(d_vocab: int, device: str) -> torch.Tensor:
+    rows = [[(7 * i + 3) % d_vocab for i in range(8)], [(5 * i + 11) % d_vocab for i in range(8)]]
+    return torch.tensor(rows, dtype=torch.long, device=device)
+
+
+def _relative(a: torch.Tensor, b: torch.Tensor) -> float:
+    a, b = a.float(), b.float()
+    return float((a - b).abs().max() / b.abs().max().clamp_min(1e-6))
+
+
+def _log_prob_error(a: torch.Tensor, b: torch.Tensor) -> float:
+    return _relative(torch.log_softmax(a.float(), dim=-1), torch.log_softmax(b.float(), dim=-1))
+
+
+def final_projection(bridge: Any, residual: torch.Tensor) -> torch.Tensor:
+    """What the model does after its last layer: final normalization, unembedding, and the logit
+    soft-capping some models (Gemma 2) apply outside both."""
+    logits = bridge.unembed(bridge.ln_final(residual))
+    cap = float(getattr(bridge.cfg, "output_logits_soft_cap", 0) or 0)
+    if cap > 0:
+        logits = cap * torch.tanh(logits / cap)
+    return logits
+
+
+def check_model(
+    bridge: Any,
+    probe: torch.Tensor,
+    reference: torch.Tensor,
+    n_layers: int,
+    kinds: tuple[str, ...],
+    dtype: str,
+) -> ModelChecks:
+    """Check, on a short input, what Logogram's measurements assume about a loaded model.
+
+    TransformerLens supports many architectures, and processes some weights; rather than trusting
+    a list, this verifies the model in front of it: that TransformerLens's version predicts what the
+    original model predicts, how each layer adds attention and MLP into the residual stream, and
+    whether the final normalization and unembedding reproduce the output (the logit lens).
+    """
+    tolerance = CHECK_TOLERANCE[dtype]
+    stream = [
+        k for k in ("resid_pre", "resid_mid", "resid_post", "attn_out", "mlp_out") if k in kinds
+    ]
+    names = [hook_name(k, layer) for layer in range(n_layers) for k in stream]
+    with torch.no_grad():
+        logits, cache = bridge.run_with_cache(probe, names_filter=names)
+
+    def act(kind: str, layer: int) -> torch.Tensor:
+        return cache[hook_name(kind, layer)].float()
+
+    structure, residual = "components", None
+    if {"resid_pre", "resid_post", "attn_out", "mlp_out"} <= set(stream):
+        chain = max(
+            (_relative(act("resid_pre", i + 1), act("resid_post", i)) for i in range(n_layers - 1)),
+            default=0.0,
+        )
+        parallel = max(
+            _relative(
+                act("resid_pre", i) + act("attn_out", i) + act("mlp_out", i), act("resid_post", i)
+            )
+            for i in range(n_layers)
+        )
+        sequential = None
+        if "resid_mid" in stream:
+            sequential = max(
+                max(
+                    _relative(act("resid_pre", i) + act("attn_out", i), act("resid_mid", i)),
+                    _relative(act("resid_mid", i) + act("mlp_out", i), act("resid_post", i)),
+                )
+                for i in range(n_layers)
+            )
+        if sequential is not None and max(sequential, chain) <= tolerance:
+            structure, residual = "sequential", max(sequential, chain)
+        elif max(parallel, chain) <= tolerance:
+            structure, residual = "parallel", max(parallel, chain)
+
+    lens = None
+    if "resid_post" in stream:
+        try:
+            with torch.no_grad():
+                final = cache[hook_name("resid_post", n_layers - 1)]
+                lens = _log_prob_error(final_projection(bridge, final), logits)
+        except Exception:  # noqa: BLE001 - no usable final norm or unembedding
+            lens = None
+    return ModelChecks(
+        tolerance=tolerance,
+        function=_log_prob_error(logits, reference),
+        structure=structure,
+        residual=residual,
+        lens=lens,
+    )
+
+
 class TransformerLensBackend(ModelBackend):
     def __init__(self, bridge: Any, info: ModelInfo) -> None:
         super().__init__()
@@ -118,27 +235,50 @@ class TransformerLensBackend(ModelBackend):
         n_params: int | None = None,
     ) -> TransformerLensBackend:
         bridge.eval()
+        cfg = bridge.cfg
+        probe = _probe_tokens(int(cfg.d_vocab), str(cfg.device))
+        with torch.no_grad():
+            # The model's own predictions, before TransformerLens touches its weights.
+            reference = bridge.original_model(probe).logits.float()
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             bridge.enable_compatibility_mode(
                 disable_warnings=True, no_processing=not process_weights
             )
-        cfg = bridge.cfg
         device = torch.device(str(cfg.device)).type
         kinds = tuple(k for k in ALL_KINDS if hook_name(k, 0) in bridge.hook_dict)
-        if "resid_mid" in kinds and not {"resid_pre", "attn_out"} <= set(kinds):
-            # resid_mid is patched through resid_pre and attn_out (see _resid_mid_hooks).
-            kinds = tuple(k for k in kinds if k != "resid_mid")
         if "head" not in kinds or PATTERN_HOOK.format(layer=0) not in bridge.hook_dict:
             raise BackendError(
                 f"{model_id} doesn't expose per-head attention hooks in TransformerLens, so "
                 "Logogram can't run head experiments on it."
             )
+        checks = check_model(bridge, probe, reference, int(cfg.n_layers), kinds, dtype)
+        if checks.function > checks.tolerance:
+            if process_weights:
+                raise BackendError(
+                    f"Processing the weights of {model_id} changed its predictions "
+                    f"(log-probabilities moved by up to {checks.function:.1%} of their range), so "
+                    "results wouldn't describe the original model. Load it with weight "
+                    "processing off."
+                )
+            raise BackendError(
+                f"TransformerLens's version of {model_id} doesn't reproduce the model's own "
+                f"predictions (log-probabilities differ by up to {checks.function:.1%} of their "
+                "range), so Logogram can't measure it reliably."
+            )
+        if not checks.structure.startswith("sequential"):
+            # resid_mid is patched as resid_pre + attn_out (see _resid_mid_hooks), which is only
+            # the residual stream between attention and MLP when the layer adds them in turn.
+            kinds = tuple(k for k in kinds if k != "resid_mid")
         if n_params is None:
             try:
                 n_params = int(bridge.n_params_total)
             except Exception:  # noqa: BLE001
                 n_params = None
+        model_type = getattr(bridge.original_model.config, "model_type", None)
+        structure = checks.structure
+        if structure == "sequential" and model_type == "gpt2":
+            structure = "sequential_pre_norm"  # GPT-2's layout, normalization included, is known
         info = ModelInfo(
             id=model_id,
             revision=revision,
@@ -159,14 +299,16 @@ class TransformerLensBackend(ModelBackend):
             backend="transformer_lens",
             backend_version=version("transformer-lens"),
             extra={
-                "block_structure": "sequential_pre_norm"
-                if getattr(bridge.original_model.config, "model_type", None) == "gpt2"
-                else "components",
+                "block_structure": structure,
                 "normalization": str(getattr(cfg, "normalization_type", "unknown")),
                 "activation": str(getattr(cfg, "act_fn", "unknown")),
                 "prediction_method": "final_norm_logit_lens"
-                if getattr(bridge.original_model.config, "model_type", None) == "gpt2"
+                if checks.lens is not None and checks.lens <= checks.tolerance
                 else None,
+                "model_type": str(model_type or "unknown"),
+                "n_key_value_heads": int(getattr(cfg, "n_key_value_heads", None) or cfg.n_heads),
+                "bos": getattr(bridge.tokenizer, "bos_token_id", None) is not None,
+                "checks": checks.to_dict(),
             },
         )
         return cls(bridge, info)
@@ -261,8 +403,9 @@ class TransformerLensBackend(ModelBackend):
     def layer_logits(self, tokens: torch.Tensor, position: int, row: int) -> torch.Tensor:
         if self.info.extra.get("prediction_method") != "final_norm_logit_lens":
             raise BackendError(
-                "Per-layer predictions are currently validated for GPT-2. Use a GPT-2 model "
-                "for this diagnostic; the other analyses remain available."
+                "Per-layer predictions need the model's final normalization and unembedding to "
+                "reproduce its output, and for this model they didn't when it loaded. The other "
+                "analyses remain available."
             )
         if not 0 <= position < tokens.shape[1] or not 0 <= row < tokens.shape[0]:
             raise ValueError("The prediction token position or batch row is out of range.")
@@ -276,7 +419,7 @@ class TransformerLensBackend(ModelBackend):
                     # would implement attribution, not the logit lens. Keep the original
                     # batch shape and dtype through both modules, including learned biases.
                     residual = act[:, position : position + 1, :]
-                    logits = bridge.unembed(bridge.ln_final(residual))
+                    logits = final_projection(bridge, residual)
                     captured[layer] = logits[row, 0].detach().float().cpu()
                     return act
 
@@ -297,6 +440,24 @@ class TransformerLensBackend(ModelBackend):
             self.bridge = None
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+
+def architecture_support(architecture: str) -> str | None:
+    """None if TransformerLens can load this Hugging Face architecture; otherwise, why not."""
+    try:
+        import transformer_lens.model_bridge  # noqa: F401 - loads before the factory (a cycle)
+        from transformer_lens.factories.architecture_adapter_factory import (
+            SUPPORTED_ARCHITECTURES,
+        )
+    except Exception:  # noqa: BLE001 - can't tell; loading the model will say
+        return None
+    if architecture == "unknown" or architecture in SUPPORTED_ARCHITECTURES:
+        return None
+    return (
+        f"TransformerLens {version('transformer-lens')} can't load {architecture} models, so "
+        "Logogram can't either. Choose a model of a supported family, such as GPT-2, Llama, "
+        "Qwen, Gemma, Pythia or OLMo."
+    )
 
 
 def _device_name(device: str) -> str:

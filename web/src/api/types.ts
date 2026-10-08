@@ -21,7 +21,35 @@ export interface ModelInfo {
   site_kinds: string[];
   backend: string;
   backend_version: string;
-  extra?: { block_structure?: string; normalization?: string; activation?: string; prediction_method?: string | null };
+  extra?: {
+    /** How each layer adds attention and MLP into the residual stream, as measured on loading. */
+    block_structure?: string;
+    normalization?: string;
+    activation?: string;
+    prediction_method?: string | null;
+    model_type?: string;
+    n_key_value_heads?: number;
+    /** Whether the tokenizer has a beginning-of-sequence token to prepend. */
+    bos?: boolean;
+    checks?: ModelChecks;
+  };
+}
+
+/** What Logogram measured about a model when it loaded (backends/transformer_lens.check_model). */
+export interface ModelChecks {
+  tolerance: number;
+  function: number;
+  structure: string;
+  residual: number | null;
+  lens: number | null;
+}
+
+export interface ModelPreset {
+  id: string;
+  label: string;
+  detail: string;
+  tested: boolean;
+  gated: boolean;
 }
 
 export interface ModelStatus {
@@ -578,6 +606,9 @@ export interface EstimateResponse {
   download_bytes: number;
   total_bytes: number;
   gated: boolean;
+  /** Whether TransformerLens can load this architecture; if not, why (known before downloading). */
+  supported: boolean;
+  support_note: string | null;
   estimate: MemoryEstimate;
 }
 

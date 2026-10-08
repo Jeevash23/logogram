@@ -141,6 +141,7 @@ export function ExperimentView() {
 
   const n = dataset ? Math.min(dataset.n, form.limit ?? dataset.n) : 0;
   const arch = model.info ?? null;
+  const noBos = model.info?.extra?.bos === false;
   const rows =
     spec && arch
       ? workload(spec, n, arch.n_layers, arch.n_heads, uniformLength && lengths ? lengths[0] : null, labels.length)
@@ -352,8 +353,8 @@ export function ExperimentView() {
             />
             <span className={s.small}>prompts</span>
             <span style={{ flex: 1 }} />
-            <Checkbox checked={form.prependBos} onChange={(prependBos) => setForm({ prependBos })}>
-              Prepend the beginning-of-sequence token
+            <Checkbox checked={form.prependBos} disabled={noBos && !form.prependBos} onChange={(prependBos) => setForm({ prependBos })}>
+              {noBos ? "Prepend a beginning-of-sequence token (this model has none)" : "Prepend the beginning-of-sequence token"}
             </Checkbox>
           </div>
         </section>

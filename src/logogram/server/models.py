@@ -323,6 +323,9 @@ class EstimateOut(_Out):
     download_bytes: int
     total_bytes: int
     gated: bool
+    # Whether TransformerLens can load this architecture, and if not, why (before downloading).
+    supported: bool
+    support_note: str | None
     estimate: MemoryEstimateOut
 
 

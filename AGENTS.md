@@ -45,7 +45,12 @@ traceability come before features.
   everything, keep batch composition fixed, and don't introduce nondeterministic kernels.
 * The sanity tests in `tests/test_sanity.py` must keep passing: patching all clean activations
   at a layer gives effect 1; patching corrupt into corrupt gives 0; the same spec twice gives
-  identical results. Tests use a tiny local model and must never touch the network.
+  identical results. `tests/test_architectures.py` runs them on tiny models of other families.
+  Tests use tiny local models and must never touch the network.
+* Don't trust a model to be what its architecture name says. `check_model` in the backend
+  measures, when a model loads, that TransformerLens reproduces its predictions, how its layers
+  add into the residual stream, and whether the logit lens reproduces its output; features that
+  rely on a property must check that it was measured.
 
 ## Design rules
 

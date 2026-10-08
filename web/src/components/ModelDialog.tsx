@@ -1,21 +1,23 @@
 import { useEffect, useState } from "react";
 
 import { api } from "../api/client";
-import type { Device, Dtype, EstimateResponse } from "../api/types";
+import type { Device, Dtype, EstimateResponse, ModelPreset } from "../api/types";
 import { bytes, params, pct, shortRevision } from "../lib/format";
 import { modelName, useActiveRun } from "../lib/hooks";
 import { useStore } from "../store/app";
-import { Button, Callout, Checkbox, Choices, Dialog, Field, Input, Progress, Segmented, Spinner } from "./ui";
+import { Button, Callout, Checkbox, Dialog, Field, Input, Progress, Segmented, Spinner } from "./ui";
 import s from "./ModelDialog.module.css";
 
 const GPT2 = "openai-community/gpt2";
+const OTHER = "other";
 
 export function ModelDialog() {
   const open = useStore((st) => st.modelDialogOpen);
   const model = useStore((st) => st.model);
   const job = useStore((st) => st.job);
   const guard = useStore((st) => st.guard);
-  const [choice, setChoice] = useState<"gpt2" | "other">("gpt2");
+  /** A preset's id, or OTHER for an id typed in. */
+  const [choice, setChoice] = useState<string>(GPT2);
   const [other, setOther] = useState("");
   const [dtype, setDtype] = useState<Dtype>("float32");
   const [device, setDevice] = useState<Device>("auto");
@@ -24,17 +26,21 @@ export function ModelDialog() {
   const run = useActiveRun();
   const formRef = useStore((st) => st.form.modelRef);
   const savedRef = run.detail?.spec.model ?? formRef;
+  const [presets, setPresets] = useState<ModelPreset[]>([]);
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [estimate, setEstimate] = useState<EstimateResponse | null>(null);
   const [estimating, setEstimating] = useState(false);
   const [estimateError, setEstimateError] = useState<string | null>(null);
 
-  const id = choice === "gpt2" ? GPT2 : other.trim();
+  const id = choice === OTHER ? other.trim() : choice;
   const loading = model.state === "loading";
 
   useEffect(() => {
     if (!open) return;
-    api.presets().then((p) => setSuggestions(p.suggestions), () => undefined);
+    api.presets().then((p) => {
+      setPresets(p.presets);
+      setSuggestions(p.suggestions);
+    }, () => undefined);
   }, [open]);
 
   // Ask Hugging Face for the exact revision and size, and estimate memory, before loading.
@@ -60,7 +66,7 @@ export function ModelDialog() {
           }
         },
       );
-    }, choice === "other" ? 500 : 0);
+    }, choice === OTHER ? 500 : 0);
     return () => {
       cancelled = true;
       window.clearTimeout(t);
@@ -96,30 +102,39 @@ export function ModelDialog() {
           <Button variant="ghost" onClick={() => useStore.setState({ modelDialogOpen: false })}>
             Close
           </Button>
-          <Button variant="primary" onClick={load} disabled={!id || loading || job?.status === "running" || est?.verdict === "wont_fit"}>
+          <Button
+            variant="primary"
+            onClick={load}
+            disabled={!id || loading || job?.status === "running" || est?.verdict === "wont_fit" || estimate?.supported === false}
+          >
             {loading ? "Loading…" : "Load"}
           </Button>
         </>
       }
     >
       {savedRef && <Button size="small" onClick={() => {
-        setChoice(savedRef.id === GPT2 ? "gpt2" : "other");
+        setChoice(presets.some((p) => p.id === savedRef.id) ? savedRef.id : OTHER);
         setOther(savedRef.id); setRevision(savedRef.revision ?? "");
         setDtype(savedRef.dtype); setDevice(savedRef.device); setProcessWeights(savedRef.process_weights);
       }}>Use saved experiment model settings</Button>}
-      <Choices
-        label="Model"
-        value={choice}
-        onChange={setChoice}
-        columns={2}
-        options={[
-          { value: "gpt2", title: "GPT-2 small", detail: "124M parameters · 12 layers × 12 heads · tested with Logogram" },
-          { value: "other", title: "Another Hugging Face model", detail: "Any model TransformerLens supports, on a best-effort basis" },
-        ]}
-      />
-      {choice === "other" && (
+      <div className={s.models} role="radiogroup" aria-label="Model">
+        {(presets.length ? presets : [{ id: GPT2, label: "GPT-2 small", detail: "124M", tested: true, gated: false }]).map((p) => (
+          <button key={p.id} type="button" role="radio" aria-checked={choice === p.id} className={s.model} onClick={() => setChoice(p.id)}>
+            <span className={s.dot} />
+            <span className={s.modelName}>{p.label}</span>
+            <span className={s.modelDetail}>{p.detail}</span>
+            {p.tested && <span className={s.tag}>Tested</span>}
+          </button>
+        ))}
+        <button type="button" role="radio" aria-checked={choice === OTHER} className={s.model} onClick={() => setChoice(OTHER)}>
+          <span className={s.dot} />
+          <span className={s.modelName}>Another model</span>
+          <span className={s.modelDetail}>Any Hugging Face model TransformerLens can load, checked when it loads</span>
+        </button>
+      </div>
+      {choice === OTHER && (
         <Field label="Hugging Face id" help="Like owner/name. Only safetensors weights are loaded.">
-          <Input value={other} onChange={(e) => setOther(e.target.value)} placeholder="EleutherAI/pythia-160m" list="model-suggestions" spellCheck={false} autoFocus />
+          <Input value={other} onChange={(e) => setOther(e.target.value)} placeholder="EleutherAI/pythia-70m" list="model-suggestions" spellCheck={false} autoFocus />
           <datalist id="model-suggestions">
             {suggestions.map((x) => (
               <option key={x} value={x} />
@@ -168,7 +183,8 @@ export function ModelDialog() {
           </div>
         )}
         {estimateError && <Callout tone="error">{estimateError}</Callout>}
-        {estimate && est && (
+        {estimate?.support_note && <Callout tone="error" title="This model can't be loaded">{estimate.support_note}</Callout>}
+        {estimate && est && estimate.supported && (
           <>
             <div className={s.verdictRow}>
               <span className={`${s.verdict} ${est.verdict === "wont_fit" ? s.bad : ""}`}>{verdictText}</span>
@@ -194,6 +210,10 @@ export function ModelDialog() {
               <dd title={estimate.revision}>{shortRevision(estimate.revision)}</dd>
               <dt>Download</dt>
               <dd>{estimate.download_bytes === 0 ? "already in the cache" : bytes(estimate.download_bytes)}</dd>
+              <dt>Shape</dt>
+              <dd>{estimate.architecture.n_layers} layers × {estimate.architecture.n_heads} heads</dd>
+              <dt>Architecture</dt>
+              <dd className={s.arch} title={estimate.architecture.architecture}>{estimate.architecture.architecture.replace(/ForCausalLM$|LMHeadModel$/, "")}</dd>
             </dl>
             <p className={s.fine}>{est.explanation}</p>
             {estimate.gated && <p className={s.fine}>This model is gated: accept its license on huggingface.co and log in with `hf auth login`.</p>}
