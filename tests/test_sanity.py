@@ -84,11 +84,13 @@ def test_same_spec_twice_gives_identical_results(tiny_backend, project, spec_fac
     a = pq.read_table(first.folder / "results.parquet")
     b = pq.read_table(second.folder / "results.parquet")
     assert a.equals(b)
-    sa = json.loads((first.folder / "summary.json").read_text())
-    sb = json.loads((second.folder / "summary.json").read_text())
+    sa = json.loads((first.folder / "summary.json").read_text(encoding="utf-8"))
+    sb = json.loads((second.folder / "summary.json").read_text(encoding="utf-8"))
     sa.pop("run_id"), sb.pop("run_id")
     assert sa == sb
-    assert (first.folder / "spec.json").read_text() == (second.folder / "spec.json").read_text()
+    assert (first.folder / "spec.json").read_text(encoding="utf-8") == (
+        second.folder / "spec.json"
+    ).read_text(encoding="utf-8")
 
 
 def test_patching_every_head_matches_the_attention_output(tiny_backend, project, spec_factory):

@@ -152,7 +152,7 @@ def test_a_run_is_stored_as_an_estimate_and_verified_by_patching(
     spec = spec_factory(experiment=ATP, scope={"kind": "heads", "position": {"kind": "last"}})
     outcome = run_spec(spec, project, backend=tiny_backend)
     assert outcome.status == "finished"
-    summary = json.loads((outcome.folder / "summary.json").read_text())
+    summary = json.loads((outcome.folder / "summary.json").read_text(encoding="utf-8"))
     assert summary["measure"] == "estimate"
     assert summary["metric"]["normalized_effect"].startswith("estimated")
     assert summary["sites"][0]["answer_prob"] is None

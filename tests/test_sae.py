@@ -24,7 +24,7 @@ from logogram.verify import verification_spec
 
 def _saelens(folder: Path, cfg: dict, tensors: dict) -> Path:
     folder.mkdir(parents=True, exist_ok=True)
-    (folder / "cfg.json").write_text(json.dumps(cfg))
+    (folder / "cfg.json").write_text(json.dumps(cfg), encoding="utf-8")
     save_file(
         {k: v.contiguous() for k, v in tensors.items()}, str(folder / "sae_weights.safetensors")
     )
@@ -190,7 +190,7 @@ def test_formats_logogram_cant_reproduce_are_refused(tmp_path):
             read_sae(_saelens(tmp_path / message.replace(" ", "-").replace("'", ""), cfg, weights))
     trans = tmp_path / "layers.1.mlp"
     trans.mkdir()
-    (trans / "cfg.json").write_text(json.dumps({"k": 2, "transcode": True}))
+    (trans / "cfg.json").write_text(json.dumps({"k": 2, "transcode": True}), encoding="utf-8")
     save_file(
         {
             "encoder.weight": torch.zeros(f, d),
@@ -337,13 +337,13 @@ def test_a_feature_run_is_stored_and_verified(tiny_backend, project, spec_factor
     )
     outcome = run_spec(spec, project, backend=tiny_backend, sae=exact)
     assert outcome.status == "finished", outcome.manifest.get("error")
-    summary = json.loads((outcome.folder / "summary.json").read_text())
+    summary = json.loads((outcome.folder / "summary.json").read_text(encoding="utf-8"))
     assert summary["features"]["sae"]["repo"] == "local/exact"
     assert summary["features"]["fit"]["variance_explained"] == pytest.approx(1.0, abs=1e-5)
     assert (
         summary["sites"][0]["kind"] == "sae_feature" and summary["sites"][0]["feature"] is not None
     )
-    manifest = json.loads((outcome.folder / "manifest.json").read_text())
+    manifest = json.loads((outcome.folder / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["sae"]["revision"] == "test"
 
     check = verification_spec(spec, summary, top=2)

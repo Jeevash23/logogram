@@ -187,7 +187,7 @@ def test_a_run_stores_the_split_and_compares_with_patching(tiny_backend, project
         backend=tiny_backend,
     )
     assert dla.status == patching.status == "finished"
-    summary = json.loads((dla.folder / "summary.json").read_text())
+    summary = json.loads((dla.folder / "summary.json").read_text(encoding="utf-8"))
     assert summary["measure"] == "attribution"
     assert set(summary["direct"]) == {
         "prompts",
@@ -204,7 +204,7 @@ def test_a_run_stores_the_split_and_compares_with_patching(tiny_backend, project
     from logogram.compare import compare_summaries
     from logogram.runs import site_detail
 
-    other = json.loads((patching.folder / "summary.json").read_text())
+    other = json.loads((patching.folder / "summary.json").read_text(encoding="utf-8"))
     comparison = compare_summaries(summary, other)
     assert comparison["n_common"] == tiny_backend.info.n_layers * tiny_backend.info.n_heads
     detail = site_detail(project, dla.run_id, 0)

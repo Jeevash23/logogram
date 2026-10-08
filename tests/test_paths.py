@@ -161,7 +161,7 @@ def test_a_run_is_stored_like_patching(tiny_backend, project, spec_factory):
     )
     outcome = run_spec(spec, project, backend=tiny_backend)
     assert outcome.status == "finished", outcome.manifest.get("error")
-    summary = json.loads((outcome.folder / "summary.json").read_text())
+    summary = json.loads((outcome.folder / "summary.json").read_text(encoding="utf-8"))
     assert summary["measure"] == "intervention"
     assert "Path patching" in summary["description"] and "L1 H0 q" in summary["description"]
     assert (

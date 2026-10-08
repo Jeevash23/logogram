@@ -123,8 +123,8 @@ def test_consent_and_check_now(app):
     # Just checked: the daily check waits for a day to pass.
     calls = len(app.state.calls)
     assert state.maybe_check_updates() is False
-    cache = json.loads(state.updates_path().read_text())
+    cache = json.loads(state.updates_path().read_text(encoding="utf-8"))
     cache["checked_at"] = "2000-01-01T00:00:00+00:00"
-    state.updates_path().write_text(json.dumps(cache))
+    state.updates_path().write_text(json.dumps(cache), encoding="utf-8")
     assert state.maybe_check_updates() is True
     assert len(app.state.calls) > calls

@@ -130,7 +130,7 @@ def test_research_notes_round_trip_and_conflicting_edits(project):
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks")
 def test_research_never_reads_external_note_files(project, tmp_path):
     external = tmp_path / "outside.json"
-    external.write_text('{"logogram_research":1,"notes":[]}')
+    external.write_text('{"logogram_research":1,"notes":[]}', encoding="utf-8")
     (project.root / "research.json").symlink_to(external)
     with pytest.raises(ProjectError, match="outside"):
         read_notebook(project)
@@ -193,7 +193,9 @@ def test_new_routes_require_session_and_preserve_prediction_context(
         )
     assert "research.json" in [p.name for p in project.root.iterdir()]
     assert (
-        json.loads((project.root / "research.json").read_text())["notes"][0]["model"]["id"]
+        json.loads((project.root / "research.json").read_text(encoding="utf-8"))["notes"][0][
+            "model"
+        ]["id"]
         == "tiny-gpt2"
     )
 

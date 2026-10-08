@@ -48,7 +48,7 @@ def ready(project, tiny_backend, tmp_path, monkeypatch):
 def test_offline_cache_refuses_pickle_weights(tmp_path, monkeypatch):
     from huggingface_hub.errors import OfflineModeIsEnabled
 
-    (tmp_path / "config.json").write_text("{}")
+    (tmp_path / "config.json").write_text("{}", encoding="utf-8")
     (tmp_path / "pytorch_model.bin").write_bytes(b"not a model")
     monkeypatch.setattr(
         "huggingface_hub.HfApi.model_info", Mock(side_effect=OfflineModeIsEnabled())
@@ -82,7 +82,9 @@ def test_safetensors_index_never_selects_unsafe_or_missing_shards(tmp_path, shar
 
 def test_adapter_config_cannot_bypass_the_safetensors_loader(tmp_path):
     (tmp_path / "model.safetensors").write_bytes(b"placeholder")
-    (tmp_path / "adapter_config.json").write_text('{"base_model_name_or_path":"other/model"}')
+    (tmp_path / "adapter_config.json").write_text(
+        '{"base_model_name_or_path":"other/model"}', encoding="utf-8"
+    )
     with pytest.raises(BackendError, match="Adapter checkpoints"):
         validate_local_weights(tmp_path)
 
@@ -163,13 +165,13 @@ def test_saved_runs_never_read_external_links(ready, project, tmp_path, spec_fac
     outside = tmp_path / "outside"
     outside.mkdir()
     spec = spec_factory(notes="external contents must stay unread").model_dump(mode="json")
-    (outside / "spec.json").write_text(json.dumps(spec))
+    (outside / "spec.json").write_text(json.dumps(spec), encoding="utf-8")
     (project.experiments_dir / "linked").symlink_to(outside, target_is_directory=True)
     assert client.get("/api/runs/linked").status_code == 400
     assert client.get("/api/runs").json() == []
     for name in ("spec", "summary", "manifest"):
         folder = project.prepare_run_dir(name)
-        (folder / "spec.json").write_text(spec_factory().model_dump_json())
+        (folder / "spec.json").write_text(spec_factory().model_dump_json(), encoding="utf-8")
         (folder / f"{name}.json").unlink(missing_ok=True)
         (folder / f"{name}.json").symlink_to(outside / "spec.json")
         response = client.get(f"/api/runs/{name}")
@@ -205,7 +207,7 @@ def test_one_bad_run_does_not_break_history(ready, project, spec_factory, name, 
     state, client = ready
     healthy = state.save_draft(spec_factory(name="Healthy"))
     bad = state.save_draft(spec_factory(name="Broken"))
-    (project.run_dir(bad) / f"{name}.json").write_text(payload)
+    (project.run_dir(bad) / f"{name}.json").write_text(payload, encoding="utf-8")
     response = client.get("/api/runs")
     assert response.status_code == 200, response.text
     rows = {row["id"]: row for row in response.json()}
@@ -286,14 +288,14 @@ def test_dataset_snapshot_survives_source_edits(project, tiny_backend, spec_fact
     saved = Spec.from_path(first.folder / "spec.json")
     assert saved.dataset.path.startswith("datasets/snapshots/")
     assert file_sha256(project.resolve_dataset(saved.dataset.path)) == saved.dataset.sha256
-    (project.datasets_dir / "ioi.jsonl").write_text("source was edited")
+    (project.datasets_dir / "ioi.jsonl").write_text("source was edited", encoding="utf-8")
     second = run_spec(saved, project, backend=tiny_backend)
     assert second.status == "finished"
     assert pq.read_table(first.folder / "results.parquet").equals(
         pq.read_table(second.folder / "results.parquet")
     )
     assert (first.folder / "spec.json").read_bytes() == (second.folder / "spec.json").read_bytes()
-    project.resolve_dataset(saved.dataset.path).write_text("snapshot was edited")
+    project.resolve_dataset(saved.dataset.path).write_text("snapshot was edited", encoding="utf-8")
     failed = run_spec(saved, project, backend=tiny_backend)
     assert failed.status == "failed" and "hash" in failed.manifest["error"]
 

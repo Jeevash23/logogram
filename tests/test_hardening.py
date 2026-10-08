@@ -104,33 +104,33 @@ def test_runs_are_never_written_through_symlinks(client, ready, project, tmp_pat
     outside = tmp_path / "outside"
     outside.mkdir()
     victim = outside / "victim"
-    victim.write_text("keep me")
+    victim.write_text("keep me", encoding="utf-8")
     spec = spec_factory().model_dump(mode="json")
 
     # A draft carrying a link where a temporary file might be written.
     draft = project.experiments_dir / "draft-a"
     draft.mkdir()
-    (draft / "spec.json").write_text(json.dumps(spec))
+    (draft / "spec.json").write_text(json.dumps(spec), encoding="utf-8")
     (draft / ".spec.json.tmp").symlink_to(victim)
     r = client.post("/api/runs", json={"spec": spec, "draft_id": "draft-a"}, headers=HEADERS)
     assert r.status_code == 200, r.text
     assert _wait(client, "draft-a") == "finished"
-    assert victim.read_text() == "keep me"
+    assert victim.read_text(encoding="utf-8") == "keep me"
 
     # A run folder that links out of the project is refused, and left alone.
-    (outside / "spec.json").write_text("{}")
+    (outside / "spec.json").write_text("{}", encoding="utf-8")
     (project.experiments_dir / "draft-b").symlink_to(outside, target_is_directory=True)
     r = client.post("/api/runs", json={"spec": spec, "draft_id": "draft-b"}, headers=HEADERS)
     assert r.status_code == 400 and "outside the project" in r.json()["error"]
-    assert (outside / "spec.json").read_text() == "{}"
+    assert (outside / "spec.json").read_text(encoding="utf-8") == "{}"
     assert sorted(p.name for p in outside.iterdir()) == ["spec.json", "victim"]
 
 
 @posix_only
 def test_datasets_are_never_read_or_written_through_symlinks(client, ready, project, tmp_path):
     outside = tmp_path / "outside.jsonl"
-    outside.write_text((project.datasets_dir / "ioi.jsonl").read_text())
-    original = outside.read_text()
+    outside.write_text((project.datasets_dir / "ioi.jsonl").read_text(encoding="utf-8"))
+    original = outside.read_text(encoding="utf-8")
     (project.datasets_dir / "linked.jsonl").symlink_to(outside)
     (project.datasets_dir / "zero.jsonl").symlink_to("/dev/zero")
 
@@ -142,10 +142,10 @@ def test_datasets_are_never_read_or_written_through_symlinks(client, ready, proj
     assert client.get("/api/datasets/linked.jsonl", headers=HEADERS).status_code == 400
 
     # Replacing a linked dataset replaces the link, not the file it points to.
-    text = (project.datasets_dir / "ioi.jsonl").read_text().splitlines()[0]
+    text = (project.datasets_dir / "ioi.jsonl").read_text(encoding="utf-8").splitlines()[0]
     body = {"name": "linked", "text": text, "overwrite": True}
     assert client.post("/api/datasets/import", json=body, headers=HEADERS).status_code == 200
-    assert outside.read_text() == original
+    assert outside.read_text(encoding="utf-8") == original
     assert not (project.datasets_dir / "linked.jsonl").is_symlink()
 
 
@@ -174,7 +174,7 @@ def test_odd_dataset_files_dont_break_a_project(client, ready, project):
     record = {"clean": "a b", "corrupt": "a c", "answer": " x", "distractor": " y"}
     (project.datasets_dir / "utf16.jsonl").write_text(json.dumps(record) + "\n", "utf-16")
     bad_span = json.dumps({**record, "positions": {"IO": 5}})
-    (project.datasets_dir / "spans.jsonl").write_text(bad_span + "\n")
+    (project.datasets_dir / "spans.jsonl").write_text(bad_span + "\n", encoding="utf-8")
     (project.datasets_dir / "folder.jsonl").mkdir()
 
     r = client.post("/api/projects/open", json={"path": str(project.root)}, headers=HEADERS)
@@ -211,7 +211,7 @@ def test_folder_listing_skips_what_it_cant_enter(client, tmp_path):
 
 def test_creating_a_project_where_you_cant_write_says_so(client, tmp_path):
     blocker = tmp_path / "a-file"
-    blocker.write_text("")
+    blocker.write_text("", encoding="utf-8")
     r = client.post("/api/projects", json={"name": "x", "parent": str(blocker)}, headers=HEADERS)
     assert r.status_code == 400 and r.json()["error"]
 
@@ -222,7 +222,7 @@ def test_creating_a_project_where_you_cant_write_says_so(client, tmp_path):
 def test_a_busy_server_writes_nothing(client, ready, project, spec_factory):
     spec = spec_factory().model_dump(mode="json")
     draft = client.post("/api/drafts", json={"spec": spec}, headers=HEADERS).json()["run_id"]
-    saved = (project.experiments_dir / draft / "spec.json").read_text()
+    saved = (project.experiments_dir / draft / "spec.json").read_text(encoding="utf-8")
     before = sorted(p.name for p in project.experiments_dir.iterdir())
 
     ready.job = Job(id="busy", kind="run", title="Another run")
@@ -230,7 +230,7 @@ def test_a_busy_server_writes_nothing(client, ready, project, spec_factory):
     other = spec_factory(name="changed").model_dump(mode="json")
     body = {"spec": other, "draft_id": draft}
     assert client.post("/api/runs", json=body, headers=HEADERS).status_code == 409
-    assert (project.experiments_dir / draft / "spec.json").read_text() == saved
+    assert (project.experiments_dir / draft / "spec.json").read_text(encoding="utf-8") == saved
     assert sorted(p.name for p in project.experiments_dir.iterdir()) == before
 
 
@@ -366,7 +366,7 @@ def test_a_draft_can_be_saved_again_until_it_runs(client, ready, project, spec_f
     edited = spec_factory(name="edited").model_dump(mode="json")
     again = client.post("/api/drafts", json={"spec": edited, "draft_id": draft}, headers=HEADERS)
     assert again.json()["run_id"] == draft
-    saved = json.loads((project.experiments_dir / draft / "spec.json").read_text())
+    saved = json.loads((project.experiments_dir / draft / "spec.json").read_text(encoding="utf-8"))
     assert saved["name"] == "edited"
     body = {"spec": edited, "draft_id": draft}
     assert client.post("/api/runs", json=body, headers=HEADERS).status_code == 200

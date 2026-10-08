@@ -12,6 +12,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Literal
 
+import anyio
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
@@ -995,17 +996,20 @@ def create_app(
             while (await ws.receive())["type"] != "websocket.disconnect":
                 pass
 
-        tasks: set[asyncio.Task[None]] = set()
+        async def first_to_finish(job: Any, scope: anyio.CancelScope) -> None:
+            await job()
+            scope.cancel()
+
         try:
             await ws.send_json({"type": "hello", "version": __version__})
-            tasks = {asyncio.create_task(send_events()), asyncio.create_task(until_closed())}
-            await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        except (WebSocketDisconnect, RuntimeError):
+            # A task group, not bare asyncio tasks, so a server-side cancel (shutdown, or the
+            # test client closing) stays inside this handler's scope.
+            async with anyio.create_task_group() as group:
+                group.start_soon(first_to_finish, send_events, group.cancel_scope)
+                group.start_soon(first_to_finish, until_closed, group.cancel_scope)
+        except* (WebSocketDisconnect, RuntimeError):
             pass
         finally:
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
             hub.unsubscribe(queue)
 
     # -- web app -----------------------------------------------------------------------------

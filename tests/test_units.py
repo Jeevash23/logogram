@@ -136,7 +136,9 @@ def test_example_spec_is_valid_and_pinned():
 
 
 def test_spec_rejects_hidden_defaults_and_typos():
-    base = json.loads((EXAMPLE / "experiments" / "ioi-head-patching" / "spec.json").read_text())
+    base = json.loads(
+        (EXAMPLE / "experiments" / "ioi-head-patching" / "spec.json").read_text(encoding="utf-8")
+    )
     with pytest.raises(ValidationError):
         Spec.model_validate({**base, "experiment": {"kind": "activation_patching"}})  # no direction
     with pytest.raises(ValidationError):

@@ -141,7 +141,7 @@ def test_a_run_stores_each_strength_and_the_held_out_prompts(tiny_backend, proje
     )
     outcome = run_spec(spec, project, backend=tiny_backend)
     assert outcome.status == "finished"
-    summary = json.loads((outcome.folder / "summary.json").read_text())
+    summary = json.loads((outcome.folder / "summary.json").read_text(encoding="utf-8"))
     assert summary["layout"]["kind"] == "steering"
     assert [c["key"] for c in summary["layout"]["cols"]] == ["×−1", "×1", "random ×−1", "random ×1"]
     steer = summary["steering"]
