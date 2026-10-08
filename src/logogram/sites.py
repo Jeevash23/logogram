@@ -44,6 +44,10 @@ class ResolvedSite:
     row: int
     col: int
     label: str
+    # A variant of the same site, for methods that measure one site several ways (a steering
+    # strength, or its random control). ``variant_key`` names it, for example "×2".
+    variant: dict[str, Any] | None = None
+    variant_key: str | None = None
 
     @property
     def kind(self) -> str:
@@ -71,6 +75,8 @@ class ResolvedSite:
             "row": self.row,
             "col": self.col,
             "label": self.label,
+            "variant": self.variant,
+            "variant_key": self.variant_key,
         }
 
 

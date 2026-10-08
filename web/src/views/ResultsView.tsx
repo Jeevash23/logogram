@@ -69,7 +69,12 @@ export function ResultsView() {
 
   const rows: Axis[] = layout?.rows.map((x) => ({ key: x.key, label: x.label })) ?? [];
   const cols: Axis[] =
-    layout?.cols.map((x) => ({ key: x.key, label: x.label, emphasis: x.differs })) ?? [];
+    layout?.cols.map((x) => ({
+      key: x.key,
+      label: x.label,
+      // Steering: strengths along the direction in ink, the random control muted.
+      emphasis: layout.kind === "steering" ? !x.control : x.differs,
+    })) ?? [];
   const value = (ri: number, ci_: number) => {
     const site = siteAt(run.sites, ri, ci_);
     if (!site) return undefined;
@@ -79,7 +84,7 @@ export function ResultsView() {
   const words = measureWords(spec?.experiment);
   const attribution = measureOf(spec?.experiment) === "attribution";
   const strongest = Object.values(run.results)
-    .filter((x) => x.effect.mean !== null)
+    .filter((x) => x.effect.mean !== null && !x.variant?.control)
     .sort((a, b) => Math.abs(b.effect.mean ?? 0) - Math.abs(a.effect.mean ?? 0))[0];
   const provenance = [
     status === "running" ? "Running" : status === "finished" ? `Finished ${ago(manifest?.finished_at)}` : status === "draft" ? "Not run yet" : status === "failed" ? "Failed" : "Cancelled",
@@ -152,7 +157,29 @@ export function ResultsView() {
 
       {summary && (
         <dl className={r.figures} aria-label="The run at a glance">
-          {summary.direct ? (
+          {summary.steering ? (
+            <>
+              <div>
+                <dt>Held-out prompts measured</dt>
+                <dd className="figure">{count(summary.steering.test.length)}</dd>
+              </div>
+              <div>
+                <dt>Pairs that computed it</dt>
+                <dd className="figure">{count(summary.steering.train.length)}</dd>
+              </div>
+              {(() => {
+                const control = Object.values(run.results)
+                  .filter((x) => x.variant?.control && x.effect.mean !== null)
+                  .sort((a, b) => Math.abs(b.effect.mean ?? 0) - Math.abs(a.effect.mean ?? 0))[0];
+                return control ? (
+                  <div>
+                    <dt>Largest random-control effect</dt>
+                    <dd className="figure">{signed(control.effect.mean, 2)}</dd>
+                  </div>
+                ) : null;
+              })()}
+            </>
+          ) : summary.direct ? (
             <>
               <div>
                 <dt>{summary.direct.prompts === "clean" ? "Clean" : "Corrupt"} logit diff</dt>
@@ -292,7 +319,9 @@ function MethodsLine({ spec, n }: { spec: Spec; n: number | undefined }) {
             ? `Direct logit attribution of the ${e.prompts} prompts`
             : e.kind === "attribution_patching"
               ? `Estimate patching ${e.direction === "clean_to_corrupt" ? "clean → corrupt" : "corrupt → clean"} (attribution patching)`
-              : `Ablate (${baselineText(e.baseline)})`}
+              : e.kind === "steering"
+                ? `Steer ${e.apply_to} → ${e.apply_to === "clean" ? "corrupt" : "clean"} (${e.coefficients.map((c) => `×${c}`.replace("-", "−")).join(", ")}${e.control ? ", random control" : ""})`
+                : `Ablate (${baselineText(e.baseline)})`}
       </strong>
       {" "}{site} at {position}
       <span className={r.sep}>·</span>

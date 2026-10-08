@@ -356,6 +356,7 @@ function ChangesTable({ changes, topK }: { changes: ComparisonChange[]; topK: nu
                   part: ch.kind === "head" ? "head" : ch.kind === "attn_out" ? "attn" : ch.kind === "mlp_out" ? "mlp" : "resid",
                   head: ch.head ?? undefined,
                   positionKey: ch.position_key === "all" ? undefined : ch.position_key,
+                  variantKey: ch.variant_key ?? undefined,
                 })
               }
             >

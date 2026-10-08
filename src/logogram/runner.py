@@ -257,7 +257,16 @@ def run_spec(
         write_manifest(folder / "manifest.json", manifest)
 
         prompts = prepare_prompts(backend, records, spec.tokenization.prepend_bos)
-        counts = resample_counts(len(prompts), spec.statistics.bootstrap, spec.statistics.seed)
+        # Bootstrap resamples over the prompts a method measures (steering measures held-out
+        # prompts only), drawn once per run so every site shares them.
+        resamples: dict[int, np.ndarray] = {}
+
+        def counts_for(result: Any) -> np.ndarray:
+            n = len(result.prompts)
+            if n not in resamples:
+                resamples[n] = resample_counts(n, spec.statistics.bootstrap, spec.statistics.seed)
+            return resamples[n]
+
         model_shape = {
             "id": info.id,
             "n_layers": info.n_layers,
@@ -302,7 +311,7 @@ def run_spec(
 
         def on_layer(layer: int, indices: list[int], partial: Any) -> None:
             # A finished site's statistics depend only on its own rows, so they are final.
-            stats = compute_stats(spec, partial, counts, indices)
+            stats = compute_stats(spec, partial, counts_for(partial), indices)
             emit(
                 "layer",
                 {"run_id": run_id, "layer": layer, "sites": site_payload(partial, stats, indices)},
@@ -330,7 +339,7 @@ def run_spec(
             on_start=on_start,
             cancel=cancel,
         )
-        stats = compute_stats(spec, result, counts)
+        stats = compute_stats(spec, result, counts_for(result))
         summary = build_summary(spec, result, stats, run_id, model_shape)
         write_results(folder / "results.parquet", results_table(result, stats))
         write_json(folder / "summary.json", summary)

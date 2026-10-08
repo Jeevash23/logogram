@@ -138,6 +138,8 @@ def build_summary(
             f"(patched − {result.receiver}) ÷ ({result.reference} − {result.receiver}) "
             "logit difference, per prompt"
         )
+    if "steering" in result.extra:
+        norm_text = norm_text.replace("patched", "steered")
     if result.measure == "estimate":
         description = (
             "first-order estimate of the change patching would cause in logit(answer) − "
@@ -181,6 +183,7 @@ def build_summary(
         "donors": result.donors,
         "warnings": result.warnings,
         **({"direct": result.extra["direct"]} if "direct" in result.extra else {}),
+        **({"steering": result.extra["steering"]} if "steering" in result.extra else {}),
     }
     return Summary.model_validate(summary).model_dump(mode="json")
 
@@ -189,7 +192,9 @@ def results_table(result: EngineResult, stats: SiteStats) -> pa.Table:
     """Long format: one row per (site, prompt), with everything needed to recompute effects."""
     n_sites, n = result.patched_ld.shape
     site_idx = np.repeat(np.arange(n_sites, dtype=np.int32), n)
-    prompt_idx = np.tile(np.arange(n, dtype=np.int32), n_sites)
+    # The prompt's index in the dataset (a method may measure only some prompts, as steering
+    # measures the held-out ones).
+    prompt_idx = np.tile(np.array([p.index for p in result.prompts], dtype=np.int32), n_sites)
     sites = result.sites
     columns = {
         "site": site_idx,
@@ -202,6 +207,10 @@ def results_table(result: EngineResult, stats: SiteStats) -> pa.Table:
         ),
         "position": pa.array(
             [sites[i].position_key() for i in site_idx], type=pa.dictionary(pa.int16(), pa.string())
+        ),
+        "variant": pa.array(
+            [sites[i].variant_key or "" for i in site_idx],
+            type=pa.dictionary(pa.int16(), pa.string()),
         ),
         "prompt": prompt_idx,
         "patched_logit_diff": result.patched_ld.ravel(),

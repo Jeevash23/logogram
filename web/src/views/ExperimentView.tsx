@@ -26,7 +26,24 @@ const METHODS: { value: ExperimentKind; title: string; detail: string }[] = [
     title: "Direct logit attribution",
     detail: "Split the logit difference into what each component writes directly. No intervention.",
   },
+  {
+    value: "steering",
+    title: "Steering",
+    detail: "Add the mean clean–corrupt difference at several strengths, against a random control.",
+  },
 ];
+
+/** Strengths as typed: numbers separated by commas or spaces (a typographic minus is fine). */
+export function parseStrengths(text: string): { values: number[] } | { error: string } {
+  const parts = text.replace(/−/g, "-").split(/[\s,;]+/).filter(Boolean);
+  if (parts.length === 0) return { error: "Give at least one steering strength, such as 1." };
+  const values = parts.map(Number);
+  const bad = parts.find((_, i) => !Number.isFinite(values[i]));
+  if (bad !== undefined) return { error: `“${bad}” isn't a number. Separate strengths with commas, like -1, 1, 2.` };
+  if (new Set(values).size !== values.length) return { error: "Each steering strength appears once." };
+  if (values.length > 16) return { error: "Use at most 16 steering strengths." };
+  return { values };
+}
 
 /** Build a spec from the form, or explain what's missing. */
 export function buildSpec(
@@ -43,6 +60,18 @@ export function buildSpec(
     experiment = { kind: "activation_patching", direction: form.direction };
   } else if (form.kind === "attribution_patching") {
     experiment = { kind: "attribution_patching", direction: form.direction };
+  } else if (form.kind === "steering") {
+    if (!form.steerApplyTo) return { error: "Choose which prompts to steer." };
+    const strengths = parseStrengths(form.steerStrengths);
+    if ("error" in strengths) return strengths;
+    experiment = {
+      kind: "steering",
+      apply_to: form.steerApplyTo,
+      coefficients: strengths.values,
+      train_fraction: form.steerTrain,
+      seed: form.steerSeed,
+      control: form.steerControl,
+    };
   } else if (form.kind === "direct_logit_attribution") {
     if (!form.dlaPrompts) return { error: "Choose which prompts' logit difference to split." };
     experiment = { kind: "direct_logit_attribution", prompts: form.dlaPrompts };
@@ -156,7 +185,9 @@ export function ExperimentView() {
       ? `Ablation · ${scopeShort(form.scope).toLowerCase()}`
       : form.kind === "direct_logit_attribution" && !form.dlaPrompts
         ? `Direct attribution · ${scopeShort(form.scope).toLowerCase()}`
-        : "";
+        : form.kind === "steering" && !form.steerApplyTo
+          ? `Steering · ${scopeShort(form.scope).toLowerCase()}`
+          : "";
   useEffect(() => {
     if (!form.nameEdited && suggested && form.name !== suggested) setForm({ name: suggested });
   }, [suggested, form.nameEdited, form.name, setForm]);
@@ -247,7 +278,9 @@ export function ExperimentView() {
             columns={3}
             options={METHODS}
           />
-          {form.kind === "direct_logit_attribution" ? (
+          {form.kind === "steering" ? (
+            <SteeringSettings form={form} onChange={setForm} />
+          ) : form.kind === "direct_logit_attribution" ? (
             <div className={e.stack}>
               <Choices
                 label="Prompts to split"
@@ -458,6 +491,54 @@ export function ExperimentView() {
   );
 }
 
+function SteeringSettings({ form, onChange }: { form: FormState; onChange: (patch: Partial<FormState>) => void }) {
+  const strengths = parseStrengths(form.steerStrengths);
+  return (
+    <div className={e.stack}>
+      <Choices
+        label="Prompts to steer"
+        value={form.steerApplyTo}
+        onChange={(steerApplyTo) => onChange({ steerApplyTo })}
+        columns={2}
+        options={[
+          {
+            value: "corrupt",
+            title: "Steer corrupt prompts toward clean",
+            detail: "Adds the mean of (clean − corrupt). Does this direction bring the behavior back?",
+          },
+          {
+            value: "clean",
+            title: "Steer clean prompts toward corrupt",
+            detail: "Adds the mean of (corrupt − clean). Does it take the behavior away?",
+          },
+        ]}
+      />
+      {!form.steerApplyTo && <p className={e.required}>Required: it decides the direction, so there's no default.</p>}
+      <div className={s.grid3}>
+        <Field
+          label="Strengths"
+          help={"error" in strengths ? strengths.error : "Multiples of the mean difference. 1 adds the whole difference; negative values push the other way."}
+        >
+          <Input value={form.steerStrengths} onChange={(ev) => onChange({ steerStrengths: ev.target.value })} spellCheck={false} aria-invalid={"error" in strengths} />
+        </Field>
+        <Field label="Pairs that compute the direction" help="The rest are held out, and only they are measured.">
+          <Select value={String(form.steerTrain)} onChange={(ev) => onChange({ steerTrain: Number(ev.target.value) })}>
+            <option value="0.25">25%</option>
+            <option value="0.5">50%</option>
+            <option value="0.75">75%</option>
+          </Select>
+        </Field>
+        <Field label="Split seed">
+          <Input type="number" value={form.steerSeed} onChange={(ev) => onChange({ steerSeed: Number(ev.target.value) })} />
+        </Field>
+      </div>
+      <Checkbox checked={form.steerControl} onChange={(steerControl) => onChange({ steerControl })}>
+        Run a random direction of the same length, at the same strengths, as a control
+      </Checkbox>
+    </div>
+  );
+}
+
 function BaselineChooser({ baseline, onChange }: { baseline: BaselineSpec | null; onChange: (b: BaselineSpec) => void }) {
   return (
     <div className={e.stack}>
@@ -511,10 +592,13 @@ function PositionPicker({
   value,
   onChange,
   labels,
+  allowAll = true,
 }: {
   value: PositionSpec;
   onChange: (p: PositionSpec) => void;
   labels: string[];
+  /** Steering adds at one token of each prompt, so "all positions" doesn't apply. */
+  allowAll?: boolean;
 }) {
   return (
     <div className={s.row}>
@@ -528,7 +612,7 @@ function PositionPicker({
           else onChange({ kind: "index", index: -1 });
         }}
         options={[
-          { value: "all", label: "All positions" },
+          { value: "all", label: "All positions", disabled: !allowAll, title: allowAll ? undefined : "Steering adds the direction at one token of each prompt" },
           { value: "last", label: "Last token" },
           { value: "label", label: "Named position", disabled: labels.length === 0, title: labels.length ? undefined : "This dataset has no named positions" },
           { value: "index", label: "Token index" },
@@ -576,6 +660,8 @@ function ScopeEditor({
   const kind = scope.kind;
   // Direct attribution splits what components write, at the last token only.
   const direct = method === "direct_logit_attribution";
+  // Steering adds to one residual stream site per layer, at one token of each prompt.
+  const steering = method === "steering";
   const verb = method === "ablation" ? "Ablate" : "Patch";
   const position = (p: PositionSpec) => (direct ? { kind: "last" } as PositionSpec : p);
   return (
@@ -584,20 +670,21 @@ function ScopeEditor({
         label="Sweep"
         value={kind}
         onChange={(k) => {
-          if (k === "heads") onChange({ kind: "heads", position: position({ kind: "all" }) });
+          if (k === "layer_components" && steering) onChange({ kind: "layer_components", components: ["resid_pre"], position: { kind: "last" } });
+          else if (k === "heads") onChange({ kind: "heads", position: position({ kind: "all" }) });
           else if (k === "layer_position")
             onChange({ kind: "layer_position", site: "resid_pre", positions: uniformLength === false && labels.length ? "labels" : "each" });
           else if (k === "layer_components") onChange({ kind: "layer_components", components: ["attn_out", "mlp_out"], position: position({ kind: "all" }) });
         }}
         options={[
-          { value: "heads", label: "Layer × head" },
+          { value: "heads", label: "Layer × head", disabled: steering, title: steering ? "Steering adds to the residual stream" : undefined },
           {
             value: "layer_position",
             label: "Layer × position",
-            disabled: direct,
-            title: direct ? "Direct effects are read at the last token only" : undefined,
+            disabled: direct || steering,
+            title: direct ? "Direct effects are read at the last token only" : steering ? "Steering adds at one token" : undefined,
           },
-          { value: "layer_components", label: "Attention and MLP per layer" },
+          { value: "layer_components", label: steering ? "One site in every layer" : "Attention and MLP per layer" },
           ...(kind === "sites" ? [{ value: "sites" as const, label: scope.sites.length === 1 ? "Single site" : "Chosen sites" }] : []),
         ]}
       />
@@ -611,7 +698,24 @@ function ScopeEditor({
             <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} />
           </Field>
         ))}
-      {scope.kind === "layer_components" && (
+      {scope.kind === "layer_components" && steering && (
+        <div className={s.grid2}>
+          <Field label="Residual stream site">
+            <Select
+              value={scope.components[0] ?? "resid_pre"}
+              onChange={(ev) => onChange({ ...scope, components: [ev.target.value as StreamKind] })}
+            >
+              <option value="resid_pre">Before each layer</option>
+              <option value="resid_mid">Between attention and MLP</option>
+              <option value="resid_post">After each layer</option>
+            </Select>
+          </Field>
+          <Field label="Add the direction at">
+            <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} allowAll={false} />
+          </Field>
+        </div>
+      )}
+      {scope.kind === "layer_components" && !steering && (
         <>
           <Field label="Components">
             <div className={s.row}>
@@ -680,6 +784,7 @@ function ScopeEditor({
               <PositionPicker
                 value={site.position}
                 labels={labels}
+                allowAll={!steering}
                 onChange={(position) =>
                   onChange({ kind: "sites", sites: scope.sites.map((x, j) => (j === i ? { ...x, position } : x)) })
                 }

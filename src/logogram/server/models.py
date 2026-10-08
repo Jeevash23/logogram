@@ -380,6 +380,7 @@ class ComparisonChange(_Out):
     layer: int
     head: int | None
     position_key: str
+    variant_key: str | None = None
     index_a: int
     index_b: int
     row: int

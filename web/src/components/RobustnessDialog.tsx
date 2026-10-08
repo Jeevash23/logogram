@@ -6,12 +6,13 @@ import { experimentText } from "../lib/spec";
 import { useStore } from "../store/app";
 import { Button, Choices, Dialog, Field, Input, Select } from "./ui";
 
-type Option = "direction" | "zero" | "mean" | "resample" | "donors" | "seed" | "total" | "prompts" | "exact";
+type Option = "direction" | "zero" | "mean" | "resample" | "donors" | "seed" | "total" | "prompts" | "exact" | "split" | "other";
 
 function suggest(e: ExperimentSpec): Option {
   if (e.kind === "activation_patching") return e.direction === "clean_to_corrupt" ? "direction" : "resample";
   if (e.kind === "direct_logit_attribution") return "total";
   if (e.kind === "attribution_patching") return "exact";
+  if (e.kind === "steering") return "split";
   if (e.baseline.kind === "resample") return "donors";
   if (e.baseline.kind === "zero") return "mean";
   return "resample";
@@ -23,6 +24,12 @@ function variant(e: ExperimentSpec, option: Option, params: { donors: number; se
     case "total":
       // The same components, patched: their total effect, through everything downstream.
       return { kind: "activation_patching", direction: e.kind === "direct_logit_attribution" && e.prompts === "corrupt" ? "clean_to_corrupt" : "corrupt_to_clean" };
+    case "split":
+      // The same steering with the pairs split differently: does the direction depend on which
+      // pairs computed it?
+      return e.kind === "steering" ? { ...e, seed: e.seed + 1 } : e;
+    case "other":
+      return e.kind === "steering" ? { ...e, apply_to: e.apply_to === "clean" ? "corrupt" : "clean" } : e;
     case "exact":
       // Every site of the sweep, patched for real.
       return { kind: "activation_patching", direction: e.kind === "attribution_patching" ? e.direction : "clean_to_corrupt" };
@@ -97,6 +104,17 @@ export function RobustnessDialog() {
       title: exp.prompts === "clean" ? "Split the corrupt prompts" : "Split the clean prompts",
       detail: "The same split on the other prompt of each pair: which direct effects the corruption changes.",
     });
+  } else if (exp.kind === "steering") {
+    options.push({
+      value: "split",
+      title: "Another split of the pairs",
+      detail: `Seed ${exp.seed + 1}: other pairs compute the directions, and others are measured.`,
+    });
+    options.push({
+      value: "other",
+      title: exp.apply_to === "clean" ? "Steer corrupt prompts toward clean" : "Steer clean prompts toward corrupt",
+      detail: "The same sites and strengths in the other direction.",
+    });
   } else if (exp.kind === "attribution_patching") {
     options.push({
       value: "exact",
@@ -117,7 +135,7 @@ export function RobustnessDialog() {
     options.push({ value: "donors", title: "More donors", detail: "Same pool and seed rule, more donors per prompt." });
     options.push({ value: "seed", title: "Another donor seed", detail: "Same number of donors, drawn differently." });
   }
-  if (exp.kind !== "direct_logit_attribution" && exp.kind !== "attribution_patching") {
+  if (exp.kind !== "direct_logit_attribution" && exp.kind !== "attribution_patching" && exp.kind !== "steering") {
     if (!(exp.kind === "ablation" && exp.baseline.kind === "zero")) options.push({ value: "zero", title: "Zero ablation", detail: "Replace the activation with zeros." });
     if (!(exp.kind === "ablation" && exp.baseline.kind === "mean" && !isResample))
       options.push({ value: "mean", title: "Mean ablation", detail: "Replace it with its mean over a reference set." });

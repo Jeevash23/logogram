@@ -244,6 +244,18 @@ them), at positions other than the last token, for single heads in models that n
 attention output after combining heads (Gemma 2, OLMo 2), and for models that soft-cap their
 logits.
 
+**Steering** adds a direction to the residual stream and measures what it does. At each steered
+site (one residual stream state per layer, or chosen ones, at one token of each prompt) the
+direction is the mean difference between the two prompts of each pair, from the prompts you steer
+toward the other ones. It is computed on a seeded training split of the pairs and measured only on
+the held-out rest, so no prompt receives its own difference. Each strength multiplies the whole
+mean difference: 1 adds all of it, negative values push the other way. The effect is normalized
+like patching, so 1 means the steered prompts moved as far as switching to the other prompt. A
+random direction of the same length, at the same strengths, runs alongside as a control, and the
+results show both: a layer × strength map with the control columns muted, and, for a selected site,
+its effect at every strength with intervals. **Check robustness** offers another split of the pairs
+or the other direction.
+
 **Sites** are abstract: `resid_pre`, `resid_mid`, `resid_post`, `attn_out`, `mlp_out` and `head`
 (an attention head's output `z`), each at a layer, head and position. Positions are `all`,
 `last`, a token `index` or a named `label`. **Sweeps** cover every head at one position
@@ -292,7 +304,7 @@ Every experiment is a `spec.json`. Nothing that can change a number is left impl
 | `model.revision` | A commit. `null` resolves the current main branch at run time; the saved spec pins what ran. |
 | `model.process_weights` | Fold LayerNorm and center weights, as TransformerLens does by default. Logit differences don't change; zero ablation of head outputs does, because value biases are folded. |
 | `dataset.sha256` | If set, the run refuses a dataset file that has changed. |
-| `experiment` | `{"kind": "activation_patching", "direction": "clean_to_corrupt" \| "corrupt_to_clean"}`, `{"kind": "ablation", "baseline": …}` with `{"kind": "zero"}`, `{"kind": "mean", "reference": "clean" \| "corrupt"}` or `{"kind": "resample", "pool": "clean" \| "corrupt", "donors": 10, "seed": 0}`, `{"kind": "attribution_patching", "direction": …}` (same directions as patching), or `{"kind": "direct_logit_attribution", "prompts": "clean" \| "corrupt"}` |
+| `experiment` | `{"kind": "activation_patching", "direction": "clean_to_corrupt" \| "corrupt_to_clean"}`, `{"kind": "ablation", "baseline": …}` with `{"kind": "zero"}`, `{"kind": "mean", "reference": "clean" \| "corrupt"}` or `{"kind": "resample", "pool": "clean" \| "corrupt", "donors": 10, "seed": 0}`, `{"kind": "attribution_patching", "direction": …}` (same directions as patching), `{"kind": "direct_logit_attribution", "prompts": "clean" \| "corrupt"}`, or `{"kind": "steering", "apply_to": "clean" \| "corrupt", "coefficients": [-1, 1, 2], "train_fraction": 0.5, "seed": 0, "control": true}` with a scope of one residual component per layer (`layer_components`) or residual `sites`, at one token |
 | `scope` | `{"kind": "heads", "position": …}`, `{"kind": "layer_position", "site": "resid_pre", "positions": "each" \| "labels"}`, `{"kind": "layer_components", "components": ["attn_out", "mlp_out"], "position": …}` or `{"kind": "sites", "sites": [{"kind": "head", "layer": 9, "head": 9, "position": {"kind": "label", "label": "end"}}]}` |
 | `metric.normalization` | `dataset_gap` or `prompt_gap` |
 | `execution.batch_size` | Recorded because batch shape can change floating-point results in the last digits. |

@@ -11,6 +11,8 @@ export interface Selection {
   /** Which residual stream site (before, between or after the layer's blocks), when known. The
    * map draws the three in one column, so a run can have several on one map cell. */
   kind?: ResidKind;
+  /** Which variant of the site, such as a steering strength ("×2" or "random ×2"). */
+  variantKey?: string;
 }
 
 export type MapPart = "resid" | "head" | "attn" | "mlp";
@@ -34,6 +36,7 @@ export function selectionOfSite(site: SiteBase): Selection {
     head: site.head ?? undefined,
     positionKey: site.position_key === "all" ? undefined : site.position_key,
     kind: isResidKind(site.kind) ? site.kind : undefined,
+    variantKey: site.variant_key ?? undefined,
   };
 }
 
@@ -44,7 +47,8 @@ export function sameSelection(a: Selection | null, b: Selection | null): boolean
     a.part === b.part &&
     (a.head ?? -1) === (b.head ?? -1) &&
     (a.positionKey ?? "") === (b.positionKey ?? "") &&
-    (a.kind ?? "") === (b.kind ?? "")
+    (a.kind ?? "") === (b.kind ?? "") &&
+    (a.variantKey ?? "") === (b.variantKey ?? "")
   );
 }
 
@@ -55,7 +59,8 @@ export function sitesOnComponent<T extends SiteBase>(sites: T[], sel: Selection)
       s.layer === sel.layer &&
       partOfKind(s.kind) === sel.part &&
       (sel.part !== "head" || s.head === sel.head) &&
-      (sel.kind === undefined || s.kind === sel.kind),
+      (sel.kind === undefined || s.kind === sel.kind) &&
+      (sel.variantKey === undefined || (s.variant_key ?? undefined) === sel.variantKey),
   );
 }
 
@@ -78,13 +83,15 @@ export function fitSelection<T extends SiteBase>(sites: T[], sel: Selection): Se
     { ...sel, positionKey: undefined },
     { ...sel, kind: undefined },
     { ...sel, positionKey: undefined, kind: undefined },
+    { ...sel, variantKey: undefined },
+    { ...sel, variantKey: undefined, positionKey: undefined, kind: undefined },
   ];
   return tries.find((t) => findSite(sites, t)) ?? { ...sel, positionKey: undefined };
 }
 
 /** What a site measures, independent of its index in a run: comparable across runs. */
-export function siteKey(site: { kind: SiteKind; layer: number; head?: number | null; position_key: string }): string {
-  return `${site.kind}|${site.layer}|${site.head ?? ""}|${site.position_key}`;
+export function siteKey(site: { kind: SiteKind; layer: number; head?: number | null; position_key: string; variant_key?: string | null }): string {
+  return `${site.kind}|${site.layer}|${site.head ?? ""}|${site.position_key}|${site.variant_key ?? ""}`;
 }
 
 export function siteAt<T extends SiteBase>(sites: T[], row: number, col: number): T | null {
@@ -92,7 +99,7 @@ export function siteAt<T extends SiteBase>(sites: T[], row: number, col: number)
 }
 
 export function componentLabel(sel: Selection): string {
-  const pos = sel.positionKey !== undefined ? ` @ ${sel.positionKey}` : "";
+  const pos = `${sel.positionKey !== undefined ? ` @ ${sel.positionKey}` : ""}${sel.variantKey ? ` ${sel.variantKey}` : ""}`;
   switch (sel.part) {
     case "head":
       return `L${sel.layer} H${sel.head}${pos}`;
@@ -131,6 +138,8 @@ export function layoutTitle(layout: Layout): string {
       return "Layer × position";
     case "layer_components":
       return "Layer × component";
+    case "steering":
+      return "Layer × strength";
     default:
       return "Chosen sites";
   }

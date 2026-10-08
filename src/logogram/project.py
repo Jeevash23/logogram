@@ -349,6 +349,8 @@ def layer_profile(summary: dict[str, Any]) -> list[float] | None:
         value = (site.get("effect") or {}).get("mean")
         if not isinstance(layer, int) or layer < 0 or not isinstance(value, int | float):
             continue
+        if (site.get("variant") or {}).get("control"):
+            continue  # a control writes nothing: it is what the run is measured against
         if math.isfinite(value) and abs(value) > abs(out[layer]):
             out[layer] = float(value)
     return [round(v, 4) for v in out]

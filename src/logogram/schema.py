@@ -36,6 +36,9 @@ class SiteRef(_Model):
     row: int
     col: int
     label: str
+    # A variant of the site, such as a steering strength; None for one measurement per site.
+    variant: dict[str, Any] | None = None
+    variant_key: str | None = None
 
 
 class SiteSummary(SiteRef):
@@ -57,7 +60,7 @@ class LayoutAxis(BaseModel):
 
 
 class Layout(_Model):
-    kind: Literal["heads", "layer_position", "layer_components", "sites"]
+    kind: Literal["heads", "layer_position", "layer_components", "sites", "steering"]
     site: str | None = None
     row_title: str
     col_title: str
@@ -124,6 +127,15 @@ class DirectSplit(_Model):
     biases: float | None
 
 
+class SteeringInfo(_Model):
+    """Which prompts trained the steering directions and which measured them, and how long each
+    site's direction is (one per row of the layout)."""
+
+    train: list[int]
+    test: list[int]
+    norms: list[float]
+
+
 class Summary(_Model):
     logogram_summary: Literal[1] = 1
     run_id: str
@@ -145,6 +157,7 @@ class Summary(_Model):
     donors: list[list[int]] | None
     warnings: list[str]
     direct: DirectSplit | None = None
+    steering: SteeringInfo | None = None
 
 
 # -- manifest.json -----------------------------------------------------------------------------

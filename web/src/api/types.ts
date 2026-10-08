@@ -205,7 +205,15 @@ export type ExperimentSpec =
   | { kind: "activation_patching"; direction: Direction }
   | { kind: "ablation"; baseline: BaselineSpec }
   | { kind: "direct_logit_attribution"; prompts: "clean" | "corrupt" }
-  | { kind: "attribution_patching"; direction: Direction };
+  | { kind: "attribution_patching"; direction: Direction }
+  | {
+      kind: "steering";
+      apply_to: "clean" | "corrupt";
+      coefficients: number[];
+      train_fraction: number;
+      seed: number;
+      control: boolean;
+    };
 
 export type ExperimentKind = ExperimentSpec["kind"];
 
@@ -287,6 +295,9 @@ export interface SiteBase {
   row: number;
   col: number;
   label: string;
+  /** One of several measurements of the same site, such as a steering strength or its control. */
+  variant?: { coefficient: number; control: boolean } | null;
+  variant_key?: string | null;
 }
 
 export interface SiteResult extends SiteBase {
@@ -307,10 +318,13 @@ export interface LayoutAxis {
   clean?: string;
   corrupt?: string;
   differs?: boolean;
+  /** Steering columns: the strength, and whether it is along the random control direction. */
+  coefficient?: number;
+  control?: boolean;
 }
 
 export interface Layout {
-  kind: "heads" | "layer_position" | "layer_components" | "sites";
+  kind: "heads" | "layer_position" | "layer_components" | "sites" | "steering";
   site?: StreamKind;
   row_title: string;
   col_title: string;
@@ -367,6 +381,9 @@ export interface Summary {
   warnings: string[];
   /** Direct logit attribution: the mean logit difference and what it splits into. */
   direct?: DirectSplit | null;
+  /** Steering: the prompts that trained the directions, the held-out ones measured, and the
+   * length of each row's direction. */
+  steering?: { train: number[]; test: number[]; norms: number[] } | null;
 }
 
 export interface DirectSplit {
@@ -570,6 +587,7 @@ export interface ComparisonChange {
   layer: number;
   head: number | null;
   position_key: string;
+  variant_key?: string | null;
   index_a: number;
   index_b: number;
   row: number;

@@ -22,7 +22,13 @@ class CompareError(ValueError):
 
 
 def site_key(site: dict[str, Any]) -> tuple[Any, ...]:
-    return (site["kind"], site["layer"], site.get("head"), site["position_key"])
+    return (
+        site["kind"],
+        site["layer"],
+        site.get("head"),
+        site["position_key"],
+        site.get("variant_key"),
+    )
 
 
 def _excludes_zero(effect: dict[str, Any]) -> bool:
@@ -112,6 +118,7 @@ def compare_summaries(
             "layer": sa["layer"],
             "head": sa.get("head"),
             "position_key": sa["position_key"],
+            "variant_key": sa.get("variant_key"),
             "index_a": sa["index"],
             "index_b": sb["index"],
             "row": sa["row"],

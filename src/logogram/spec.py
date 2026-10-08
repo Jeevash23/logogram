@@ -232,10 +232,43 @@ class AttributionPatching(_Strict):
     direction: Literal["clean_to_corrupt", "corrupt_to_clean"]
 
 
+class Steering(_Strict):
+    """Add a direction to the residual stream at several strengths, and measure what it does.
+
+    At each steered site, the direction is the mean difference between the two prompts of each
+    pair, from the receiver (``apply_to``) toward the other prompt. It is computed on a training
+    split of the prompts and applied to the held-out rest, so no prompt receives its own
+    difference. A strength of 1 adds the whole mean difference. The effect is normalized like
+    patching: 1 means the steered prompt moves as far as switching to the other prompt. With
+    ``control``, a random direction of the same length, at the same strengths, runs alongside.
+    """
+
+    kind: Literal["steering"] = "steering"
+    apply_to: Literal["clean", "corrupt"]
+    coefficients: list[float] = Field(min_length=1, max_length=16)
+    train_fraction: float = Field(gt=0.0, lt=1.0)
+    seed: int
+    control: bool
+
+    @model_validator(mode="after")
+    def _distinct_finite(self) -> Steering:
+        if any(c != c or c in (float("inf"), float("-inf")) for c in self.coefficients):
+            raise ValueError("steering strengths must be finite numbers")
+        if len(set(self.coefficients)) != len(self.coefficients):
+            raise ValueError("steering strengths must not repeat")
+        return self
+
+
 Experiment = Annotated[
-    ActivationPatching | Ablation | DirectLogitAttribution | AttributionPatching,
+    ActivationPatching | Ablation | DirectLogitAttribution | AttributionPatching | Steering,
     Field(discriminator="kind"),
 ]
+
+
+def strength_text(coefficient: float) -> str:
+    """A steering strength as written on the map, for example ×2 or ×−0.5."""
+    text = f"{coefficient:g}".replace("-", "−")
+    return f"×{text}"
 
 
 # ---------------------------------------------------------------------------------------------
@@ -328,7 +361,7 @@ class Spec(_Strict):
 
 
 def describe_intervention(
-    exp: ActivationPatching | Ablation | DirectLogitAttribution | AttributionPatching,
+    exp: ActivationPatching | Ablation | DirectLogitAttribution | AttributionPatching | Steering,
 ) -> str:
     """The intervention in a few words, for example 'Resample-ablate (10 corrupt donors, seed 0)'."""
     if isinstance(exp, ActivationPatching):
@@ -342,6 +375,14 @@ def describe_intervention(
     if isinstance(exp, AttributionPatching):
         arrow = "clean → corrupt" if exp.direction == "clean_to_corrupt" else "corrupt → clean"
         return f"Attribution patching, estimated ({arrow})"
+    if isinstance(exp, Steering):
+        toward = "corrupt" if exp.apply_to == "clean" else "clean"
+        strengths = ", ".join(strength_text(c) for c in exp.coefficients)
+        control = ", random control" if exp.control else ""
+        return (
+            f"Steer {exp.apply_to} prompts toward {toward} ({strengths}; "
+            f"{exp.train_fraction:.0%} of pairs train the direction, seed {exp.seed}{control})"
+        )
     b = exp.baseline
     if isinstance(b, ZeroBaseline):
         return "Zero-ablate"

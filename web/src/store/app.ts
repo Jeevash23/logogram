@@ -96,6 +96,13 @@ export interface FormState {
   direction: "clean_to_corrupt" | "corrupt_to_clean";
   baseline: BaselineSpec | null;
   dlaPrompts: "clean" | "corrupt" | null;
+  /** Steering: which prompts receive the direction (no default), the strengths as typed, the
+   * share of pairs that train the direction, its seed, and whether a random control runs. */
+  steerApplyTo: "clean" | "corrupt" | null;
+  steerStrengths: string;
+  steerTrain: number;
+  steerSeed: number;
+  steerControl: boolean;
   scope: ScopeSpec;
   normalization: "dataset_gap" | "prompt_gap";
   bootstrap: number;
@@ -121,6 +128,11 @@ export const DEFAULT_FORM: FormState = {
   direction: "clean_to_corrupt",
   baseline: null,
   dlaPrompts: null,
+  steerApplyTo: null,
+  steerStrengths: "-2, -1, 1, 2, 4",
+  steerTrain: 0.5,
+  steerSeed: 0,
+  steerControl: true,
   scope: { kind: "heads", position: { kind: "all" } },
   normalization: "dataset_gap",
   bootstrap: 1000,
@@ -145,6 +157,11 @@ export function formFromSpec(spec: Spec): FormState {
     direction: e.kind === "activation_patching" ? e.direction : "clean_to_corrupt",
     baseline: e.kind === "ablation" ? e.baseline : null,
     dlaPrompts: e.kind === "direct_logit_attribution" ? e.prompts : null,
+    steerApplyTo: e.kind === "steering" ? e.apply_to : null,
+    steerStrengths: e.kind === "steering" ? e.coefficients.join(", ") : DEFAULT_FORM.steerStrengths,
+    steerTrain: e.kind === "steering" ? e.train_fraction : DEFAULT_FORM.steerTrain,
+    steerSeed: e.kind === "steering" ? e.seed : DEFAULT_FORM.steerSeed,
+    steerControl: e.kind === "steering" ? e.control : DEFAULT_FORM.steerControl,
     scope: spec.scope,
     normalization: spec.metric.normalization,
     bootstrap: spec.statistics.bootstrap,

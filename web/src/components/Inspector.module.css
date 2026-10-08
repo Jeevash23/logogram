@@ -308,3 +308,60 @@
   font-weight: 620;
   line-height: 1.3;
 }
+
+/* The dose response of a steered site: ink along the direction, faint along the control. */
+.dose {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dose svg {
+  overflow: visible;
+}
+
+.doseZero {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.doseOne {
+  stroke: var(--line-soft);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+.doseTick {
+  font-size: 10px;
+  fill: var(--muted);
+}
+
+.doseDirection,
+.doseControl {
+  fill: none;
+}
+
+.doseDirection polyline,
+.doseDirection line {
+  stroke: var(--text);
+  stroke-width: 1.5;
+}
+
+.doseDirection circle {
+  fill: var(--text);
+  cursor: pointer;
+}
+
+.doseControl polyline,
+.doseControl line {
+  stroke: var(--faint);
+  stroke-width: 1.2;
+  stroke-dasharray: 4 3;
+}
+
+.doseControl circle {
+  fill: var(--bg);
+  stroke: var(--faint);
+  stroke-width: 1.2;
+  cursor: pointer;
+}

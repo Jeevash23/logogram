@@ -141,6 +141,13 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
       `Estimates, to first order, what replacing ${what} at ${position} in each ${receiver} prompt with its value from the paired ` +
       `${source} prompt would do: (${source} activation − ${receiver} activation) · the gradient of the logit difference at the ` +
       `${receiver} run. Nothing is replaced. The estimate misses saturation and can miss or even invert an effect; verify it by patching.`;
+  } else if (exp.kind === "steering") {
+    const toward = exp.apply_to === "clean" ? "corrupt" : "clean";
+    const split = summary?.steering;
+    how =
+      `Adds a direction to ${what} at ${position} in each held-out ${exp.apply_to} prompt: the mean of (${toward} − ${exp.apply_to}) ` +
+      `there over the training pairs, times each strength${exp.control ? ", and a random direction of the same length at the same strengths as a control" : ""}. ` +
+      (split ? `${split.train.length} pairs computed the directions; the ${split.test.length} held-out pairs are measured.` : "");
   } else if (exp.kind === "activation_patching") {
     how =
       exp.direction === "clean_to_corrupt"
@@ -172,7 +179,7 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
         Logit difference at the last token: logit(answer) − logit(distractor).
       </p>
       <p className={s.text}>
-        {exp.kind === "attribution_patching" ? "Estimated effect = (estimated patched" : "Normalized effect = (patched"} − {receiver}) ÷{" "}
+        {exp.kind === "attribution_patching" ? "Estimated effect = (estimated patched" : exp.kind === "steering" ? "Normalized effect = (steered" : "Normalized effect = (patched"} − {receiver}) ÷{" "}
         {spec.metric.normalization === "dataset_gap" ? (
           <>
             mean({reference} − {receiver}){gap !== null && gap !== undefined && <> (denominator {num(gap, 3)})</>}
@@ -277,6 +284,7 @@ function Evidence({
               <Icon name="alert" size={13} /> The dataset file changed after this run. Prompt texts may not match.
             </p>
           )}
+          {site.variant && <DoseResponse site={site} ciLevel={ciLevel} />}
           <Distribution
             label={`Per-prompt ${words.effect.toLowerCase()}`}
             values={detail.prompts.map((p) => ({ index: p.index, value: p.effect }))}
@@ -290,6 +298,64 @@ function Evidence({
         </>
       )}
     </section>
+  );
+}
+
+/** A steered site at every strength: the mean effect and its interval, along the direction and
+ * along the random control. */
+function DoseResponse({ site, ciLevel }: { site: SiteResult; ciLevel: number }) {
+  const run = useActiveRun();
+  const select = useStore((st) => st.select);
+  const row = Object.values(run.results).filter((x) => x.row === site.row && x.variant);
+  const series = [false, true].map((control) =>
+    row.filter((x) => x.variant?.control === control).sort((a, b) => (a.variant?.coefficient ?? 0) - (b.variant?.coefficient ?? 0)),
+  );
+  if (series[0].length < 2) return null;
+  const xs = row.map((x) => x.variant?.coefficient ?? 0);
+  const ys = row.flatMap((x) => [x.effect.lo ?? x.effect.mean ?? 0, x.effect.hi ?? x.effect.mean ?? 0]).concat([0, 1]);
+  const [x0, x1] = [Math.min(...xs), Math.max(...xs)];
+  const [y0, y1] = [Math.min(...ys), Math.max(...ys)];
+  const W = 280, H = 150, L = 34, R = 8, T = 10, B = 24;
+  const x = (v: number) => L + ((v - x0) / Math.max(1e-9, x1 - x0)) * (W - L - R);
+  const y = (v: number) => T + (1 - (v - y0) / Math.max(1e-9, y1 - y0)) * (H - T - B);
+  const description = series[0].map((p) => `${p.variant_key}: ${signed(p.effect.mean, 2)}`).join(", ");
+  return (
+    <div className={s.dose}>
+      <h4 className={s.sectionTitle}>Effect at each strength</h4>
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label={`Mean normalized effect at each strength, with ${ciLevel}% intervals. ${description}.`}>
+        <line x1={L} x2={W - R} y1={y(0)} y2={y(0)} className={s.doseZero} />
+        <line x1={L} x2={W - R} y1={y(1)} y2={y(1)} className={s.doseOne} />
+        <text x={L - 6} y={y(0)} className={s.doseTick} textAnchor="end" dominantBaseline="middle">0</text>
+        <text x={L - 6} y={y(1)} className={s.doseTick} textAnchor="end" dominantBaseline="middle">1</text>
+        {[x0, x1].map((v) => (
+          <text key={v} x={x(v)} y={H - 6} className={s.doseTick} textAnchor="middle">{`×${num(v, Math.abs(v) < 1 ? 1 : 0)}`}</text>
+        ))}
+        {series.map((points, k) => (
+          <g key={k} className={k ? s.doseControl : s.doseDirection}>
+            <polyline points={points.map((p) => `${x(p.variant?.coefficient ?? 0)},${y(p.effect.mean ?? 0)}`).join(" ")} />
+            {points.map((p) => (
+              <g key={p.index}>
+                {p.effect.lo !== null && p.effect.hi !== null && (
+                  <line x1={x(p.variant?.coefficient ?? 0)} x2={x(p.variant?.coefficient ?? 0)} y1={y(p.effect.lo)} y2={y(p.effect.hi)} />
+                )}
+                <circle
+                  cx={x(p.variant?.coefficient ?? 0)}
+                  cy={y(p.effect.mean ?? 0)}
+                  r={p.index === site.index ? 4.5 : 3}
+                  onClick={() => select(selectionOfSite(p))}
+                >
+                  <title>{`${p.label}: ${signed(p.effect.mean, 3)} (${ci(p.effect.lo, p.effect.hi)})`}</title>
+                </circle>
+              </g>
+            ))}
+          </g>
+        ))}
+      </svg>
+      <p className={s.fine}>
+        Along the direction (solid){series[1].length ? " and a random direction of the same length (faint)" : ""}, with {ciLevel}%
+        intervals. 1 means the prompts moved as far as switching to the other prompt.
+      </p>
+    </div>
   );
 }
 

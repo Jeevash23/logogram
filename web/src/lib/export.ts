@@ -24,7 +24,9 @@ export function methodsText(run: RunDetail): string {
       ? `Ablation baseline: ${JSON.stringify(s.experiment.baseline)}.`
       : s.experiment.kind === "direct_logit_attribution"
         ? `Direct logit attribution of the ${s.experiment.prompts} prompts: each component's output at the last token, read through the final normalization with its scale held at its value in the run.${summary?.direct ? ` Mean logit difference ${summary.direct.logit_diff?.toFixed(4)}: attention ${summary.direct.attention?.toFixed(4)}, MLPs ${summary.direct.mlp?.toFixed(4)}, embeddings ${summary.direct.embeddings?.toFixed(4)}, biases ${summary.direct.biases?.toFixed(4)}.` : ""}`
-        : s.experiment.kind === "attribution_patching"
+        : s.experiment.kind === "steering"
+          ? `Steering: a direction added to the ${s.experiment.apply_to} prompts, the mean of (${s.experiment.apply_to === "clean" ? "corrupt" : "clean"} − ${s.experiment.apply_to}) at each site over a training split of ${Math.round(s.experiment.train_fraction * 100)}% of the pairs (split seed ${s.experiment.seed}); strengths ${s.experiment.coefficients.join(", ")}; random control of the same length ${s.experiment.control ? "included" : "not run"}.${summary?.steering ? ` Directions from dataset prompts ${summary.steering.train.join(", ")}; measured on the ${summary.steering.test.length} held-out prompts.` : ""}`
+          : s.experiment.kind === "attribution_patching"
           ? `Attribution patching (direction ${s.experiment.direction}): a first-order estimate of each site's patching effect, (source − receiver activation) · the gradient of the logit difference at the receiver run, not a patched forward pass.`
           : `Direction: ${s.experiment.direction}.`,
     `Run: ${run.id}. ${manifest?.versions ? `Software: ${Object.entries(manifest.versions).filter(([, v]) => v).map(([k, v]) => `${k} ${v}`).join(", ")}.` : ""}`,

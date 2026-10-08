@@ -38,6 +38,11 @@ export function baselineText(b: BaselineSpec): string {
   }
 }
 
+/** A steering strength as the results write it, for example ×2 or ×−0.5. */
+export function strengthText(c: number): string {
+  return `×${String(c).replace("-", "−")}`;
+}
+
 export function experimentText(e: ExperimentSpec): string {
   if (e.kind === "activation_patching") {
     return e.direction === "clean_to_corrupt" ? "Patch clean → corrupt" : "Patch corrupt → clean";
@@ -45,6 +50,10 @@ export function experimentText(e: ExperimentSpec): string {
   if (e.kind === "direct_logit_attribution") return `Direct logit attribution (${e.prompts} prompts)`;
   if (e.kind === "attribution_patching") {
     return e.direction === "clean_to_corrupt" ? "Estimate patching clean → corrupt" : "Estimate patching corrupt → clean";
+  }
+  if (e.kind === "steering") {
+    const toward = e.apply_to === "clean" ? "corrupt" : "clean";
+    return `Steer ${e.apply_to} prompts toward ${toward} (${e.coefficients.map(strengthText).join(", ")}${e.control ? ", random control" : ""})`;
   }
   switch (e.baseline.kind) {
     case "zero":
@@ -62,6 +71,7 @@ export function experimentShort(e: ExperimentSpec): string {
   }
   if (e.kind === "direct_logit_attribution") return `Direct attribution, ${e.prompts}`;
   if (e.kind === "attribution_patching") return e.direction === "clean_to_corrupt" ? "Estimated clean→corrupt" : "Estimated corrupt→clean";
+  if (e.kind === "steering") return `Steer ${e.apply_to}→${e.apply_to === "clean" ? "corrupt" : "clean"}`;
   return { zero: "Zero ablation", mean: "Mean ablation", resample: "Resample ablation" }[e.baseline.kind];
 }
 
@@ -82,6 +92,15 @@ export function measureWords(e: ExperimentSpec | null | undefined) {
       effectLegend:
         "Share of the mean logit difference this component writes directly. Negative values push toward the distractor.",
       deltaLegend: "What the component writes directly into the logit difference (answer − distractor), in logits.",
+    };
+  }
+  if (e?.kind === "steering") {
+    return {
+      effect: "Normalized effect",
+      delta: "Δ logit diff",
+      mean: "mean normalized effect",
+      effectLegend: `Normalized effect: 1 means steering moved the ${e.apply_to} prompts as far as switching to the ${e.apply_to === "clean" ? "corrupt" : "clean"} prompt; 0 means no change.`,
+      deltaLegend: "Change in logit difference (answer − distractor) caused by adding the direction.",
     };
   }
   const restores = (e?.kind === "activation_patching" || e?.kind === "attribution_patching") && e.direction === "clean_to_corrupt";
@@ -123,7 +142,8 @@ export function scopeShort(s: ScopeSpec): string {
     case "layer_position":
       return "Layer × position";
     case "layer_components":
-      return "Attn and MLP";
+      if (s.components.length === 1) return `${s.components[0].replace("_", " ")} per layer`;
+      return s.components.length === 2 && s.components.includes("attn_out") && s.components.includes("mlp_out") ? "Attn and MLP" : "Components per layer";
     case "sites":
       return s.sites.length === 1 ? "Single site" : "Chosen sites";
   }
@@ -138,6 +158,7 @@ export function directionQuestion(e: ExperimentSpec): string {
   if (e.kind === "attribution_patching") {
     return e.direction === "clean_to_corrupt" ? "Would this restore the behavior, to first order?" : "Would this break it, to first order?";
   }
+  if (e.kind === "steering") return "Does adding this direction move the behavior, more than a random one?";
   return "Does removing this break the behavior?";
 }
 
@@ -153,6 +174,7 @@ export function receiverText(e: ExperimentSpec): { receiver: string; source: str
       ? { receiver: "corrupt prompt", source: "the clean prompt" }
       : { receiver: "clean prompt", source: "the corrupt prompt" };
   }
+  if (e.kind === "steering") return { receiver: `${e.apply_to} prompt`, source: "the mean difference of the training pairs" };
   return { receiver: "clean prompt", source: baselineText(e.baseline) };
 }
 
@@ -230,6 +252,12 @@ export function positionKey(p: PositionSpec): string {
 export function workload(spec: Spec, n: number, nLayers: number, nHeads: number, nPositions: number | null, nLabels: number): number | null {
   if (spec.experiment.kind === "direct_logit_attribution" || spec.experiment.kind === "attribution_patching") return n;
   const s = spec.scope;
+  if (spec.experiment.kind === "steering") {
+    const e = spec.experiment;
+    const sites = s.kind === "layer_components" ? nLayers : s.kind === "sites" ? s.sites.length : 0;
+    const test = n - Math.round(n * e.train_fraction);
+    return sites * e.coefficients.length * (e.control ? 2 : 1) * Math.max(0, test);
+  }
   let sites = 0;
   if (s.kind === "heads") sites = nLayers * nHeads;
   else if (s.kind === "layer_components") sites = nLayers * s.components.length;
@@ -246,14 +274,30 @@ export function workload(spec: Spec, n: number, nLayers: number, nHeads: number,
 export function workloadText(spec: Spec, rows: number): string {
   if (spec.experiment.kind === "direct_logit_attribution") return `That is one forward and one backward pass for each of the ${count(rows)} prompts.`;
   if (spec.experiment.kind === "attribution_patching") return `That is two forward passes and one backward pass for each of the ${count(rows)} prompts, for every site at once.`;
+  if (spec.experiment.kind === "steering") return `That is ${count(rows)} steered forward passes on the held-out prompts.`;
   return `That is ${count(rows)} patched forward passes.`;
 }
 
 /** Fit a sweep to a method. Direct attribution reads what heads, attention and MLP outputs write,
  * at the last token where the logit difference is measured. */
 export function scopeFor(kind: ExperimentKind, scope: ScopeSpec): ScopeSpec {
-  if (kind !== "direct_logit_attribution") return scope;
   const last: PositionSpec = { kind: "last" };
+  if (kind === "steering") {
+    // Steering adds to one residual stream site per layer, at one token.
+    const single = (p: PositionSpec) => (p.kind === "all" ? last : p);
+    if (scope.kind === "layer_components") {
+      const resid = scope.components.find((c) => c === "resid_pre" || c === "resid_mid" || c === "resid_post") ?? "resid_pre";
+      return { kind: "layer_components", components: [resid], position: single(scope.position) };
+    }
+    if (scope.kind === "sites") {
+      const sites = scope.sites
+        .filter((x) => x.kind === "resid_pre" || x.kind === "resid_mid" || x.kind === "resid_post")
+        .map((x) => ({ ...x, position: single(x.position) }));
+      if (sites.length) return { kind: "sites", sites };
+    }
+    return { kind: "layer_components", components: ["resid_pre"], position: last };
+  }
+  if (kind !== "direct_logit_attribution") return scope;
   switch (scope.kind) {
     case "heads":
       return { kind: "heads", position: last };

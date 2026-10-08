@@ -33,6 +33,7 @@ from logogram.spec import (
     MeanBaseline,
     ResampleBaseline,
     Spec,
+    Steering,
     ZeroBaseline,
 )
 
@@ -288,6 +289,10 @@ def run_experiment(
         from logogram.atp import run_attribution_patching
 
         return run_attribution_patching(spec, backend, prompts, **kwargs)
+    if isinstance(spec.experiment, Steering):
+        from logogram.steering import run_steering
+
+        return run_steering(spec, backend, prompts, **kwargs)
     return run_engine(spec, backend, prompts, **kwargs)
 
 
