@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.2.0
       - run: uvx ruff@0.16.10 check src tests scripts
       - run: uvx ruff@0.16.10 format --check src tests scripts
 
@@ -40,7 +40,7 @@ jobs:
           - { os: windows-latest, python: "3.12" }
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.2.0
       # CPU-only PyTorch keeps CI fast; the tests use a tiny local model and no network.
       - run: uv venv --python ${{ matrix.python }}
       - run: uv pip install --torch-backend=cpu -e . pytest httpx
@@ -79,7 +79,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.2.0
       - uses: actions/setup-node@v7
         with:
           node-version: 24
