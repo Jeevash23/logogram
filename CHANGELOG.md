@@ -2,7 +2,7 @@
 
 What changed in each version of Logogram.
 
-## 0.1.2 (unreleased)
+## 0.1.2 (2026-10-08)
 
 Fixes and checks that came out of validating every method on real weights.
 
