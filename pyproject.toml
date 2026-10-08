@@ -39,6 +39,12 @@ dependencies = [
     "huggingface-hub>=0.23",
 ]
 
+[project.urls]
+Homepage = "https://github.com/Jeevash23/logogram"
+Source = "https://github.com/Jeevash23/logogram"
+Issues = "https://github.com/Jeevash23/logogram/issues"
+Changelog = "https://github.com/Jeevash23/logogram/blob/main/CHANGELOG.md"
+
 [project.scripts]
 logogram = "logogram.cli:main"
 
@@ -58,7 +64,7 @@ packages = ["src/logogram"]
 artifacts = ["src/logogram/web_dist/**"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/logogram", "web/src", "web/public", "web/tests", "web/package.json", "web/package-lock.json", "web/index.html", "web/tsconfig.json", "web/vite.config.ts", "web/playwright.config.ts", "uv.lock", "tests", "scripts", "README.md", "LICENSE", "AGENTS.md"]
+include = ["src/logogram", "web/src", "web/public", "web/tests", "web/package.json", "web/package-lock.json", "web/index.html", "web/tsconfig.json", "web/vite.config.ts", "web/playwright.config.ts", "uv.lock", "tests", "scripts", "README.md", "CHANGELOG.md", "LICENSE", "AGENTS.md"]
 artifacts = ["src/logogram/web_dist/**"]
 
 [tool.pytest.ini_options]

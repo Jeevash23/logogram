@@ -25,9 +25,10 @@ Logogram needs Python 3.11 or newer and [uv](https://docs.astral.sh/uv/).
 uv tool install logogram
 ```
 
-Until Logogram is published on PyPI, install it from a clone of this repository with
-`uv tool install .` instead. The web app is prebuilt inside the package, so you never need Node.
-The commands in the table below work the same way with `.` in place of `logogram`.
+To run the code in a clone of this repository instead, install it with `uv tool install .`; the
+commands in the table below work the same way with `.` in place of `logogram`. The web app is
+prebuilt inside the package, so you never need Node. What changed in each version is in
+[CHANGELOG.md](CHANGELOG.md).
 
 PyTorch is chosen per machine:
 
