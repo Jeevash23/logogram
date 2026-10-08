@@ -204,7 +204,23 @@ class Ablation(_Strict):
     baseline: Baseline
 
 
-Experiment = Annotated[ActivationPatching | Ablation, Field(discriminator="kind")]
+class DirectLogitAttribution(_Strict):
+    """Split the logit difference of the chosen prompts into what each component writes directly.
+
+    At the last position, the residual stream is the sum of the embeddings and every attention and
+    MLP output. With the final normalization's scale held at its value in the run, the logit
+    difference is a sum of one term per component plus a constant from biases. A component's term
+    is its direct effect: it leaves out everything the component does through later components.
+    This is a decomposition of one forward pass, not an intervention.
+    """
+
+    kind: Literal["direct_logit_attribution"] = "direct_logit_attribution"
+    prompts: Literal["clean", "corrupt"]
+
+
+Experiment = Annotated[
+    ActivationPatching | Ablation | DirectLogitAttribution, Field(discriminator="kind")
+]
 
 
 # ---------------------------------------------------------------------------------------------
@@ -296,7 +312,7 @@ class Spec(_Strict):
         return cls.model_validate_json(Path(path).read_text(encoding="utf-8"))
 
 
-def describe_intervention(exp: ActivationPatching | Ablation) -> str:
+def describe_intervention(exp: ActivationPatching | Ablation | DirectLogitAttribution) -> str:
     """The intervention in a few words, for example 'Resample-ablate (10 corrupt donors, seed 0)'."""
     if isinstance(exp, ActivationPatching):
         return (
@@ -304,6 +320,8 @@ def describe_intervention(exp: ActivationPatching | Ablation) -> str:
             if exp.direction == "clean_to_corrupt"
             else "Patch corrupt → clean"
         )
+    if isinstance(exp, DirectLogitAttribution):
+        return f"Direct logit attribution ({exp.prompts} prompts)"
     b = exp.baseline
     if isinstance(b, ZeroBaseline):
         return "Zero-ablate"

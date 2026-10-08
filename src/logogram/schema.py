@@ -113,6 +113,17 @@ class ModelShape(_Model):
     activation: str | None = None
 
 
+class DirectSplit(_Model):
+    """Direct logit attribution: the mean logit difference and the parts it splits into."""
+
+    prompts: Literal["clean", "corrupt"]
+    logit_diff: float | None
+    embeddings: float | None
+    attention: float | None
+    mlp: float | None
+    biases: float | None
+
+
 class Summary(_Model):
     logogram_summary: Literal[1] = 1
     run_id: str
@@ -124,6 +135,8 @@ class Summary(_Model):
     layout: Layout
     receiver: Literal["clean", "corrupt"]
     reference: Literal["clean", "corrupt"]
+    # What each per-prompt value is: a patched run, an estimate of one, or a term of a split.
+    measure: Literal["intervention", "estimate", "attribution"] = "intervention"
     metric: MetricInfo
     statistics: StatisticsInfo
     baseline: BaselineSummary
@@ -131,6 +144,7 @@ class Summary(_Model):
     per_prompt: dict[str, list[float | None]]
     donors: list[list[int]] | None
     warnings: list[str]
+    direct: DirectSplit | None = None
 
 
 # -- manifest.json -----------------------------------------------------------------------------

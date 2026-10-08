@@ -1,17 +1,27 @@
 import { useEffect, useMemo } from "react";
 
-import type { BaselineSpec, PositionSpec, ScopeSpec, Spec, StreamKind } from "../api/types";
+import type { BaselineSpec, ExperimentKind, PositionSpec, ScopeSpec, Spec, StreamKind } from "../api/types";
 import { Button, Callout, Checkbox, Choices, Field, Input, Kbd, Segmented, Select, TextArea } from "../components/ui";
 import { MOD } from "../components/Header";
-import { count, plural, shortRevision } from "../lib/format";
+import { plural, shortRevision } from "../lib/format";
 import { modelName } from "../lib/hooks";
 import { KIND_SHORT } from "../lib/sites";
-import { experimentText, scopeShort, scopeText, siteText, suggestName, workload } from "../lib/spec";
+import { experimentText, scopeFor, scopeShort, scopeText, siteText, suggestName, workload, workloadText } from "../lib/spec";
 import { useStore, type FormState } from "../store/app";
 import s from "./views.module.css";
 import e from "./ExperimentView.module.css";
 
 const STREAM_KINDS: StreamKind[] = ["resid_pre", "resid_mid", "resid_post", "attn_out", "mlp_out"];
+
+const METHODS: { value: ExperimentKind; title: string; detail: string }[] = [
+  { value: "activation_patching", title: "Activation patching", detail: "Copy an activation from the other prompt of each pair." },
+  { value: "ablation", title: "Ablation", detail: "Replace an activation with a baseline you choose." },
+  {
+    value: "direct_logit_attribution",
+    title: "Direct logit attribution",
+    detail: "Split the logit difference into what each component writes directly. No intervention.",
+  },
+];
 
 /** Build a spec from the form, or explain what's missing. */
 export function buildSpec(
@@ -26,6 +36,9 @@ export function buildSpec(
   let experiment: Spec["experiment"];
   if (form.kind === "activation_patching") {
     experiment = { kind: "activation_patching", direction: form.direction };
+  } else if (form.kind === "direct_logit_attribution") {
+    if (!form.dlaPrompts) return { error: "Choose which prompts' logit difference to split." };
+    experiment = { kind: "direct_logit_attribution", prompts: form.dlaPrompts };
   } else {
     if (!form.baseline) return { error: "Choose a baseline for the ablation. Logogram never assumes one." };
     experiment = { kind: "ablation", baseline: form.baseline };
@@ -134,7 +147,9 @@ export function ExperimentView() {
     ? suggestName(spec)
     : form.kind === "ablation" && !form.baseline
       ? `Ablation · ${scopeShort(form.scope).toLowerCase()}`
-      : "";
+      : form.kind === "direct_logit_attribution" && !form.dlaPrompts
+        ? `Direct attribution · ${scopeShort(form.scope).toLowerCase()}`
+        : "";
   useEffect(() => {
     if (!form.nameEdited && suggested && form.name !== suggested) setForm({ name: suggested });
   }, [suggested, form.nameEdited, form.name, setForm]);
@@ -217,17 +232,34 @@ export function ExperimentView() {
         </Field>
 
         <section className={e.section}>
-          <h3 className={e.sectionTitle}>Intervention</h3>
-          <Segmented
-            label="Experiment type"
+          <h3 className={e.sectionTitle}>Method</h3>
+          <Choices
+            label="Method"
             value={form.kind}
-            onChange={(kind) => setForm({ kind })}
-            options={[
-              { value: "activation_patching", label: "Activation patching" },
-              { value: "ablation", label: "Ablation" },
-            ]}
+            onChange={(kind) => setForm({ kind, scope: scopeFor(kind, form.scope) })}
+            columns={3}
+            options={METHODS}
           />
-          {form.kind === "activation_patching" ? (
+          {form.kind === "direct_logit_attribution" ? (
+            <div className={e.stack}>
+              <Choices
+                label="Prompts to split"
+                value={form.dlaPrompts}
+                onChange={(dlaPrompts) => setForm({ dlaPrompts })}
+                columns={2}
+                options={[
+                  { value: "clean", title: "Clean prompts", detail: "Where the model should prefer the answer." },
+                  { value: "corrupt", title: "Corrupt prompts", detail: "After the corruption has changed what it prefers." },
+                ]}
+              />
+              {!form.dlaPrompts && <p className={e.required}>Required: the two prompts split differently, so there's no default.</p>}
+              <p className={s.small}>
+                Each component's term is its direct effect: what it writes into the residual stream at the last token, read
+                through the final normalization with its scale held at its value in the run. It leaves out everything the
+                component does through later components, which patching measures.
+              </p>
+            </div>
+          ) : form.kind === "activation_patching" ? (
             <Choices
               label="Direction"
               value={form.direction}
@@ -254,7 +286,7 @@ export function ExperimentView() {
         <section className={e.section}>
           <h3 className={e.sectionTitle}>What to sweep</h3>
           <ScopeEditor
-            verb={form.kind === "ablation" ? "Ablate" : "Patch"}
+            method={form.kind}
             scope={form.scope}
             onChange={(scope) => setForm({ scope })}
             labels={labels}
@@ -268,24 +300,45 @@ export function ExperimentView() {
           <p className={e.text}>
             Logit difference at the last token: logit(answer) − logit(distractor). Per-prompt values are always kept.
           </p>
-          <Field
-            label="Normalize the effect by"
-            help={
-              form.normalization === "dataset_gap"
-                ? "Each prompt's change divided by the dataset's mean clean–corrupt gap. Stable, and its mean is the usual normalized metric."
-                : "Each prompt's change divided by its own clean–corrupt gap. Exactly 0 to 1 per prompt, but unstable when a gap is small."
-            }
-          >
-            <Segmented
-              label="Normalization"
-              value={form.normalization}
-              onChange={(normalization) => setForm({ normalization })}
-              options={[
-                { value: "dataset_gap", label: "Dataset mean gap" },
-                { value: "prompt_gap", label: "Each prompt's gap" },
-              ]}
-            />
-          </Field>
+          {form.kind === "direct_logit_attribution" ? (
+            <Field
+              label="Express each direct effect as a share of"
+              help={
+                form.normalization === "dataset_gap"
+                  ? "Each prompt's term divided by the mean logit difference of the chosen prompts. With the embeddings and biases, the shares add up to one."
+                  : "Each prompt's term divided by its own logit difference. Unstable when a prompt's logit difference is near zero."
+              }
+            >
+              <Segmented
+                label="Normalization"
+                value={form.normalization}
+                onChange={(normalization) => setForm({ normalization })}
+                options={[
+                  { value: "dataset_gap", label: "Mean logit difference" },
+                  { value: "prompt_gap", label: "Each prompt's" },
+                ]}
+              />
+            </Field>
+          ) : (
+            <Field
+              label="Normalize the effect by"
+              help={
+                form.normalization === "dataset_gap"
+                  ? "Each prompt's change divided by the dataset's mean clean–corrupt gap. Stable, and its mean is the usual normalized metric."
+                  : "Each prompt's change divided by its own clean–corrupt gap. Exactly 0 to 1 per prompt, but unstable when a gap is small."
+              }
+            >
+              <Segmented
+                label="Normalization"
+                value={form.normalization}
+                onChange={(normalization) => setForm({ normalization })}
+                options={[
+                  { value: "dataset_gap", label: "Dataset mean gap" },
+                  { value: "prompt_gap", label: "Each prompt's gap" },
+                ]}
+              />
+            </Field>
+          )}
         </section>
 
         <section className={e.section}>
@@ -373,7 +426,7 @@ export function ExperimentView() {
             spec && (
               <p className={e.summaryText}>
                 <strong>{experimentText(spec.experiment)}</strong> at {scopeText(spec.scope)}, over {plural(n, "prompt")}.
-                {rows !== null && <> That is {count(rows)} patched forward passes.</>}{" "}
+                {rows !== null && <> {workloadText(spec, rows)}</>}{" "}
                 <span className="faint">
                   Press <Kbd>{MOD}</Kbd> <Kbd>Enter</Kbd> to run.
                 </span>
@@ -486,15 +539,17 @@ function PositionPicker({
   );
 }
 
+const LAST_TOKEN_NOTE = "Read at the last token, where the logit difference is measured.";
+
 function ScopeEditor({
-  verb,
+  method,
   scope,
   onChange,
   labels,
   uniformLength,
   lengths,
 }: {
-  verb: string;
+  method: ExperimentKind;
   scope: ScopeSpec;
   onChange: (s: ScopeSpec) => void;
   labels: string[];
@@ -502,29 +557,43 @@ function ScopeEditor({
   lengths: number[] | null;
 }) {
   const kind = scope.kind;
+  // Direct attribution splits what components write, at the last token only.
+  const direct = method === "direct_logit_attribution";
+  const verb = method === "ablation" ? "Ablate" : "Patch";
+  const position = (p: PositionSpec) => (direct ? { kind: "last" } as PositionSpec : p);
   return (
     <div className={e.stack}>
       <Segmented
         label="Sweep"
         value={kind}
         onChange={(k) => {
-          if (k === "heads") onChange({ kind: "heads", position: { kind: "all" } });
+          if (k === "heads") onChange({ kind: "heads", position: position({ kind: "all" }) });
           else if (k === "layer_position")
             onChange({ kind: "layer_position", site: "resid_pre", positions: uniformLength === false && labels.length ? "labels" : "each" });
-          else if (k === "layer_components") onChange({ kind: "layer_components", components: ["attn_out", "mlp_out"], position: { kind: "all" } });
+          else if (k === "layer_components") onChange({ kind: "layer_components", components: ["attn_out", "mlp_out"], position: position({ kind: "all" }) });
         }}
         options={[
           { value: "heads", label: "Layer × head" },
-          { value: "layer_position", label: "Layer × position" },
+          {
+            value: "layer_position",
+            label: "Layer × position",
+            disabled: direct,
+            title: direct ? "Direct effects are read at the last token only" : undefined,
+          },
           { value: "layer_components", label: "Attention and MLP per layer" },
           ...(kind === "sites" ? [{ value: "sites" as const, label: scope.sites.length === 1 ? "Single site" : "Chosen sites" }] : []),
         ]}
       />
-      {scope.kind === "heads" && (
-        <Field label={`${verb} each head's output (z) at`}>
-          <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} />
-        </Field>
-      )}
+      {scope.kind === "heads" &&
+        (direct ? (
+          <Field label="Each head's output (z), through its share of the output projection">
+            <p className={s.small}>{LAST_TOKEN_NOTE}</p>
+          </Field>
+        ) : (
+          <Field label={`${verb} each head's output (z) at`}>
+            <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} />
+          </Field>
+        ))}
       {scope.kind === "layer_components" && (
         <>
           <Field label="Components">
@@ -533,6 +602,7 @@ function ScopeEditor({
                 <Checkbox
                   key={k}
                   checked={scope.components.includes(k)}
+                  disabled={direct && k !== "attn_out" && k !== "mlp_out"}
                   onChange={(on) =>
                     onChange({
                       ...scope,
@@ -546,7 +616,11 @@ function ScopeEditor({
             </div>
           </Field>
           <Field label="At">
-            <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} />
+            {direct ? (
+              <p className={s.small}>{LAST_TOKEN_NOTE} Residual stream states aren't written by a component, so they have no direct effect.</p>
+            ) : (
+              <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} />
+            )}
           </Field>
         </>
       )}
@@ -583,7 +657,8 @@ function ScopeEditor({
       )}
       {scope.kind === "sites" && (
         <div className={e.stack}>
-          {scope.sites.map((site, i) => (
+          {direct && <p className={s.small}>{LAST_TOKEN_NOTE}</p>}
+          {!direct && scope.sites.map((site, i) => (
             <Field key={i} label={siteText({ ...site, position: { kind: "all" } })}>
               <PositionPicker
                 value={site.position}

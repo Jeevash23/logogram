@@ -220,6 +220,19 @@ choose:
   pool without replacement, never itself, with a seed; the result is averaged over donors, and
   the same donors are used at every site.
 
+**Direct logit attribution** splits the logit difference of the clean or the corrupt prompts
+(your choice; there is no default) into what each head, attention output and MLP output writes
+directly into the residual stream at the last token. The final normalization is read with its
+scale held at its value in the run, so the logit difference is exactly the sum of one term per
+component plus the embeddings and biases; the results page shows that split. A component's direct
+effect leaves out what it does through later components, which patching measures: **Check
+robustness** offers the same components patched, so direct and total effects can be compared
+side by side. Nothing is replaced, so there are no sign flips or patched probabilities.
+Logogram refuses it where it isn't defined: for residual stream states (no component writes
+them), at positions other than the last token, for single heads in models that normalize the
+attention output after combining heads (Gemma 2, OLMo 2), and for models that soft-cap their
+logits.
+
 **Sites** are abstract: `resid_pre`, `resid_mid`, `resid_post`, `attn_out`, `mlp_out` and `head`
 (an attention head's output `z`), each at a layer, head and position. Positions are `all`,
 `last`, a token `index` or a named `label`. **Sweeps** cover every head at one position
@@ -268,7 +281,7 @@ Every experiment is a `spec.json`. Nothing that can change a number is left impl
 | `model.revision` | A commit. `null` resolves the current main branch at run time; the saved spec pins what ran. |
 | `model.process_weights` | Fold LayerNorm and center weights, as TransformerLens does by default. Logit differences don't change; zero ablation of head outputs does, because value biases are folded. |
 | `dataset.sha256` | If set, the run refuses a dataset file that has changed. |
-| `experiment` | `{"kind": "activation_patching", "direction": "clean_to_corrupt" \| "corrupt_to_clean"}` or `{"kind": "ablation", "baseline": …}` with `{"kind": "zero"}`, `{"kind": "mean", "reference": "clean" \| "corrupt"}` or `{"kind": "resample", "pool": "clean" \| "corrupt", "donors": 10, "seed": 0}` |
+| `experiment` | `{"kind": "activation_patching", "direction": "clean_to_corrupt" \| "corrupt_to_clean"}`, `{"kind": "ablation", "baseline": …}` with `{"kind": "zero"}`, `{"kind": "mean", "reference": "clean" \| "corrupt"}` or `{"kind": "resample", "pool": "clean" \| "corrupt", "donors": 10, "seed": 0}`, or `{"kind": "direct_logit_attribution", "prompts": "clean" \| "corrupt"}` |
 | `scope` | `{"kind": "heads", "position": …}`, `{"kind": "layer_position", "site": "resid_pre", "positions": "each" \| "labels"}`, `{"kind": "layer_components", "components": ["attn_out", "mlp_out"], "position": …}` or `{"kind": "sites", "sites": [{"kind": "head", "layer": 9, "head": 9, "position": {"kind": "label", "label": "end"}}]}` |
 | `metric.normalization` | `dataset_gap` or `prompt_gap` |
 | `execution.batch_size` | Recorded because batch shape can change floating-point results in the last digits. |

@@ -21,7 +21,7 @@ import torch
 from logogram import __version__
 from logogram.backends.base import ModelBackend
 from logogram.datasets import parse_jsonl
-from logogram.engine import Cancelled, run_engine
+from logogram.engine import Cancelled, run_experiment
 from logogram.fileio import atomic_output, write_text_atomic
 from logogram.project import Project, now_iso
 from logogram.prompts import prepare_prompts
@@ -321,7 +321,7 @@ def run_spec(
                 },
             )
 
-        result = run_engine(
+        result = run_experiment(
             spec,
             backend,
             prompts,

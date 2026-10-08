@@ -8,6 +8,7 @@ import type {
   BaselineReport,
   BaselineSpec,
   DatasetDetail,
+  ExperimentKind,
   ExperimentSpec,
   Job,
   Layout,
@@ -85,14 +86,16 @@ export interface Notice {
   text: string;
 }
 
-/** The experiment form. An ablation has no baseline until the user chooses one. */
+/** The experiment form. Choices that change a number, such as an ablation's baseline or which
+ * prompts a direct attribution splits, have no default: they stay empty until chosen. */
 export interface FormState {
   predictions: PredictionSettings | null;
   name: string;
   nameEdited: boolean;
-  kind: "activation_patching" | "ablation";
+  kind: ExperimentKind;
   direction: "clean_to_corrupt" | "corrupt_to_clean";
   baseline: BaselineSpec | null;
+  dlaPrompts: "clean" | "corrupt" | null;
   scope: ScopeSpec;
   normalization: "dataset_gap" | "prompt_gap";
   bootstrap: number;
@@ -117,6 +120,7 @@ export const DEFAULT_FORM: FormState = {
   kind: "activation_patching",
   direction: "clean_to_corrupt",
   baseline: null,
+  dlaPrompts: null,
   scope: { kind: "heads", position: { kind: "all" } },
   normalization: "dataset_gap",
   bootstrap: 1000,
@@ -140,6 +144,7 @@ export function formFromSpec(spec: Spec): FormState {
     kind: e.kind,
     direction: e.kind === "activation_patching" ? e.direction : "clean_to_corrupt",
     baseline: e.kind === "ablation" ? e.baseline : null,
+    dlaPrompts: e.kind === "direct_logit_attribution" ? e.prompts : null,
     scope: spec.scope,
     normalization: spec.metric.normalization,
     bootstrap: spec.statistics.bootstrap,

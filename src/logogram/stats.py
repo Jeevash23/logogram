@@ -80,16 +80,25 @@ def compute_site_stats(
     normalization: Normalization,
     counts: np.ndarray,
     ci: float,
+    delta: np.ndarray | None = None,
+    gap: np.ndarray | None = None,
 ) -> SiteStats:
-    """``patched_*`` are [S, n]; ``receiver_*``/``source_ld`` are [n]; ``counts`` is [B, n]."""
+    """``patched_*`` are [S, n]; ``receiver_*``/``source_ld`` are [n]; ``counts`` is [B, n].
+
+    ``delta`` [S, n] and ``gap`` [n] replace patched - receiver and source - receiver for methods
+    whose per-prompt values aren't patched runs (estimates, and terms of a decomposition). Where
+    nothing ran patched, ``patched_*`` are NaN and count no sign flips.
+    """
     patched_ld = np.asarray(patched_ld, dtype=np.float64)
     patched_prob = np.asarray(patched_prob, dtype=np.float64)
     receiver_ld = np.asarray(receiver_ld, dtype=np.float64)
     source_ld = np.asarray(source_ld, dtype=np.float64)
     n = patched_ld.shape[1]
 
-    delta = patched_ld - receiver_ld[None, :]
-    gap = source_ld - receiver_ld
+    delta = (
+        patched_ld - receiver_ld[None, :] if delta is None else np.asarray(delta, dtype=np.float64)
+    )
+    gap = source_ld - receiver_ld if gap is None else np.asarray(gap, dtype=np.float64)
     effect, denom = normalize(delta, gap, normalization)
 
     weights = counts.T / n  # [n, B]

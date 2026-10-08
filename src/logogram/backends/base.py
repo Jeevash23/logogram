@@ -109,6 +109,22 @@ class ModelBackend(ABC):
     def attention_pattern(self, tokens: torch.Tensor, layer: int) -> torch.Tensor:
         """Attention probabilities ``[B, H, query, key]`` in float32."""
 
+    def direct_effects(
+        self,
+        tokens: torch.Tensor,
+        answers: torch.Tensor,
+        distractors: torch.Tensor,
+        heads: bool,
+    ) -> dict[str, torch.Tensor]:
+        """Direct contributions to logit(answer) - logit(distractor) at the last position.
+
+        Returns float64 tensors on the CPU, one row per prompt: ``embed`` ``[B]``, ``attn_out``
+        and ``mlp_out`` ``[B, layers]``, ``head`` ``[B, layers, heads]`` when ``heads`` is true,
+        ``logit_diff`` ``[B]`` and ``remainder`` ``[B]`` (what biases add: the logit difference
+        minus every component's term).
+        """
+        raise BackendError("Direct logit attribution isn't supported by this model backend.")
+
     def layer_logits(self, tokens: torch.Tensor, position: int, row: int) -> torch.Tensor:
         """Final-norm logit lens at resid_post, ``[layer, vocab]`` for one row, on CPU.
 

@@ -1,6 +1,6 @@
 import type { RunDetail } from "../api/types";
 import { divergingScale, niceBound, SCALE_FLOOR, textOn } from "./color";
-import { experimentText, scopeText } from "./spec";
+import { experimentText, measureWords, scopeText } from "./spec";
 
 export function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
@@ -20,7 +20,11 @@ export function methodsText(run: RunDetail): string {
     `Dataset: ${s.dataset.path}; SHA-256 ${s.dataset.sha256 ?? "unpinned"}; n = ${summary?.n_prompts ?? "unknown"}; limit ${s.dataset.limit ?? "none"}; prepend BOS ${s.tokenization.prepend_bos}.`,
     `Metric: logit(answer) − logit(distractor) at the last token; normalization ${s.metric.normalization}. ${summary?.metric.normalized_effect ?? ""}.`,
     `Execution batch size ${s.execution.batch_size}. Percentile bootstrap over prompts: ${s.statistics.bootstrap} resamples, ${s.statistics.ci * 100}% confidence interval, seed ${s.statistics.seed}.`,
-    s.experiment.kind === "ablation" ? `Ablation baseline: ${JSON.stringify(s.experiment.baseline)}.` : `Direction: ${s.experiment.direction}.`,
+    s.experiment.kind === "ablation"
+      ? `Ablation baseline: ${JSON.stringify(s.experiment.baseline)}.`
+      : s.experiment.kind === "direct_logit_attribution"
+        ? `Direct logit attribution of the ${s.experiment.prompts} prompts: each component's output at the last token, read through the final normalization with its scale held at its value in the run.${summary?.direct ? ` Mean logit difference ${summary.direct.logit_diff?.toFixed(4)}: attention ${summary.direct.attention?.toFixed(4)}, MLPs ${summary.direct.mlp?.toFixed(4)}, embeddings ${summary.direct.embeddings?.toFixed(4)}, biases ${summary.direct.biases?.toFixed(4)}.` : ""}`
+        : `Direction: ${s.experiment.direction}.`,
     `Run: ${run.id}. ${manifest?.versions ? `Software: ${Object.entries(manifest.versions).filter(([, v]) => v).map(([k, v]) => `${k} ${v}`).join(", ")}.` : ""}`,
     ...(summary?.warnings.map((warning) => `Run note: ${warning}`) ?? []),
   ].join("\n\n");
@@ -56,7 +60,8 @@ export async function exportFigure(run: RunDetail, metric: "effect" | "delta", u
   ctx.font = `14px ${font}`;
   ctx.fillText(`${experimentText(run.spec.experiment)} · ${scopeText(run.spec.scope)}`, 28, 66, width - 56);
   ctx.fillText(`${run.spec.model.id} @ ${run.spec.model.revision ?? "unpinned"} · ${run.spec.model.dtype} · n = ${summary.n_prompts}`, 28, 88, width - 56);
-  ctx.fillText(`${layout.row_title} × ${layout.col_title} · ${metric === "effect" ? "Normalized effect" : "Δ logit difference"} · mean over prompts`, 28, 110, width - 56);
+  const words = measureWords(run.spec.experiment);
+  ctx.fillText(`${layout.row_title} × ${layout.col_title} · ${metric === "effect" ? words.effect : words.delta} · mean over prompts`, 28, 110, width - 56);
   const bound = unit && metric === "effect" ? 1 : niceBound(sites.map((s) => s[metric].mean), SCALE_FLOOR[metric]);
   const color = divergingScale(bound, "light");
   ctx.font = `13px ${font}`;

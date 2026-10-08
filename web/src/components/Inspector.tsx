@@ -14,7 +14,7 @@ import {
   type ResidKind,
   type Selection,
 } from "../lib/sites";
-import { baselineText, experimentText, positionText } from "../lib/spec";
+import { baselineText, experimentText, measureOf, measureWords, positionText } from "../lib/spec";
 import { useStore } from "../store/app";
 import { Distribution } from "./Distribution";
 import { Button, Icon, Spinner } from "./ui";
@@ -108,6 +108,33 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
             ? `the ${KIND_NAMES[resid]}`
             : "the residual stream";
   let how: string;
+  if (exp.kind === "direct_logit_attribution") {
+    const written = selection.part === "head" ? "this head's output, through its share of the output projection," : `${what}`;
+    return (
+      <section className={s.section}>
+        <h4 className={s.sectionTitle}>Method</h4>
+        <p className={s.strong}>{experimentText(exp)}</p>
+        <p className={s.text}>
+          Runs each {exp.prompts} prompt once and reads {written} at the last token through the final normalization, with its
+          scale held at its value in the run. This is the component's direct effect: it leaves out what the component does
+          through later components, which patching measures. Nothing is replaced.
+        </p>
+        <h4 className={s.sectionTitle}>Metric</h4>
+        <p className={s.text}>Logit difference at the last token: logit(answer) − logit(distractor).</p>
+        <p className={s.text}>
+          Share = direct effect ÷{" "}
+          {spec.metric.normalization === "dataset_gap" ? (
+            <>
+              the mean {exp.prompts} logit difference{summary?.metric.denominator != null && <> ({num(summary.metric.denominator, 3)})</>}
+            </>
+          ) : (
+            <>each prompt's own {exp.prompts} logit difference</>
+          )}
+          . Over all components, with the embeddings and biases, the shares add up to one.
+        </p>
+      </section>
+    );
+  }
   if (exp.kind === "activation_patching") {
     how =
       exp.direction === "clean_to_corrupt"
@@ -184,6 +211,9 @@ function Evidence({
 
   const stats = summary?.statistics;
   const ciLevel = stats ? Math.round(stats.ci * 100) : 95;
+  const exp = useActiveRun().detail?.spec.experiment;
+  const words = measureWords(exp);
+  const intervention = measureOf(exp) === "intervention";
   const noInterval = site.effect.lo === null || site.effect.hi === null;
   const byIndex = useMemo(() => new Map(detail?.prompts.map((p) => [p.index, p]) ?? []), [detail]);
 
@@ -192,7 +222,7 @@ function Evidence({
       <h4 className={s.sectionTitle}>Evidence</h4>
       <div className={s.headline}>
         <span className={s.big}>{signed(site.effect.mean, 3)}</span>
-        <span className={s.bigLabel}>mean normalized effect</span>
+        <span className={s.bigLabel}>{words.mean}</span>
       </div>
       <dl className={s.stats}>
         <dt>{ciLevel}% CI</dt>
@@ -203,22 +233,27 @@ function Evidence({
         <dd>{plural(site.n, "prompt")}</dd>
         <dt>SD</dt>
         <dd>{num(site.effect.sd, 3)}</dd>
-        <dt>Δ logit diff</dt>
+        <dt>{words.delta}</dt>
         <dd>
           {signed(site.delta.mean, 3)} <span className={s.muted}>({ci(site.delta.lo, site.delta.hi)})</span>
         </dd>
-        <dt>Answer prob.</dt>
-        <dd>
-          {prob(site.answer_prob)} <span className={s.muted}>({signed(site.answer_prob_delta, 3)})</span>
-        </dd>
-        <dt>Sign flips</dt>
-        <dd>
-          {count(site.sign_flips)} of {count(site.n)}{" "}
-          <span className={s.muted}>prompts changed which name the model prefers</span>
-        </dd>
+        {intervention && (
+          <>
+            <dt>Answer prob.</dt>
+            <dd>
+              {prob(site.answer_prob)} <span className={s.muted}>({signed(site.answer_prob_delta, 3)})</span>
+            </dd>
+            <dt>Sign flips</dt>
+            <dd>
+              {count(site.sign_flips)} of {count(site.n)}{" "}
+              <span className={s.muted}>prompts changed which name the model prefers</span>
+            </dd>
+          </>
+        )}
         <dt>Opposite sign</dt>
         <dd>
-          {count(site.opposite_sign)} of {count(site.n)} <span className={s.muted}>prompts moved the other way</span>
+          {count(site.opposite_sign)} of {count(site.n)}{" "}
+          <span className={s.muted}>{intervention ? "prompts moved the other way" : "prompts point the other way"}</span>
         </dd>
       </dl>
       {stats && (
@@ -237,14 +272,15 @@ function Evidence({
             </p>
           )}
           <Distribution
+            label={`Per-prompt ${words.effect.toLowerCase()}`}
             values={detail.prompts.map((p) => ({ index: p.index, value: p.effect }))}
             mean={site.effect.mean}
             lo={site.effect.lo}
             hi={site.effect.hi}
             onPick={(i) => setPromptIndex(i)}
           />
-          <PromptList title="Strongest" indices={detail.strongest} byIndex={byIndex} onPick={setPromptIndex} />
-          <PromptList title="Weakest" indices={detail.weakest} byIndex={byIndex} onPick={setPromptIndex} />
+          <PromptList title="Strongest" indices={detail.strongest} byIndex={byIndex} onPick={setPromptIndex} intervention={intervention} />
+          <PromptList title="Weakest" indices={detail.weakest} byIndex={byIndex} onPick={setPromptIndex} intervention={intervention} />
         </>
       )}
     </section>
@@ -256,11 +292,13 @@ function PromptList({
   indices,
   byIndex,
   onPick,
+  intervention,
 }: {
   title: string;
   indices: number[];
   byIndex: Map<number, SiteDetail["prompts"][number]>;
   onPick: (i: number) => void;
+  intervention: boolean;
 }) {
   return (
     <div className={s.promptList}>
@@ -275,8 +313,16 @@ function PromptList({
             <span className={s.promptValue}>{signed(p.effect, 2)}</span>
             <span className={s.promptMeta}>
               {p.answer && p.distractor ? `${p.answer.trim()} vs ${p.distractor.trim()} · ` : ""}
-              logit diff {signed(p.receiver_logit_diff, 2)} → {signed(p.patched_logit_diff, 2)}
-              {p.flipped ? " · flipped" : ""}
+              {intervention ? (
+                <>
+                  logit diff {signed(p.receiver_logit_diff, 2)} → {signed(p.patched_logit_diff, 2)}
+                  {p.flipped ? " · flipped" : ""}
+                </>
+              ) : (
+                <>
+                  writes {signed(p.delta, 2)} of a logit diff of {signed(p.receiver_logit_diff, 2)}
+                </>
+              )}
             </span>
           </button>
         );

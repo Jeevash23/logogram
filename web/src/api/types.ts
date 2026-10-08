@@ -199,9 +199,17 @@ export type BaselineSpec =
   | { kind: "mean"; reference: "clean" | "corrupt" }
   | { kind: "resample"; pool: "clean" | "corrupt"; donors: number; seed: number };
 
+export type Direction = "clean_to_corrupt" | "corrupt_to_clean";
+
 export type ExperimentSpec =
-  | { kind: "activation_patching"; direction: "clean_to_corrupt" | "corrupt_to_clean" }
-  | { kind: "ablation"; baseline: BaselineSpec };
+  | { kind: "activation_patching"; direction: Direction }
+  | { kind: "ablation"; baseline: BaselineSpec }
+  | { kind: "direct_logit_attribution"; prompts: "clean" | "corrupt" };
+
+export type ExperimentKind = ExperimentSpec["kind"];
+
+/** What a run's per-prompt values are: patched runs, estimates of them, or terms of a split. */
+export type Measure = "intervention" | "estimate" | "attribution";
 
 export interface Spec {
   logogram_spec: 1;
@@ -337,6 +345,8 @@ export interface Summary {
   layout: Layout;
   receiver: "clean" | "corrupt";
   reference: "clean" | "corrupt";
+  /** Absent in runs from before it existed: those are interventions. */
+  measure?: Measure;
   metric: {
     kind: string;
     normalization: "dataset_gap" | "prompt_gap";
@@ -354,6 +364,17 @@ export interface Summary {
   per_prompt: Record<string, (number | null)[]>;
   donors: number[][] | null;
   warnings: string[];
+  /** Direct logit attribution: the mean logit difference and what it splits into. */
+  direct?: DirectSplit | null;
+}
+
+export interface DirectSplit {
+  prompts: "clean" | "corrupt";
+  logit_diff: number | null;
+  embeddings: number | null;
+  attention: number | null;
+  mlp: number | null;
+  biases: number | null;
 }
 
 export interface Manifest {

@@ -115,6 +115,10 @@ class ModelChecks:
     residual: float | None
     # Error of the final-norm logit lens at the last layer against the model's output, if defined.
     lens: float | None
+    # Error of each head's output (z through its slice of W_O) summed with b_O against the attention
+    # output: small when heads add up to what attention writes, large when the model normalizes
+    # after combining them (Gemma 2, OLMo 2). None if it couldn't be measured.
+    heads: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -134,12 +138,17 @@ def _log_prob_error(a: torch.Tensor, b: torch.Tensor) -> float:
     return _relative(torch.log_softmax(a.float(), dim=-1), torch.log_softmax(b.float(), dim=-1))
 
 
+def _soft_cap(cfg: Any) -> float | None:
+    cap = float(getattr(cfg, "output_logits_soft_cap", 0) or 0)
+    return cap if cap > 0 else None
+
+
 def final_projection(bridge: Any, residual: torch.Tensor) -> torch.Tensor:
     """What the model does after its last layer: final normalization, unembedding, and the logit
     soft-capping some models (Gemma 2) apply outside both."""
     logits = bridge.unembed(bridge.ln_final(residual))
-    cap = float(getattr(bridge.cfg, "output_logits_soft_cap", 0) or 0)
-    if cap > 0:
+    cap = _soft_cap(bridge.cfg)
+    if cap is not None:
         logits = cap * torch.tanh(logits / cap)
     return logits
 
@@ -164,6 +173,8 @@ def check_model(
         k for k in ("resid_pre", "resid_mid", "resid_post", "attn_out", "mlp_out") if k in kinds
     ]
     names = [hook_name(k, layer) for layer in range(n_layers) for k in stream]
+    if "head" in kinds:
+        names += [hook_name("head", layer) for layer in range(n_layers)]
     with torch.no_grad():
         logits, cache = bridge.run_with_cache(probe, names_filter=names)
 
@@ -196,6 +207,22 @@ def check_model(
         elif max(parallel, chain) <= tolerance:
             structure, residual = "parallel", max(parallel, chain)
 
+    heads = None
+    if "head" in kinds and "attn_out" in stream:
+        try:
+            errors = []
+            for i in range(n_layers):
+                attention = bridge.blocks[i].attn
+                z = cache[hook_name("head", i)].float()
+                with torch.no_grad():
+                    out = torch.einsum("bphd,hdm->bpm", z, attention.W_O.float())
+                    if getattr(attention, "b_O", None) is not None:
+                        out = out + attention.b_O.float()
+                errors.append(_relative(out, act("attn_out", i)))
+            heads = max(errors)
+        except Exception:  # noqa: BLE001 - no per-head output weights to check with
+            heads = None
+
     lens = None
     if "resid_post" in stream:
         try:
@@ -210,6 +237,7 @@ def check_model(
         structure=structure,
         residual=residual,
         lens=lens,
+        heads=heads,
     )
 
 
@@ -308,6 +336,8 @@ class TransformerLensBackend(ModelBackend):
                 "model_type": str(model_type or "unknown"),
                 "n_key_value_heads": int(getattr(cfg, "n_key_value_heads", None) or cfg.n_heads),
                 "bos": getattr(bridge.tokenizer, "bos_token_id", None) is not None,
+                # TransformerLens marks "no soft-cap" with a value of zero or below.
+                "logit_soft_cap": _soft_cap(cfg),
                 "checks": checks.to_dict(),
             },
         )
@@ -399,6 +429,82 @@ class TransformerLensBackend(ModelBackend):
         if self.bridge is None:
             raise BackendError("The model was unloaded. Load it again to continue.")
         return self.bridge
+
+    def direct_effects(
+        self,
+        tokens: torch.Tensor,
+        answers: torch.Tensor,
+        distractors: torch.Tensor,
+        heads: bool,
+    ) -> dict[str, torch.Tensor]:
+        n = self.info.n_layers
+        kept: dict[str, torch.Tensor] = {}
+
+        def keep(name: str) -> Callable[..., torch.Tensor]:
+            def fn(act: torch.Tensor, hook: Any = None) -> torch.Tensor:
+                kept[name] = act[:, -1].detach()  # only the last position is read out
+                return act
+
+            return fn
+
+        names = [hook_name("resid_pre", 0), hook_name("resid_post", n - 1)]
+        names += [hook_name(k, layer) for layer in range(n) for k in ("attn_out", "mlp_out")]
+        if heads:
+            names += [hook_name("head", layer) for layer in range(n)]
+        with self.lock:
+            bridge = self._bridge()
+            with torch.no_grad():
+                bridge.run_with_hooks(
+                    tokens.to(self.device),
+                    fwd_hooks=[(name, keep(name)) for name in names],
+                    return_type=None,
+                )
+
+            # The direction in the residual stream that the logit difference reads, with the final
+            # normalization's scale held at its value for each prompt: the logit difference is then
+            # an affine function of the residual stream, and splits over its components.
+            def hold(scale: torch.Tensor, hook: Any = None) -> torch.Tensor:
+                return scale.detach()
+
+            with torch.enable_grad(), warnings.catch_warnings():
+                # TransformerLens warns that an edited scale is recomputed from the hooked values;
+                # that is the point, and the result is checked against the measured logit difference.
+                warnings.simplefilter("ignore")
+                final = kept[hook_name("resid_post", n - 1)].clone().requires_grad_(True)
+                with bridge.hooks(fwd_hooks=[("ln_final.hook_scale", hold)]):
+                    logits = final_projection(bridge, final[:, None, :])[:, 0]
+                rows = torch.arange(final.shape[0], device=final.device)
+                ld = (
+                    logits[rows, answers.to(final.device)]
+                    - logits[rows, distractors.to(final.device)]
+                )
+                (direction,) = torch.autograd.grad(ld.sum(), final)
+            g = direction.double()
+
+            def term(vector: torch.Tensor) -> torch.Tensor:
+                return (vector.double() * g).sum(-1)
+
+            out: dict[str, torch.Tensor] = {
+                "embed": term(kept[hook_name("resid_pre", 0)]),
+                "attn_out": torch.stack(
+                    [term(kept[hook_name("attn_out", layer)]) for layer in range(n)], dim=1
+                ),
+                "mlp_out": torch.stack(
+                    [term(kept[hook_name("mlp_out", layer)]) for layer in range(n)], dim=1
+                ),
+                "logit_diff": ld.detach().double(),
+            }
+            if heads:
+                per_layer = []
+                for layer in range(n):
+                    z = kept[hook_name("head", layer)].double()  # [B, H, d_head]
+                    w_o = bridge.blocks[layer].attn.W_O.detach().double()  # [H, d_head, d_model]
+                    written = torch.einsum("bhd,hdm->bhm", z, w_o)
+                    per_layer.append((written * g[:, None, :]).sum(-1))
+                out["head"] = torch.stack(per_layer, dim=1)
+        total = out["embed"] + out["attn_out"].sum(1) + out["mlp_out"].sum(1)
+        out["remainder"] = out["logit_diff"] - total
+        return {k: v.cpu() for k, v in out.items()}
 
     def layer_logits(self, tokens: torch.Tensor, position: int, row: int) -> torch.Tensor:
         if self.info.extra.get("prediction_method") != "final_norm_logit_lens":

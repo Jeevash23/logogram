@@ -45,6 +45,8 @@ def compute_stats(
         normalization=spec.metric.normalization,
         counts=counts,
         ci=spec.statistics.ci,
+        delta=None if result.delta is None else result.delta[rows],
+        gap=result.gap,
     )
 
 
@@ -113,7 +115,20 @@ def build_summary(
 ) -> dict[str, Any]:
     b = result.baselines
     normalization = spec.metric.normalization
-    if normalization == "dataset_gap":
+    description = "logit(answer) − logit(distractor) at the last position"
+    if result.measure == "attribution":
+        description = (
+            "direct contribution to logit(answer) − logit(distractor) at the last position, with "
+            "the final normalization's scale held at its value in the run"
+        )
+        if normalization == "dataset_gap":
+            norm_text = (
+                f"contribution ÷ mean {result.receiver} logit difference; "
+                f"mean = {stats.denominator:.4f}"
+            )
+        else:
+            norm_text = f"contribution ÷ each prompt's own {result.receiver} logit difference"
+    elif normalization == "dataset_gap":
         norm_text = (
             f"(patched − {result.receiver}) ÷ mean({result.reference} − {result.receiver}) "
             f"logit difference; mean gap = {stats.denominator:.4f}"
@@ -134,11 +149,12 @@ def build_summary(
         "layout": result.layout,
         "receiver": result.receiver,
         "reference": result.reference,
+        "measure": result.measure,
         "metric": {
             "kind": spec.metric.kind,
             "normalization": normalization,
             "denominator": _f(stats.denominator) if normalization == "dataset_gap" else None,
-            "description": "logit(answer) − logit(distractor) at the last position",
+            "description": description,
             "normalized_effect": norm_text,
         },
         "statistics": {
@@ -157,6 +173,7 @@ def build_summary(
         },
         "donors": result.donors,
         "warnings": result.warnings,
+        **({"direct": result.extra["direct"]} if "direct" in result.extra else {}),
     }
     return Summary.model_validate(summary).model_dump(mode="json")
 

@@ -10,7 +10,7 @@ import { divergingScale, niceBound, SCALE_FLOOR } from "../lib/color";
 import { ago, ci, count, duration, num, pct, shortRevision, signed } from "../lib/format";
 import { modelName, siteValue, useActiveRun, useRunProfile } from "../lib/hooks";
 import { findSite, layoutTitle, selectionOfSite, siteAt } from "../lib/sites";
-import { baselineText, positionText } from "../lib/spec";
+import { baselineText, measureOf, measureWords, positionText } from "../lib/spec";
 import { formFromSpec, useStore } from "../store/app";
 import { Distribution } from "../components/Distribution";
 import { api } from "../api/client";
@@ -72,6 +72,8 @@ export function ResultsView() {
     return siteValue(run.results[site.index], metric);
   };
 
+  const words = measureWords(spec?.experiment);
+  const attribution = measureOf(spec?.experiment) === "attribution";
   const strongest = Object.values(run.results)
     .filter((x) => x.effect.mean !== null)
     .sort((a, b) => Math.abs(b.effect.mean ?? 0) - Math.abs(a.effect.mean ?? 0))[0];
@@ -136,21 +138,44 @@ export function ResultsView() {
 
       {summary && (
         <dl className={r.figures} aria-label="The run at a glance">
-          <div>
-            <dt>Clean logit diff</dt>
-            <dd className="figure">{signed(summary.baseline.clean.logit_diff.mean)}</dd>
-          </div>
-          <div>
-            <dt>Corrupt logit diff</dt>
-            <dd className="figure">{signed(summary.baseline.corrupt.logit_diff.mean)}</dd>
-          </div>
-          <div>
-            <dt>Gap the effects are measured against</dt>
-            <dd className="figure">{num(summary.baseline.gap.mean)}</dd>
-          </div>
+          {summary.direct ? (
+            <>
+              <div>
+                <dt>{summary.direct.prompts === "clean" ? "Clean" : "Corrupt"} logit diff</dt>
+                <dd className="figure">{signed(summary.direct.logit_diff)}</dd>
+              </div>
+              <div>
+                <dt>Attention writes</dt>
+                <dd className="figure">{signed(summary.direct.attention)}</dd>
+              </div>
+              <div>
+                <dt>MLPs write</dt>
+                <dd className="figure">{signed(summary.direct.mlp)}</dd>
+              </div>
+              <div>
+                <dt>Embeddings and biases</dt>
+                <dd className="figure">{signed((summary.direct.embeddings ?? 0) + (summary.direct.biases ?? 0))}</dd>
+              </div>
+            </>
+          ) : (
+            <>
+              <div>
+                <dt>Clean logit diff</dt>
+                <dd className="figure">{signed(summary.baseline.clean.logit_diff.mean)}</dd>
+              </div>
+              <div>
+                <dt>Corrupt logit diff</dt>
+                <dd className="figure">{signed(summary.baseline.corrupt.logit_diff.mean)}</dd>
+              </div>
+              <div>
+                <dt>Gap the effects are measured against</dt>
+                <dd className="figure">{num(summary.baseline.gap.mean)}</dd>
+              </div>
+            </>
+          )}
           {strongest && (
-            <div>
-              <dt>Strongest effect</dt>
+            <div className={r.wide}>
+              <dt>{attribution ? "Largest direct effect" : "Strongest effect"}</dt>
               <dd className="figure">
                 <button type="button" className={r.figureLink} onClick={() => select(selectionOfSite(strongest))}>
                   <span className={r.swatch} style={{ background: color(siteValue(strongest, metric) ?? 0) }} aria-hidden="true" />
@@ -163,7 +188,7 @@ export function ResultsView() {
       )}
 
       {layout && <div className={r.controls}>
-        <Segmented label="Result values" value={metric} onChange={mapMetric => useStore.setState({ mapMetric })} options={[{ value: "effect", label: "Normalized effect" }, { value: "delta", label: "Δ logit diff" }]} />
+        <Segmented label="Result values" value={metric} onChange={mapMetric => useStore.setState({ mapMetric })} options={[{ value: "effect", label: words.effect }, { value: "delta", label: words.delta }]} />
         <Segmented label="Result scale" value={scaleMode} onChange={scaleMode => useStore.setState({ scaleMode })} options={[{ value: "auto", label: "Fit" }, { value: "unit", label: "±1", disabled: metric !== "effect" }]} />
         <Checkbox checked={cellValues} onChange={(v) => useStore.setState({ cellValues: v })}>Show values</Checkbox>
         <span className={r.controlsSpacer} />
@@ -175,7 +200,7 @@ export function ResultsView() {
           <div className={r.heat}>
             <div className={r.heatHead}>
               <span className={s.panelTitle}>{layoutTitle(layout)}</span>
-              <ScaleBar bound={bound} theme={theme} label={metric === "effect" ? "Normalized effect" : "Δ logit diff"} />
+              <ScaleBar bound={bound} theme={theme} label={metric === "effect" ? words.effect : words.delta} />
             </div>
             <Heatmap
               rows={rows}
@@ -200,12 +225,12 @@ export function ResultsView() {
                 const site = siteAt(run.sites, ri, ci_);
                 if (site) select(selectionOfSite(site));
               }}
-              tooltip={(ri, ci_) => <CellTooltip site={siteAt(run.sites, ri, ci_)} results={run.results} metric={metric} />}
+              tooltip={(ri, ci_) => <CellTooltip site={siteAt(run.sites, ri, ci_)} results={run.results} metric={metric} words={words} attribution={attribution} />}
               ariaLabel={`${layoutTitle(layout)} results`}
             />
           </div>
           <div className={r.side}>
-            {layout.kind === "heads" && <SweepSummary results={Object.values(run.results)} total={run.sites.length} />}
+            {layout.kind === "heads" && <SweepSummary results={Object.values(run.results)} total={run.sites.length} label={`${words.mean[0].toUpperCase()}${words.mean.slice(1)} of each head`} />}
             <Forest ciLevel={run.ciLevel} results={Object.values(run.results)} selectedIndex={selectedSite?.index ?? null} onSelect={(site) => select(selectionOfSite(site))} flagged={flagged} />
           </div>
         </div>
@@ -246,9 +271,18 @@ function MethodsLine({ spec, n }: { spec: Spec; n: number | undefined }) {
         : scope.sites.map((x) => positionText(x.position)).filter((v, i, a) => a.indexOf(v) === i).join(", ");
   return (
     <p className={r.methods}>
-      <strong>{e.kind === "activation_patching" ? (e.direction === "clean_to_corrupt" ? "Patch clean → corrupt" : "Patch corrupt → clean") : `Ablate (${baselineText(e.baseline)})`}</strong>
+      <strong>
+        {e.kind === "activation_patching"
+          ? e.direction === "clean_to_corrupt" ? "Patch clean → corrupt" : "Patch corrupt → clean"
+          : e.kind === "direct_logit_attribution"
+            ? `Direct logit attribution of the ${e.prompts} prompts`
+            : `Ablate (${baselineText(e.baseline)})`}
+      </strong>
       {" "}{site} at {position}
-      <span className={r.sep}>·</span>logit difference, normalized by {spec.metric.normalization === "dataset_gap" ? "the dataset gap" : "each prompt's gap"}
+      <span className={r.sep}>·</span>
+      {e.kind === "direct_logit_attribution"
+        ? `logit difference, as a share of ${spec.metric.normalization === "dataset_gap" ? "the mean" : "each prompt's"}`
+        : `logit difference, normalized by ${spec.metric.normalization === "dataset_gap" ? "the dataset gap" : "each prompt's gap"}`}
       {n !== undefined && <><span className={r.sep}>·</span>n = {count(n)}</>}
       <span className={r.sep}>·</span>{Math.round(spec.statistics.ci * 100)}% CI, {count(spec.statistics.bootstrap)} resamples, seed {spec.statistics.seed}
       <span className={r.sep}>·</span>{modelName(spec.model.id)}{spec.model.revision ? ` @ ${shortRevision(spec.model.revision)}` : ""}, {spec.model.dtype}
@@ -320,10 +354,14 @@ function CellTooltip({
   site,
   results,
   metric,
+  words,
+  attribution,
 }: {
   site: { index: number; label: string } | null;
   results: Record<number, SiteResult>;
   metric: "effect" | "delta";
+  words: ReturnType<typeof measureWords>;
+  attribution: boolean;
 }) {
   if (!site) return null;
   const res = results[site.index];
@@ -333,11 +371,11 @@ function CellTooltip({
       {res ? (
         <>
           <div>
-            {metric === "effect" ? "effect" : "Δ logit diff"} <strong>{signed(siteValue(res, metric), 3)}</strong>
+            {metric === "effect" ? words.effect : words.delta} <strong>{signed(siteValue(res, metric), 3)}</strong>
           </div>
           <div style={{ opacity: 0.72 }}>
-            CI {metric === "effect" ? ci(res.effect.lo, res.effect.hi) : ci(res.delta.lo, res.delta.hi)} · flipped{" "}
-            {res.sign_flips} of {res.n}
+            CI {metric === "effect" ? ci(res.effect.lo, res.effect.hi) : ci(res.delta.lo, res.delta.hi)}
+            {!attribution && <> · flipped {res.sign_flips} of {res.n}</>}
           </div>
         </>
       ) : (
@@ -348,7 +386,7 @@ function CellTooltip({
 }
 
 
-function SweepSummary({ results, total }: { results: SiteResult[]; total: number }) {
+function SweepSummary({ results, total, label }: { results: SiteResult[]; total: number; label: string }) {
   const select = useStore((st) => st.select);
   const done = results.filter((x) => x.effect.mean !== null);
   const pos = done.filter((x) => (x.effect.lo ?? 0) > 0);
@@ -376,7 +414,7 @@ function SweepSummary({ results, total }: { results: SiteResult[]; total: number
         mean={null}
         lo={null}
         hi={null}
-        label="Mean normalized effect of each head"
+        label={label}
         pointName="Site"
         showKey={false}
         onPick={(i) => {
@@ -384,7 +422,7 @@ function SweepSummary({ results, total }: { results: SiteResult[]; total: number
           if (site) select(selectionOfSite(site));
         }}
       />
-      <p className={r.summaryNote}>Select a dot or a heatmap cell to inspect its intervention evidence.</p>
+      <p className={r.summaryNote}>Select a dot or a heatmap cell to inspect its per-prompt evidence.</p>
     </div>
   );
 }

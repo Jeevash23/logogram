@@ -28,6 +28,7 @@ from logogram.spec import (
     Ablation,
     ActivationPatching,
     AllPositions,
+    DirectLogitAttribution,
     MeanBaseline,
     ResampleBaseline,
     Spec,
@@ -61,10 +62,19 @@ class EngineResult:
     baselines: Baselines
     receiver: str
     reference: str
-    patched_ld: np.ndarray  # [S, n]
-    patched_prob: np.ndarray  # [S, n]
+    patched_ld: np.ndarray  # [S, n]; NaN where nothing was run patched
+    patched_prob: np.ndarray  # [S, n]; NaN where not measured
     donors: list[list[int]] | None = None
     warnings: list[str] = field(default_factory=list)
+    # What the per-prompt values are: "intervention" (a patched forward pass), "estimate" (a
+    # linear estimate of one) or "attribution" (a term of a decomposition of one forward pass).
+    measure: str = "intervention"
+    # Per-prompt values [S, n] when they aren't patched - receiver (an estimate or a term), and
+    # what normalizes them [n] when it isn't reference - receiver.
+    delta: np.ndarray | None = None
+    gap: np.ndarray | None = None
+    # Method-specific numbers for the summary.
+    extra: dict[str, Any] = field(default_factory=dict)
 
     @property
     def receiver_ld(self) -> np.ndarray:
@@ -216,6 +226,20 @@ class _LayerSources:
             rows.sort(key=lambda r: r[0])
             self._tables[key] = torch.stack([r[1] for r in rows])
         return self._tables[key]
+
+
+def run_experiment(
+    spec: Spec,
+    backend: ModelBackend,
+    prompts: list[PreparedPrompt],
+    **kwargs: Any,
+) -> EngineResult:
+    """Run whichever experiment the spec describes. The app and the CLI both come through here."""
+    if isinstance(spec.experiment, DirectLogitAttribution):
+        from logogram.direct import run_direct_effects
+
+        return run_direct_effects(spec, backend, prompts, **kwargs)
+    return run_engine(spec, backend, prompts, **kwargs)
 
 
 def run_engine(
