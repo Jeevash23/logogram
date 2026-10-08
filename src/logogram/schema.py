@@ -176,7 +176,9 @@ class DatasetProvenance(_Model):
 
 class DerivedFrom(_Model):
     run: str
-    kind: Literal["robustness", "rerun"]
+    # robustness: one methodological choice changed; rerun: the same spec again; verification:
+    # the strongest estimated sites of an attribution patching run, patched for real.
+    kind: Literal["robustness", "rerun", "verification"]
     change: str | None = None
 
 

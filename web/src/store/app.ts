@@ -246,6 +246,8 @@ interface Store {
   prepareNote: (sites: SiteSpec[]) => void;
   startRun: (spec: Spec) => Promise<void>;
   startRobustness: (runId: string, experiment: ExperimentSpec) => Promise<void>;
+  /** Patch, for real, the strongest sites an attribution patching run estimated. */
+  startVerification: (runId: string, top: number) => Promise<void>;
   cancelJob: () => Promise<void>;
   setCompare: (a: string | null, b: string | null) => void;
   setForm: (patch: Partial<FormState>) => void;
@@ -662,6 +664,21 @@ export const useStore = create<Store>((set, get) => ({
     await get().refreshRuns();
   },
 
+  startVerification: async (runId, top) => {
+    const seq = projectSeq;
+    const out = await get().guard(() => api.verify(runId, top));
+    if (!out || seq !== projectSeq) return;
+    get().applyJob(out.job);
+    set((s) => ({
+      pendingRunId: out.run_id,
+      compareIds: [runId, out.run_id],
+      compareMode: "side",
+      view: "compare",
+      live: { ...s.live, [out.run_id]: s.live[out.run_id] ?? emptyLive(out.run_id) },
+    }));
+    await get().refreshRuns();
+  },
+
   cancelJob: async () => {
     await get().guard(() => api.cancelJob());
   },
@@ -801,7 +818,7 @@ export const useStore = create<Store>((set, get) => ({
           // A finished robustness check paints its flags onto the original run.
           const detail = get().runDetails[runId];
           const from = detail?.manifest?.derived_from;
-          if (status === "finished" && from?.kind === "robustness") {
+          if (status === "finished" && (from?.kind === "robustness" || from?.kind === "verification")) {
             const cmp = await api.compare(from.run, runId).catch(() => null);
             if (cmp) set((s) => ({ flags: { ...s.flags, [from.run]: { against: runId, sites: cmp.flagged } } }));
           }

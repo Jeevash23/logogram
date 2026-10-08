@@ -24,7 +24,9 @@ export function methodsText(run: RunDetail): string {
       ? `Ablation baseline: ${JSON.stringify(s.experiment.baseline)}.`
       : s.experiment.kind === "direct_logit_attribution"
         ? `Direct logit attribution of the ${s.experiment.prompts} prompts: each component's output at the last token, read through the final normalization with its scale held at its value in the run.${summary?.direct ? ` Mean logit difference ${summary.direct.logit_diff?.toFixed(4)}: attention ${summary.direct.attention?.toFixed(4)}, MLPs ${summary.direct.mlp?.toFixed(4)}, embeddings ${summary.direct.embeddings?.toFixed(4)}, biases ${summary.direct.biases?.toFixed(4)}.` : ""}`
-        : `Direction: ${s.experiment.direction}.`,
+        : s.experiment.kind === "attribution_patching"
+          ? `Attribution patching (direction ${s.experiment.direction}): a first-order estimate of each site's patching effect, (source − receiver activation) · the gradient of the logit difference at the receiver run, not a patched forward pass.`
+          : `Direction: ${s.experiment.direction}.`,
     `Run: ${run.id}. ${manifest?.versions ? `Software: ${Object.entries(manifest.versions).filter(([, v]) => v).map(([k, v]) => `${k} ${v}`).join(", ")}.` : ""}`,
     ...(summary?.warnings.map((warning) => `Run note: ${warning}`) ?? []),
   ].join("\n\n");

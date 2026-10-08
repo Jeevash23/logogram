@@ -43,6 +43,9 @@ export function experimentText(e: ExperimentSpec): string {
     return e.direction === "clean_to_corrupt" ? "Patch clean → corrupt" : "Patch corrupt → clean";
   }
   if (e.kind === "direct_logit_attribution") return `Direct logit attribution (${e.prompts} prompts)`;
+  if (e.kind === "attribution_patching") {
+    return e.direction === "clean_to_corrupt" ? "Estimate patching clean → corrupt" : "Estimate patching corrupt → clean";
+  }
   switch (e.baseline.kind) {
     case "zero":
       return "Zero-ablate";
@@ -58,12 +61,15 @@ export function experimentShort(e: ExperimentSpec): string {
     return e.direction === "clean_to_corrupt" ? "Patch clean→corrupt" : "Patch corrupt→clean";
   }
   if (e.kind === "direct_logit_attribution") return `Direct attribution, ${e.prompts}`;
+  if (e.kind === "attribution_patching") return e.direction === "clean_to_corrupt" ? "Estimated clean→corrupt" : "Estimated corrupt→clean";
   return { zero: "Zero ablation", mean: "Mean ablation", resample: "Resample ablation" }[e.baseline.kind];
 }
 
 /** What a method's per-prompt values are (see Summary.measure). */
 export function measureOf(e: ExperimentSpec | null | undefined): Measure {
-  return e?.kind === "direct_logit_attribution" ? "attribution" : "intervention";
+  if (e?.kind === "direct_logit_attribution") return "attribution";
+  if (e?.kind === "attribution_patching") return "estimate";
+  return "intervention";
 }
 
 /** The names of a run's two values, and what they mean, for its method. */
@@ -78,7 +84,16 @@ export function measureWords(e: ExperimentSpec | null | undefined) {
       deltaLegend: "What the component writes directly into the logit difference (answer − distractor), in logits.",
     };
   }
-  const restores = e?.kind === "activation_patching" && e.direction === "clean_to_corrupt";
+  const restores = (e?.kind === "activation_patching" || e?.kind === "attribution_patching") && e.direction === "clean_to_corrupt";
+  if (measureOf(e) === "estimate") {
+    return {
+      effect: "Estimated effect",
+      delta: "Estimated Δ",
+      mean: "mean estimated effect",
+      effectLegend: `Estimated normalized effect, to first order: 1 would mean the site alone ${restores ? "restores the clean behavior" : "shifts the output as far as the corrupt prompt does"}. Verify the strongest by patching.`,
+      deltaLegend: "First-order estimate of the change in logit difference (answer − distractor) patching would cause.",
+    };
+  }
   return {
     effect: "Normalized effect",
     delta: "Δ logit diff",
@@ -120,6 +135,9 @@ export function directionQuestion(e: ExperimentSpec): string {
     return e.direction === "clean_to_corrupt" ? "Does this restore the behavior?" : "Does this break it?";
   }
   if (e.kind === "direct_logit_attribution") return "How much does this write directly toward the answer?";
+  if (e.kind === "attribution_patching") {
+    return e.direction === "clean_to_corrupt" ? "Would this restore the behavior, to first order?" : "Would this break it, to first order?";
+  }
   return "Does removing this break the behavior?";
 }
 
@@ -130,6 +148,11 @@ export function receiverText(e: ExperimentSpec): { receiver: string; source: str
       : { receiver: "clean prompt", source: "the corrupt prompt" };
   }
   if (e.kind === "direct_logit_attribution") return { receiver: `${e.prompts} prompt`, source: "its own forward pass" };
+  if (e.kind === "attribution_patching") {
+    return e.direction === "clean_to_corrupt"
+      ? { receiver: "corrupt prompt", source: "the clean prompt" }
+      : { receiver: "clean prompt", source: "the corrupt prompt" };
+  }
   return { receiver: "clean prompt", source: baselineText(e.baseline) };
 }
 
@@ -205,7 +228,7 @@ export function positionKey(p: PositionSpec): string {
 
 /** Rows the sweep will run: sites × prompts × donors. A decomposition runs each prompt once. */
 export function workload(spec: Spec, n: number, nLayers: number, nHeads: number, nPositions: number | null, nLabels: number): number | null {
-  if (spec.experiment.kind === "direct_logit_attribution") return n;
+  if (spec.experiment.kind === "direct_logit_attribution" || spec.experiment.kind === "attribution_patching") return n;
   const s = spec.scope;
   let sites = 0;
   if (s.kind === "heads") sites = nLayers * nHeads;
@@ -222,6 +245,7 @@ export function workload(spec: Spec, n: number, nLayers: number, nHeads: number,
 /** What running the spec costs, in words. */
 export function workloadText(spec: Spec, rows: number): string {
   if (spec.experiment.kind === "direct_logit_attribution") return `That is one forward and one backward pass for each of the ${count(rows)} prompts.`;
+  if (spec.experiment.kind === "attribution_patching") return `That is two forward passes and one backward pass for each of the ${count(rows)} prompts, for every site at once.`;
   return `That is ${count(rows)} patched forward passes.`;
 }
 

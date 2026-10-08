@@ -135,7 +135,13 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
       </section>
     );
   }
-  if (exp.kind === "activation_patching") {
+  if (exp.kind === "attribution_patching") {
+    const [receiver, source] = exp.direction === "clean_to_corrupt" ? ["corrupt", "clean"] : ["clean", "corrupt"];
+    how =
+      `Estimates, to first order, what replacing ${what} at ${position} in each ${receiver} prompt with its value from the paired ` +
+      `${source} prompt would do: (${source} activation − ${receiver} activation) · the gradient of the logit difference at the ` +
+      `${receiver} run. Nothing is replaced. The estimate misses saturation and can miss or even invert an effect; verify it by patching.`;
+  } else if (exp.kind === "activation_patching") {
     how =
       exp.direction === "clean_to_corrupt"
         ? `Runs each corrupt prompt and replaces ${what} at ${position} with its value from the paired clean prompt. Does this restore the behavior?`
@@ -150,12 +156,12 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
           : `its value in ${b.donors} randomly drawn ${b.pool} prompts (seed ${b.seed}), averaging the result`;
     how = `Runs each clean prompt and replaces ${what} at ${position} with ${source}.`;
   }
-  const receiver = summary?.receiver ?? (exp.kind === "activation_patching" && exp.direction === "clean_to_corrupt" ? "corrupt" : "clean");
+  const receiver = summary?.receiver ?? ((exp.kind === "activation_patching" || exp.kind === "attribution_patching") && exp.direction === "clean_to_corrupt" ? "corrupt" : "clean");
   const reference = summary?.reference ?? (receiver === "corrupt" ? "clean" : "corrupt");
   const gap = summary?.metric.denominator;
   return (
     <section className={s.section}>
-      <h4 className={s.sectionTitle}>Intervention</h4>
+      <h4 className={s.sectionTitle}>{exp.kind === "attribution_patching" ? "Estimate" : "Intervention"}</h4>
       <p className={s.strong}>
         {experimentText(exp)}
         {exp.kind === "ablation" && <span className={s.muted}> · baseline: {baselineText(exp.baseline)}</span>}
@@ -166,7 +172,7 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
         Logit difference at the last token: logit(answer) − logit(distractor).
       </p>
       <p className={s.text}>
-        Normalized effect = (patched − {receiver}) ÷{" "}
+        {exp.kind === "attribution_patching" ? "Estimated effect = (estimated patched" : "Normalized effect = (patched"} − {receiver}) ÷{" "}
         {spec.metric.normalization === "dataset_gap" ? (
           <>
             mean({reference} − {receiver}){gap !== null && gap !== undefined && <> (denominator {num(gap, 3)})</>}

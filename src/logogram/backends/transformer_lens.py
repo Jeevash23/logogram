@@ -430,6 +430,58 @@ class TransformerLensBackend(ModelBackend):
             raise BackendError("The model was unloaded. Load it again to continue.")
         return self.bridge
 
+    def gradients(
+        self,
+        tokens: torch.Tensor,
+        answers: torch.Tensor,
+        distractors: torch.Tensor,
+        sites: list[tuple[str, int]],
+    ) -> tuple[dict[tuple[str, int], torch.Tensor], dict[tuple[str, int], torch.Tensor]]:
+        # A zero tensor added at each hook point: the gradient with respect to it is the gradient
+        # with respect to the activation there, through every later use, without cutting the graph.
+        # hook_resid_mid only feeds the MLP's normalization (see _resid_mid_hooks); the residual
+        # stream between attention and MLP is resid_pre + attn_out, so its gradient is taken at
+        # attn_out, which is added to it.
+        kept: dict[tuple[str, int], torch.Tensor] = {}
+        zeros: dict[tuple[str, int], torch.Tensor] = {}
+
+        def value(site: tuple[str, int]) -> Callable[..., torch.Tensor]:
+            def fn(act: torch.Tensor, hook: Any = None) -> torch.Tensor:
+                kept[site] = act.detach()
+                return act
+
+            return fn
+
+        def probe(site: tuple[str, int]) -> Callable[..., torch.Tensor]:
+            def fn(act: torch.Tensor, hook: Any = None) -> torch.Tensor:
+                zero = torch.zeros_like(act, requires_grad=True)
+                zeros[site] = zero
+                if site[0] != "resid_mid":
+                    kept[site] = act.detach()
+                return act + zero
+
+            return fn
+
+        hooks: list[tuple[str, Callable[..., torch.Tensor]]] = []
+        for kind, layer in dict.fromkeys(sites):
+            if kind == "resid_mid":
+                hooks.append((hook_name("resid_mid", layer), value((kind, layer))))
+                hooks.append((hook_name("attn_out", layer), probe((kind, layer))))
+            else:
+                hooks.append((hook_name(kind, layer), probe((kind, layer))))
+        kwargs: dict[str, Any] = {"return_type": "logits"}
+        if self._logits_to_keep:
+            kwargs["logits_to_keep"] = 1
+        with self.lock, torch.enable_grad():
+            bridge = self._bridge()
+            logits = bridge.run_with_hooks(tokens.to(self.device), fwd_hooks=hooks, **kwargs)
+            last = logits[:, -1, :].float()
+            rows = torch.arange(last.shape[0], device=last.device)
+            ld = last[rows, answers.to(last.device)] - last[rows, distractors.to(last.device)]
+            order = list(zeros)
+            grads = torch.autograd.grad(ld.sum(), [zeros[s] for s in order])
+        return kept, {site: g.detach() for site, g in zip(order, grads, strict=True)}
+
     def direct_effects(
         self,
         tokens: torch.Tensor,

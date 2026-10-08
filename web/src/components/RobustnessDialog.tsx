@@ -6,11 +6,12 @@ import { experimentText } from "../lib/spec";
 import { useStore } from "../store/app";
 import { Button, Choices, Dialog, Field, Input, Select } from "./ui";
 
-type Option = "direction" | "zero" | "mean" | "resample" | "donors" | "seed" | "total" | "prompts";
+type Option = "direction" | "zero" | "mean" | "resample" | "donors" | "seed" | "total" | "prompts" | "exact";
 
 function suggest(e: ExperimentSpec): Option {
   if (e.kind === "activation_patching") return e.direction === "clean_to_corrupt" ? "direction" : "resample";
   if (e.kind === "direct_logit_attribution") return "total";
+  if (e.kind === "attribution_patching") return "exact";
   if (e.baseline.kind === "resample") return "donors";
   if (e.baseline.kind === "zero") return "mean";
   return "resample";
@@ -22,6 +23,9 @@ function variant(e: ExperimentSpec, option: Option, params: { donors: number; se
     case "total":
       // The same components, patched: their total effect, through everything downstream.
       return { kind: "activation_patching", direction: e.kind === "direct_logit_attribution" && e.prompts === "corrupt" ? "clean_to_corrupt" : "corrupt_to_clean" };
+    case "exact":
+      // Every site of the sweep, patched for real.
+      return { kind: "activation_patching", direction: e.kind === "attribution_patching" ? e.direction : "clean_to_corrupt" };
     case "prompts":
       return { kind: "direct_logit_attribution", prompts: e.kind === "direct_logit_attribution" && e.prompts === "clean" ? "corrupt" : "clean" };
     case "direction":
@@ -93,6 +97,12 @@ export function RobustnessDialog() {
       title: exp.prompts === "clean" ? "Split the corrupt prompts" : "Split the clean prompts",
       detail: "The same split on the other prompt of each pair: which direct effects the corruption changes.",
     });
+  } else if (exp.kind === "attribution_patching") {
+    options.push({
+      value: "exact",
+      title: "Patch every site for real",
+      detail: "The same sweep with activation patching: one patched run per site and prompt, exact rather than estimated.",
+    });
   } else if (exp.kind === "activation_patching") {
     options.push({
       value: "direction",
@@ -107,7 +117,7 @@ export function RobustnessDialog() {
     options.push({ value: "donors", title: "More donors", detail: "Same pool and seed rule, more donors per prompt." });
     options.push({ value: "seed", title: "Another donor seed", detail: "Same number of donors, drawn differently." });
   }
-  if (exp.kind !== "direct_logit_attribution") {
+  if (exp.kind !== "direct_logit_attribution" && exp.kind !== "attribution_patching") {
     if (!(exp.kind === "ablation" && exp.baseline.kind === "zero")) options.push({ value: "zero", title: "Zero ablation", detail: "Replace the activation with zeros." });
     if (!(exp.kind === "ablation" && exp.baseline.kind === "mean" && !isResample))
       options.push({ value: "mean", title: "Mean ablation", detail: "Replace it with its mean over a reference set." });

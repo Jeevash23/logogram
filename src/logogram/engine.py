@@ -28,6 +28,7 @@ from logogram.spec import (
     Ablation,
     ActivationPatching,
     AllPositions,
+    AttributionPatching,
     DirectLogitAttribution,
     MeanBaseline,
     ResampleBaseline,
@@ -139,6 +140,50 @@ def compute_baselines(
     return Baselines(**out)
 
 
+def check_gap(
+    spec: Spec,
+    baselines: Baselines,
+    prompts: list[PreparedPrompt],
+    receiver: str,
+    reference: str,
+) -> list[str]:
+    """Refuse a normalization the gap can't support, and warn when it is unreliable."""
+    warnings: list[str] = []
+    n = len(prompts)
+    gap = baselines.ld(reference) - baselines.ld(receiver)
+    mean_gap = float(gap.mean())
+    if spec.metric.normalization == "dataset_gap":
+        if abs(mean_gap) < 1e-3:
+            raise EngineError(
+                "The clean and corrupt prompts give almost the same logit difference "
+                f"(mean gap {mean_gap:.4f}), so a normalized effect is undefined. Run the "
+                "baseline check: the model may not show the behavior on these prompts."
+            )
+        if n > 1:
+            se = float(gap.std(ddof=1)) / np.sqrt(n)
+            if abs(mean_gap) < 3 * se:
+                warnings.append(
+                    f"The mean clean–corrupt gap ({mean_gap:.3f}) is small next to its standard "
+                    f"error ({se:.3f}), so normalized effects and their intervals are unreliable. "
+                    "Use more prompts, or check the baseline."
+                )
+    if spec.metric.normalization == "prompt_gap":
+        zero = [p.index for p, g in zip(prompts, gap, strict=True) if abs(g) < 1e-6]
+        if zero:
+            raise EngineError(
+                f"Prompt(s) {', '.join(map(str, zero[:5]))} have no clean–corrupt gap, so their "
+                "own gap can't normalize an effect. Normalize by the dataset gap, or fix those "
+                "prompts."
+            )
+        small = int((np.abs(gap) < 0.1).sum())
+        if small:
+            warnings.append(
+                f"{small} prompt(s) have a clean–corrupt gap below 0.1, so their per-prompt "
+                "normalized effects are unstable."
+            )
+    return warnings
+
+
 def draw_donors(
     prompts: list[PreparedPrompt],
     groups: list[LengthGroup],
@@ -239,6 +284,10 @@ def run_experiment(
         from logogram.direct import run_direct_effects
 
         return run_direct_effects(spec, backend, prompts, **kwargs)
+    if isinstance(spec.experiment, AttributionPatching):
+        from logogram.atp import run_attribution_patching
+
+        return run_attribution_patching(spec, backend, prompts, **kwargs)
     return run_engine(spec, backend, prompts, **kwargs)
 
 
@@ -295,38 +344,7 @@ def run_engine(
         raise EngineError(f"Unknown experiment {exp!r}")
     receiver = receiver_override or receiver
     source = source_override or source
-
-    gap = baselines.ld(reference) - baselines.ld(receiver)
-    mean_gap = float(gap.mean())
-    if spec.metric.normalization == "dataset_gap":
-        if abs(mean_gap) < 1e-3:
-            raise EngineError(
-                "The clean and corrupt prompts give almost the same logit difference "
-                f"(mean gap {mean_gap:.4f}), so a normalized effect is undefined. Run the "
-                "baseline check: the model may not show the behavior on these prompts."
-            )
-        if n > 1:
-            se = float(gap.std(ddof=1)) / np.sqrt(n)
-            if abs(mean_gap) < 3 * se:
-                warnings.append(
-                    f"The mean clean–corrupt gap ({mean_gap:.3f}) is small next to its standard "
-                    f"error ({se:.3f}), so normalized effects and their intervals are unreliable. "
-                    "Use more prompts, or check the baseline."
-                )
-    if spec.metric.normalization == "prompt_gap":
-        zero = [p.index for p, g in zip(prompts, gap, strict=True) if abs(g) < 1e-6]
-        if zero:
-            raise EngineError(
-                f"Prompt(s) {', '.join(map(str, zero[:5]))} have no clean–corrupt gap, so their "
-                "own gap can't normalize an effect. Normalize by the dataset gap, or fix those "
-                "prompts."
-            )
-        small = int((np.abs(gap) < 0.1).sum())
-        if small:
-            warnings.append(
-                f"{small} prompt(s) have a clean–corrupt gap below 0.1, so their per-prompt "
-                "normalized effects are unstable."
-            )
+    warnings.extend(check_gap(spec, baselines, prompts, receiver, reference))
 
     donors: list[list[int]] | None = None
     k = 1

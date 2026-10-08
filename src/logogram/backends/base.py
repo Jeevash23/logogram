@@ -109,6 +109,19 @@ class ModelBackend(ABC):
     def attention_pattern(self, tokens: torch.Tensor, layer: int) -> torch.Tensor:
         """Attention probabilities ``[B, H, query, key]`` in float32."""
 
+    def gradients(
+        self,
+        tokens: torch.Tensor,
+        answers: torch.Tensor,
+        distractors: torch.Tensor,
+        sites: list[tuple[str, int]],
+    ) -> tuple[dict[tuple[str, int], torch.Tensor], dict[tuple[str, int], torch.Tensor]]:
+        """Activations at ``(kind, layer)`` sites and the gradient of logit(answer) -
+        logit(distractor) at the last position with respect to each, in one forward and backward
+        pass. Shapes as in :meth:`capture`. The gradient of a residual-stream site is with respect
+        to the residual stream itself, not only to what the next component reads."""
+        raise BackendError("Gradients aren't supported by this model backend.")
+
     def direct_effects(
         self,
         tokens: torch.Tensor,

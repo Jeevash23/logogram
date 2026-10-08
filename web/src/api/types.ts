@@ -204,7 +204,8 @@ export type Direction = "clean_to_corrupt" | "corrupt_to_clean";
 export type ExperimentSpec =
   | { kind: "activation_patching"; direction: Direction }
   | { kind: "ablation"; baseline: BaselineSpec }
-  | { kind: "direct_logit_attribution"; prompts: "clean" | "corrupt" };
+  | { kind: "direct_logit_attribution"; prompts: "clean" | "corrupt" }
+  | { kind: "attribution_patching"; direction: Direction };
 
 export type ExperimentKind = ExperimentSpec["kind"];
 
@@ -407,7 +408,7 @@ export interface Manifest {
 
 export interface DerivedFrom {
   run: string;
-  kind: "robustness" | "rerun";
+  kind: "robustness" | "rerun" | "verification";
   change?: string;
 }
 

@@ -192,6 +192,8 @@ export const api = {
     post<{ run_id: string; job: Job }>(`/api/runs/${encodeURIComponent(id)}/robustness`, {
       experiment,
     }),
+  verify: (id: string, top: number) =>
+    post<{ run_id: string; job: Job }>(`/api/runs/${encodeURIComponent(id)}/verify`, { top }),
   derived: (id: string) => get<RunListing[]>(`/api/runs/${encodeURIComponent(id)}/derived`),
   siteDetail: (id: string, site: number) =>
     get<SiteDetail>(`/api/runs/${encodeURIComponent(id)}/sites/${site}`),

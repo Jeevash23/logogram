@@ -218,8 +218,23 @@ class DirectLogitAttribution(_Strict):
     prompts: Literal["clean", "corrupt"]
 
 
+class AttributionPatching(_Strict):
+    """Estimate activation patching at every site from one gradient (attribution patching).
+
+    For each site, the change patching would cause is estimated as (source activation - receiver
+    activation) · the gradient of the logit difference at the receiver run, from one forward and
+    backward pass per batch of prompts instead of one patched run per site. It is a first-order
+    estimate: it misses saturation (in attention, normalization and the softmax) and can miss or
+    even invert an effect, so verify the strongest sites with activation patching.
+    """
+
+    kind: Literal["attribution_patching"] = "attribution_patching"
+    direction: Literal["clean_to_corrupt", "corrupt_to_clean"]
+
+
 Experiment = Annotated[
-    ActivationPatching | Ablation | DirectLogitAttribution, Field(discriminator="kind")
+    ActivationPatching | Ablation | DirectLogitAttribution | AttributionPatching,
+    Field(discriminator="kind"),
 ]
 
 
@@ -312,7 +327,9 @@ class Spec(_Strict):
         return cls.model_validate_json(Path(path).read_text(encoding="utf-8"))
 
 
-def describe_intervention(exp: ActivationPatching | Ablation | DirectLogitAttribution) -> str:
+def describe_intervention(
+    exp: ActivationPatching | Ablation | DirectLogitAttribution | AttributionPatching,
+) -> str:
     """The intervention in a few words, for example 'Resample-ablate (10 corrupt donors, seed 0)'."""
     if isinstance(exp, ActivationPatching):
         return (
@@ -322,6 +339,9 @@ def describe_intervention(exp: ActivationPatching | Ablation | DirectLogitAttrib
         )
     if isinstance(exp, DirectLogitAttribution):
         return f"Direct logit attribution ({exp.prompts} prompts)"
+    if isinstance(exp, AttributionPatching):
+        arrow = "clean → corrupt" if exp.direction == "clean_to_corrupt" else "corrupt → clean"
+        return f"Attribution patching, estimated ({arrow})"
     b = exp.baseline
     if isinstance(b, ZeroBaseline):
         return "Zero-ablate"

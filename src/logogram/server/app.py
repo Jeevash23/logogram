@@ -224,6 +224,10 @@ class RobustnessRequest(BaseModel):
     experiment: dict[str, Any]
 
 
+class VerifyRequest(BaseModel):
+    top: int = Field(default=10, ge=1, le=200)
+
+
 class SettingsRequest(BaseModel):
     system_check_seen: bool | None = None
     theme: Literal["light", "dark", "system"] | None = None
@@ -765,6 +769,27 @@ def create_app(
         change = describe_intervention(variant.experiment)
         job = state.run_spec_job(
             variant, derived_from={"run": run_id, "kind": "robustness", "change": change}
+        )
+        return {"run_id": job.run_id, "job": job.to_dict()}
+
+    @app.post("/api/runs/{run_id}/verify", response_model=M.StartedRun)
+    def verify(run_id: str, body: VerifyRequest) -> dict[str, Any]:
+        """Patch, for real, the sites an attribution patching run estimated to matter most."""
+        from logogram.verify import verification_spec
+
+        project = state.require_project()
+        run = _read_run(project, run_id)
+        if not run["summary"]:
+            raise ValueError("Only a finished run can be verified.")
+        spec = verification_spec(Spec.model_validate(run["spec"]), run["summary"], body.top)
+        n = len(spec.scope.sites)  # type: ignore[union-attr]
+        job = state.run_spec_job(
+            spec,
+            derived_from={
+                "run": run_id,
+                "kind": "verification",
+                "change": f"the {n} strongest estimated site{'s' if n != 1 else ''}, patched",
+            },
         )
         return {"run_id": job.run_id, "job": job.to_dict()}
 

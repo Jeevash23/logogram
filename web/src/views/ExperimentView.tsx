@@ -17,6 +17,11 @@ const METHODS: { value: ExperimentKind; title: string; detail: string }[] = [
   { value: "activation_patching", title: "Activation patching", detail: "Copy an activation from the other prompt of each pair." },
   { value: "ablation", title: "Ablation", detail: "Replace an activation with a baseline you choose." },
   {
+    value: "attribution_patching",
+    title: "Attribution patching",
+    detail: "Estimate patching at every site from one gradient, then verify the strongest.",
+  },
+  {
     value: "direct_logit_attribution",
     title: "Direct logit attribution",
     detail: "Split the logit difference into what each component writes directly. No intervention.",
@@ -36,6 +41,8 @@ export function buildSpec(
   let experiment: Spec["experiment"];
   if (form.kind === "activation_patching") {
     experiment = { kind: "activation_patching", direction: form.direction };
+  } else if (form.kind === "attribution_patching") {
+    experiment = { kind: "attribution_patching", direction: form.direction };
   } else if (form.kind === "direct_logit_attribution") {
     if (!form.dlaPrompts) return { error: "Choose which prompts' logit difference to split." };
     experiment = { kind: "direct_logit_attribution", prompts: form.dlaPrompts };
@@ -259,25 +266,35 @@ export function ExperimentView() {
                 component does through later components, which patching measures.
               </p>
             </div>
-          ) : form.kind === "activation_patching" ? (
-            <Choices
-              label="Direction"
-              value={form.direction}
-              onChange={(direction) => setForm({ direction })}
-              columns={2}
-              options={[
-                {
-                  value: "clean_to_corrupt",
-                  title: "Clean → corrupt",
-                  detail: "Run the corrupt prompt and patch in clean activations. Does this restore the behavior?",
-                },
-                {
-                  value: "corrupt_to_clean",
-                  title: "Corrupt → clean",
-                  detail: "Run the clean prompt and patch in corrupt activations. Does this break it?",
-                },
-              ]}
-            />
+          ) : form.kind === "activation_patching" || form.kind === "attribution_patching" ? (
+            <div className={e.stack}>
+              <Choices
+                label="Direction"
+                value={form.direction}
+                onChange={(direction) => setForm({ direction })}
+                columns={2}
+                options={[
+                  {
+                    value: "clean_to_corrupt",
+                    title: "Clean → corrupt",
+                    detail: "Run the corrupt prompt and patch in clean activations. Does this restore the behavior?",
+                  },
+                  {
+                    value: "corrupt_to_clean",
+                    title: "Corrupt → clean",
+                    detail: "Run the clean prompt and patch in corrupt activations. Does this break it?",
+                  },
+                ]}
+              />
+              {form.kind === "attribution_patching" && (
+                <p className={s.small}>
+                  Estimates what patching each site would do, to first order: (source activation − receiver activation) · the
+                  gradient of the logit difference at the receiver run. One gradient covers every site, so large sweeps take
+                  seconds. It misses saturation and can miss or even invert an effect: verify the strongest sites by patching
+                  from the results.
+                </p>
+              )}
+            </div>
           ) : (
             <BaselineChooser baseline={form.baseline} onChange={(baseline) => setForm({ baseline })} />
           )}

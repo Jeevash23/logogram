@@ -90,7 +90,9 @@ def _tiny_bpe_tokenizer() -> Any:
     )
 
 
-def build_tiny_architecture(folder: Path, arch: str) -> None:
+def build_tiny_architecture(folder: Path, arch: str, initializer_range: float = 0.3) -> None:
+    """A tiny random model of ``arch``. The large default weights give clear effects; smaller ones
+    give a smoother function, for checks that need small changes to behave linearly."""
     import torch
     from transformers import AutoConfig, AutoModelForCausalLM
 
@@ -105,7 +107,7 @@ def build_tiny_architecture(folder: Path, arch: str) -> None:
         num_attention_heads=4,
         intermediate_size=96,
         max_position_embeddings=64,
-        initializer_range=0.3,
+        initializer_range=initializer_range,
         bos_token_id=0,
         eos_token_id=0,
         pad_token_id=0,

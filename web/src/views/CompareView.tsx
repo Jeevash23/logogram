@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
-import type { Comparison, ComparisonChange, RunDetail } from "../api/types";
+import type { Comparison, ComparisonChange, RunDetail, SiteSpec } from "../api/types";
 import { Heatmap, type Axis } from "../components/Heatmap/Heatmap";
 import { ScaleBar } from "../components/Heatmap/ScaleBar";
 import { Button, Callout, Empty, Field, Progress, Segmented, Select } from "../components/ui";
@@ -9,12 +9,18 @@ import { divergingScale, niceBound, SCALE_FLOOR } from "../lib/color";
 import { ci, count, num, pct, signed } from "../lib/format";
 import { siteValue } from "../lib/hooks";
 import { selectionOfSite, siteAt, siteKey } from "../lib/sites";
+import { siteText } from "../lib/spec";
 import { runView, useStore } from "../store/app";
 import s from "./views.module.css";
 import c from "./CompareView.module.css";
 
 function describeValue(v: unknown): string {
   if (v === null || v === undefined) return "none";
+  if (Array.isArray(v) && v.length > 0 && v.every((x) => x && typeof x === "object" && "kind" in x && "layer" in x)) {
+    // A list of sites: name them, as the map does.
+    const names = (v as SiteSpec[]).map(siteText);
+    return `${names.length} site${names.length === 1 ? "" : "s"}: ${names.slice(0, 6).join(", ")}${names.length > 6 ? ", …" : ""}`;
+  }
   if (typeof v === "object") return JSON.stringify(v);
   return String(v);
 }
@@ -60,6 +66,8 @@ export function CompareView() {
 
   const finished = runs.filter((r) => r.status === "finished" || r.id === aId || r.id === bId);
   const robust = db?.manifest?.derived_from?.kind === "robustness" && db.manifest.derived_from.run === aId;
+  // B patches, for real, the strongest sites that A (attribution patching) estimated.
+  const verification = db?.manifest?.derived_from?.kind === "verification" && db.manifest.derived_from.run === aId;
   const bLive = bId ? live[bId] : undefined;
 
   const bound = useMemo(() => {
@@ -86,11 +94,13 @@ export function CompareView() {
     <div className={s.view}>
       <div className={s.head}>
         <div className={s.titleBlock}>
-          <h2 className={s.title}>{robust ? "Robustness check" : "Compare runs"}</h2>
+          <h2 className={s.title}>{verification ? "Estimates checked by patching" : robust ? "Robustness check" : "Compare runs"}</h2>
           <p className={s.subtitle}>
-            {robust
-              ? "The same sweep rerun with one methodological choice changed. Conclusions that change are flagged on the map."
-              : "Two runs over the same sites, for example the same sweep on two datasets or on two models of the same architecture."}
+            {verification
+              ? "A estimates every site to first order; B patches the strongest of them for real. Where they disagree, the estimate is flagged."
+              : robust
+                ? "The same sweep rerun with one methodological choice changed. Conclusions that change are flagged on the map."
+                : "Two runs over the same sites, for example the same sweep on two datasets or on two models of the same architecture."}
           </p>
         </div>
         <div className={s.headActions}>
@@ -161,7 +171,7 @@ export function CompareView() {
       )}
       {error && <Callout tone="error">{error}</Callout>}
 
-      {comparison && <Verdict comparison={comparison} robust={robust} />}
+      {comparison && <Verdict comparison={comparison} robust={robust} verification={verification} />}
 
       {layout && layout.kind !== "sites" && aId && bId && (
         mode === "diff" && comparison?.same_layout ? (
@@ -223,7 +233,7 @@ export function CompareView() {
                   color={color}
                   theme={theme}
                   cellMax={26}
-                  rowTitle={layout.row_title}
+                  rowTitle={(v.layout ?? layout).row_title}
                   tokens={layout.kind === "layer_position" && layout.cols[0]?.clean !== undefined}
                   fade={label === "B" && bLive?.status === "running"}
                   flagged={(r, col) => {
@@ -261,7 +271,7 @@ export function CompareView() {
   );
 }
 
-function Verdict({ comparison, robust }: { comparison: Comparison; robust: boolean }) {
+function Verdict({ comparison, robust, verification }: { comparison: Comparison; robust: boolean; verification: boolean }) {
   const rho = comparison.spearman;
   const k = comparison.top_k;
   const overlap = comparison.top_overlap;
@@ -286,7 +296,21 @@ function Verdict({ comparison, robust }: { comparison: Comparison; robust: boole
         </div>
       </div>
       <p className={s.sentence}>
-        {stable ? (
+        {verification ? (
+          comparison.n_sign_changes === 0 ? (
+            <>
+              <strong>No estimate has the wrong sign.</strong> Where both are confident, patching agrees with the estimate's
+              direction{rho !== null && <>, and their rankings correlate at {num(rho, 2)}</>}.
+            </>
+          ) : (
+            <>
+              <strong>
+                {comparison.n_sign_changes} estimate{comparison.n_sign_changes === 1 ? " has" : "s have"} the wrong sign.
+              </strong>{" "}
+              Patching confidently reverses {comparison.n_sign_changes === 1 ? "it" : "them"}: trust the patched value, listed below.
+            </>
+          )
+        ) : stable ? (
           <>
             <strong>The conclusions hold.</strong> The ranking agrees closely and no top component changes.
           </>

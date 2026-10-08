@@ -192,3 +192,38 @@ def test_every_endpoint_matches_its_schema(app, client, tiny_backend, tmp_path, 
     assert _wait_for_run(client, rerun["run_id"]) == "finished"
     detail = client.get(f"/api/runs/{rerun['run_id']}", headers=AUTH).json()
     assert detail["manifest"]["derived_from"] == {"run": draft_id, "kind": "rerun", "change": None}
+
+
+def test_an_attribution_patching_run_is_verified_by_patching(
+    app, client, tiny_backend, tmp_path: Path, spec_factory
+):
+    app.state.logogram.backend = tiny_backend
+    app.state.logogram.model_status = {"state": "ready"}
+    headers = {**AUTH, **ORIGIN}
+    client.post("/api/projects", json={"name": "Verify", "parent": str(tmp_path)}, headers=headers)
+    client.post("/api/datasets/ioi", json={"name": "ioi", "n": 10, "seed": 1}, headers=headers)
+    spec = spec_factory(
+        dataset={"path": "datasets/ioi.jsonl"},
+        experiment={"kind": "attribution_patching", "direction": "clean_to_corrupt"},
+        scope={"kind": "heads", "position": {"kind": "last"}},
+    ).model_dump(mode="json")
+    run_id = client.post("/api/runs", json={"spec": spec}, headers=headers).json()["run_id"]
+    assert _wait_for_run(client, run_id) == "finished"
+
+    started = client.post(f"/api/runs/{run_id}/verify", json={"top": 4}, headers=headers)
+    assert started.status_code == 200, started.text
+    verified = started.json()["run_id"]
+    assert _wait_for_run(client, verified) == "finished"
+    run = client.get(f"/api/runs/{verified}", headers=AUTH).json()
+    assert run["spec"]["experiment"] == {
+        "kind": "activation_patching",
+        "direction": "clean_to_corrupt",
+    }
+    assert len(run["spec"]["scope"]["sites"]) == 4
+    assert run["manifest"]["derived_from"]["kind"] == "verification"
+    comparison = client.get(f"/api/compare?a={run_id}&b={verified}", headers=AUTH).json()
+    assert comparison["n_common"] == 4
+
+    # Only attribution patching runs are verified this way.
+    again = client.post(f"/api/runs/{verified}/verify", json={"top": 4}, headers=headers)
+    assert again.status_code == 400 and "Only attribution patching" in again.json()["error"]

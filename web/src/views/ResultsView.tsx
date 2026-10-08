@@ -20,6 +20,9 @@ import { Forest } from "./Forest";
 import s from "./views.module.css";
 import r from "./ResultsView.module.css";
 
+/** How many of an estimate's strongest sites "Verify by patching" patches for real. */
+const VERIFY_TOP = 10;
+
 export function ResultsView() {
   const run = useActiveRun();
   const selection = useStore((st) => st.selection);
@@ -31,6 +34,7 @@ export function ResultsView() {
   const cellValues = useStore((st) => st.cellValues);
   const profile = useRunProfile(run);
   const runs = useStore((st) => st.runs);
+  const job = useStore((st) => st.job);
   const listing = runs.find((x) => x.id === run.id);
 
   const bound = useMemo(() => {
@@ -101,6 +105,16 @@ export function ResultsView() {
         <div className={r.heroActions}>
           {status === "finished" && (
             <>
+              {spec?.experiment.kind === "attribution_patching" && (
+                <Button
+                  variant="primary"
+                  disabled={job?.status === "running"}
+                  onClick={() => void useStore.getState().startVerification(run.id as string, VERIFY_TOP)}
+                  title="Patch the sites with the largest estimated effects, for real, and compare"
+                >
+                  Verify top {VERIFY_TOP} by patching
+                </Button>
+              )}
               <Button onClick={() => useStore.setState({ robustnessDialogOpen: true })} icon="refresh">
                 Check robustness
               </Button>
@@ -276,7 +290,9 @@ function MethodsLine({ spec, n }: { spec: Spec; n: number | undefined }) {
           ? e.direction === "clean_to_corrupt" ? "Patch clean → corrupt" : "Patch corrupt → clean"
           : e.kind === "direct_logit_attribution"
             ? `Direct logit attribution of the ${e.prompts} prompts`
-            : `Ablate (${baselineText(e.baseline)})`}
+            : e.kind === "attribution_patching"
+              ? `Estimate patching ${e.direction === "clean_to_corrupt" ? "clean → corrupt" : "corrupt → clean"} (attribution patching)`
+              : `Ablate (${baselineText(e.baseline)})`}
       </strong>
       {" "}{site} at {position}
       <span className={r.sep}>·</span>

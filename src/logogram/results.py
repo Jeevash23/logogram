@@ -138,6 +138,13 @@ def build_summary(
             f"(patched − {result.receiver}) ÷ ({result.reference} − {result.receiver}) "
             "logit difference, per prompt"
         )
+    if result.measure == "estimate":
+        description = (
+            "first-order estimate of the change patching would cause in logit(answer) − "
+            "logit(distractor) at the last position: (source − receiver activation) · its "
+            "gradient at the receiver run"
+        )
+        norm_text = f"estimated {norm_text}"
     summary = {
         "logogram_summary": SUMMARY_VERSION,
         "run_id": run_id,
