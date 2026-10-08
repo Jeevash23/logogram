@@ -1,3 +1,4 @@
+/* A gap of fog between two sheets; a grip appears on hover. */
 .vertical,
 .horizontal {
   position: relative;
@@ -6,29 +7,46 @@
 }
 
 .vertical {
-  width: 1px;
-  margin: 0 -3px;
-  padding: 0 3px;
+  width: 10px;
   cursor: col-resize;
-  background-clip: content-box;
-  background-color: var(--line);
-  box-sizing: content-box;
 }
 
 .horizontal {
-  height: 1px;
-  margin: -3px 0;
-  padding: 3px 0;
+  height: 10px;
   cursor: row-resize;
-  background-clip: content-box;
-  background-color: var(--line);
-  box-sizing: content-box;
 }
 
-.vertical:hover,
-.horizontal:hover,
+.vertical::after,
+.horizontal::after {
+  content: "";
+  position: absolute;
+  border-radius: 2px;
+  background: transparent;
+  transition: background var(--dur) var(--ease);
+}
+
+.vertical::after {
+  left: 4px;
+  width: 2px;
+  top: 30%;
+  bottom: 30%;
+}
+
+.horizontal::after {
+  top: 4px;
+  height: 2px;
+  left: 30%;
+  right: 30%;
+}
+
+.vertical:hover::after,
+.horizontal:hover::after,
+.vertical:focus-visible::after,
+.horizontal:focus-visible::after {
+  background: var(--accent);
+}
+
 .vertical:focus-visible,
 .horizontal:focus-visible {
-  background-color: var(--faint);
   outline: none;
 }

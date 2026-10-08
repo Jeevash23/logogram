@@ -102,11 +102,12 @@
   flex: 1;
   min-width: 0;
   display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 1px 8px;
-  padding: 6px 8px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 1px 10px;
+  align-items: center;
+  padding: 7px 8px;
   border: 0;
-  border-radius: var(--radius);
+  border-radius: var(--radius-lg);
   background: transparent;
   text-align: left;
 }
@@ -117,7 +118,14 @@
 
 .item[aria-current="true"] {
   background: var(--surface-2);
-  box-shadow: inset 2px 0 0 var(--text);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+/* Each run's logogram, written by its results. */
+.glyph {
+  grid-row: 1 / span 2;
+  color: var(--text);
+  margin: 2px 2px 2px 0;
 }
 
 .name {
@@ -138,7 +146,7 @@
 }
 
 .meta {
-  grid-column: 1 / -1;
+  grid-column: 2 / -1;
   font-size: var(--text-xs);
   color: var(--muted);
   overflow: hidden;

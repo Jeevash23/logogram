@@ -30,12 +30,14 @@ export function BaselineView() {
   };
 
   const ready = model.state === "ready" && !!datasetPath && !context.error;
+  const verdict = report?.summary ? (behaviorPresent(report) ? "The behavior is present" : "The behavior is weak or missing") : null;
 
   return (
     <div className={s.view}>
       <div className={s.head}>
         <div className={s.titleBlock}>
-          <h2 className={s.title}>Baseline</h2>
+          <span className="eyebrow">Baseline</span>
+          <h2 className={s.title}>{verdict ?? "Does the model show the behavior?"}</h2>
           <p className={s.subtitle}>
             Run the model on the clean and corrupt prompts without intervening, to confirm the behavior exists before
             measuring what carries it.
@@ -78,12 +80,11 @@ function Report({ report, index }: { report: BaselineReport; index: number }) {
     );
   }
   const gap = sum.gap ?? 0;
-  const present = (sum.clean_logit_diff ?? 0) > 0 && gap > 0.5;
+  const present = behaviorPresent(report);
   const prompt = report.prompts.find((p) => p.index === index) ?? report.prompts[0];
   return (
     <>
       <p className={s.sentence}>
-        {present ? <strong>The behavior is present.</strong> : <strong>The behavior is weak or missing.</strong>}{" "}
         Clean prompts prefer the answer by <strong>{signed(sum.clean_logit_diff)}</strong> logits on average (in{" "}
         {sum.clean_prefers_answer} of {report.n}); corrupt prompts by <strong>{signed(sum.corrupt_logit_diff)}</strong>{" "}
         (in {sum.corrupt_prefers_answer} of {report.n}). The clean–corrupt gap is <strong>{num(gap)}</strong>
@@ -110,11 +111,17 @@ function Report({ report, index }: { report: BaselineReport; index: number }) {
   );
 }
 
+/** The clean prompts prefer the answer, by a gap large enough to measure interventions against. */
+function behaviorPresent(report: BaselineReport): boolean {
+  const sum = report.summary;
+  return !!sum && (sum.clean_logit_diff ?? 0) > 0 && (sum.gap ?? 0) > 0.5;
+}
+
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className={b.stat}>
       <div className={b.statLabel}>{label}</div>
-      <div className={b.statValue}>{value}</div>
+      <div className={`${b.statValue} figure`}>{value}</div>
     </div>
   );
 }

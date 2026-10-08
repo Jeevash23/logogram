@@ -3,7 +3,9 @@ import { useEffect, useMemo, useState } from "react";
 import type { RunListing } from "../api/types";
 import { ago, pct, plural } from "../lib/format";
 import { experimentShort, scopeShort } from "../lib/spec";
+import { layerProfile } from "../lib/logogram";
 import { useStore } from "../store/app";
+import { Logogram } from "./Logogram";
 import { Button, Spinner } from "./ui";
 import s from "./History.module.css";
 
@@ -98,6 +100,7 @@ export function History({ onOpen }: { onOpen?: () => void } = {}) {
                   aria-current={run.id === activeRunId ? "true" : undefined}
                   onClick={() => void open(run)}
                 >
+                  <RunGlyph run={run} />
                   <span className={s.name}>
                     {run.derived_from?.kind === "robustness" ? "Robustness · " : ""}
                     {run.derived_from?.kind === "robustness" ? (run.derived_from.change ?? run.name) : run.name}
@@ -128,4 +131,16 @@ export function History({ onOpen }: { onOpen?: () => void } = {}) {
       )}
     </div>
   );
+}
+
+/** A run's logogram in the list: written by its results, or by the layers streamed so far. */
+function RunGlyph({ run }: { run: RunListing }) {
+  const live = useStore((st) => st.live[run.id]);
+  const profile = useMemo(() => {
+    if (run.profile) return run.profile;
+    if (!live || live.sites.length === 0) return null;
+    const layers = live.model?.n_layers ?? Math.max(...live.sites.map((x) => x.layer)) + 1;
+    return layerProfile(live.sites, (i) => live.cells[i]?.effect.mean ?? null, layers);
+  }, [run.profile, live]);
+  return <Logogram seed={run.id} profile={profile} size={30} className={s.glyph} />;
 }

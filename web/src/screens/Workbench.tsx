@@ -8,7 +8,8 @@ import { RobustnessDialog } from "../components/RobustnessDialog";
 import { Splitter } from "../components/Splitter";
 import { StatusLine } from "../components/StatusLine";
 import { TokenStrip } from "../components/TokenStrip";
-import { Button, Dialog } from "../components/ui";
+import { Rail } from "../components/Rail";
+import { Button, Dialog, Icon } from "../components/ui";
 import { useAnalysisContext } from "../lib/hooks";
 import { useStore, workspaceFor, type View, type Workspace } from "../store/app";
 import { AttentionView } from "../views/AttentionView";
@@ -63,29 +64,30 @@ export function Workbench() {
     else setInspector(true);
   }, [inspectorFocus, narrow, supportsInspector]);
 
+  const goWorkspace = (w: Workspace) =>
+    w === "experiment" && staged > 0 ? useStore.getState().configureStaged() : setView(lastView.current[w]);
+
   return <div className={s.workbench}>
-    <Header />
-    <div className={s.workspaceBar}>
-      <nav className={s.workspaces} aria-label="Workspaces">{WORKSPACES.map(w => <button key={w.id} type="button" aria-current={workspace === w.id ? "page" : undefined} onClick={() => w.id === "experiment" && staged > 0 ? useStore.getState().configureStaged() : setView(lastView.current[w.id])}>{w.label}{w.id === "experiment" && staged > 0 && <span className={s.count} title="Staged sites">{staged}</span>}</button>)}</nav>
-      <Button size="small" variant="ghost" aria-expanded={drawer === "history"} onClick={() => setDrawer("history")}>History <span className={s.count}>{runs}</span></Button>
+    <Rail workspace={workspace} onWorkspace={goWorkspace} onHistory={() => setDrawer("history")} runs={runs} staged={staged} />
+    <div className={s.main}>
+      <Header next={<NextStep />} />
+      <div className={s.body}>
+        <main className={s.sheet}>
+          <div className={s.viewBar}>
+            <nav className={s.tabs} aria-label={`${workspace} views`}>{WORKSPACES.find(w => w.id === workspace)?.views.map(v => <button key={v.id} type="button" className={s.tab} aria-current={view === v.id ? "page" : undefined} onClick={() => setView(v.id)}>{v.label}{v.id === "heads" && pins > 0 && <span className={s.count}>{pins}/2</span>}</button>)}</nav>
+            <Button size="small" variant="ghost" aria-expanded={showInspector || drawer === "inspector"} onClick={() => narrow || !supportsInspector ? setDrawer("inspector") : setInspector(!inspector)}>{showInspector ? "Hide inspector" : "Inspector"}</Button>
+          </div>
+          <div className={s.view} ref={viewPane}><ActiveView view={view} /></div>
+          {!["notes", "compare", "spec"].includes(view) && <TokenStrip />}
+        </main>
+        {showInspector && <><Splitter orientation="vertical" label="Resize the inspector" onReset={() => setInspectorWidth(320)} onResize={(delta, phase) => {
+          if (phase === "start") { startWidth.current = inspectorWidth; return; }
+          const next = Math.max(280, Math.min(480, startWidth.current - delta)); setInspectorWidth(next);
+          if (phase === "end") { try { localStorage.setItem("logogram.inspectorWidth", String(next)); } catch { /* use session size */ } }
+        }} /><aside className={`${s.sheet} ${s.inspector}`} style={{ width: inspectorWidth }} aria-label="Inspector"><Inspector /></aside></>}
+      </div>
+      <StatusLine />
     </div>
-    <FirstExperiment />
-    <div className={s.viewBar}>
-      <nav className={s.tabs} aria-label={`${workspace} views`}>{WORKSPACES.find(w => w.id === workspace)?.views.map(v => <button key={v.id} type="button" className={s.tab} aria-current={view === v.id ? "page" : undefined} onClick={() => setView(v.id)}>{v.label}{v.id === "heads" && pins > 0 && <span className={s.count}>{pins}/2</span>}</button>)}</nav>
-      <Button size="small" variant="ghost" aria-expanded={showInspector || drawer === "inspector"} onClick={() => narrow || !supportsInspector ? setDrawer("inspector") : setInspector(!inspector)}>{showInspector ? "Hide inspector" : "Inspector"}</Button>
-    </div>
-    <div className={s.body}>
-      <main className={s.center}>
-        <div className={s.view} ref={viewPane}><ActiveView view={view} /></div>
-        {!["notes", "compare", "spec"].includes(view) && <TokenStrip />}
-      </main>
-      {showInspector && <><Splitter orientation="vertical" label="Resize the inspector" onReset={() => setInspectorWidth(320)} onResize={(delta, phase) => {
-        if (phase === "start") { startWidth.current = inspectorWidth; return; }
-        const next = Math.max(280, Math.min(480, startWidth.current - delta)); setInspectorWidth(next);
-        if (phase === "end") { try { localStorage.setItem("logogram.inspectorWidth", String(next)); } catch { /* use session size */ } }
-      }} /><aside className={s.inspector} style={{ width: inspectorWidth }} aria-label="Inspector"><Inspector /></aside></>}
-    </div>
-    <StatusLine />
     <ModelDialog />
     <RobustnessDialog />
     <NoteEditorDialog />
@@ -93,7 +95,10 @@ export function Workbench() {
   </div>;
 }
 
-function FirstExperiment() {
+const STEPS = ["Load a model", "Prepare prompts", "Check the baseline", "Run the experiment"];
+
+/** Until the first run finishes: the next of four steps, one click away. */
+function NextStep() {
   const model = useStore((st) => st.model);
   const dataset = useStore((st) => st.dataset);
   const completed = useStore((st) => st.runs.some((r) => r.status === "finished"));
@@ -101,12 +106,13 @@ function FirstExperiment() {
   const baseline = useStore((st) => st.baselines[context.key]);
   if (completed) return null;
   const step = model.state !== "ready" ? 0 : !dataset ? 1 : !baseline ? 2 : 3;
-  return <nav className={s.firstRun} aria-label="First experiment">
-    {["Load a model", "Prepare prompts", "Check baseline", "Run experiment"].map((label, i) => <button
-      key={label} type="button" aria-current={step === i ? "step" : undefined}
-      onClick={() => i === 0 ? useStore.setState({ modelDialogOpen: true }) : useStore.getState().setView(i === 1 ? "prompts" : i === 2 ? "baseline" : "experiment")}
-    >{i + 1}. {label}</button>)}
-  </nav>;
+  const go = () =>
+    step === 0 ? useStore.setState({ modelDialogOpen: true }) : useStore.getState().setView(step === 1 ? "prompts" : step === 2 ? "baseline" : "experiment");
+  return <button type="button" className={s.next} onClick={go} aria-label={`Next step: ${STEPS[step]}`} title="Your first experiment, in four steps">
+    <span className={s.nextDots} aria-hidden="true">{STEPS.map((label, i) => <span key={label} data-state={i < step ? "done" : i === step ? "now" : "todo"} />)}</span>
+    <span className={s.nextText}><span className={s.nextCount}>Step {step + 1} of 4</span>{STEPS[step]}</span>
+    <Icon name="arrowRight" size={14} />
+  </button>;
 }
 
 function ActiveView({ view }: { view: View }) {

@@ -54,7 +54,7 @@ export function TokenStrip() {
         <div className={s.nav}>
           <Button size="small" variant="ghost" icon="chevronLeft" aria-label="Previous prompt ([)" disabled={index === 0} onClick={() => setIndex(index - 1)} />
           <span className={s.counter}>
-            Prompt <strong>{index}</strong> <span className={s.of}>of {context.n} (zero-based)</span>
+            Prompt <strong>{index}</strong> <span className={s.of}>of {context.n}</span>
           </span>
           <Button size="small" variant="ghost" icon="chevronRight" aria-label="Next prompt (])" disabled={index >= context.n - 1} onClick={() => setIndex(index + 1)} />
         </div>

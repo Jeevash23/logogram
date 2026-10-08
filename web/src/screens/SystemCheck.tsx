@@ -3,16 +3,16 @@ import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import type { SystemReport } from "../api/types";
 import { CopyCommand } from "../components/CopyCommand";
-import { Button, Callout, Mark, Spinner } from "../components/ui";
+import { Button, Callout, Spinner } from "../components/ui";
 import { bytes } from "../lib/format";
 import { useStore } from "../store/app";
 import s from "./Screens.module.css";
+import { Welcome } from "./Welcome";
 
 export function SystemCheck() {
   const [report, setReport] = useState<SystemReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [opening, setOpening] = useState(false);
-  const version = useStore((st) => st.version);
   const project = useStore((st) => st.project);
   const firstRun = useStore((st) => st.firstRun);
 
@@ -42,14 +42,10 @@ export function SystemCheck() {
     : "";
 
   return (
-    <div className={s.page}>
+    <Welcome>
       <div className={s.column}>
-        <div className={s.brand}>
-          <Mark size={22} />
-          <span className={s.wordmark}>Logogram</span>
-          <span className={s.version}>{version}</span>
-        </div>
-        <h1>System check</h1>
+        <span className="eyebrow">Before the first experiment</span>
+        <h1 className={s.pageTitle}>System check</h1>
         <p className={s.lead}>
           Logogram runs every experiment on this computer. This is what it found, and what it will use.
         </p>
@@ -149,6 +145,6 @@ export function SystemCheck() {
           No account, no telemetry. The only network access is model downloads from Hugging Face that you start.
         </p>
       </div>
-    </div>
+    </Welcome>
   );
 }

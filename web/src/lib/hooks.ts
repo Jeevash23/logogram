@@ -3,6 +3,7 @@ import { useMemo } from "react";
 import type { RunDetail, SiteResult } from "../api/types";
 import { runView, useStore } from "../store/app";
 import { analysisContext } from "./analysis";
+import { layerProfile } from "./logogram";
 
 export function useAnalysisContext() {
   const form = useStore((s) => s.form);
@@ -79,4 +80,16 @@ export function siteValue(site: SiteResult | undefined, metric: "effect" | "delt
   if (!site) return null;
   const v = metric === "effect" ? site.effect.mean : site.delta.mean;
   return v === null || v === undefined || !Number.isFinite(v) ? null : v;
+}
+
+/**
+ * The per-layer profile that writes a run's logogram: in each layer, the measured site with the
+ * largest normalized effect. Layers still running count as zero, so the glyph fills in live.
+ */
+export function useRunProfile(run: ReturnType<typeof useActiveRun>): number[] | null {
+  return useMemo(() => {
+    const layers = run.model?.n_layers ?? (run.sites.length ? Math.max(...run.sites.map((x) => x.layer)) + 1 : 0);
+    if (!layers || Object.keys(run.results).length === 0) return null;
+    return layerProfile(run.sites, (i) => siteValue(run.results[i], "effect"), layers);
+  }, [run.model, run.sites, run.results]);
 }

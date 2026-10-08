@@ -250,6 +250,8 @@ class RunListing(_Model):
     scope: dict[str, Any]
     derived_from: DerivedFrom | None
     error: str | None
+    # Per layer, the largest normalized effect (signed): what writes the run's logogram in the app.
+    profile: list[float] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json")

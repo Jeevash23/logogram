@@ -373,3 +373,30 @@ def test_a_draft_can_be_saved_again_until_it_runs(client, ready, project, spec_f
     assert _wait(client, draft) == "finished"
     late = client.post("/api/drafts", json={"spec": spec, "draft_id": draft}, headers=HEADERS)
     assert late.status_code == 409
+
+
+def test_finished_runs_list_the_profile_that_writes_their_logogram(client, ready, spec_factory):
+    spec = spec_factory().model_dump(mode="json")
+    run_id = client.post("/api/runs", json={"spec": spec}, headers=HEADERS).json()["run_id"]
+    assert _wait(client, run_id) == "finished"
+    listing = next(r for r in client.get("/api/runs", headers=HEADERS).json() if r["id"] == run_id)
+    summary = client.get(f"/api/runs/{run_id}", headers=HEADERS).json()["summary"]
+    expected = []
+    for layer in range(summary["model"]["n_layers"]):
+        values = [s["effect"]["mean"] for s in summary["sites"] if s["layer"] == layer]
+        expected.append(round(max(values, key=abs), 4))
+    assert listing["profile"] == expected
+
+
+def test_a_run_that_has_ended_is_never_listed_as_running(client, ready, project, spec_factory):
+    spec = spec_factory().model_dump(mode="json")
+    run_id = client.post("/api/runs", json={"spec": spec}, headers=HEADERS).json()["run_id"]
+    assert _wait(client, run_id) == "finished"
+    draft = client.post("/api/drafts", json={"spec": spec}, headers=HEADERS).json()["run_id"]
+    # The moment between writing the manifest and the job reporting that it finished.
+    ready.job = Job(id="late", kind="run", title="test", run_id=run_id)
+    status = {r["id"]: r["status"] for r in client.get("/api/runs", headers=HEADERS).json()}
+    assert status[run_id] == "finished"
+    ready.job = Job(id="draft", kind="run", title="test", run_id=draft)
+    status = {r["id"]: r["status"] for r in client.get("/api/runs", headers=HEADERS).json()}
+    assert status[draft] == "running"

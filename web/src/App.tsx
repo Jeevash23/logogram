@@ -3,7 +3,8 @@ import { useEffect } from "react";
 import { connectEvents } from "./api/events";
 import { CommandPalette } from "./components/CommandPalette";
 import { Notices } from "./components/Notices";
-import { Mark, TooltipProvider } from "./components/ui";
+import { BRAND_SEED, Logogram } from "./components/Logogram";
+import { TooltipProvider } from "./components/ui";
 import { useGlobalKeys } from "./lib/keys";
 import { Projects } from "./screens/Projects";
 import { SystemCheck } from "./screens/SystemCheck";
@@ -42,13 +43,13 @@ export function App() {
     <TooltipProvider delayDuration={350} skipDelayDuration={200}>
       {screen === "loading" && (
         <div className={s.center}>
-          <Mark size={28} />
+          <Logogram seed={BRAND_SEED} size={44} detail={0.85} weight={1.2} className={s.loadingGlyph} />
         </div>
       )}
       {screen === "error" && (
         <div className={s.center}>
           <div className={s.error}>
-            <Mark size={28} />
+            <Logogram seed={BRAND_SEED} size={36} detail={0.85} weight={1.2} />
             <h2>Logogram can't start</h2>
             <p className="muted">{bootError}</p>
           </div>

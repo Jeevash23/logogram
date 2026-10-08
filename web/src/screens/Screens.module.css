@@ -1,9 +1,111 @@
-.page {
+/* First screens: the chamber on the left, paper on the right. */
+.welcome {
+  display: grid;
+  grid-template-columns: minmax(300px, 0.9fr) minmax(0, 1.4fr);
+  height: 100%;
+  background: var(--bg) var(--grain);
+}
+
+.chamber {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  padding: 32px 36px 36px;
+  background: var(--rail) var(--grain);
+  color: var(--rail-text);
+  overflow: hidden;
+}
+
+.brand {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.wordmark {
+  font-weight: 640;
+  font-size: var(--text-xl);
+  font-stretch: var(--display-stretch);
+  letter-spacing: -0.01em;
+}
+
+.version {
+  color: var(--rail-muted);
+  font-size: var(--text-xs);
+}
+
+/* The lit screen of the shell, with the ink floating on it. */
+.screen {
+  flex: 1;
+  min-height: 240px;
+  max-height: 520px;
+  display: grid;
+  place-items: center;
+  border-radius: 18px;
+  background:
+    radial-gradient(ellipse at 50% 42%, #f8faf9 0%, #e6ebeb 62%, #d3dadb 100%);
+  color: #11171a;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.5),
+    0 30px 80px rgba(0, 0, 0, 0.35);
+}
+
+:root[data-theme="dark"] .screen {
+  background: radial-gradient(ellipse at 50% 42%, #dfe5e5 0%, #c3cccd 62%, #a9b4b6 100%);
+}
+
+.heroGlyph {
+  width: min(300px, 58%);
+  height: auto;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .heroGlyph {
+    animation: ink 1600ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+  @keyframes ink {
+    from {
+      opacity: 0;
+      transform: scale(0.82) rotate(-14deg);
+      filter: blur(6px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+      filter: none;
+    }
+  }
+}
+
+.chamberText {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 420px;
+}
+
+.tagline {
+  font-size: var(--text-2xl);
+  font-weight: 600;
+  font-stretch: var(--display-stretch);
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  text-wrap: balance;
+}
+
+.chamberNote {
+  color: var(--rail-muted);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+}
+
+.paper {
   height: 100%;
   overflow: auto;
   display: flex;
   justify-content: center;
-  padding: clamp(24px, 8vh, 88px) 24px 48px;
+  padding: clamp(28px, 7vh, 72px) clamp(20px, 5vw, 64px) 48px;
 }
 
 .column {
@@ -14,28 +116,45 @@
 }
 
 .wideColumn {
-  width: min(940px, 100%);
+  width: min(860px, 100%);
   display: flex;
   flex-direction: column;
   gap: 18px;
 }
 
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  margin-bottom: 18px;
+.pageTitle {
+  font-size: var(--text-3xl);
 }
 
-.wordmark {
-  font-weight: 620;
-  font-size: var(--text-lg);
-  letter-spacing: -0.005em;
-}
-
-.version {
-  color: var(--faint);
-  font-size: var(--text-xs);
+@media (max-width: 900px) {
+  .welcome {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+    overflow: auto;
+  }
+  .chamber {
+    flex-direction: row;
+    align-items: center;
+    gap: 16px;
+    padding: 14px 18px;
+  }
+  .screen {
+    flex: none;
+    width: 64px;
+    min-height: 64px;
+    height: 64px;
+    border-radius: 12px;
+  }
+  .heroGlyph {
+    width: 48px;
+  }
+  .chamberText {
+    display: none;
+  }
+  .paper {
+    height: auto;
+    overflow: visible;
+  }
 }
 
 .lead {
@@ -56,15 +175,23 @@
   display: grid;
   grid-template-columns: 190px 1fr;
   margin: 6px 0 0;
-  border-top: 1px solid var(--line);
+  padding: 4px 20px;
+  border-radius: var(--radius-sheet);
+  background: var(--surface);
+  box-shadow: var(--sheet-shadow);
 }
 
 .facts dt,
 .facts dd {
   margin: 0;
-  padding: 10px 0;
+  padding: 11px 0;
   border-bottom: 1px solid var(--line-soft);
   font-size: var(--text-md);
+}
+
+.facts dt:nth-last-child(2),
+.facts dd:last-child {
+  border-bottom: 0;
 }
 
 .facts dt {
@@ -132,24 +259,32 @@
 .recent {
   list-style: none;
   margin: 0;
-  padding: 0;
-  border-top: 1px solid var(--line);
+  padding: 6px;
+  border-radius: var(--radius-sheet);
+  background: var(--surface);
+  box-shadow: var(--sheet-shadow);
 }
 
 .recentItem {
   display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 2px 16px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px 14px;
   width: 100%;
-  padding: 11px 6px;
+  padding: 10px 12px;
   border: 0;
-  border-bottom: 1px solid var(--line-soft);
+  border-radius: var(--radius-lg);
   background: transparent;
   text-align: left;
 }
 
 .recentItem:hover {
   background: var(--hover);
+}
+
+.recentGlyph {
+  grid-row: 1 / span 2;
+  color: var(--text);
 }
 
 .recentName {
@@ -159,14 +294,14 @@
 
 .recentTime {
   grid-row: 1;
-  grid-column: 2;
+  grid-column: 3;
   color: var(--faint);
   font-size: var(--text-xs);
   align-self: center;
 }
 
 .recentPath {
-  grid-column: 1 / -1;
+  grid-column: 2 / -1;
   color: var(--faint);
   font-size: var(--text-xs);
   overflow: hidden;

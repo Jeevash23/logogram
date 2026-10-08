@@ -1,0 +1,49 @@
+.dial {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+}
+
+.face {
+  position: relative;
+}
+
+.glyph {
+  position: absolute;
+  color: var(--text);
+}
+
+.label {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  min-width: 22px;
+  height: 22px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.label:hover:not(:disabled),
+.label:focus-visible {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.label:disabled {
+  color: var(--line);
+}
+
+.caption {
+  max-width: 260px;
+  color: var(--muted);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  text-align: center;
+}

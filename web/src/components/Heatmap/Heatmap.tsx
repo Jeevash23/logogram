@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 
-import { cornerFlag, fitText, font, prepareCanvas, ring, useChromeColors, useElementSize } from "../../lib/canvas";
+import { cornerFlag, fitText, font, inkRing, prepareCanvas, useChromeColors, useElementSize } from "../../lib/canvas";
 import { textOn, type ResolvedTheme } from "../../lib/color";
 import { visibleToken } from "../../lib/format";
 import { moveCell, type Cell } from "../../lib/heatmapNavigation";
@@ -93,7 +93,9 @@ export function Heatmap({
     const headerH = rotate ? Math.min(84, maxColLabel * 0.72 + 14) : 18;
     const left = titleW + rowLabelW;
     const top = headerH + (colTitle ? 16 : 0);
-    const gap = cell >= 14 ? 1 : 0;
+    const gap = cell >= 20 ? 2 : cell >= 14 ? 1 : 0;
+    // Room around the grid for the ink ring of a selected edge cell.
+    const margin = Math.ceil(cell * 0.25 + 6);
     return {
       cell,
       cellH,
@@ -103,8 +105,8 @@ export function Heatmap({
       rotate,
       rowLabelW,
       titleW,
-      width: Math.max(width, left + cols.length * cell + 8),
-      height: top + rows.length * cellH + 6,
+      width: Math.max(width, left + cols.length * cell + margin),
+      height: top + rows.length * cellH + margin,
       labelOf,
     };
   }, [width, rows, cols, colors, tokens, cellMin, cellMax, rowTitle, colTitle, aspect]);
@@ -217,7 +219,7 @@ export function Heatmap({
       ctx.strokeRect(left + hover.c * cell - 1.5, top + hover.r * cellH - 1.5, cell - gap + 3, cellH - gap + 3);
     }
     if (selected && selected.r < rows.length && selected.c < cols.length) {
-      ring(ctx, left + selected.c * cell, top + selected.r * cellH, cell - gap, cellH - gap, colors.text, colors.surface, 2);
+      inkRing(ctx, left + selected.c * cell, top + selected.r * cellH, cell - gap, cellH - gap, colors.text, colors.surface);
     }
     if (fading) {
       const frame = requestAnimationFrame(() => setTick((t) => t + 1));

@@ -188,6 +188,8 @@ interface Store {
   selection: Selection | null;
   mapMetric: "effect" | "delta";
   scaleMode: "auto" | "unit";
+  /** Print each heatmap cell's value. Off by default: color carries the pattern. */
+  cellValues: boolean;
   compareIds: [string | null, string | null];
   compareMode: "side" | "diff";
   flags: Record<string, { against: string; sites: number[] }>;
@@ -296,6 +298,7 @@ export const useStore = create<Store>((set, get) => ({
   selection: null,
   mapMetric: "effect",
   scaleMode: "auto",
+  cellValues: false,
   compareIds: [null, null],
   compareMode: "side",
   flags: {},

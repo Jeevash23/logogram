@@ -34,6 +34,11 @@ const PATHS: Record<string, string> = {
   split: "M8 2.5v11M2.5 3.5h11v9h-11z",
   diff: "M5 2.5v6M2 5.5h6M9 11.5h5",
   cpu: "M4.5 4.5h7v7h-7zM6.5 2v2.5M9.5 2v2.5M6.5 11.5V14M9.5 11.5V14M2 6.5h2.5M2 9.5h2.5M11.5 6.5H14M11.5 9.5H14",
+  explore: "M2 4.2 6 2.7l4 1.5 4-1.5v9.1l-4 1.5-4-1.5-4 1.5zM6 2.7v9.1M10 4.2v9.1",
+  experiment: "M6 2.5h4M6.6 2.5v4.2L3 12.6c-.4.7.1 1.4.9 1.4h8.2c.8 0 1.3-.7.9-1.4L9.4 6.7V2.5M4.7 10.2h6.6",
+  evidence: "M2.5 13.5h11M4.5 11V8.5M8 11V4.5M11.5 11V6.8",
+  history: "M8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12zM8 4.8v3.4l2.2 1.4",
+  palette: "M4.5 3.5h7a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1zM6 6.5l2 1.5-2 1.5M8.8 10h1.7",
 };
 
 export type IconName = keyof typeof PATHS;
@@ -59,19 +64,6 @@ export function Icon({ name, size = 16, ...rest }: Props) {
       {...rest}
     >
       <path d={PATHS[name]} />
-    </svg>
-  );
-}
-
-/** The Logogram mark: an ink ring, nearly closed. */
-export function Mark({ size = 20 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden="true">
-      <path
-        fill="currentColor"
-        d="M16 3.2c7.3 0 12.8 5.6 12.8 12.6 0 7.2-5.7 13-12.9 13-6.8 0-12.1-5-12.6-11.6l2.4-.4c.5 5.3 4.8 9.4 10.2 9.4 5.8 0 10.4-4.6 10.4-10.4 0-5.6-4.4-10.1-10.1-10.1-3.1 0-5.6 1.2-7.4 3.3L6.9 7.4C9.2 4.8 12.4 3.2 16 3.2Z"
-      />
-      <path fill="currentColor" d="M4.6 12.1c.4-1.3 1-2.5 1.8-3.6l1.3 1.1c-.5.9-.9 1.8-1.2 2.9Z" />
     </svg>
   );
 }

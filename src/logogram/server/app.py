@@ -613,7 +613,9 @@ def create_app(
         job = state.job
         if job is not None and job.status == "running" and job.run_id:
             for r in out:
-                if r["id"] == job.run_id:
+                # The job outlives its run by a moment (it writes the manifest, then reports);
+                # a run whose manifest is written has ended, whatever the job says.
+                if r["id"] == job.run_id and r["status"] == "draft":
                     r["status"] = "running"
         return out
 

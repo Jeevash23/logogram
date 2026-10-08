@@ -12,10 +12,11 @@ import {
   type TextareaHTMLAttributes,
 } from "react";
 
+import { Logogram } from "../Logogram";
 import { Icon, type IconName } from "./Icon";
 import s from "./ui.module.css";
 
-export { Icon, Mark } from "./Icon";
+export { Icon } from "./Icon";
 
 function cx(...names: (string | false | null | undefined)[]): string {
   return names.filter(Boolean).join(" ");
@@ -255,24 +256,38 @@ export function Progress({ value }: { value: number | null }) {
   );
 }
 
+/** Work in progress: an ink ring writing itself, over and over. */
 export function Spinner({ label = "Working" }: { label?: string }) {
-  return <span className={s.spinner} role="status" aria-label={label} />;
+  return (
+    <span className={s.spinner} role="status" aria-label={label}>
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <circle cx="8" cy="8" r="5.6" pathLength={100} />
+      </svg>
+    </span>
+  );
 }
 
+/** An empty state: a quiet logogram, what's missing, and the way forward. */
 export function Empty({
   title,
   children,
   action,
+  seed,
+  align = "center",
 }: {
   title: ReactNode;
   children?: ReactNode;
   action?: ReactNode;
+  /** Seeds the logogram; defaults to the title. */
+  seed?: string;
+  align?: "center" | "start";
 }) {
   return (
-    <div className={s.empty}>
+    <div className={cx(s.empty, align === "start" && s.emptyStart)}>
+      <Logogram seed={seed ?? (typeof title === "string" ? title : "empty")} size={58} className={s.emptyGlyph} haze={false} />
       <div className={s.emptyTitle}>{title}</div>
       {children && <div className={s.emptyText}>{children}</div>}
-      {action}
+      {action && <div className={s.emptyAction}>{action}</div>}
     </div>
   );
 }

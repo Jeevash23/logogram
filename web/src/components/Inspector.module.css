@@ -301,3 +301,10 @@
 .topValue {
   font-weight: 600;
 }
+
+.overviewTitle {
+  margin-top: -4px;
+  font-size: var(--text-lg);
+  font-weight: 620;
+  line-height: 1.3;
+}

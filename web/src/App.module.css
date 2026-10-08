@@ -3,6 +3,24 @@
   display: grid;
   place-items: center;
   color: var(--muted);
+  background: var(--bg) var(--grain);
+}
+
+/* While the app connects: the mark, breathing slowly. */
+.loadingGlyph {
+  color: var(--text);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .loadingGlyph {
+    animation: breathe 2.4s ease-in-out infinite;
+  }
+  @keyframes breathe {
+    50% {
+      opacity: 0.45;
+      transform: scale(0.94) rotate(8deg);
+    }
+  }
 }
 
 .error {

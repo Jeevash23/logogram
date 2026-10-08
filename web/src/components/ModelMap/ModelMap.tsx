@@ -2,7 +2,7 @@ import * as ContextMenu from "@radix-ui/react-context-menu";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 
 import type { SiteBase, SiteResult } from "../../api/types";
-import { cornerFlag, font, prepareCanvas, ring, useChromeColors, useElementSize } from "../../lib/canvas";
+import { cornerFlag, font, inkRing, prepareCanvas, useChromeColors, useElementSize } from "../../lib/canvas";
 import { divergingScale, niceBound, SCALE_FLOOR } from "../../lib/color";
 import { ci, signed } from "../../lib/format";
 import { siteValue, useActiveRun, useArchitecture, modelName } from "../../lib/hooks";
@@ -79,7 +79,7 @@ function computeGeometry(width: number, nLayers: number, nHeads: number, promine
     top,
     headerH,
     width: Math.max(width, left + gridW + PAD_X),
-    height: top + headerH + nLayers * pitch + 4,
+    height: top + headerH + nLayers * pitch + Math.ceil(pitch * 0.3 + 6),
   };
 }
 
@@ -241,7 +241,10 @@ export function ModelMap({ prominent = false, structureOnly = false }: { promine
       for (const col of columns) {
         const key = cellKey(layer, col.part, col.head);
         const data = cells.get(key);
-        ctx.fillStyle = colors.surface2;
+        // Measured cells are filled (near zero is the scale's pale neutral); unmeasured ones are
+        // empty outlines, so "nothing here" never looks like "no effect".
+        if (structureOnly || !data) ctx.fillStyle = colors.surface;
+        else ctx.fillStyle = colors.surface2;
         ctx.fillRect(col.x, y, cell, cell);
         if (!structureOnly && data && data.value !== null) {
           const arrived = data.site ? arrivals.current.get(data.site.index) ?? 0 : 0;
@@ -264,7 +267,7 @@ export function ModelMap({ prominent = false, structureOnly = false }: { promine
       const col = columns.find((c) => c.part === sel.part && (sel.part !== "head" || c.head === sel.head));
       if (!col || sel.layer >= arch.nLayers) return;
       const y = top + headerH + sel.layer * pitch;
-      if (kind === "selected") ring(ctx, col.x, y, cell, cell, colors.text, colors.surface, 2);
+      if (kind === "selected") inkRing(ctx, col.x, y, cell, cell, colors.text, colors.surface);
       else {
         ctx.strokeStyle = colors.muted;
         ctx.lineWidth = 1;

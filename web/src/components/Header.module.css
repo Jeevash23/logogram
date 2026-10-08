@@ -1,26 +1,27 @@
+/* The context bar sits directly on fog. Chips are small sheets of paper. */
 .header {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   height: var(--header-h);
-  padding: 0 16px;
-  border-bottom: 1px solid var(--line);
-  background: var(--bg);
+  padding: 0 14px 0 12px;
   flex: none;
 }
 
 .project {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  height: 28px;
-  padding: 0 8px;
+  gap: 7px;
+  height: 32px;
+  padding: 0 10px;
   border: 0;
   border-radius: var(--radius);
   background: transparent;
-  font-weight: 620;
-  font-size: var(--text-md);
-  max-width: 280px;
+  font-size: var(--text-lg);
+  font-weight: 640;
+  font-stretch: var(--display-stretch);
+  letter-spacing: -0.01em;
+  max-width: 300px;
 }
 
 .project:hover,
@@ -29,7 +30,7 @@
 }
 
 .project svg:last-child {
-  color: var(--faint);
+  color: var(--muted);
 }
 
 .projectName {
@@ -40,7 +41,7 @@
 
 .divider {
   width: 1px;
-  height: 18px;
+  height: 20px;
   background: var(--line);
   margin: 0 4px;
 }
@@ -49,15 +50,16 @@
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  height: 26px;
-  padding: 0 10px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
+  height: 30px;
+  padding: 0 11px;
+  border: 1px solid transparent;
+  border-radius: 15px;
   background: var(--surface);
+  box-shadow: var(--sheet-shadow);
   font-size: var(--text-sm);
-  font-weight: 540;
+  font-weight: 560;
   white-space: nowrap;
-  max-width: 340px;
+  max-width: 360px;
   overflow: hidden;
 }
 
@@ -68,38 +70,56 @@
 
 .chip:hover,
 .chip[data-state="open"] {
-  border-color: var(--faint);
+  border-color: var(--line);
 }
 
 .chip svg {
-  color: var(--faint);
+  color: var(--muted);
   flex: none;
 }
 
+/* Nothing chosen yet: an outline on fog, waiting to be filled. */
 .chipEmpty {
-  border-style: dashed;
-  color: var(--muted);
   background: transparent;
+  box-shadow: none;
+  border-color: var(--line);
+  color: var(--muted);
+}
+
+.chipEmpty:hover {
+  border-color: var(--muted);
+  color: var(--text);
 }
 
 .chipMuted {
-  color: var(--faint);
+  color: var(--muted);
   font-weight: 500;
 }
 
-.dot {
-  width: 7px;
-  height: 7px;
+/* A loaded model: signal orange, steady. */
+.live {
+  position: relative;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
-  background: var(--text);
+  background: var(--accent);
   flex: none;
 }
 
-.ring {
-  width: 7px;
-  height: 7px;
+.live::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
   border-radius: 50%;
-  border: 1.5px solid var(--faint);
+  border: 1px solid var(--accent);
+  opacity: 0.35;
+}
+
+.ring {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.5px solid var(--muted);
   flex: none;
 }
 
@@ -107,48 +127,9 @@
   flex: 1;
 }
 
-.palette {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 26px;
-  padding: 0 6px 0 9px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--surface);
-  color: var(--muted);
-  font-size: var(--text-sm);
-}
-
-.palette:hover {
-  color: var(--text);
-  border-color: var(--faint);
-}
-
-.palette > span:not(:last-child):not(:nth-last-child(2)) {
-  margin-right: 6px;
-}
-
-.iconButton {
-  display: inline-grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  border: 0;
-  border-radius: var(--radius);
-  background: transparent;
-  color: var(--muted);
-}
-
-.iconButton:hover,
-.iconButton[data-state="open"] {
-  background: var(--hover);
-  color: var(--text);
-}
-
 @media (max-width: 920px) {
-  .header { flex-wrap: wrap; height: auto; min-height: var(--header-h); padding: 6px 10px; }
-  .project { max-width: 190px; }
-  .chip { max-width: 230px; }
-  .palette { display: none; }
+  .header { flex-wrap: wrap; height: auto; min-height: var(--header-h); padding: 6px 10px; gap: 6px; }
+  .project { max-width: 190px; font-size: var(--text-md); }
+  .chip { max-width: 240px; }
+  .divider { display: none; }
 }

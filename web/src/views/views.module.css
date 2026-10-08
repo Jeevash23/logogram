@@ -18,15 +18,18 @@
 .titleBlock {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   min-width: 0;
   max-width: 680px;
 }
 
 .title {
-  font-size: 28px;
-  font-weight: 560;
-  letter-spacing: -0.035em;
+  font-size: 34px;
+  font-weight: 600;
+  font-stretch: var(--display-stretch);
+  letter-spacing: -0.022em;
+  line-height: 1.05;
+  text-wrap: balance;
 }
 
 .subtitle {

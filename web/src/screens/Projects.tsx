@@ -3,10 +3,12 @@ import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import type { RecentProject } from "../api/types";
 import { FolderPicker } from "../components/FolderPicker";
-import { Button, Field, Icon, Input, Mark } from "../components/ui";
+import { Logogram } from "../components/Logogram";
+import { Button, Field, Icon, Input } from "../components/ui";
 import { ago } from "../lib/format";
 import { useStore } from "../store/app";
 import s from "./Screens.module.css";
+import { Welcome } from "./Welcome";
 
 export function Projects() {
   const [recent, setRecent] = useState<RecentProject[] | null>(null);
@@ -15,7 +17,6 @@ export function Projects() {
   const [parent, setParent] = useState("");
   const [picker, setPicker] = useState<"parent" | "open" | null>(null);
   const [busy, setBusy] = useState(false);
-  const version = useStore((st) => st.version);
   const guard = useStore((st) => st.guard);
   const enter = useStore((st) => st.enterProject);
 
@@ -49,14 +50,10 @@ export function Projects() {
   };
 
   return (
-    <div className={s.page}>
+    <Welcome>
       <div className={s.wideColumn}>
-        <div className={s.brand}>
-          <Mark size={22} />
-          <span className={s.wordmark}>Logogram</span>
-          <span className={s.version}>{version}</span>
-        </div>
-        <h1>Projects</h1>
+        <span className="eyebrow">Your work</span>
+        <h1 className={s.pageTitle}>Projects</h1>
         <p className={s.lead}>
           A project is a folder of datasets and experiments. Each experiment is a spec and its results, as
           plain files you can commit, share and rerun.
@@ -72,6 +69,7 @@ export function Projects() {
                 {recent.map((p) => (
                   <li key={p.path}>
                     <button type="button" className={s.recentItem} onClick={() => void open(p.path)} disabled={busy}>
+                      <Logogram seed={p.path} size={34} className={s.recentGlyph} />
                       <span className={s.recentName}>{p.name}</span>
                       <span className={s.recentPath} title={p.path}>
                         {/* The left-to-right mark keeps the leading slash in place when truncating from the left. */}
@@ -160,6 +158,6 @@ export function Projects() {
         requireProject
         onChoose={(path) => void open(path)}
       />
-    </div>
+    </Welcome>
   );
 }

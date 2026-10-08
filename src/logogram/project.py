@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import os
 import re
 import shutil
@@ -305,6 +306,7 @@ class Project:
             scope=spec.scope.model_dump(),
             derived_from=manifest.get("derived_from"),
             error=error or manifest.get("error"),
+            profile=layer_profile(summary_meta) if status == "finished" else None,
         )
 
     def last_modified(self) -> str:
@@ -327,6 +329,29 @@ class Project:
             "session_id": self.session_id,
             "datasets": self.list_datasets(),
         }
+
+
+def layer_profile(summary: dict[str, Any]) -> list[float] | None:
+    """Per layer, the measured site with the largest absolute normalized effect, with its sign.
+
+    The app writes each run's logogram from this: layers clockwise, swelling where effects are
+    strong. Layers without a measured value are 0.
+    """
+    sites = summary.get("sites") or []
+    layers = [s.get("layer") for s in sites if isinstance(s.get("layer"), int)]
+    if not layers:
+        return None
+    model = summary.get("model") or {}
+    n_layers = model.get("n_layers") if isinstance(model.get("n_layers"), int) else max(layers) + 1
+    out = [0.0] * max(n_layers, max(layers) + 1)
+    for site in sites:
+        layer = site.get("layer")
+        value = (site.get("effect") or {}).get("mean")
+        if not isinstance(layer, int) or layer < 0 or not isinstance(value, int | float):
+            continue
+        if math.isfinite(value) and abs(value) > abs(out[layer]):
+            out[layer] = float(value)
+    return [round(v, 4) for v in out]
 
 
 def _mtime_iso(path: Path) -> str | None:

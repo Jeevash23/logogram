@@ -19,22 +19,22 @@ const DIVERGING: Record<ResolvedTheme, Stops> = {
   light: {
     neg: "#86560f",
     negMid: "#d29a3c",
-    zero: "#eceeee",
+    zero: "#e8ecec",
     posMid: "#7aa0d8",
     pos: "#1f4795",
   },
   dark: {
     neg: "#f0bd62",
     negMid: "#9c7130",
-    zero: "#232b36",
+    zero: "#1f292e",
     posMid: "#3f679f",
     pos: "#a9c6f5",
   },
 };
 
 const INK: Record<ResolvedTheme, [string, string]> = {
-  light: ["#f4f6f6", "#1c2226"],
-  dark: ["#1d2530", "#e3e8ec"],
+  light: ["#f5f7f6", "#11171a"],
+  dark: ["#141c20", "#e6ecec"],
 };
 
 function labInterpolator(stops: string[], domain: number[]) {
@@ -92,8 +92,8 @@ export function inkScale(max: number, theme: ResolvedTheme): ColorScale {
 /** A readable text color on top of a data color. */
 export function textOn(color: string, theme: ResolvedTheme): string {
   const l = lab(color).l;
-  if (theme === "light") return l < 58 ? "#f4f6f6" : "#1c2226";
-  return l > 62 ? "#161c24" : "#e3e8ec";
+  if (theme === "light") return l < 58 ? "#f5f7f6" : "#11171a";
+  return l > 62 ? "#0b1013" : "#e6ecec";
 }
 
 /** Smallest scale bound per metric, so negligible effects never fill the color range. */

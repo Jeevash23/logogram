@@ -33,16 +33,29 @@
   opacity: 0.45;
 }
 
+/* Signal orange: the action that moves the work forward. */
 .primary {
-  background: var(--text);
-  border-color: var(--text);
-  color: var(--on-ink);
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  font-weight: 620;
 }
 
 .primary:hover:not(:disabled) {
-  background: var(--text);
-  border-color: var(--text);
-  opacity: 0.88;
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.primary:active:not(:disabled) {
+  background: var(--accent);
+  filter: brightness(0.94);
+}
+
+.primary:disabled {
+  background: var(--surface-2);
+  border-color: var(--line);
+  color: var(--muted);
+  opacity: 1;
 }
 
 .ghost {
@@ -227,7 +240,7 @@
 
 .choice[aria-checked="true"] .radioDot {
   border-color: var(--text);
-  background: radial-gradient(circle, var(--text) 0 3px, transparent 3.5px);
+  background: radial-gradient(circle, var(--accent) 0 3.2px, transparent 3.7px);
 }
 
 .choiceTitle {
@@ -318,7 +331,7 @@
 
 .progress {
   position: relative;
-  height: 2px;
+  height: 3px;
   background: var(--line-soft);
   border-radius: 1px;
   overflow: hidden;
@@ -327,7 +340,7 @@
 .progressBar {
   position: absolute;
   inset: 0 auto 0 0;
-  background: var(--text);
+  background: var(--accent);
   transition: width 200ms linear;
 }
 
@@ -336,7 +349,7 @@
   top: 0;
   bottom: 0;
   width: 30%;
-  background: var(--text);
+  background: var(--accent);
   animation: slide 1.4s var(--ease) infinite;
 }
 
@@ -350,13 +363,40 @@
 }
 
 .spinner {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  border: 1.5px solid var(--line);
-  border-top-color: var(--text);
-  animation: spin 0.8s linear infinite;
+  display: inline-block;
+  width: 14px;
+  height: 14px;
   flex: none;
+  color: var(--accent);
+}
+
+.spinner svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  animation: spin 2.4s linear infinite;
+}
+
+.spinner circle {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.1;
+  stroke-linecap: round;
+  stroke-dasharray: 100;
+  animation: write 1.6s var(--ease) infinite;
+}
+
+@keyframes write {
+  0% {
+    stroke-dashoffset: 100;
+  }
+  55% {
+    stroke-dashoffset: 8;
+  }
+  100% {
+    stroke-dashoffset: -100;
+  }
 }
 
 @keyframes spin {
@@ -368,20 +408,50 @@
 .empty {
   display: flex;
   flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 8px;
+  max-width: 420px;
+  margin: clamp(24px, 12vh, 120px) auto;
+  padding: 0 16px;
+}
+
+.emptyStart {
   align-items: flex-start;
-  gap: 10px;
-  max-width: 440px;
-  padding: var(--space-6) 0;
+  text-align: left;
+  margin: var(--space-6) 0;
+  padding: 0;
+}
+
+.emptyGlyph {
+  color: var(--text);
+  opacity: 0.85;
+  margin-bottom: 10px;
 }
 
 .emptyTitle {
-  font-size: var(--text-lg);
-  font-weight: 560;
+  font-size: var(--text-xl);
+  font-weight: 600;
+  font-stretch: var(--display-stretch);
+  letter-spacing: -0.01em;
 }
 
 .emptyText {
   color: var(--muted);
   font-size: var(--text-sm);
+  line-height: 1.55;
+}
+
+.emptyAction {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: 8px;
+}
+
+.emptyStart .emptyAction {
+  justify-content: flex-start;
 }
 
 .callout {
@@ -455,8 +525,10 @@
 }
 
 .dialogTitle {
-  font-size: var(--text-lg);
+  font-size: var(--text-xl);
   font-weight: 600;
+  font-stretch: var(--display-stretch);
+  letter-spacing: -0.01em;
 }
 
 .dialogDescription {

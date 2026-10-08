@@ -1,9 +1,9 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 
 import { api } from "../api/client";
 import { FolderPicker } from "./FolderPicker";
-import { Icon, Kbd, Mark, Spinner, menuClasses } from "./ui";
+import { Icon, Spinner, menuClasses } from "./ui";
 import { modelName, useAnalysisContext } from "../lib/hooks";
 import { pct, plural } from "../lib/format";
 import { useStore } from "../store/app";
@@ -12,7 +12,8 @@ import s from "./Header.module.css";
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 export const MOD = isMac ? "⌘" : "Ctrl";
 
-export function Header() {
+/** The context bar, on fog: which project, which model, which prompts, and what to do next. */
+export function Header({ next }: { next?: ReactNode } = {}) {
   const project = useStore((st) => st.project);
   const [picker, setPicker] = useState(false);
   const guard = useStore((st) => st.guard);
@@ -22,7 +23,6 @@ export function Header() {
     <header className={s.header}>
       <DropdownMenu.Root>
         <DropdownMenu.Trigger className={s.project}>
-          <Mark size={18} />
           <span className={s.projectName}>{project?.name ?? "Logogram"}</span>
           <Icon name="chevronDown" size={14} />
         </DropdownMenu.Trigger>
@@ -59,18 +59,7 @@ export function Header() {
       <DatasetChip />
 
       <div className={s.spacer} />
-      <button
-        type="button"
-        className={s.palette}
-        onClick={() => useStore.setState({ paletteOpen: true })}
-        aria-label="Open the command palette"
-      >
-        <Icon name="search" size={14} />
-        <span>Commands</span>
-        <Kbd>{MOD}</Kbd>
-        <Kbd>K</Kbd>
-      </button>
-      <ThemeMenu />
+      {next}
       <FolderPicker
         open={picker}
         onOpenChange={setPicker}
@@ -107,7 +96,7 @@ function ModelChip() {
     const info = model.info;
     return (
       <button type="button" className={s.chip} onClick={open} title={`${info.id} @ ${info.revision ?? ""}`}>
-        <span className={s.dot} aria-hidden="true" />
+        <span className={s.live} aria-hidden="true" />
         <span>
           {modelName(info.id)}
           <span className={s.chipMuted}>
@@ -140,7 +129,7 @@ function DatasetChip() {
       <DropdownMenu.Trigger className={`${s.chip} ${current ? "" : s.chipEmpty}`}>
         <Icon name="file" size={14} />
         <span>
-          {current ? current.name : datasetPath?.startsWith("datasets/snapshots/") ? "Run dataset snapshot" : "No prompts"}
+          {current ? current.name : datasetPath?.startsWith("datasets/snapshots/") ? "Saved prompts of this run" : "No prompts yet"}
           {dataset && <span className={s.chipMuted}> · {context.n < dataset.n ? `${context.n} of ${dataset.n} prompts` : plural(dataset.n, "prompt")}</span>}
         </span>
         <Icon name="chevronDown" size={14} />
@@ -165,30 +154,6 @@ function DatasetChip() {
           <DropdownMenu.Item className={menuClasses.item} onSelect={() => setView("prompts")}>
             Set up prompts…
           </DropdownMenu.Item>
-        </DropdownMenu.Content>
-      </DropdownMenu.Portal>
-    </DropdownMenu.Root>
-  );
-}
-
-function ThemeMenu() {
-  const setting = useStore((st) => st.themeSetting);
-  const theme = useStore((st) => st.theme);
-  const setTheme = useStore((st) => st.setTheme);
-  return (
-    <DropdownMenu.Root>
-      <DropdownMenu.Trigger className={s.iconButton} aria-label="Appearance">
-        <Icon name={theme === "dark" ? "moon" : "sun"} size={15} />
-      </DropdownMenu.Trigger>
-      <DropdownMenu.Portal>
-        <DropdownMenu.Content className={menuClasses.menu} sideOffset={6} align="end">
-          <div className={menuClasses.label}>Appearance</div>
-          {(["light", "dark", "system"] as const).map((t) => (
-            <DropdownMenu.Item key={t} className={menuClasses.item} onSelect={() => setTheme(t)}>
-              {setting === t ? <Icon name="check" size={14} /> : <span style={{ width: 14 }} />}
-              {t === "system" ? "Match the system" : t === "light" ? "Light" : "Dark"}
-            </DropdownMenu.Item>
-          ))}
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>

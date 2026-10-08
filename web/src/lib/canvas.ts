@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useState, type RefObject } from "react";
 
+import { logogram, RING_RADIUS } from "./logogram";
 import { useStore } from "../store/app";
 
 export interface ChromeColors {
@@ -136,5 +137,44 @@ export function cornerFlag(
   ctx.closePath();
   ctx.fillStyle = color;
   ctx.fill();
+  ctx.restore();
+}
+
+const inkRings = new Map<string, Path2D>();
+
+/**
+ * Circle a cell in ink, like marking a printout: a thin hand-drawn ring around the rectangle,
+ * cut out of its surroundings by a band of ``gapColor`` so it reads over any data color.
+ */
+export function inkRing(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  color: string,
+  gapColor: string,
+  seed = "selection",
+): void {
+  let path = inkRings.get(seed);
+  if (!path) {
+    path = new Path2D(logogram({ seed, detail: 0, weight: 0.4 }).d);
+    inkRings.set(seed, path);
+  }
+  // Clear the cell's corners: the ring's inner edge sits outside the half-diagonal.
+  const rx = (w / 2) * 1.42 + 2.5;
+  const ry = (h / 2) * 1.42 + 2.5;
+  const sx = rx / RING_RADIUS;
+  const sy = ry / RING_RADIUS;
+  ctx.save();
+  ctx.translate(x + w / 2, y + h / 2);
+  ctx.scale(sx, sy);
+  ctx.translate(-50, -50);
+  ctx.lineJoin = "round";
+  ctx.lineWidth = 2.6 / Math.min(sx, sy);
+  ctx.strokeStyle = gapColor;
+  ctx.stroke(path);
+  ctx.fillStyle = color;
+  ctx.fill(path, "nonzero");
   ctx.restore();
 }

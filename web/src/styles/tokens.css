@@ -1,43 +1,84 @@
-/* Design tokens. Chrome stays neutral (fog grey and ink); color is reserved for data. */
+/* Design tokens, after Arrival: fog around everything, paper where the work happens, ink for
+   text and logograms, the dark shell as the one solid shape, and signal orange (the hazmat suits)
+   for actions and live state. Effect colors stay reserved for data (see lib/color.ts). */
 
 :root,
 :root[data-theme="light"] {
-  --bg: #e8ebec;
-  --surface: #f4f6f6;
-  --surface-2: #eef1f1;
-  --raised: #fafbfb;
-  --line: #cdd3d6;
-  --line-soft: #dce1e3;
-  --text: #1c2226;
-  --muted: #5e6a71;
-  --faint: #667178;
-  --hover: rgba(28, 34, 38, 0.05);
-  --press: rgba(28, 34, 38, 0.09);
-  --mark: rgba(28, 34, 38, 0.08);
-  --scrim: rgba(22, 28, 36, 0.32);
-  --shadow: 0 1px 2px rgba(28, 34, 38, 0.06), 0 10px 28px rgba(28, 34, 38, 0.1);
-  --alert: #7d3a2c;
-  --on-ink: #f4f6f6;
+  /* Fog: the air around the work. */
+  --bg: #d9dfe1;
+  --fog-2: #cdd5d8;
+  /* Paper: the sheets work happens on. */
+  --surface: #f5f7f6;
+  --surface-2: #eaeeee;
+  --raised: #fbfcfb;
+  --line: #c3cbce;
+  --line-soft: #dde2e3;
+  /* Ink. Use --muted, not --faint, for text sitting directly on fog. */
+  --text: #11171a;
+  --muted: #4c5960;
+  --faint: #5f6d75;
+  --hover: rgba(17, 23, 26, 0.055);
+  --press: rgba(17, 23, 26, 0.1);
+  --mark: rgba(240, 106, 43, 0.24);
+  --scrim: rgba(12, 17, 20, 0.45);
+  --shadow: 0 1px 2px rgba(17, 23, 26, 0.08), 0 14px 36px rgba(17, 23, 26, 0.16);
+  --sheet-shadow: 0 0 0 1px rgba(17, 23, 26, 0.05), 0 1px 3px rgba(17, 23, 26, 0.07);
+  --alert: #8f2f17;
+  --on-ink: #f5f7f6;
+
+  /* The shell: the dark monolith that holds navigation. */
+  --rail: #121a1e;
+  --rail-2: #1c272d;
+  --rail-line: #26333a;
+  --rail-text: #dce3e5;
+  --rail-muted: #8d9ca4;
+
+  /* Signal orange: primary actions, the active place, live state. Never data. */
+  --accent: #f06a2b;
+  --accent-hover: #f57f45;
+  --on-accent: #11171a;
+  --accent-text: #b2451a;
+  --accent-soft: rgba(240, 106, 43, 0.13);
+
+  /* Film grain over fog and shell: fractal noise, alpha only (data URIs pass the page's CSP). */
+  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .09 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
   color-scheme: light;
 }
 
 :root[data-theme="dark"] {
-  --bg: #161c24;
-  --surface: #1d2530;
-  --surface-2: #19212b;
-  --raised: #232c38;
-  --line: #2e3946;
-  --line-soft: #27313d;
-  --text: #e3e8ec;
-  --muted: #8d9aa6;
-  --faint: #94a0ab;
-  --hover: rgba(227, 232, 236, 0.05);
-  --press: rgba(227, 232, 236, 0.09);
-  --mark: rgba(227, 232, 236, 0.08);
-  --scrim: rgba(8, 11, 15, 0.55);
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 12px 32px rgba(0, 0, 0, 0.35);
-  --alert: #e4a08e;
-  --on-ink: #161c24;
+  /* Inside the shell: near-black stone, the lit screen as paper. */
+  --bg: #0b1013;
+  --fog-2: #121a1e;
+  --surface: #141c20;
+  --surface-2: #10171a;
+  --raised: #1b252a;
+  --line: #27343b;
+  --line-soft: #1d282e;
+  --text: #e6ecec;
+  --muted: #9cabb1;
+  --faint: #8a9ca4;
+  --hover: rgba(230, 236, 236, 0.055);
+  --press: rgba(230, 236, 236, 0.1);
+  --mark: rgba(240, 106, 43, 0.32);
+  --scrim: rgba(3, 6, 8, 0.62);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 16px 40px rgba(0, 0, 0, 0.5);
+  --sheet-shadow: 0 0 0 1px rgba(230, 236, 236, 0.045), 0 1px 3px rgba(0, 0, 0, 0.35);
+  --alert: #f0a58c;
+  --on-ink: #0b1013;
+
+  --rail: #06090b;
+  --rail-2: #131c20;
+  --rail-line: #1b262c;
+  --rail-text: #dce3e5;
+  --rail-muted: #82939b;
+
+  --accent: #f26d2e;
+  --accent-hover: #f68550;
+  --on-accent: #0b1013;
+  --accent-text: #ff9b68;
+  --accent-soft: rgba(242, 109, 46, 0.16);
+
+  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .055 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
   color-scheme: dark;
 }
 
@@ -51,8 +92,14 @@
   --text-sm: 12.5px;
   --text-md: 13.5px;
   --text-lg: 15px;
-  --text-xl: 19px;
-  --text-2xl: 26px;
+  --text-xl: 20px;
+  --text-2xl: 30px;
+  --text-3xl: 44px;
+
+  /* Instrument Sans has a narrow word space (0.2em); this brings it to a readable 0.27em. */
+  --word-space: 0.07em;
+  /* Display type: condensed a little, like labels on an instrument. */
+  --display-stretch: 88%;
 
   --space-1: 4px;
   --space-2: 8px;
@@ -65,11 +112,13 @@
 
   --radius-sm: 3px;
   --radius: 5px;
-  --radius-lg: 8px;
+  --radius-lg: 9px;
+  --radius-sheet: 12px;
 
   --control-h: 28px;
-  --header-h: 48px;
-  --status-h: 28px;
+  --header-h: 52px;
+  --status-h: 30px;
+  --rail-w: 76px;
 
   --ease: cubic-bezier(0.2, 0, 0, 1);
   --dur: 160ms;

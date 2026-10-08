@@ -1,14 +1,16 @@
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useMemo } from "react";
 
 import type { SiteResult, Spec } from "../api/types";
 import { Heatmap, type Axis } from "../components/Heatmap/Heatmap";
 import { ScaleBar } from "../components/Heatmap/ScaleBar";
-import { Button, Callout, Chip, Empty, Progress, Segmented } from "../components/ui";
+import { Logogram } from "../components/Logogram";
+import { Button, Callout, Checkbox, Empty, Icon, menuClasses, Progress, Segmented } from "../components/ui";
 import { divergingScale, niceBound, SCALE_FLOOR } from "../lib/color";
 import { ago, ci, count, duration, num, pct, shortRevision, signed } from "../lib/format";
-import { modelName, siteValue, useActiveRun } from "../lib/hooks";
+import { modelName, siteValue, useActiveRun, useRunProfile } from "../lib/hooks";
 import { findSite, layoutTitle, selectionOfSite, siteAt } from "../lib/sites";
-import { baselineText, experimentText, positionText, scopeText } from "../lib/spec";
+import { baselineText, positionText } from "../lib/spec";
 import { formFromSpec, useStore } from "../store/app";
 import { Distribution } from "../components/Distribution";
 import { api } from "../api/client";
@@ -26,6 +28,8 @@ export function ResultsView() {
   const scaleMode = useStore((st) => st.scaleMode);
   const theme = useStore((st) => st.theme);
   const flags = useStore((st) => (run.id ? st.flags[run.id] : undefined));
+  const cellValues = useStore((st) => st.cellValues);
+  const profile = useRunProfile(run);
   const runs = useStore((st) => st.runs);
   const listing = runs.find((x) => x.id === run.id);
 
@@ -68,24 +72,37 @@ export function ResultsView() {
     return siteValue(run.results[site.index], metric);
   };
 
+  const strongest = Object.values(run.results)
+    .filter((x) => x.effect.mean !== null)
+    .sort((a, b) => Math.abs(b.effect.mean ?? 0) - Math.abs(a.effect.mean ?? 0))[0];
+  const provenance = [
+    status === "running" ? "Running" : status === "finished" ? `Finished ${ago(manifest?.finished_at)}` : status === "draft" ? "Not run yet" : status === "failed" ? "Failed" : "Cancelled",
+    manifest?.wall_time_s !== undefined && manifest?.wall_time_s !== null ? duration(manifest.wall_time_s) : null,
+    manifest?.device?.name ? `on ${manifest.device.name}` : null,
+  ].filter(Boolean).join(" · ");
+
   return (
     <div className={s.view}>
-      <div className={s.head}>
-        <div className={s.titleBlock}>
-          <h2 className={s.title}>{spec?.name ?? run.id}</h2>
-          {spec && (
-            <p className={s.subtitle}>
-              {experimentText(spec.experiment)} at {scopeText(spec.scope)}
-              {spec.experiment.kind === "ablation" && <> · baseline {baselineText(spec.experiment.baseline)}</>}.
-            </p>
-          )}
+      <div className={r.hero}>
+        <Logogram
+          seed={run.id}
+          profile={profile}
+          size={92}
+          className={r.glyph}
+          title={profile ? "This run's logogram: layers run clockwise from the top; the ink swells outward where a layer's strongest effect is positive and inward where it is negative." : undefined}
+        />
+        <div className={r.heroText}>
+          <span className="eyebrow">{provenance}</span>
+          <h1 className={r.title}>{spec?.name ?? run.id}</h1>
+          {spec && <MethodsLine spec={spec} n={summary?.n_prompts ?? run.live?.nPrompts} />}
         </div>
-        <div className={s.headActions}>
+        <div className={r.heroActions}>
           {status === "finished" && (
             <>
               <Button onClick={() => useStore.setState({ robustnessDialogOpen: true })} icon="refresh">
                 Check robustness
               </Button>
+              {run.detail && <ExportMenu runId={run.id} detail={run.detail} />}
               <Button variant="ghost" onClick={() => useStore.setState({ view: "spec", specSource: "run" })}>
                 Spec
               </Button>
@@ -106,8 +123,6 @@ export function ResultsView() {
         </div>
       </div>
 
-      {spec && <MethodChips spec={spec} n={summary?.n_prompts ?? run.live?.nPrompts} />}
-
       {status === "running" && <RunningBanner />}
       {status === "failed" && (
         <Callout tone="error" title="This run failed">
@@ -120,37 +135,40 @@ export function ResultsView() {
       )}
 
       {summary && (
-        <p className={r.baseline}>
-          Unpatched logit difference: clean <strong>{signed(summary.baseline.clean.logit_diff.mean)}</strong>, corrupt{" "}
-          <strong>{signed(summary.baseline.corrupt.logit_diff.mean)}</strong>, gap{" "}
-          <strong>{num(summary.baseline.gap.mean)}</strong>.{" "}
-          <span className="faint">
-            {manifest?.model && <>{modelName(manifest.model.id)} @ {shortRevision(manifest.model.revision)} · </>}
-            {manifest?.device && <>{manifest.device.name} · </>}
-            {manifest?.wall_time_s !== undefined && <>{duration(manifest.wall_time_s)} · </>}
-            {ago(manifest?.finished_at)}
-          </span>
-        </p>
+        <dl className={r.figures} aria-label="The run at a glance">
+          <div>
+            <dt>Clean logit diff</dt>
+            <dd className="figure">{signed(summary.baseline.clean.logit_diff.mean)}</dd>
+          </div>
+          <div>
+            <dt>Corrupt logit diff</dt>
+            <dd className="figure">{signed(summary.baseline.corrupt.logit_diff.mean)}</dd>
+          </div>
+          <div>
+            <dt>Gap the effects are measured against</dt>
+            <dd className="figure">{num(summary.baseline.gap.mean)}</dd>
+          </div>
+          {strongest && (
+            <div>
+              <dt>Strongest effect</dt>
+              <dd className="figure">
+                <button type="button" className={r.figureLink} onClick={() => select(selectionOfSite(strongest))}>
+                  <span className={r.swatch} style={{ background: color(siteValue(strongest, metric) ?? 0) }} aria-hidden="true" />
+                  {strongest.label} <span className={r.figureValue}>{signed(strongest.effect.mean, 2)}</span>
+                </button>
+              </dd>
+            </div>
+          )}
+        </dl>
       )}
 
-      {summary && run.detail && <div className={s.row} style={{ flexWrap: "wrap", marginBottom: 16 }} aria-label="Export results">
-        <Button size="small" onClick={() => void useStore.getState().guard(async () => {
-          const blob = await api.exportRun(run.id!);
-          downloadBlob(blob, `${run.id}.csv`);
-        })}>Export per-prompt CSV</Button>
-        <Button size="small" onClick={() => void useStore.getState().guard(() => exportFigure(run.detail!, metric, scaleMode === "unit"))}>Export figure PNG</Button>
-        <Button size="small" onClick={() => void useStore.getState().guard(async () => {
-          if (!await copyText(methodsText(run.detail!))) throw new Error("Couldn't access the clipboard. Use Download methods instead.");
-          useStore.getState().notify("Methods copied.");
-        })}>Copy methods</Button>
-        <Button size="small" variant="ghost" onClick={() => downloadBlob(new Blob([methodsText(run.detail!)], { type: "text/plain;charset=utf-8" }), `${run.id}-methods.txt`)}>Download methods</Button>
-      </div>}
-
-      {layout && <div className={s.headActions}>
+      {layout && <div className={r.controls}>
         <Segmented label="Result values" value={metric} onChange={mapMetric => useStore.setState({ mapMetric })} options={[{ value: "effect", label: "Normalized effect" }, { value: "delta", label: "Δ logit diff" }]} />
         <Segmented label="Result scale" value={scaleMode} onChange={scaleMode => useStore.setState({ scaleMode })} options={[{ value: "auto", label: "Fit" }, { value: "unit", label: "±1", disabled: metric !== "effect" }]} />
-        <Button size="small" onClick={() => useStore.setState({ view: "explore", exploreMode: "atlas" })}>Open model atlas</Button>
-        {run.detail?.predictions && <Button size="small" onClick={() => useStore.getState().setView("predictions")}>Open saved predictions</Button>}
+        <Checkbox checked={cellValues} onChange={(v) => useStore.setState({ cellValues: v })}>Show values</Checkbox>
+        <span className={r.controlsSpacer} />
+        <Button size="small" variant="ghost" icon="explore" onClick={() => useStore.setState({ view: "explore", exploreMode: "atlas" })}>Open model atlas</Button>
+        {run.detail?.predictions && <Button size="small" variant="ghost" onClick={() => useStore.getState().setView("predictions")}>Open saved predictions</Button>}
       </div>}
       {layout && layout.kind !== "sites" && (
         <div className={r.grid}>
@@ -170,7 +188,7 @@ export function ResultsView() {
               tokens={layout.kind === "layer_position" && layout.cols[0]?.clean !== undefined}
               cellMax={layout.kind === "layer_components" ? 60 : layout.kind === "heads" ? 44 : 34}
               aspect={layout.kind === "layer_components" ? 0.45 : 1}
-              showValues
+              showValues={cellValues}
               format={(v) => num(v, Math.abs(v) >= 10 ? 0 : 2)}
               fade={status === "running"}
               selected={selectedSite ? { r: selectedSite.row, c: selectedSite.col } : null}
@@ -206,9 +224,18 @@ export function ResultsView() {
   );
 }
 
-function MethodChips({ spec, n }: { spec: Spec; n: number | undefined }) {
+/** The method as one quiet line: every choice that can change a number, in reading order. */
+function MethodsLine({ spec, n }: { spec: Spec; n: number | undefined }) {
   const e = spec.experiment;
   const scope = spec.scope;
+  const site =
+    scope.kind === "heads"
+      ? "each head's output (z)"
+      : scope.kind === "layer_position"
+        ? scope.site.replace("_", " ")
+        : scope.kind === "layer_components"
+          ? scope.components.map((c) => c.replace("_", " ")).join(", ")
+          : `${scope.sites.length} chosen site${scope.sites.length === 1 ? "" : "s"}`;
   const position =
     scope.kind === "heads" || scope.kind === "layer_components"
       ? positionText(scope.position)
@@ -217,34 +244,57 @@ function MethodChips({ spec, n }: { spec: Spec; n: number | undefined }) {
           ? "every position"
           : "named positions"
         : scope.sites.map((x) => positionText(x.position)).filter((v, i, a) => a.indexOf(v) === i).join(", ");
-  const site =
-    scope.kind === "heads"
-      ? "head output (z)"
-      : scope.kind === "layer_position"
-        ? scope.site
-        : scope.kind === "layer_components"
-          ? scope.components.join(", ")
-          : `${scope.sites.length} chosen`;
   return (
-    <div className={s.chips}>
-      {e.kind === "activation_patching" ? (
-        <Chip k="direction">{e.direction === "clean_to_corrupt" ? "clean → corrupt" : "corrupt → clean"}</Chip>
-      ) : (
-        <Chip k="baseline">{baselineText(e.baseline)}</Chip>
-      )}
-      <Chip k="site">{site}</Chip>
-      <Chip k="position">{position}</Chip>
-      <Chip k="metric">
-        logit diff · {spec.metric.normalization === "dataset_gap" ? "dataset gap" : "per-prompt gap"}
-      </Chip>
-      {n !== undefined && <Chip k="n">{count(n)}</Chip>}
-      <Chip k="CI">
-        {Math.round(spec.statistics.ci * 100)}% · {count(spec.statistics.bootstrap)} resamples · seed {spec.statistics.seed}
-      </Chip>
-      <Chip k="model" title={spec.model.revision ?? undefined}>
-        {modelName(spec.model.id)} · {spec.model.dtype}
-      </Chip>
-    </div>
+    <p className={r.methods}>
+      <strong>{e.kind === "activation_patching" ? (e.direction === "clean_to_corrupt" ? "Patch clean → corrupt" : "Patch corrupt → clean") : `Ablate (${baselineText(e.baseline)})`}</strong>
+      {" "}{site} at {position}
+      <span className={r.sep}>·</span>logit difference, normalized by {spec.metric.normalization === "dataset_gap" ? "the dataset gap" : "each prompt's gap"}
+      {n !== undefined && <><span className={r.sep}>·</span>n = {count(n)}</>}
+      <span className={r.sep}>·</span>{Math.round(spec.statistics.ci * 100)}% CI, {count(spec.statistics.bootstrap)} resamples, seed {spec.statistics.seed}
+      <span className={r.sep}>·</span>{modelName(spec.model.id)}{spec.model.revision ? ` @ ${shortRevision(spec.model.revision)}` : ""}, {spec.model.dtype}
+    </p>
+  );
+}
+
+/** Exports in one place: the per-prompt table, the figure, and the methods text. */
+function ExportMenu({ runId, detail }: { runId: string; detail: NonNullable<ReturnType<typeof useActiveRun>["detail"]> }) {
+  const metric = useStore((st) => st.mapMetric);
+  const scaleMode = useStore((st) => st.scaleMode);
+  const guard = useStore((st) => st.guard);
+  return (
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger asChild>
+        <Button iconAfter="chevronDown">Export</Button>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content className={menuClasses.menu} sideOffset={6} align="end">
+          <DropdownMenu.Item className={menuClasses.item} onSelect={() => void guard(async () => downloadBlob(await api.exportRun(runId), `${runId}.csv`))}>
+            <Icon name="download" size={14} /> Export per-prompt CSV
+          </DropdownMenu.Item>
+          <DropdownMenu.Item className={menuClasses.item} onSelect={() => void guard(() => exportFigure(detail, metric, scaleMode === "unit"))}>
+            <Icon name="download" size={14} /> Export figure PNG
+          </DropdownMenu.Item>
+          <DropdownMenu.Separator className={menuClasses.separator} />
+          <DropdownMenu.Item
+            className={menuClasses.item}
+            onSelect={() =>
+              void guard(async () => {
+                if (!(await copyText(methodsText(detail)))) throw new Error("Couldn't access the clipboard. Use Download methods instead.");
+                useStore.getState().notify("Methods copied.");
+              })
+            }
+          >
+            <Icon name="copy" size={14} /> Copy methods
+          </DropdownMenu.Item>
+          <DropdownMenu.Item
+            className={menuClasses.item}
+            onSelect={() => downloadBlob(new Blob([methodsText(detail)], { type: "text/plain;charset=utf-8" }), `${runId}-methods.txt`)}
+          >
+            <Icon name="download" size={14} /> Download methods
+          </DropdownMenu.Item>
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
   );
 }
 

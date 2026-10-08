@@ -429,7 +429,8 @@ function RunOverview() {
   }
   return (
     <div className={s.overview}>
-      <h2 className={s.componentTitle}>{run.detail?.spec.name ?? "Run"}</h2>
+      <span className="eyebrow">Selected run</span>
+      <h3 className={s.overviewTitle}>{run.detail?.spec.name ?? "Run"}</h3>
       {run.detail?.spec && <p className={s.componentText}>{experimentText(run.detail.spec.experiment)}</p>}
       {summary && (
         <dl className={s.stats}>

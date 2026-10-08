@@ -3,12 +3,14 @@ import { useEffect, useMemo, useRef, type KeyboardEvent } from "react";
 import type { SiteBase, SiteResult } from "../api/types";
 import { ModelMap } from "../components/ModelMap/ModelMap";
 import { Legend } from "../components/ModelMap/Legend";
+import { Logogram } from "../components/Logogram";
+import { LogogramDial } from "../components/LogogramDial";
 import { Button, Empty, Segmented, Select } from "../components/ui";
 import { fitText, font, prepareCanvas, ring, useChromeColors, useElementSize } from "../lib/canvas";
 import { divergingScale, niceBound, SCALE_FLOOR, textOn } from "../lib/color";
 import { count, signed } from "../lib/format";
-import { modelName, siteValue, useActiveRun, useArchitecture, type Architecture } from "../lib/hooks";
-import { componentLabel, findSite, sameSelection, type Selection } from "../lib/sites";
+import { modelName, siteValue, useActiveRun, useArchitecture, useRunProfile, type Architecture } from "../lib/hooks";
+import { componentLabel, findSite, sameSelection, selectionOfSite, type Selection } from "../lib/sites";
 import { siteFromSelection, siteText } from "../lib/spec";
 import { useStore } from "../store/app";
 import s from "./ExploreView.module.css";
@@ -30,6 +32,11 @@ export function ExploreView() {
   const pins = useStore(st => st.headPins);
   const tokenPosition = useStore(st => st.tokenPosition);
   const current = selection && arch && selection.layer < arch.nLayers ? selection : null;
+  const profile = useRunProfile(run);
+  const strongest = useMemo(
+    () => Object.values(run.results).filter((x) => x.effect.mean !== null).sort((a, b) => Math.abs(b.effect.mean ?? 0) - Math.abs(a.effect.mean ?? 0)).slice(0, 3),
+    [run.results],
+  );
 
   const changeLayer = (next: number) => select({ ...(current ?? { part: "head", head: 0 }), layer: next });
 
@@ -44,8 +51,17 @@ export function ExploreView() {
       </div>
     </div>
     {!arch ? <Empty title={modelState === "loading" ? "Loading the model…" : "Start with a model"} action={<Button variant="primary" onClick={() => useStore.setState({ modelDialogOpen: true })}>Load a model</Button>}>The map uses the loaded model’s actual layers, attention heads, and supported intervention sites.</Empty> : <>
-      <div className={s.contextLine}><span>{run.detail?.spec.name ?? (run.running ? "Experiment running" : "No experiment selected")}</span><span>{run.running ? "Results arrive layer by layer" : run.id ? `${count(Object.keys(run.results).length)} measured sites` : "Run an experiment to colour the model"}</span></div>
-      {mode === "atlas" ? <div className={s.atlas}><ModelMap prominent structureOnly={overlay === "structure"} /><p className={s.hint}>Double-click a component to open its layer. Arrow keys move through the map. Unfilled cells have no measurement in this run.</p></div> : <div className={s.layerWorkspace}>
+      <div className={s.contextLine}>
+        <span className={s.contextRun}>
+          {run.id && <Logogram seed={run.id} profile={profile} size={30} />}
+          <span>{run.detail?.spec.name ?? (run.running ? "Experiment running" : "No experiment selected")}</span>
+        </span>
+        <span>{run.running ? "Results arrive layer by layer" : strongest.length ? <>Strongest: {strongest.map((x, i) => <span key={x.index}>{i > 0 && " · "}<button type="button" className={s.reading} onClick={() => select(selectionOfSite(x))}>{x.label} <strong>{signed(x.effect.mean, 2)}</strong></button></span>)}</> : run.id ? `${count(Object.keys(run.results).length)} measured sites` : "Run an experiment to color the model"}</span>
+      </div>
+      {mode === "atlas" ? <div className={s.atlasRow}>
+        <div className={s.atlas}><ModelMap prominent structureOnly={overlay === "structure"} /><p className={s.hint}>Double-click a component to open its layer. Arrow keys move through the map. Empty outlines have no measurement in this run.</p></div>
+        {run.id && profile && overlay === "data" && <aside className={s.dialPanel} aria-label="Run logogram"><LogogramDial seed={run.id} profile={profile} sites={run.sites} results={run.results} size={150} /></aside>}
+      </div> : <div className={s.layerWorkspace}>
         <nav className={s.layerNav} aria-label="Model layers"><span className={s.eyebrow}>Layers</span>
           {Array.from({ length: arch.nLayers }, (_, l) => <button key={l} type="button" aria-current={l === layer ? "true" : undefined} onClick={() => changeLayer(l)}><span>Layer {l}</span><span className={s.layerCount}>{arch.nHeads} heads</span></button>)}
         </nav>

@@ -66,6 +66,13 @@ This starts a local server on 127.0.0.1, prints its address and opens your brows
    L8 H6 …) to see, in the inspector, the exact intervention, the metric, the confidence
    interval, how many prompts flipped, the distribution of per-prompt effects and the prompts
    with the strongest and weakest effects.
+
+   Each run also gets a **logogram**, a circular ink glyph written by its results: layers run
+   clockwise from the top, and the ink swells outward (cobalt) where a layer's strongest effect
+   is positive and inward (ochre) where it is negative. A run with a few strong layers reads as
+   a heavy, lopsided ring; a null result as a thin, even one. Logograms appear in the history,
+   on the results page, and beside the model atlas, where each layer number opens that layer's
+   strongest component.
 4. Press **A** on a head to see its attention pattern, or right-click any cell for **Patch here**,
    **Ablate here** and **Compare across runs**.
 5. Press **Check robustness** to rerun the sweep with a different baseline, direction or donor

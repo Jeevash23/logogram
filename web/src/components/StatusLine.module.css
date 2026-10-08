@@ -4,9 +4,8 @@
   justify-content: space-between;
   gap: 16px;
   height: var(--status-h);
-  padding: 0 12px;
-  border-top: 1px solid var(--line);
-  background: var(--bg);
+  padding: 0 14px;
+  background: transparent;
   font-size: var(--text-xs);
   color: var(--muted);
   flex: none;

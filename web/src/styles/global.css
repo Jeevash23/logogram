@@ -1,4 +1,5 @@
-@import "@fontsource-variable/instrument-sans/wght.css";
+/* Weight 400–700 and width 75–100%: condensed widths set titles and figures. */
+@import "@fontsource-variable/instrument-sans/standard.css";
 @import "./tokens.css";
 
 *,
@@ -20,6 +21,7 @@ body {
   font-family: var(--font);
   font-size: var(--text-md);
   line-height: 1.45;
+  word-spacing: var(--word-space);
   font-variant-numeric: tabular-nums;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -37,16 +39,18 @@ p {
 
 h1 {
   font-size: var(--text-2xl);
-  font-weight: 560;
-  letter-spacing: -0.015em;
-  line-height: 1.15;
+  font-weight: 600;
+  font-stretch: var(--display-stretch);
+  letter-spacing: -0.02em;
+  line-height: 1.08;
 }
 
 h2 {
   font-size: var(--text-xl);
-  font-weight: 560;
-  letter-spacing: -0.01em;
-  line-height: 1.2;
+  font-weight: 600;
+  font-stretch: var(--display-stretch);
+  letter-spacing: -0.012em;
+  line-height: 1.15;
 }
 
 h3 {
@@ -134,6 +138,23 @@ pre {
 
 .muted {
   color: var(--muted);
+}
+
+/* A small label above a title: sentence case, spaced, quiet. */
+.eyebrow {
+  display: block;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+}
+
+/* Big figures: condensed, tabular. */
+.figure {
+  font-stretch: 82%;
+  font-weight: 620;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
 }
 
 .faint {

@@ -30,8 +30,9 @@ test("saved analysis context, keyboard attention and exports", async ({ page }) 
   await page.getByRole("button", { name: "Evidence", exact: true }).click();
   await page.getByRole("button", { name: "Results", exact: true }).click();
   for (const name of ["Export per-prompt CSV", "Export figure PNG", "Download methods"]) {
+    await page.getByRole("button", { name: "Export", exact: true }).click();
     const download = page.waitForEvent("download");
-    await page.getByRole("button", { name, exact: true }).click();
+    await page.getByRole("menuitem", { name, exact: true }).click();
     expect(await (await download).failure()).toBeNull();
   }
   expect(errors).toEqual([]);
@@ -96,7 +97,7 @@ test("two heads share a query and prediction reports survive a completed run", a
   await page.reload();
   await page.getByRole("button", { name: "Layer predictions", exact: true }).click();
   await expect(page.getByText(/Saved diagnostic from Prediction regression/)).toBeVisible();
-  await expect(table).toHaveText(projection);
+  await expect(table).toHaveText(projection, { useInnerText: true });
 });
 
 test("project changes clear the other tab and reject its stale writes", async ({ page, context }) => {
@@ -112,12 +113,12 @@ test("project changes clear the other tab and reject its stale writes", async ({
   expect(response.status()).toBe(409);
   await page.getByRole("spinbutton", { name: "Prompts", exact: true }).fill("4");
   await page.getByRole("button", { name: "Generate 4 prompts", exact: true }).click();
-  await page.getByRole("button", { name: "3. Check baseline", exact: true }).click();
+  await page.getByRole("button", { name: "Next step: Check the baseline", exact: true }).click();
   await page.getByRole("button", { name: "Check the baseline", exact: true }).click();
   await expect(page.getByText("Clean logit diff", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "4. Run experiment", exact: true }).click();
+  await page.getByRole("button", { name: "Next step: Run the experiment", exact: true }).click();
   await page.getByRole("button", { name: "Run", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Export per-prompt CSV", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: /Run dataset snapshot/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Export", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Saved prompts of this run/ })).toBeVisible();
   await second.close();
 });

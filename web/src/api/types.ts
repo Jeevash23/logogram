@@ -361,6 +361,8 @@ export interface RunListing {
   scope: ScopeSpec;
   derived_from: DerivedFrom | null;
   error: string | null;
+  /** Per layer, the largest normalized effect (signed): writes the run's logogram. */
+  profile?: number[] | null;
 }
 
 export interface RunDetail {

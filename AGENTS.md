@@ -47,24 +47,36 @@ traceability come before features.
 
 ## Design rules
 
-* Calm, exact and quietly beautiful: fog grey, ink and stillness. The model map is the one bold
-  element; everything around it stays restrained.
-* Color is for data only. Chrome stays neutral (tokens in `web/src/styles/tokens.css`). Effects
-  use the diverging cobalt–neutral–ochre scale, symmetric around zero, always with a legend.
-  Attention uses the single-hue ink ramp. Selection is an outline ring, not a new color.
-* One typeface, Instrument Sans, with tabular figures for numbers. Monospace appears only in the
-  spec view. Sentence case everywhere; no all-caps labels.
-* Motion only explains state changes, such as cells filling as results stream in or panels
-  opening.
+* After *Arrival*: fog, paper, ink and the dark shell. Work sits on paper sheets laid on fog
+  (`--surface` on `--bg`); the shell, the dark rail that holds navigation, is the one solid
+  shape. The model map and each run's logogram are the bold elements; everything around them
+  stays quiet. Fog and shell carry a faint film grain (`--grain`).
+* Chrome is fog, paper and ink (tokens in `web/src/styles/tokens.css`). One accent, signal
+  orange (`--accent`, the hazmat suits), marks the primary action, the active place and live
+  state; it never encodes data. Effects use the diverging cobalt–neutral–ochre scale, symmetric
+  around zero, always with a legend. Attention uses the single-hue ink ramp.
+* Selection is circled in ink (`inkRing` in `web/src/lib/canvas.ts`), not a new color.
+* Logograms (`web/src/lib/logogram.ts`) are data, not decoration. A run's glyph is written by its
+  results: layers clockwise from the top, the ink swelling outward where a layer's strongest
+  effect is positive and inward where it is negative, bleeding in the effect colors. Glyphs from
+  a seed alone mark identity only: the brand (`BRAND_SEED`), projects, empty states. Glyphs are
+  pure functions of seed and profile; keep them deterministic.
+* One typeface, Instrument Sans (weight and width axes): condensed widths for titles and big
+  figures (`--display-stretch`, `.figure`), tabular figures for numbers. Its word space is
+  narrow, so body text widens it (`--word-space`). Monospace appears only in the spec view.
+  Sentence case everywhere; no all-caps labels.
+* Motion only explains state changes, such as cells filling as results stream in, a glyph
+  appearing, or panels opening. Respect reduced motion.
 * Copy uses plain verbs that say exactly what happens. Errors say what went wrong and how to fix
-  it.
-* Avoid the generic AI-app look: no decorative gradients, glassmorphism, glow, sparkle icons,
-  emoji, chat panels, grids of identical rounded cards, purple-blue palettes, or 3D brains and
-  node galaxies.
+  it. Titles say what a view found or is for; they don't repeat the tab's name.
+* Avoid the generic AI-app look: no decorative gradients (the welcome screen's lit screen is the
+  one illustration), glassmorphism, glow, sparkle icons, emoji, chat panels, grids of identical
+  rounded cards, purple-blue palettes, or 3D brains and node galaxies.
 * Draw the model map and heatmaps on canvas. Use Radix primitives for menus, dialogs, tooltips
   and popovers, Zustand for state, d3-scale and d3-color for scales, CSS variables and CSS
   modules for styling. No component kits or chart libraries.
-* Every view must work with the keyboard and in both light and dark themes.
+* Every view must work with the keyboard and in both light (fog) and dark (inside the shell)
+  themes, and down to an 800-pixel window, where the rail lies across the top.
 
 ## Layout of the code
 

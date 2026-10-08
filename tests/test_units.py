@@ -266,3 +266,19 @@ def test_malformed_spans_are_reported_not_crashed():
     )
     with pytest.raises(DatasetError, match="line 1"):
         parse_jsonl(line)
+
+
+def test_layer_profile_keeps_each_layers_strongest_signed_effect():
+    from logogram.project import layer_profile
+
+    summary = {
+        "model": {"n_layers": 3},
+        "sites": [
+            {"layer": 0, "effect": {"mean": 0.2}},
+            {"layer": 0, "effect": {"mean": -0.5}},
+            {"layer": 2, "effect": {"mean": 0.3}},
+            {"layer": 2, "effect": {"mean": None}},
+        ],
+    }
+    assert layer_profile(summary) == [-0.5, 0.0, 0.3]
+    assert layer_profile({"sites": []}) is None
