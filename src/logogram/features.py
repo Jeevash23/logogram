@@ -20,7 +20,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from logogram.backends.base import Cancelled, ModelBackend
+from logogram.backends.base import Cancelled, ModelBackend, float64
 from logogram.engine import (
     EngineResult,
     LayerFn,
@@ -273,7 +273,7 @@ def _attribution(
             positions = range(x_rec.shape[1])
             per_position = ((x_src - x_rec) * grad).sum(-1)  # [B, pos]
             if every:
-                rows = torch.zeros(len(idx), d_sae, dtype=torch.float64, device=x_rec.device)
+                rows = float64(torch.zeros(len(idx), d_sae, device=x_rec.device))
                 for pos in positions:
                     if position is not None and not isinstance(position, AllPositions):
                         at = torch.tensor([resolve_position(position, prompts[p]) for p in idx])
@@ -287,17 +287,17 @@ def _attribution(
                     g = grad[:, pos]
                     if stats is not None:
                         g = g * stats[1]
-                    term = ((f_src - f_rec) * (g @ W_dec.T)).double()  # [B, d_sae]
+                    term = float64((f_src - f_rec) * (g @ W_dec.T))  # [B, d_sae]
                     if mask is not None:
-                        term = term * mask[:, None]
+                        term = term * mask[:, None].to(term.device)
                     rows += term
                 estimates[idx] = rows.cpu().numpy()
                 if position is None or isinstance(position, AllPositions):
-                    site_total[idx] = per_position.sum(1).double().cpu().numpy()
+                    site_total[idx] = float64(per_position.sum(1)).cpu().numpy()
                 else:
                     at = [resolve_position(position, prompts[p]) for p in idx]
                     site_total[idx] = (
-                        per_position[torch.arange(len(idx)), at].double().cpu().numpy()
+                        float64(per_position[torch.arange(len(idx)), at]).cpu().numpy()
                     )
             else:
                 f_src, _ = sae.encode(x_src)
@@ -311,8 +311,8 @@ def _attribution(
                     else:
                         at = [resolve_position(rs.site.position, prompts[p]) for p in idx]
                         values = term[torch.arange(len(idx)), at]
-                    estimates[rs.index, idx] = values.double().cpu().numpy()
-                site_total[idx] = per_position.sum(1).double().cpu().numpy()
+                    estimates[rs.index, idx] = float64(values).cpu().numpy()
+                site_total[idx] = float64(per_position.sum(1)).cpu().numpy()
             done += len(idx)
             if on_progress is not None:
                 on_progress(done, n, sae.layer)

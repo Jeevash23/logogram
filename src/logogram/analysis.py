@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from logogram.backends.base import ModelBackend
+from logogram.backends.base import ModelBackend, float64
 from logogram.datasets import PromptRecord
 from logogram.engine import compute_baselines
 from logogram.prompts import PreparedPrompt, PromptIssue, group_by_length, prepare_prompt
@@ -153,7 +153,7 @@ def attention_report(
     chosen = None
     for start in range(0, len(same), batch_size):
         pattern = backend.attention_pattern(tokens[start : start + batch_size], layer)[:, head]
-        pattern = pattern.double().cpu()
+        pattern = float64(pattern).cpu()
         total = pattern.sum(0) if total is None else total + pattern.sum(0)
         for row, p in enumerate(same[start : start + batch_size]):
             if p.index == index:
@@ -299,8 +299,8 @@ def sae_fit_report(
             rows = torch.arange(len(idx))
             plain = backend.final_logits(tokens)
             edited = backend.edit_logits(tokens, sae.site, sae.layer, splice)
-            clean.append((plain[rows, answers] - plain[rows, distractors]).double())
-            spliced.append((edited[rows, answers] - edited[rows, distractors]).double())
+            clean.append(float64(plain[rows, answers] - plain[rows, distractors]))
+            spliced.append(float64(edited[rows, answers] - edited[rows, distractors]))
     flat = torch.cat([a.reshape(-1, a.shape[-1]) for a in acts])
     fit = fit_on(sae, flat)
     ld, ld_spliced = torch.cat(clean), torch.cat(spliced)
@@ -388,7 +388,7 @@ def feature_report(
             f, _ = sae.encode(
                 backend.capture(tokens[begin : begin + batch_size], [key])[key].float()
             )
-            column = f[..., feature].double().cpu()  # [B, pos]
+            column = float64(f[..., feature]).cpu()  # [B, pos]
             for row, p in enumerate(idx):
                 prompt = prepared[p]
                 values = column[row]

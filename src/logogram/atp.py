@@ -20,7 +20,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from logogram.backends.base import Cancelled, ModelBackend
+from logogram.backends.base import Cancelled, ModelBackend, float64
 from logogram.engine import (
     EngineResult,
     LayerFn,
@@ -82,8 +82,8 @@ def run_attribution_patching(
             rows = torch.arange(len(idx))
             for rs in sites:
                 key = (rs.kind, rs.layer)
-                diff = source_acts[key].double() - receiver_acts[key].double()
-                grad = grads[key].double()
+                diff = float64(source_acts[key]) - float64(receiver_acts[key])
+                grad = float64(grads[key])
                 if rs.kind == "head":
                     diff, grad = diff[:, :, rs.head], grad[:, :, rs.head]
                 per_position = (diff * grad).sum(-1)  # [B, pos]

@@ -17,6 +17,17 @@ import torch
 STREAM_KINDS = ("resid_pre", "resid_mid", "resid_post", "attn_out", "mlp_out")
 ALL_KINDS = (*STREAM_KINDS, "head")
 
+# Devices with no float64 arithmetic: Apple's Metal has no doubles.
+NO_FLOAT64 = frozenset({"mps"})
+
+
+def float64(t: torch.Tensor) -> torch.Tensor:
+    """``t`` in float64, for statistics and decompositions: on its own device, or on the CPU when
+    that device has no float64 (Apple's MPS), where converting it would fail. Every conversion to
+    float64 goes through here."""
+    device = torch.device("cpu") if t.device.type in NO_FLOAT64 else t.device
+    return t.to(device=device, dtype=torch.float64)
+
 
 @dataclass(frozen=True)
 class ModelInfo:
@@ -164,8 +175,10 @@ class ModelBackend(ABC):
 
         Returns float64 tensors on the CPU, one row per prompt: ``embed`` ``[B]``, ``attn_out``
         and ``mlp_out`` ``[B, layers]``, ``head`` ``[B, layers, heads]`` when ``heads`` is true,
-        ``logit_diff`` ``[B]`` and ``remainder`` ``[B]`` (what biases add: the logit difference
-        minus every component's term).
+        ``logit_diff`` ``[B]``, ``remainder`` ``[B]`` (what biases add: the logit difference
+        minus every component's term) and ``logit_scale`` ``[B]`` (the larger magnitude of the
+        answer's and the distractor's logit, which sets how finely the model's dtype resolves
+        them).
         """
         raise BackendError("Direct logit attribution isn't supported by this model backend.")
 

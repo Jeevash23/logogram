@@ -18,7 +18,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from logogram.backends.base import Cancelled, ModelBackend, ModelInfo, Patch
+from logogram.backends.base import Cancelled, ModelBackend, ModelInfo, Patch, float64
 from logogram.engine import (
     EngineError,
     EngineResult,
@@ -208,19 +208,22 @@ def run_steering(
             backend, train, train_groups, site.layer, kinds, receiver, batch_size, cancel
         )
         direction = (
-            toward.table(site.kind, probe).double() - away.table(site.kind, probe).double()
+            float64(toward.table(site.kind, probe)) - float64(away.table(site.kind, probe))
         ).mean(0)
         norm = float(direction.norm())
         result.extra["steering"]["norms"].append(norm)
         control_direction = None
         if exp.control:
             generator = torch.Generator().manual_seed(exp.seed * 1_000_003 + b)
+            # float64 on the CPU: a seeded CPU generator draws it, whatever the model's device.
             noise = torch.randn(direction.shape, generator=generator, dtype=torch.float64)
             control_direction = noise / noise.norm() * norm
         # The held-out receivers' own activations, to which the direction is added.
-        own = _LayerSources(
-            backend, test, test_groups, site.layer, kinds, receiver, batch_size, cancel
-        ).table(site.kind, probe)
+        own = float64(
+            _LayerSources(
+                backend, test, test_groups, site.layer, kinds, receiver, batch_size, cancel
+            ).table(site.kind, probe)
+        )
         positions = [resolve_position(site.position, p) for p in test]
         first = b * len(variants)
         for group in test_groups:
@@ -232,7 +235,7 @@ def run_steering(
                 chunk = rows[sl]
                 values = torch.stack(
                     [
-                        own[p].double()
+                        own[p]
                         + variants[v][0]
                         * (control_direction if variants[v][1] else direction).to(own.device)
                         for v, p in chunk

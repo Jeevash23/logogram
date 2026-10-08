@@ -33,6 +33,10 @@ from logogram.spec import DirectLogitAttribution, Spec
 
 DIRECT_KINDS = ("head", "attn_out", "mlp_out")
 
+# The spacing of representable numbers near 1 in each dtype: a logit L is rounded to about L times
+# this, so two computations of a logit difference agree to a few of these steps.
+PRECISION = {"float32": 2.0**-23, "float16": 2.0**-10, "bfloat16": 2.0**-7}
+
 
 def check_direct_sites(
     sites: list[ResolvedSite], info: ModelInfo, prompts: list[PreparedPrompt]
@@ -110,6 +114,7 @@ def run_direct_effects(
         "mlp_out": np.zeros((n, n_layers)),
         "logit_diff": np.zeros(n),
         "remainder": np.zeros(n),
+        "logit_scale": np.zeros(n),
     }
     if heads:
         terms["head"] = np.zeros((n, n_layers, info.n_heads))
@@ -149,12 +154,16 @@ def run_direct_effects(
                 f"{small} prompt(s) have a logit difference below 0.1, so their per-prompt shares "
                 "are unstable."
             )
-    # The split is of the model's own logit difference; the two ways of reading it out must agree.
-    drift = float(np.abs(terms["logit_diff"] - gap).max()) if n else 0.0
-    if drift > 1e-3 * max(1.0, float(np.abs(gap).max())):
+    # The split is of the model's own logit difference; the two ways of reading it out must agree,
+    # up to how finely the model's dtype resolves the two logits.
+    drift = np.abs(terms["logit_diff"] - gap)
+    allowed = (
+        1e-3 * max(1.0, float(np.abs(gap).max())) + 4 * PRECISION[info.dtype] * terms["logit_scale"]
+    )
+    if n and bool((drift > allowed).any()):
         warnings.append(
-            f"The decomposed logit difference differs from the measured one by up to {drift:.2g}, "
-            "more than rounding explains."
+            f"The decomposed logit difference differs from the measured one by up to "
+            f"{float(drift.max()):.2g}, more than rounding explains."
         )
 
     delta = np.zeros((len(sites), n))

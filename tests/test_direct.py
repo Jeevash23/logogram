@@ -210,3 +210,41 @@ def test_a_run_stores_the_split_and_compares_with_patching(tiny_backend, project
     detail = site_detail(project, dla.run_id, 0)
     assert detail["prompts"][0]["patched_logit_diff"] is None
     assert detail["prompts"][0]["flipped"] is False
+
+
+def test_rounding_in_16_bit_isnt_reported_as_drift(tiny_model_dir, project, spec_factory):
+    # In bfloat16 the logits are rounded to about 1 part in 128, so the decomposed and the measured
+    # logit difference differ by more than float32's tolerance; that is rounding, not drift.
+    from logogram.backends.transformer_lens import TransformerLensBackend, boot_local
+
+    backend = TransformerLensBackend.from_bridge(
+        boot_local(tiny_model_dir, device="cpu", dtype="bfloat16"),
+        model_id="tiny-gpt2",
+        revision="test",
+        dtype="bfloat16",
+        process_weights=True,
+    )
+    spec = spec_factory(
+        model={"id": "tiny-gpt2", "revision": "test", "device": "cpu", "dtype": "bfloat16"},
+        experiment={"kind": "direct_logit_attribution", "prompts": "clean"},
+        scope={"kind": "heads", "position": LAST},
+    )
+    result = run_experiment(spec, backend, _prompts(backend, project))
+    assert not any("rounding" in w for w in result.warnings)
+
+
+def test_a_decomposition_that_drifts_is_reported(tiny_backend, project, spec_factory, monkeypatch):
+    direct_effects = tiny_backend.direct_effects
+
+    def drifting(*args, **kwargs):
+        out = direct_effects(*args, **kwargs)
+        out["logit_diff"] = out["logit_diff"] + 0.5
+        return out
+
+    monkeypatch.setattr(tiny_backend, "direct_effects", drifting)
+    spec = spec_factory(
+        experiment={"kind": "direct_logit_attribution", "prompts": "clean"},
+        scope={"kind": "heads", "position": LAST},
+    )
+    result = run_experiment(spec, tiny_backend, _prompts(tiny_backend, project))
+    assert any("more than rounding explains" in w for w in result.warnings)

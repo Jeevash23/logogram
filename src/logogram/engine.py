@@ -21,7 +21,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from logogram.backends.base import Cancelled, ModelBackend, Patch
+from logogram.backends.base import Cancelled, ModelBackend, Patch, float64
 from logogram.prompts import LengthGroup, PreparedPrompt, group_by_length
 from logogram.sites import ResolvedSite, expand_scope, resolve_position
 from logogram.spec import (
@@ -111,7 +111,7 @@ def _metric(
     distractors = distractors.to(logits.device)
     ld = logits[rows, answers] - logits[rows, distractors]
     prob = torch.log_softmax(logits, dim=-1)[rows, answers].exp()
-    return ld.double().cpu().numpy(), prob.double().cpu().numpy()
+    return float64(ld).cpu().numpy(), float64(prob).cpu().numpy()
 
 
 def _answer_tensors(prompts: list[PreparedPrompt], idx: list[int]) -> tuple[torch.Tensor, ...]:

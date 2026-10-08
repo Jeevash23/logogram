@@ -447,6 +447,13 @@ the weights needs more for a moment while the model loads: TransformerLens works
 copies, three to four times the float32 size of the weights. The estimate includes them, so a
 model that fits only without processing (Qwen 2.5 0.5B on a 6 GB GPU) says so before it loads.
 
+Use float32 whenever the model fits. float16 and bfloat16 halve the memory and run two to three
+times faster on a GPU, but they round. In the IOI example on GPT-2 small and Qwen 2.5, float16
+moved effects by at most 0.003 and bfloat16 by up to 0.03: the strongest sites stayed in place,
+but effects smaller than about 0.01 changed order. On Pythia-70m, bfloat16 doubled the clean
+logit difference and reordered the heads, and float16 overflows. Check results that matter
+against float32.
+
 Rather than trusting a list, Logogram checks every model when it loads, on a short fixed input:
 
 * TransformerLens's version of the model must predict what the original model predicts. If weight

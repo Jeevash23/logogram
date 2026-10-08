@@ -26,6 +26,7 @@ from logogram.backends.base import (
     ModelInfo,
     Patch,
     Tokenized,
+    float64,
 )
 
 log = logging.getLogger(__name__)
@@ -675,10 +676,10 @@ class TransformerLensBackend(ModelBackend):
                     - logits[rows, distractors.to(final.device)]
                 )
                 (direction,) = torch.autograd.grad(ld.sum(), final)
-            g = direction.double()
+            g = float64(direction)
 
             def term(vector: torch.Tensor) -> torch.Tensor:
-                return (vector.double() * g).sum(-1)
+                return (float64(vector) * g).sum(-1)
 
             out: dict[str, torch.Tensor] = {
                 "embed": term(kept[hook_name("resid_pre", 0)]),
@@ -688,13 +689,20 @@ class TransformerLensBackend(ModelBackend):
                 "mlp_out": torch.stack(
                     [term(kept[hook_name("mlp_out", layer)]) for layer in range(n)], dim=1
                 ),
-                "logit_diff": ld.detach().double(),
+                "logit_diff": float64(ld.detach()),
+                # How large the two logits are, which sets how finely the dtype resolves them.
+                "logit_scale": float64(
+                    torch.maximum(
+                        logits[rows, answers.to(final.device)].abs(),
+                        logits[rows, distractors.to(final.device)].abs(),
+                    ).detach()
+                ),
             }
             if heads:
                 per_layer = []
                 for layer in range(n):
-                    z = kept[hook_name("head", layer)].double()  # [B, H, d_head]
-                    w_o = bridge.blocks[layer].attn.W_O.detach().double()  # [H, d_head, d_model]
+                    z = float64(kept[hook_name("head", layer)])  # [B, H, d_head]
+                    w_o = float64(bridge.blocks[layer].attn.W_O.detach())  # [H, d_head, d_model]
                     written = torch.einsum("bhd,hdm->bhm", z, w_o)
                     per_layer.append((written * g[:, None, :]).sum(-1))
                 out["head"] = torch.stack(per_layer, dim=1)
