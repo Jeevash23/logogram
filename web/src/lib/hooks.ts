@@ -1,0 +1,82 @@
+import { useMemo } from "react";
+
+import type { RunDetail, SiteResult } from "../api/types";
+import { runView, useStore } from "../store/app";
+import { analysisContext } from "./analysis";
+
+export function useAnalysisContext() {
+  const form = useStore((s) => s.form);
+  const model = useStore((s) => s.model);
+  const datasetPath = useStore((s) => s.datasetPath);
+  const dataset = useStore((s) => s.dataset);
+  const project = useStore((s) => s.project);
+  const analysisSource = useStore((s) => s.analysisSource);
+  const activeRunId = useStore((s) => s.activeRunId);
+  const runDetails = useStore((s) => s.runDetails);
+  return useMemo(() => analysisContext({ form, model, datasetPath, dataset, project, analysisSource, activeRunId, runDetails }),
+    [form, model, datasetPath, dataset, project, analysisSource, activeRunId, runDetails]);
+}
+
+const MODEL_NAMES: Record<string, string> = {
+  "openai-community/gpt2": "GPT-2 small",
+  gpt2: "GPT-2 small",
+  "openai-community/gpt2-medium": "GPT-2 medium",
+  "openai-community/gpt2-large": "GPT-2 large",
+  "openai-community/gpt2-xl": "GPT-2 XL",
+};
+
+export function modelName(id: string | null | undefined): string {
+  if (!id) return "No model";
+  return MODEL_NAMES[id] ?? id;
+}
+
+export function useActiveRun() {
+  const id = useStore((s) => s.activeRunId);
+  const detail = useStore((s) => (id ? s.runDetails[id] : undefined));
+  const live = useStore((s) => (id ? s.live[id] : undefined));
+  const view = useMemo(() => runView(detail, live), [detail, live]);
+  return { id, detail, live, ...view, ciLevel: ciLevelOf(detail) };
+}
+
+/** The confidence level a run's intervals use, in percent. */
+export function ciLevelOf(detail: RunDetail | undefined): number {
+  return Math.round((detail?.summary?.statistics.ci ?? detail?.spec.statistics.ci ?? 0.95) * 100);
+}
+
+export interface Architecture {
+  nLayers: number;
+  nHeads: number;
+  id: string;
+  dModel: number | null;
+  dHead: number | null;
+  dMlp: number | null;
+  siteKinds: string[];
+  structure: string;
+  normalization: string;
+  activation: string;
+}
+
+export function useArchitecture(): Architecture | null {
+  const info = useStore((s) => s.model.info);
+  const run = useActiveRun();
+  return useMemo(() => {
+    const shape = run.model ?? info;
+    if (!shape) return null;
+    const matching = info && (!run.detail || (info.id === run.detail.spec.model.id && (!run.detail.spec.model.revision || info.revision === run.detail.spec.model.revision)));
+    return {
+      nLayers: shape.n_layers, nHeads: shape.n_heads, id: shape.id,
+      dModel: shape.d_model ?? (matching ? info.d_model : null), dHead: shape.d_head ?? (matching ? info.d_head : null),
+      dMlp: shape.d_mlp ?? (matching ? info.d_mlp : null),
+      siteKinds: shape.site_kinds ?? (matching ? info.site_kinds : [...new Set(run.sites.map(s => s.kind))]),
+      structure: run.model?.block_structure ?? (matching ? info.extra?.block_structure : null) ?? "components",
+      normalization: run.model?.normalization ?? (matching ? info.extra?.normalization : null) ?? "Normalization",
+      activation: run.model?.activation ?? (matching ? info.extra?.activation : null) ?? "",
+    };
+  }, [info, run.model, run.detail, run.sites]);
+}
+
+export function siteValue(site: SiteResult | undefined, metric: "effect" | "delta"): number | null {
+  if (!site) return null;
+  const v = metric === "effect" ? site.effect.mean : site.delta.mean;
+  return v === null || v === undefined || !Number.isFinite(v) ? null : v;
+}

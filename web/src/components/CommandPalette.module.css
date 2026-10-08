@@ -1,0 +1,97 @@
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--scrim);
+  z-index: 80;
+  animation: fade 120ms var(--ease);
+}
+
+.palette {
+  position: fixed;
+  top: 14vh;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(580px, calc(100vw - 32px));
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--raised);
+  box-shadow: var(--shadow);
+  z-index: 81;
+  overflow: hidden;
+  animation: rise 160ms var(--ease);
+}
+
+.inputRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--faint);
+}
+
+.input {
+  flex: 1;
+  height: 46px;
+  border: 0;
+  background: transparent;
+  font-size: var(--text-lg);
+  color: var(--text);
+  outline: none;
+}
+
+.input::placeholder {
+  color: var(--faint);
+}
+
+.list {
+  max-height: min(420px, 60vh);
+  overflow: auto;
+  padding: 6px;
+}
+
+.group {
+  padding: 8px 10px 4px;
+  font-size: var(--text-xs);
+  color: var(--faint);
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--radius);
+  font-size: var(--text-md);
+  cursor: default;
+}
+
+.item[aria-selected="true"] {
+  background: var(--hover);
+  box-shadow: inset 2px 0 0 var(--text);
+}
+
+.item[aria-disabled="true"] {
+  opacity: 0.4;
+}
+
+.empty {
+  padding: 16px 10px;
+  color: var(--faint);
+  font-size: var(--text-sm);
+}
+
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 6px);
+  }
+}

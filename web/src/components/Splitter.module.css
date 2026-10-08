@@ -1,0 +1,34 @@
+.vertical,
+.horizontal {
+  position: relative;
+  flex: none;
+  z-index: 2;
+}
+
+.vertical {
+  width: 1px;
+  margin: 0 -3px;
+  padding: 0 3px;
+  cursor: col-resize;
+  background-clip: content-box;
+  background-color: var(--line);
+  box-sizing: content-box;
+}
+
+.horizontal {
+  height: 1px;
+  margin: -3px 0;
+  padding: 3px 0;
+  cursor: row-resize;
+  background-clip: content-box;
+  background-color: var(--line);
+  box-sizing: content-box;
+}
+
+.vertical:hover,
+.horizontal:hover,
+.vertical:focus-visible,
+.horizontal:focus-visible {
+  background-color: var(--faint);
+  outline: none;
+}

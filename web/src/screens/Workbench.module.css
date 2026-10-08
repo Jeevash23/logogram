@@ -1,0 +1,22 @@
+.workbench { display: flex; flex-direction: column; height: 100%; background: var(--bg); }
+.workspaceBar { display: flex; justify-content: space-between; align-items: center; padding: 0 24px; border-bottom: 1px solid var(--line); gap: 12px; }
+.workspaces { display: flex; gap: 28px; }
+.workspaces > button { border: 0; background: transparent; font-size: 16px; font-weight: 500; color: var(--muted); position: relative; height: 54px; display: flex; gap: 8px; align-items: center; }
+.workspaces > button[aria-current="page"] { color: var(--text); font-weight: 600; }
+.workspaces > button[aria-current="page"]::after { content: ""; position: absolute; bottom: -1px; left: 0; right: 0; height: 2px; background: var(--text); }
+.count { font-size: 10px; font-weight: 500; color: var(--muted); padding: 1px 5px; border: 1px solid var(--line); border-radius: 3px; }
+.viewBar { display: flex; justify-content: space-between; align-items: center; gap: 12px; border-bottom: 1px solid var(--line-soft); padding: 0 20px; }
+.tabs { display: flex; gap: 16px; overflow-x: auto; min-width: 0; }
+.tab { display: flex; align-items: center; gap: 7px; position: relative; min-height: 42px; padding: 0 3px; border: 0; background: transparent; color: var(--muted); font-size: 12px; font-weight: 500; white-space: nowrap; }
+.tab:hover, .tab[aria-current="page"] { color: var(--text); }
+.tab[aria-current="page"] { font-weight: 650; }
+.tab[aria-current="page"]::after { content: ""; position: absolute; left: 3px; right: 3px; bottom: 7px; height: 1px; background: var(--text); }
+.body { flex: 1; display: flex; min-height: 0; }
+.center { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+.view { flex: 1; min-height: 0; overflow: auto; }
+.inspector { flex: none; display: flex; flex-direction: column; min-height: 0; background: var(--surface); }
+.drawer { display: flex; flex-direction: column; height: min(70vh, 720px); min-height: 300px; }
+.firstRun { display: flex; flex-wrap: wrap; gap: 4px 18px; padding: 10px 24px; border-bottom: 1px solid var(--line); }
+.firstRun button { border: 0; border-bottom: 1px solid transparent; padding: 4px 0; background: transparent; color: var(--muted); font-size: var(--text-sm); }
+.firstRun button[aria-current="step"] { color: var(--text); border-bottom-color: var(--text); font-weight: 600; }
+@media (max-width: 600px) { .workspaceBar { padding: 0 12px; } .workspaces { gap: 20px; } .workspaces > button { font-size: 14px; height: 47px; } .viewBar { padding: 0 10px; } .tabs { gap: 13px; } .firstRun { padding: 8px 12px; gap: 4px 12px; } }

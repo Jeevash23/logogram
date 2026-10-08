@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+dist/
+build/
+*.egg-info/
+
+# Web app sources build into src/logogram/web_dist, which is committed so that
+# `uv tool install .` works without Node. Only dependencies and caches are ignored.
+web/node_modules/
+web/.vite/
+web/test-results/
+web/playwright-report/
+
+# Editors, assistants and operating systems
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.claude/
+
+# Logogram caches inside projects
+.logogram/

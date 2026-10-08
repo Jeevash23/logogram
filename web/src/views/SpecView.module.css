@@ -1,0 +1,63 @@
+.main {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* The only monospace text in Logogram. */
+.json {
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow: auto;
+  color: var(--muted);
+  tab-size: 2;
+}
+
+.key {
+  color: var(--text);
+}
+
+.punct {
+  color: var(--faint);
+}
+
+.value {
+  color: var(--text);
+}
+
+.aside {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: var(--text-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--muted);
+}
+
+.files strong {
+  color: var(--text);
+  font-weight: 600;
+  margin-right: 6px;
+}

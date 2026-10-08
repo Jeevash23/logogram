@@ -1,0 +1,107 @@
+.running {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 520px;
+}
+
+.differences {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.difference {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: var(--text-sm);
+  flex-wrap: wrap;
+}
+
+.path {
+  font-weight: 600;
+}
+
+.verdict {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.metrics {
+  display: flex;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.metrics > div {
+  flex: 1 1 160px;
+  padding: 10px 16px 10px 0;
+}
+
+.metrics > div + div {
+  padding-left: 16px;
+  border-left: 1px solid var(--line-soft);
+}
+
+.metricValue {
+  font-size: var(--text-xl);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.metricLabel {
+  font-size: var(--text-xs);
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+}
+
+@container (max-width: 760px) {
+  .pair {
+    grid-template-columns: 1fr;
+  }
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.panelHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.panelHead > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.scale {
+  grid-column: 1 / -1;
+}
+
+.changes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.flagged {
+  font-weight: 600;
+}

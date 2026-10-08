@@ -1,0 +1,42 @@
+{
+  "logogram_spec": 1,
+  "name": "Which heads restore the answer?",
+  "notes": "Run each corrupt prompt (the subject is replaced by the indirect object, so the model should prefer the other name) and patch in one head's output from the clean prompt at every position. A normalized effect of 1 means that head alone restores the clean behavior; negative values mean the head works against the answer.",
+  "model": {
+    "id": "openai-community/gpt2",
+    "revision": "607a30d783dfa663caf39e06633721c8d4cfcd7e",
+    "dtype": "float32",
+    "device": "auto",
+    "process_weights": true
+  },
+  "dataset": {
+    "path": "datasets/ioi.jsonl",
+    "sha256": "2bd046d5d0190d42863dfa64e185f61228dd26a58458f7b6cf93140847478ac3",
+    "limit": null
+  },
+  "tokenization": {
+    "prepend_bos": true
+  },
+  "experiment": {
+    "kind": "activation_patching",
+    "direction": "clean_to_corrupt"
+  },
+  "scope": {
+    "kind": "heads",
+    "position": {
+      "kind": "all"
+    }
+  },
+  "metric": {
+    "kind": "logit_diff",
+    "normalization": "dataset_gap"
+  },
+  "statistics": {
+    "bootstrap": 1000,
+    "ci": 0.95,
+    "seed": 0
+  },
+  "execution": {
+    "batch_size": 64
+  }
+}

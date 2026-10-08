@@ -1,0 +1,24 @@
+.methodTag { padding: 5px 9px; border: 1px solid var(--line); border-radius: 3px; font-size: 12px; color: var(--muted); }
+.method { border-left: 2px solid var(--text); padding: 2px 0 2px 18px; display: flex; flex-direction: column; gap: 8px; max-width: 850px; }
+.method h2 { font-size: 15px; font-weight: 560; }
+.method > p { color: var(--muted); font-size: 13px; line-height: 1.65; }
+.controls { display: flex; gap: 14px; align-items: end; flex-wrap: wrap; padding: 20px 0 4px; }
+.controls input { width: 95px; }
+.reportHeading { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding-top: 18px; border-top: 1px solid var(--line); }
+.reportHeading h2 { font-size: 22px; letter-spacing: -.025em; font-weight: 550; margin-bottom: 5px; }
+.reportHeading h2 span { font-size: 16px; color: var(--muted); margin-left: 8px; }
+.trace { min-width: 0; padding: 16px 0; }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; padding: 0 0 15px 52px; }
+.legend > span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { display: inline-block; width: 20px; border-top: 2px solid var(--text); }
+.legend .dashed { border-top: 2px dashed var(--muted); }
+.tableScroll { overflow-x: auto; }
+.table caption { text-align: left; font-size: 12px; color: var(--muted); padding: 0 0 12px; }
+.table tbody th { background: transparent; position: static; min-width: 85px; }
+.table tbody th button { border: 1px solid transparent; border-radius: 3px; padding: 6px; color: var(--text); background: transparent; font-size: 12px; }
+.table tbody th button[aria-pressed="true"] { outline: 1px solid var(--text); }
+.table tbody td { padding: 14px 8px; }
+.tokens { display: flex; gap: 6px; flex-wrap: wrap; min-width: 230px; }
+.tokens > span { border: 1px solid var(--line-soft); border-radius: 3px; padding: 3px 7px; display: inline-flex; gap: 7px; align-items: baseline; white-space: pre; }
+.tokens small, .tokens > span > span { font-size: 10px; color: var(--muted); }
+.tokens strong { font-size: 12px; font-weight: 550; }

@@ -1,0 +1,91 @@
+.settings {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.estimate {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+  min-height: 64px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+
+.verdictRow {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: var(--text-sm);
+}
+
+.verdictRow strong {
+  font-weight: 620;
+}
+
+.verdict {
+  font-size: var(--text-lg);
+  font-weight: 650;
+}
+
+.bad {
+  color: var(--alert);
+}
+
+.bar {
+  display: flex;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--line-soft);
+  overflow: hidden;
+}
+
+.weights {
+  background: var(--text);
+}
+
+.acts {
+  background: var(--muted);
+}
+
+.margin {
+  background: var(--faint);
+}
+
+.breakdown {
+  display: grid;
+  grid-template-columns: repeat(3, auto 1fr);
+  gap: 3px 10px;
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.breakdown dt {
+  color: var(--muted);
+}
+
+.breakdown dd {
+  margin: 0;
+}
+
+.fine {
+  font-size: var(--text-xs);
+  color: var(--faint);
+}
+
+.progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}

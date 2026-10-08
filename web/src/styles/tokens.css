@@ -1,0 +1,76 @@
+/* Design tokens. Chrome stays neutral (fog grey and ink); color is reserved for data. */
+
+:root,
+:root[data-theme="light"] {
+  --bg: #e8ebec;
+  --surface: #f4f6f6;
+  --surface-2: #eef1f1;
+  --raised: #fafbfb;
+  --line: #cdd3d6;
+  --line-soft: #dce1e3;
+  --text: #1c2226;
+  --muted: #5e6a71;
+  --faint: #667178;
+  --hover: rgba(28, 34, 38, 0.05);
+  --press: rgba(28, 34, 38, 0.09);
+  --mark: rgba(28, 34, 38, 0.08);
+  --scrim: rgba(22, 28, 36, 0.32);
+  --shadow: 0 1px 2px rgba(28, 34, 38, 0.06), 0 10px 28px rgba(28, 34, 38, 0.1);
+  --alert: #7d3a2c;
+  --on-ink: #f4f6f6;
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --bg: #161c24;
+  --surface: #1d2530;
+  --surface-2: #19212b;
+  --raised: #232c38;
+  --line: #2e3946;
+  --line-soft: #27313d;
+  --text: #e3e8ec;
+  --muted: #8d9aa6;
+  --faint: #94a0ab;
+  --hover: rgba(227, 232, 236, 0.05);
+  --press: rgba(227, 232, 236, 0.09);
+  --mark: rgba(227, 232, 236, 0.08);
+  --scrim: rgba(8, 11, 15, 0.55);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 12px 32px rgba(0, 0, 0, 0.35);
+  --alert: #e4a08e;
+  --on-ink: #161c24;
+  color-scheme: dark;
+}
+
+:root {
+  --font: "Instrument Sans Variable", "Instrument Sans", ui-sans-serif, system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", "Segoe UI Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  --text-2xs: 10.5px;
+  --text-xs: 11.5px;
+  --text-sm: 12.5px;
+  --text-md: 13.5px;
+  --text-lg: 15px;
+  --text-xl: 19px;
+  --text-2xl: 26px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+
+  --radius-sm: 3px;
+  --radius: 5px;
+  --radius-lg: 8px;
+
+  --control-h: 28px;
+  --header-h: 48px;
+  --status-h: 28px;
+
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --dur: 160ms;
+}

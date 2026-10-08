@@ -1,0 +1,260 @@
+.view {
+  container-type: inline-size;
+  padding: 28px 30px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  min-width: 0;
+}
+
+.head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.titleBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  max-width: 680px;
+}
+
+.title {
+  font-size: 28px;
+  font-weight: 560;
+  letter-spacing: -0.035em;
+}
+
+.subtitle {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.headActions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.panel {
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  background: var(--surface);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.panelTitle {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+
+.grid2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 16px;
+}
+
+.grid3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px 16px;
+}
+
+.grid4 {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px 16px;
+}
+
+@container (max-width: 760px) {
+  .grid3,
+  .grid4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.small {
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+
+.faint {
+  font-size: var(--text-xs);
+  color: var(--faint);
+}
+
+.divider {
+  height: 1px;
+  background: var(--line-soft);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.table th {
+  text-align: left;
+  font-weight: 560;
+  font-size: var(--text-xs);
+  color: var(--muted);
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  z-index: 1;
+  white-space: nowrap;
+}
+
+.table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line-soft);
+  vertical-align: top;
+}
+
+.table tr[data-clickable] {
+  cursor: pointer;
+}
+
+.table tr[data-clickable]:hover td {
+  background: var(--hover);
+}
+
+.table tr[aria-selected="true"] td {
+  background: var(--surface-2);
+}
+
+.table tr[aria-selected="true"] td:first-child {
+  box-shadow: inset 2px 0 0 var(--text);
+}
+
+.num {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.diffWord {
+  font-weight: 680;
+  text-decoration: underline;
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 3px;
+}
+
+.tok {
+  font-weight: 600;
+  white-space: pre;
+}
+
+.tabsInline {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.datasetButton {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: var(--text-sm);
+  font-weight: 540;
+}
+
+.datasetButton:hover {
+  border-color: var(--faint);
+}
+
+.datasetButton[aria-pressed="true"] {
+  border-color: var(--text);
+  box-shadow: 0 0 0 1px var(--text);
+}
+
+.datasetButton span {
+  color: var(--faint);
+  font-weight: 500;
+  font-size: var(--text-xs);
+}
+
+.template {
+  font-size: var(--text-sm);
+  line-height: 1.6;
+}
+
+.slot {
+  display: inline-block;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--surface-2);
+  border: 1px solid var(--line-soft);
+  font-size: var(--text-xs);
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.sentence {
+  font-size: var(--text-md);
+  line-height: 1.55;
+  max-width: 720px;
+}
+
+.sentence strong {
+  font-weight: 620;
+}
+
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 300px);
+  gap: 20px;
+  align-items: start;
+}
+
+@container (max-width: 900px) {
+  .split {
+    grid-template-columns: 1fr;
+  }
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 14px;
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.kv dt {
+  color: var(--muted);
+}
+
+.kv dd {
+  margin: 0;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+@media (max-width: 600px) { .view { padding: 20px 14px 32px; } .title { font-size: 24px; } .grid2, .grid3, .grid4 { grid-template-columns: 1fr; } }

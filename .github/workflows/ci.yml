@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  privacy:
+    name: Privacy check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: python3 scripts/check_privacy.py
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+      - run: uvx ruff@0.16.10 check src tests scripts
+      - run: uvx ruff@0.16.10 format --check src tests scripts
+
+  test:
+    name: Tests (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, python: "3.11" }
+          - { os: ubuntu-latest, python: "3.13" }
+          - { os: macos-latest, python: "3.12" }
+          - { os: windows-latest, python: "3.12" }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+      # CPU-only PyTorch keeps CI fast; the tests use a tiny local model and no network.
+      - run: uv venv --python ${{ matrix.python }}
+      - run: uv pip install --torch-backend=cpu -e . pytest httpx
+      - run: uv run --no-sync pytest -q
+      - run: uv run --no-sync logogram --version
+      - run: uv build
+      - name: Install and smoke test the built wheel
+        run: uv run --no-sync python -c "import pathlib, subprocess, sys; wheel = next(pathlib.Path('dist').glob('*.whl')); subprocess.run(['uv', 'pip', 'install', '--python', sys.executable, '--reinstall', '--no-deps', str(wheel)], check=True); subprocess.run([sys.executable, 'scripts/smoke_wheel.py'], check=True)"
+
+  web:
+    name: Web app build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+      - run: npm test
+        working-directory: web
+      - name: The committed build matches the sources
+        run: |
+          if [ -n "$(git status --porcelain -- src/logogram/web_dist)" ]; then
+            git status --short -- src/logogram/web_dist
+            echo "src/logogram/web_dist is out of date: run 'npm run build' in web/ and commit it."
+            exit 1
+          fi
+
+  browser:
+    name: Offline browser workflow
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: uv venv --python 3.12
+      - run: uv pip install --torch-backend=cpu -e . pytest
+      - run: npm ci
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+      - run: npx playwright install --with-deps chromium
+        working-directory: web
+      - run: npm run test:browser
+        working-directory: web

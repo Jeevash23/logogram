@@ -1,0 +1,147 @@
+.history {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 10px 0 14px;
+  flex: none;
+}
+
+.title {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.count {
+  color: var(--faint);
+  font-size: var(--text-xs);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.empty {
+  padding: 4px 14px;
+  color: var(--faint);
+  font-size: var(--text-xs);
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0 6px 8px;
+  overflow: auto;
+  min-height: 0;
+}
+
+.row {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.branch {
+  position: absolute;
+  top: 0;
+  bottom: 50%;
+  width: 8px;
+  border-left: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  border-bottom-left-radius: 4px;
+}
+
+.check {
+  appearance: none;
+  flex: none;
+  width: 13px;
+  height: 13px;
+  margin: 10px 0 0;
+  border: 1.5px solid var(--line);
+  border-radius: 3px;
+  background: var(--surface);
+  opacity: 0;
+  transition: opacity var(--dur) var(--ease);
+  display: grid;
+  place-content: center;
+}
+
+.row:hover .check,
+.check:checked,
+.check:focus-visible {
+  opacity: 1;
+}
+
+.check:checked {
+  border-color: var(--text);
+  background: var(--text);
+}
+
+.check:checked::after {
+  content: "";
+  width: 6px;
+  height: 3px;
+  border-left: 1.5px solid var(--on-ink);
+  border-bottom: 1.5px solid var(--on-ink);
+  transform: translateY(-1px) rotate(-45deg);
+}
+
+.check:disabled {
+  visibility: hidden;
+}
+
+.item {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 1px 8px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  text-align: left;
+}
+
+.item:hover {
+  background: var(--hover);
+}
+
+.item[aria-current="true"] {
+  background: var(--surface-2);
+  box-shadow: inset 2px 0 0 var(--text);
+}
+
+.name {
+  font-size: var(--text-sm);
+  font-weight: 560;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--text-2xs);
+  color: var(--faint);
+  white-space: nowrap;
+}
+
+.meta {
+  grid-column: 1 / -1;
+  font-size: var(--text-xs);
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
