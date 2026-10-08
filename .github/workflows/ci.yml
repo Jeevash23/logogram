@@ -2,7 +2,10 @@ name: CI
 
 on:
   push:
+    branches: ["**"]
   pull_request:
+  # The release workflow runs these checks on the tagged commit before publishing.
+  workflow_call:
 
 permissions:
   contents: read

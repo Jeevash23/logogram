@@ -403,11 +403,13 @@ The wheel check covers the CLI, bundled example and fonts, authenticated API and
 assets. Source distributions include the web sources and lockfiles so the bundle can be rebuilt.
 
 Releasing: raise `__version__` and set `__released__` to the release date in
-`src/logogram/__init__.py` (the date drives the "this version is getting old" hint), then publish
-to PyPI so update checks see it.
+`src/logogram/__init__.py` (the date drives the "this version is getting old" hint), commit, and
+push a tag with the same version, such as `v0.1.0`. The Release workflow runs every CI check on
+that commit, builds the wheel and source distribution, and uploads them to PyPI through Trusted
+Publishing, so no token is stored anywhere. PyPI never accepts the same version twice.
 
-Before publishing a release, require all CI jobs to pass and manually check a first GPT-2 download,
-cancel and retry it, then run the example on each supported compute backend. CPU and CUDA are
+Before tagging, manually check a first GPT-2 download, cancel and retry it, then run the example
+on each supported compute backend. CPU and CUDA are
 covered by local development checks; MPS still needs a check on Apple Silicon. Models other than
 GPT-2 small remain best effort.
 

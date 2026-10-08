@@ -13,7 +13,7 @@ authors = [{ name = "The Logogram contributors" }]
 requires-python = ">=3.11"
 keywords = ["interpretability", "mechanistic-interpretability", "activation-patching", "transformers"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
