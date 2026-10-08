@@ -10,6 +10,7 @@ from __future__ import annotations
 import fnmatch
 import json
 import logging
+import math
 import sys
 import threading
 from collections.abc import Callable
@@ -106,9 +107,15 @@ def resolve(model_id: str, revision: str | None) -> RepoFiles:
             cached = cached_snapshot(model_id, revision)
             if cached is not None:
                 sha, path = cached
-                files = [(p.name, p.stat().st_size) for p in path.iterdir() if p.is_file()]
+                files = _select_files(
+                    [(p.name, p.stat().st_size) for p in path.iterdir() if p.is_file()]
+                )
+                weights = [name for name, _ in files if name.endswith(".safetensors")]
                 return RepoFiles(
-                    revision=sha, files=_select_files(files), n_params=None, gated=False
+                    revision=sha,
+                    files=files,
+                    n_params=count_stored_values(path, weights),
+                    gated=False,
                 )
             raise BackendError(
                 f"Couldn't reach Hugging Face, and {model_id} isn't in your local cache. "
@@ -127,15 +134,55 @@ def resolve(model_id: str, revision: str | None) -> RepoFiles:
     )
 
 
+def count_stored_values(folder: Path, names: list[str]) -> int | None:
+    """How many values safetensors files hold, as the Hub reports for a model it knows, read from
+    their headers (no tensor is loaded). None if a file can't be read: loading it will say why."""
+    from safetensors import safe_open
+
+    total = 0
+    try:
+        for name in names:
+            with safe_open(str(folder / name), framework="pt", device="cpu") as f:
+                total += sum(math.prod(f.get_slice(key).get_shape()) for key in f.keys())  # noqa: SIM118
+    except Exception:  # noqa: BLE001
+        return None
+    return total
+
+
 def cached_snapshot(model_id: str, revision: str | None) -> tuple[str, Path] | None:
     """The (commit, folder) of a cached snapshot containing config.json, if any."""
-    from huggingface_hub import try_to_load_from_cache
+    found = cached_file(model_id, "config.json", revision)
+    return None if found is None else (found[0], found[1].parent)
 
-    found = try_to_load_from_cache(model_id, "config.json", revision=revision or "main")
+
+def cached_file(repo_id: str, filename: str, revision: str | None) -> tuple[str, Path] | None:
+    """The commit and local path of ``filename`` in the Hugging Face cache, at ``revision``.
+
+    Without a revision, the cached main branch; failing that, the only cached commit that has the
+    file. Logogram downloads exact commits, which records no branch in the cache, so this is how a
+    model it downloaded opens offline. Several commits and no branch would be a guess, so that is
+    refused with the commits to choose from.
+    """
+    from huggingface_hub import constants, try_to_load_from_cache
+    from huggingface_hub.file_download import repo_folder_name
+
+    depth = len(Path(filename).parts)
+    found = try_to_load_from_cache(repo_id, filename, revision=revision or "main")
     if isinstance(found, str):
-        path = Path(found).parent
-        return path.name, path
-    return None
+        return Path(found).parents[depth - 1].name, Path(found)
+    snapshots = (
+        Path(constants.HF_HUB_CACHE) / repo_folder_name(repo_id=repo_id, repo_type="model")
+    ) / "snapshots"
+    if revision is not None or not snapshots.is_dir():
+        return None
+    commits = sorted(d for d in snapshots.iterdir() if (d / filename).is_file())
+    if len(commits) > 1:
+        names = ", ".join(d.name[:12] for d in commits)
+        raise BackendError(
+            f"Hugging Face can't be reached, and several revisions of {repo_id} are in your local "
+            f"cache ({names}). Enter the one to use as the revision."
+        )
+    return (commits[0].name, commits[0] / filename) if commits else None
 
 
 def validate_local_weights(folder: Path) -> None:

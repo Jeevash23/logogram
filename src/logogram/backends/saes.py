@@ -238,9 +238,10 @@ def download_sae(
     try:
         info = HfApi().model_info(repo, revision=revision, files_metadata=True)
     except Exception as exc:  # noqa: BLE001
-        cached = _cached(repo, prefix, revision)
-        if cached is not None and hub._is_offline_error(exc):
-            return cached
+        if hub._is_offline_error(exc):
+            cached = _cached(repo, prefix, revision)
+            if cached is not None:
+                return cached
         raise hub._friendly_hub_error(repo, exc) from exc
     sizes = {s.rfilename: int(s.size or 0) for s in info.siblings or []}
     if f"{prefix}params.npz" in sizes:
@@ -265,13 +266,12 @@ def download_sae(
 
 
 def _cached(repo: str, prefix: str, revision: str | None) -> tuple[str, Path] | None:
-    from huggingface_hub import try_to_load_from_cache
+    from logogram.backends.hub import cached_file
 
-    found = try_to_load_from_cache(repo, f"{prefix}cfg.json", revision=revision or "main")
-    if not isinstance(found, str):
+    found = cached_file(repo, f"{prefix}cfg.json", revision)
+    if found is None:
         return None
-    folder = Path(found).parent
-    if not any((folder / w).is_file() for w in WEIGHT_FILES):
+    commit, path = found
+    if not any((path.parent / w).is_file() for w in WEIGHT_FILES):
         return None
-    snapshot = folder if not prefix else Path(found).parents[prefix.count("/")]
-    return snapshot.name, folder
+    return commit, path.parent

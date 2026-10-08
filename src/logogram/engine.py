@@ -144,6 +144,21 @@ def compute_baselines(
     return Baselines(**out)
 
 
+def behavior_warnings(baselines: Baselines) -> list[str]:
+    """Warn when the model doesn't do the task: the answer is defined by the clean prompt, so a
+    model that prefers the distractor there doesn't show the behavior the prompts test, and every
+    effect describes something else."""
+    clean = baselines.clean_ld
+    if not len(clean) or float(clean.mean()) >= 0:
+        return []
+    return [
+        f"On the clean prompts the model prefers the distractor (mean logit difference "
+        f"{float(clean.mean()):.3f}; {int((clean > 0).sum())} of {len(clean)} prefer the answer), "
+        "so it doesn't show the behavior these prompts test. Check the baseline, or use prompts "
+        "this model solves."
+    ]
+
+
 def check_gap(
     spec: Spec,
     baselines: Baselines,
@@ -152,7 +167,7 @@ def check_gap(
     reference: str,
 ) -> list[str]:
     """Refuse a normalization the gap can't support, and warn when it is unreliable."""
-    warnings: list[str] = []
+    warnings: list[str] = behavior_warnings(baselines)
     n = len(prompts)
     gap = baselines.ld(reference) - baselines.ld(receiver)
     mean_gap = float(gap.mean())

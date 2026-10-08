@@ -289,6 +289,8 @@ class MemoryEstimate:
     n_params: int
     weights: int
     activations: int
+    # Extra memory for a moment while the model loads, when its weights are processed.
+    processing: int
     margin: int
     total: int
     available: int
@@ -328,8 +330,10 @@ def estimate_memory(
     batch_size: int = 64,
     seq_len: int = 32,
     loaded_bytes: int = 0,
+    process_weights: bool = False,
 ) -> MemoryEstimate:
-    """Weights + activations of one batch + a safety margin, against free memory.
+    """Weights + the larger of the activations of one batch and, while the model loads, weight
+    processing + a safety margin, against free memory.
 
     ``loaded_bytes`` is memory held by a model that loading this one would replace.
     """
@@ -340,10 +344,13 @@ def estimate_memory(
     # patterns, final logits for the last position, plus one layer of cached source activations.
     per_layer = tokens * (8 * d_model + 2 * d_mlp) * b + 3 * batch_size * n_heads * seq_len**2 * b
     activations = per_layer * 2 + batch_size * d_vocab * 4 + 3 * tokens * d_model * b
-    margin = int(0.15 * (weights + activations)) + (
-        512 * 1024**2 if device == "cuda" else 256 * 1024**2
-    )
-    total = weights + activations + margin
+    # TransformerLens processes the weights on float32 copies, on the model's device: while the
+    # model loads, that takes about three more float32 copies of the weights, or four for a 16-bit
+    # model (measured on GPT-2 and Pythia).
+    processing = n_params * 4 * (3 if dtype == "float32" else 4) if process_weights else 0
+    need = weights + max(activations, processing)
+    margin = int(0.15 * need) + (512 * 1024**2 if device == "cuda" else 256 * 1024**2)
+    total = need + margin
     available = available_memory(device) + loaded_bytes
     if total <= 0.8 * available:
         verdict = "fits"
@@ -354,15 +361,21 @@ def estimate_memory(
     where = {"cuda": "GPU memory", "mps": "unified memory", "cpu": "RAM"}.get(device, "memory")
     explanation = (
         f"{n_params / 1e6:,.0f}M stored values × {b} bytes ({dtype}) for weights; activations for a "
-        f"batch of {batch_size} prompts of {seq_len} tokens; a margin of 15% plus runtime "
-        f"overhead. Compared with free {where}."
+        f"batch of {batch_size} prompts of {seq_len} tokens"
     )
+    if processing:
+        explanation += (
+            "; for a moment while the model loads, float32 copies of the weights to process them "
+            "(loading with weight processing off avoids this)"
+        )
+    explanation += f"; a margin of 15% plus runtime overhead. Compared with free {where}."
     return MemoryEstimate(
         device=device,
         dtype=dtype,
         n_params=n_params,
         weights=weights,
         activations=activations,
+        processing=processing,
         margin=margin,
         total=total,
         available=available,

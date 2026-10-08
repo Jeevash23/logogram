@@ -310,6 +310,7 @@ class MemoryEstimateOut(_Out):
     n_params: int
     weights: int
     activations: int
+    processing: int
     margin: int
     total: int
     available: int

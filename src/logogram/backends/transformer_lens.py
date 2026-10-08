@@ -5,7 +5,9 @@ Abstract sites map to TransformerLens hook points here and nowhere else.
 
 from __future__ import annotations
 
+import gc
 import logging
+import math
 import threading
 import warnings
 from collections.abc import Callable
@@ -121,7 +123,12 @@ class ModelChecks:
     heads: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        # JSON has no infinity: a comparison that failed on values that aren't finite numbers
+        # reads as not measured.
+        return {
+            k: None if isinstance(v, float) and not math.isfinite(v) else v
+            for k, v in asdict(self).items()
+        }
 
 
 def _probe_tokens(d_vocab: int, device: str) -> torch.Tensor:
@@ -131,7 +138,18 @@ def _probe_tokens(d_vocab: int, device: str) -> torch.Tensor:
 
 def _relative(a: torch.Tensor, b: torch.Tensor) -> float:
     a, b = a.float(), b.float()
-    return float((a - b).abs().max() / b.abs().max().clamp_min(1e-6))
+    error = float((a - b).abs().max() / b.abs().max().clamp_min(1e-6))
+    # An overflow (inf or NaN) agrees with nothing. A NaN would pass every "error <= tolerance"
+    # test, and max() over several errors can drop it.
+    return error if math.isfinite(error) else math.inf
+
+
+# What to do when a dtype can't hold a model's values.
+RANGE_FIX = {
+    "float16": "Load it in bfloat16 or float32, which have a wider range than float16.",
+    "bfloat16": "Load it in float32.",
+    "float32": "Its weights may be damaged: delete it from the Hugging Face cache and load it again.",
+}
 
 
 def _log_prob_error(a: torch.Tensor, b: torch.Tensor) -> float:
@@ -247,6 +265,7 @@ class TransformerLensBackend(ModelBackend):
         self.bridge = bridge
         self.info = info
         self.tokenizer = bridge.tokenizer
+        self.bos_token_id = own_bos_token_id(bridge)
         self._logits_to_keep = self._supports_logits_to_keep()
 
     # -- construction ------------------------------------------------------------------------
@@ -268,6 +287,11 @@ class TransformerLensBackend(ModelBackend):
         with torch.no_grad():
             # The model's own predictions, before TransformerLens touches its weights.
             reference = bridge.original_model(probe).logits.float()
+        if not torch.isfinite(reference).all():
+            raise BackendError(
+                f"In {dtype}, {model_id}'s own forward pass gives values that aren't finite "
+                f"numbers (it overflows), so its predictions can't be checked. {RANGE_FIX[dtype]}"
+            )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             bridge.enable_compatibility_mode(
@@ -281,6 +305,14 @@ class TransformerLensBackend(ModelBackend):
                 "Logogram can't run head experiments on it."
             )
         checks = check_model(bridge, probe, reference, int(cfg.n_layers), kinds, dtype)
+        if math.isinf(checks.function):
+            what = (
+                "Processing the weights of" if process_weights else "TransformerLens's version of"
+            )
+            raise BackendError(
+                f"{what} {model_id} gives values that aren't finite numbers in {dtype}, while the "
+                f"model itself doesn't. {RANGE_FIX[dtype]}"
+            )
         if checks.function > checks.tolerance:
             if process_weights:
                 raise BackendError(
@@ -335,7 +367,7 @@ class TransformerLensBackend(ModelBackend):
                 else None,
                 "model_type": str(model_type or "unknown"),
                 "n_key_value_heads": int(getattr(cfg, "n_key_value_heads", None) or cfg.n_heads),
-                "bos": getattr(bridge.tokenizer, "bos_token_id", None) is not None,
+                "bos": own_bos_token_id(bridge) is not None,
                 # TransformerLens marks "no soft-cap" with a value of zero or below.
                 "logit_soft_cap": _soft_cap(cfg),
                 "checks": checks.to_dict(),
@@ -353,8 +385,7 @@ class TransformerLensBackend(ModelBackend):
             return False
 
     def _bos_or_zero(self) -> int:
-        bos = getattr(self.tokenizer, "bos_token_id", None)
-        return int(bos) if bos is not None else 0
+        return int(self.bos_token_id) if self.bos_token_id is not None else 0
 
     # -- tokens ------------------------------------------------------------------------------
 
@@ -363,7 +394,7 @@ class TransformerLensBackend(ModelBackend):
         ids = list(enc["input_ids"])
         offsets = [tuple(o) for o in enc["offset_mapping"]]
         if prepend_bos:
-            bos = getattr(self.tokenizer, "bos_token_id", None)
+            bos = self.bos_token_id
             if bos is None:
                 raise BackendError(
                     "This model's tokenizer has no beginning-of-sequence token. Set "
@@ -797,20 +828,87 @@ def load_model(
 
     folder = hub.download(model_id, repo, on_download, cancel=cancel)
     emit("loading", revision=repo.revision)
-    bridge = boot_local(folder, device=resolved_device, dtype=dtype)
-    emit("processing")
-    backend = TransformerLensBackend.from_bridge(
-        bridge,
-        model_id=model_id,
-        revision=repo.revision,
-        dtype=dtype,
-        process_weights=process_weights,
-    )
+
+    def boot_and_check() -> TransformerLensBackend:
+        bridge = boot_local(folder, device=resolved_device, dtype=dtype)
+        emit("processing")
+        return TransformerLensBackend.from_bridge(
+            bridge,
+            model_id=model_id,
+            revision=repo.revision,
+            dtype=dtype,
+            process_weights=process_weights,
+        )
+
+    release_memory()  # what an earlier attempt that failed may still hold
+    try:
+        backend: TransformerLensBackend | None = boot_and_check()
+    except (torch.OutOfMemoryError, RuntimeError) as exc:
+        if not is_out_of_memory(exc):
+            raise
+        backend = None
+    if backend is None:
+        # The partly loaded model is freed once the exception and its frames are gone; give its
+        # memory back, so the next attempt has it.
+        release_memory()
+        raise BackendError(out_of_memory_message(resolved_device, process_weights))
     if cancel is not None and cancel.is_set():
         backend.close()
         raise Cancelled()
     emit("ready")
     return backend
+
+
+def is_out_of_memory(exc: BaseException) -> bool:
+    if isinstance(exc, torch.OutOfMemoryError):
+        return True
+    # Some devices (Apple's MPS, the CPU allocator) report it as a plain RuntimeError.
+    text = str(exc)
+    return (
+        isinstance(exc, RuntimeError)
+        and not isinstance(exc, BackendError)
+        and ("out of memory" in text or "can't allocate memory" in text)
+    )
+
+
+def release_memory() -> None:
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    mps = getattr(torch, "mps", None)
+    if mps is not None and torch.backends.mps.is_available():
+        mps.empty_cache()
+
+
+def out_of_memory_message(device: str, process_weights: bool) -> str:
+    where = {"cuda": "GPU memory", "mps": "unified memory"}.get(device, "memory")
+    if process_weights:
+        return (
+            f"The model doesn't fit in {where} while its weights are processed: processing works "
+            "on float32 copies of the weights and needs several times their size for a moment. "
+            "Load it with weight processing off, or choose a smaller model or another device."
+        )
+    return (
+        f"The model doesn't fit in {where}. Choose a smaller model, a 16-bit dtype or another "
+        "device."
+    )
+
+
+# Where boot_local records the model's own beginning-of-sequence token.
+_OWN_BOS = "_logogram_bos_token_id"
+
+
+def own_bos_token_id(bridge: Any) -> int | None:
+    """The beginning-of-sequence token of the model's own tokenizer, or None if it has none.
+
+    TransformerLens gives a tokenizer without one a substitute (for Qwen, its end-of-text token,
+    which the model never saw at the start of a sequence), so :func:`boot_local` records the
+    model's own before the bridge's tokenizer replaces it. A bridge booted elsewhere falls back to
+    its tokenizer's.
+    """
+    if _OWN_BOS in bridge.__dict__:
+        return bridge.__dict__[_OWN_BOS]
+    return getattr(bridge.tokenizer, "bos_token_id", None)
 
 
 def boot_local(folder: Path, *, device: str, dtype: str) -> Any:
@@ -840,7 +938,8 @@ def boot_local(folder: Path, *, device: str, dtype: str) -> Any:
                 local_files_only=True,
                 trust_remote_code=False,
             )
-            return TransformerBridge.boot_transformers(
+            own_bos = tokenizer.bos_token_id  # read first: booting gives the tokenizer a substitute
+            bridge = TransformerBridge.boot_transformers(
                 str(folder),
                 device=device,
                 dtype=DTYPES[dtype],
@@ -848,14 +947,13 @@ def boot_local(folder: Path, *, device: str, dtype: str) -> Any:
                 tokenizer=tokenizer,
                 trust_remote_code=False,
             )
-    except torch.OutOfMemoryError as exc:
-        raise BackendError(
-            "The model doesn't fit in GPU memory. Choose a smaller model, a 16-bit dtype, or "
-            "the CPU."
-        ) from exc
+            bridge.__dict__[_OWN_BOS] = own_bos
+            return bridge
     except BackendError:
         raise
     except Exception as exc:  # noqa: BLE001
+        if is_out_of_memory(exc):
+            raise  # load_model frees the memory and says what to do
         raise BackendError(
             f"TransformerLens couldn't load this model ({type(exc).__name__}: {exc}). Models "
             "TransformerLens supports are listed in its documentation."

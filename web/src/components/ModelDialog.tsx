@@ -52,7 +52,7 @@ export function ModelDialog() {
     let cancelled = false;
     const t = window.setTimeout(() => {
       setEstimating(true);
-      api.estimate({ id, revision: revision.trim() || null, dtype, device }).then(
+      api.estimate({ id, revision: revision.trim() || null, dtype, device, process_weights: processWeights }).then(
         (e) => {
           if (!cancelled) {
             setEstimate(e);
@@ -71,7 +71,7 @@ export function ModelDialog() {
       cancelled = true;
       window.clearTimeout(t);
     };
-  }, [open, id, revision, dtype, device, choice]);
+  }, [open, id, revision, dtype, device, processWeights, choice]);
 
   const load = async () => {
     const out = await guard(() =>
@@ -194,7 +194,8 @@ export function ModelDialog() {
             </div>
             <div className={s.bar} aria-hidden="true">
               <span style={{ width: `${Math.min(100, (est.weights / est.available) * 100)}%` }} className={s.weights} />
-              <span style={{ width: `${Math.min(100, (est.activations / est.available) * 100)}%` }} className={s.acts} />
+              {/* The larger need beside the weights: processing them while loading, or a batch's activations. */}
+              <span style={{ width: `${Math.min(100, (Math.max(est.activations, est.processing) / est.available) * 100)}%` }} className={est.processing > est.activations ? s.processing : s.acts} />
               <span style={{ width: `${Math.min(100, (est.margin / est.available) * 100)}%` }} className={s.margin} />
             </div>
             <dl className={s.breakdown}>
@@ -202,6 +203,12 @@ export function ModelDialog() {
               <dd>{bytes(est.weights)}</dd>
               <dt>Activations</dt>
               <dd>{bytes(est.activations)}</dd>
+              {est.processing > 0 && (
+                <>
+                  <dt title="Float32 copies of the weights, for a moment while the model loads">Processing</dt>
+                  <dd>{bytes(est.processing)}</dd>
+                </>
+              )}
               <dt>Margin</dt>
               <dd>{bytes(est.margin)}</dd>
               <dt title="Parameters and stored buffers, as listed in the safetensors files">Stored values</dt>

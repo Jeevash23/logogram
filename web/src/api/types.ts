@@ -706,6 +706,8 @@ export interface MemoryEstimate {
   n_params: number;
   weights: number;
   activations: number;
+  /** Extra memory for a moment while the model loads, when its weights are processed. */
+  processing: number;
   margin: number;
   total: number;
   available: number;

@@ -117,6 +117,18 @@ def test_site_stats_ratio_of_means_and_ci():
     assert int(stats.sign_flips[2]) > 30 and int(stats.sign_flips[0]) == 0
 
 
+def test_a_model_that_prefers_the_distractor_is_flagged():
+    # As Pythia-70m does on IOI prompts: the clean prompts don't show the behavior they test.
+    from logogram.engine import Baselines, behavior_warnings
+
+    ones = np.ones(4)
+    solves = Baselines(np.array([2.0, 1.0, -0.5, 3.0]), -ones, ones, ones)
+    assert behavior_warnings(solves) == []
+    fails = Baselines(np.array([-1.0, 0.5, -0.8, -0.2]), ones, ones, ones)
+    (warning,) = behavior_warnings(fails)
+    assert "prefers the distractor" in warning and "1 of 4 prefer the answer" in warning
+
+
 def test_rank_correlation():
     assert rankdata(np.array([3.0, 1.0, 2.0, 2.0])).tolist() == [4.0, 1.0, 2.5, 2.5]
     assert spearman(np.arange(10.0), np.arange(10.0) ** 3) == pytest.approx(1.0)

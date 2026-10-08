@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 
 import pyarrow.parquet as pq
+import pytest
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
@@ -74,6 +75,38 @@ def test_cli_reproduces_the_app_exactly(tiny_backend, tmp_path, monkeypatch, spe
     a = pq.read_table(root / "experiments" / run_id / "results.parquet")
     b = pq.read_table(runs[0] / "results.parquet")
     assert a.equals(b)
+
+
+@pytest.mark.parametrize(
+    ("experiment", "scope"),
+    [
+        (
+            {"kind": "direct_logit_attribution", "prompts": "clean"},
+            {"kind": "heads", "position": {"kind": "last"}},
+        ),
+        (
+            {"kind": "attribution_patching", "direction": "clean_to_corrupt"},
+            {"kind": "heads", "position": {"kind": "all"}},
+        ),
+    ],
+)
+def test_a_rerun_of_a_method_that_leaves_values_unmeasured_is_identical(
+    tiny_backend, project, monkeypatch, spec_factory, experiment, scope
+):
+    # Direct effects and estimates have no patched probability (NaN), which must match itself.
+    from logogram.runner import run_spec
+
+    monkeypatch.setattr("logogram.project.config_dir", lambda: project.root / "config")
+    first = run_spec(
+        spec_factory(experiment=experiment, scope=scope), project, backend=tiny_backend
+    )
+    assert first.status == "finished"
+    monkeypatch.setattr(
+        "logogram.runner.default_provider", lambda on_event=None: lambda ref: tiny_backend
+    )
+    result = CliRunner().invoke(cli, ["run", str(first.folder / "spec.json")])
+    assert result.exit_code == 0, result.output
+    assert f"Identical to {first.run_id}" in result.output
 
 
 def test_open_refuses_a_folder_without_a_project(tmp_path):

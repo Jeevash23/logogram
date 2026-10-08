@@ -157,7 +157,7 @@ export const api = {
       presets: ModelPreset[];
       suggestions: string[];
     }>("/api/models/presets"),
-  estimate: (body: { id: string; revision?: string | null; dtype: Dtype; device: Device }) =>
+  estimate: (body: { id: string; revision?: string | null; dtype: Dtype; device: Device; process_weights: boolean }) =>
     post<EstimateResponse>("/api/models/estimate", body),
   loadModel: (body: {
     id: string;

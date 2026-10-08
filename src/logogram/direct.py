@@ -24,6 +24,7 @@ from logogram.engine import (
     ProgressFn,
     _answer_tensors,
     _chunks,
+    behavior_warnings,
     compute_baselines,
 )
 from logogram.prompts import PreparedPrompt, group_by_length
@@ -127,7 +128,7 @@ def run_direct_effects(
                 on_progress(done, n, n_layers - 1)
 
     gap = baselines.ld(which)
-    warnings: list[str] = []
+    warnings: list[str] = behavior_warnings(baselines)
     mean_gap = float(gap.mean())
     if spec.metric.normalization == "dataset_gap" and abs(mean_gap) < 1e-3:
         raise EngineError(

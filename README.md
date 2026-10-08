@@ -229,7 +229,11 @@ estimate misses saturation (in attention, normalization and the final softmax) a
 even invert an effect, so **Verify top 10 by patching** on the results page patches the sites
 with the largest estimated effects for real and opens the comparison: the rank correlation, and
 any estimate whose sign patching confidently reverses. **Check robustness** can also patch the
-whole sweep.
+whole sweep. Do that for residual stream sweeps: an estimate is least reliable where patching
+replaces a whole token's representation. In the IOI example on GPT-2 small, patching the residual
+stream at the changed name in the first layer restores the whole answer while its estimate is
+slightly negative, so verifying the top estimates would never reach it. Head outputs track
+patching closely.
 
 **Direct logit attribution** splits the logit difference of the clean or the corrupt prompts
 (your choice; there is no default) into what each head, attention output and MLP output writes
@@ -266,7 +270,10 @@ like patching, so 1 means the steered prompts moved as far as switching to the o
 random direction of the same length, at the same strengths, runs alongside as a control, and the
 results show both: a layer × strength map with the control columns muted, and, for a selected site,
 its effect at every strength with intervals. **Check robustness** offers another split of the pairs
-or the other direction.
+or the other direction. A mean difference steers only when the pairs differ the same way. In IOI
+prompts that mix the ABBA and BABA orders, the difference at the last token flips with the order,
+so the mean cancels and steering does no more than the control; generate prompts of one order to
+steer.
 
 **SAE features.** A sparse autoencoder (SAE) rewrites one of the model's activations as a few active
 features out of thousands, each a direction in the model, plus an error it misses. In
@@ -335,7 +342,7 @@ Every experiment is a `spec.json`. Nothing that can change a number is left impl
 | Field | Values |
 |---|---|
 | `model.revision` | A commit. `null` resolves the current main branch at run time; the saved spec pins what ran. |
-| `model.process_weights` | Fold LayerNorm and center weights, as TransformerLens does by default. Logit differences don't change; zero ablation of head outputs does, because value biases are folded. |
+| `model.process_weights` | Fold LayerNorm and center weights, as TransformerLens does by default. Logit differences don't change. Value biases are folded into the attention output's bias, so zero ablation of head outputs and heads' direct effects do change (by up to several logits in Qwen 2.5, whose value biases are large); a layer's attention output doesn't. |
 | `dataset.sha256` | If set, the run refuses a dataset file that has changed. |
 | `experiment` | `{"kind": "activation_patching", "direction": "clean_to_corrupt" \| "corrupt_to_clean"}`, `{"kind": "ablation", "baseline": …}` with `{"kind": "zero"}`, `{"kind": "mean", "reference": "clean" \| "corrupt"}` or `{"kind": "resample", "pool": "clean" \| "corrupt", "donors": 10, "seed": 0}`, `{"kind": "attribution_patching", "direction": …}` (same directions as patching), `{"kind": "direct_logit_attribution", "prompts": "clean" \| "corrupt"}`, `{"kind": "path_patching", "direction": …, "receivers": [{"kind": "head", "layer": 9, "head": 9, "input": "q" \| "k" \| "v"}, {"kind": "logits"}], "freeze_mlps": false}`, or `{"kind": "steering", "apply_to": "clean" \| "corrupt", "coefficients": [-1, 1, 2], "train_fraction": 0.5, "seed": 0, "control": true}` with a scope of one residual component per layer (`layer_components`) or residual `sites`, at one token |
 | `scope` | `{"kind": "heads", "position": …}`, `{"kind": "layer_position", "site": "resid_pre", "positions": "each" \| "labels"}`, `{"kind": "layer_components", "components": ["attn_out", "mlp_out"], "position": …}` `{"kind": "sites", "sites": [{"kind": "head", "layer": 9, "head": 9, "position": {"kind": "label", "label": "end"}}]}` (feature sites are `{"kind": "sae_feature", "layer": 8, "feature": 1234, "position": …}`), or, for attribution patching, `{"kind": "features", "position": …, "top": 50}` |
@@ -435,12 +442,16 @@ TransformerLens 4 loads well over a hundred architectures, and Logogram works wi
 decoder-only language models among them: GPT-2, Pythia, Llama, Mistral, SmolLM, Qwen, Gemma,
 OLMo, Phi and more. The model dialog lists starting points, and any other Hugging Face id can be
 typed in. Before downloading, Logogram checks that TransformerLens supports the architecture and
-estimates the memory needed (weights, activations and a margin) against what is free.
+estimates the memory needed (weights, activations and a margin) against what is free. Processing
+the weights needs more for a moment while the model loads: TransformerLens works on float32
+copies, three to four times the float32 size of the weights. The estimate includes them, so a
+model that fits only without processing (Qwen 2.5 0.5B on a 6 GB GPU) says so before it loads.
 
 Rather than trusting a list, Logogram checks every model when it loads, on a short fixed input:
 
 * TransformerLens's version of the model must predict what the original model predicts. If weight
-  processing changes the predictions, loading with processed weights is refused.
+  processing changes the predictions, loading with processed weights is refused. So is a dtype in
+  which the model overflows (Pythia in float16).
 * It measures how each layer adds attention and the MLP to the residual stream: one after the
   other (sequential), or both from the same input (parallel, as in Pythia, GPT-J and Phi). Only
   sequential layers have a residual stream between attention and MLP (`resid_mid`), and the layer
@@ -448,11 +459,15 @@ Rather than trusting a list, Logogram checks every model when it loads, on a sho
 * Layer predictions are offered when the final normalization and unembedding, with any logit
   soft-capping, reproduce the model's output.
 
-GPT-2 small is the model the bundled example was made for, and the one run end to end with real
-weights. The test suite runs the sanity checks on tiny random models of the Llama, Pythia, Qwen 2,
-Gemma 2 and OLMo 2 families without downloading anything. Pythia publishes checkpoints from
-throughout training as revisions (`step1000` to `step143000`), so an experiment can be rerun at
-several points of training.
+GPT-2 small is the model the bundled example was made for. Every method has been run end to end
+with real weights on GPT-2 small (with a SAELens and an OpenAI SAE), Pythia-70m (with an
+EleutherAI SAE) and Qwen 2.5 0.5B, and the test suite runs the sanity checks on tiny random models
+of the Llama, Pythia, Qwen 2, Gemma 2 and OLMo 2 families without downloading anything. The
+example's names are single tokens for GPT-2 and Qwen but not all for Pythia; for another model,
+generate IOI prompts in the app, which keeps only names that are single tokens for it. A small
+model may not do the task at all (Pythia-70m prefers the repeated name), and its runs then say so.
+Pythia publishes checkpoints from throughout training as revisions (`step1000` to `step143000`),
+so an experiment can be rerun at several points of training.
 
 Some tokenizers, such as Qwen's, have no beginning-of-sequence token. Logogram then runs prompts
 without one, and the spec records it. Answers and distractors must still be single tokens.
@@ -503,8 +518,8 @@ Publishing, so no token is stored anywhere. PyPI never accepts the same version 
 
 Before tagging, manually check a first GPT-2 download, cancel and retry it, then run the example
 on each supported compute backend. CPU and CUDA are covered by local development checks; MPS
-still needs a check on Apple Silicon. Other model families are checked when they load and in the
-tiny-model tests, but not yet run end to end with their real weights.
+still needs a check on Apple Silicon. Pythia and Qwen 2.5 have also been run end to end with
+their real weights; other families are checked when they load and in the tiny-model tests.
 
 Model access goes through `logogram.backends.base.ModelBackend`. TransformerLens is the only
 backend today; remote execution and other libraries can be added behind the same interface.

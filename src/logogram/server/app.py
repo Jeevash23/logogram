@@ -54,8 +54,8 @@ from logogram.system import SystemReport
 log = logging.getLogger(__name__)
 
 # Starting points that load through TransformerLens and fit an ordinary machine. Every model is
-# checked again when it loads (backends/transformer_lens.check_model); only GPT-2 small has been
-# run end to end with the bundled example.
+# checked again when it loads (backends/transformer_lens.check_model); "tested" ones have run every
+# method end to end with the bundled example.
 MODEL_PRESETS = [
     {
         "id": "openai-community/gpt2",
@@ -96,7 +96,7 @@ MODEL_PRESETS = [
         "id": "Qwen/Qwen2.5-0.5B",
         "label": "Qwen2.5 0.5B",
         "detail": "No beginning-of-sequence token",
-        "tested": False,
+        "tested": True,
         "gated": False,
     },
     {
@@ -229,6 +229,7 @@ class EstimateRequest(BaseModel):
     revision: str | None = None
     dtype: Literal["float32", "float16", "bfloat16"] = "float32"
     device: Literal["auto", "cpu", "cuda", "mps"] = "auto"
+    process_weights: bool = True
 
 
 class BaselineRequest(AnalysisRequest):
@@ -650,6 +651,7 @@ def create_app(
             dtype=body.dtype,
             device=device,
             loaded_bytes=loaded,
+            process_weights=body.process_weights,
         )
         return {
             "id": body.id,

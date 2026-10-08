@@ -59,6 +59,12 @@
   background: var(--muted);
 }
 
+/* Needed only for a moment, while the model loads. */
+.processing {
+  background: var(--muted);
+  opacity: 0.5;
+}
+
 .margin {
   background: var(--faint);
 }

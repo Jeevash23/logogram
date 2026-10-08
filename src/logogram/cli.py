@@ -464,26 +464,36 @@ def _print_summary(summary: dict, top: int) -> None:  # type: ignore[type-arg]
 
 
 def _report_reproduction(original: Path, new: Path, original_id: str) -> None:
+    import numpy as np
+    import pyarrow as pa
     import pyarrow.parquet as pq
 
     a = pq.read_table(original)
     b = pq.read_table(new)
-    if a.equals(b):
+    if a.num_rows != b.num_rows or a.column_names != b.column_names:
+        typer.echo(f"Differs from {original_id}: {a.num_rows} rows before, {b.num_rows} now.")
+        return
+    # Values a method doesn't measure (a direct effect's patched probability) are NaN in both, and
+    # match; Arrow's own equality never matches NaN.
+    largest = 0.0
+    for name in a.column_names:
+        x, y = a.column(name), b.column(name)
+        if not pa.types.is_floating(x.type):
+            if not x.equals(y):
+                largest = np.inf
+            continue
+        u, v = x.to_numpy(), y.to_numpy()
+        both = np.isnan(u) & np.isnan(v)
+        change = np.where(both, 0.0, np.abs(u - v))
+        largest = max(largest, float(np.nan_to_num(change, nan=np.inf).max(initial=0.0)))
+    if largest == 0.0:
         typer.echo(
             f"Identical to {original_id}: all {a.num_rows:,} per-prompt values match exactly."
         )
         return
-    import numpy as np
-
-    if a.num_rows != b.num_rows:
-        typer.echo(f"Differs from {original_id}: {a.num_rows} rows before, {b.num_rows} now.")
-        return
-    diff = np.abs(
-        np.asarray(a.column("patched_logit_diff")) - np.asarray(b.column("patched_logit_diff"))
-    )
     typer.echo(
-        f"Differs from {original_id}: largest change in a patched logit difference is "
-        f"{diff.max():.3g}. Check the device, dtype and library versions in the two manifests."
+        f"Differs from {original_id}: largest change in a per-prompt value is {largest:.3g}. "
+        "Check the device, dtype and library versions in the two manifests."
     )
 
 
