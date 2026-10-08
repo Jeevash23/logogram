@@ -20,6 +20,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
@@ -51,7 +52,7 @@ logogram = "logogram.cli:main"
 [dependency-groups]
 dev = [
     "pytest>=8",
-    "httpx>=0.27",
+    "httpx2>=2.13",
     "ruff==0.16.10",
 ]
 

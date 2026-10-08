@@ -34,6 +34,8 @@ from logogram.prompts import PreparedPrompt, group_by_length
 from logogram.sites import ResolvedSite, expand_scope, resolve_position
 from logogram.spec import AllPositions, AttributionPatching, Spec
 
+RESIDUAL = ("resid_pre", "resid_mid", "resid_post")
+
 
 def run_attribution_patching(
     spec: Spec,
@@ -99,6 +101,14 @@ def run_attribution_patching(
             if on_progress is not None:
                 on_progress(done, n, info.n_layers - 1)
 
+    if any(rs.kind in RESIDUAL for rs in sites):
+        warnings.append(
+            "Estimates at residual stream sites can miss effects where patching replaces a whole "
+            "token's representation: in GPT-2 small's IOI example, patching the residual stream at "
+            "the changed name in the first layer restores the whole answer, while its estimate is "
+            "slightly negative. Verifying the top estimates can't catch such a miss; Check "
+            "robustness patches every site."
+        )
     receiver_ld = baselines.ld(receiver)
     result = EngineResult(
         sites=sites,

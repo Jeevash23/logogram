@@ -400,3 +400,42 @@ def test_a_run_that_has_ended_is_never_listed_as_running(client, ready, project,
     ready.job = Job(id="draft", kind="run", title="test", run_id=draft)
     status = {r["id"]: r["status"] for r in client.get("/api/runs", headers=HEADERS).json()}
     assert status[draft] == "running"
+
+
+def test_a_run_can_be_checked_in_float32(
+    app, client, ready, spec_factory, monkeypatch, tiny_model_dir
+):
+    from logogram.backends.transformer_lens import TransformerLensBackend, boot_local
+
+    def tiny(dtype):
+        return TransformerLensBackend.from_bridge(
+            boot_local(tiny_model_dir, device="cpu", dtype=dtype),
+            model_id="tiny-gpt2",
+            revision="test",
+            dtype=dtype,
+            process_weights=True,
+        )
+
+    loaded = []
+
+    def load(model_id, *, dtype="float32", **kwargs):
+        loaded.append(dtype)
+        return tiny(dtype)
+
+    # Its own model, since switching precision closes the loaded one.
+    ready.backend = tiny("bfloat16")
+    monkeypatch.setattr("logogram.backends.transformer_lens.load_model", load)
+    model = {"id": "tiny-gpt2", "revision": "test", "device": "cpu", "dtype": "bfloat16"}
+    spec = spec_factory(model=model).model_dump(mode="json")
+    run_id = client.post("/api/runs", json={"spec": spec}, headers=HEADERS).json()["run_id"]
+    assert _wait(client, run_id) == "finished"
+    url = f"/api/runs/{run_id}/robustness"
+    assert client.post(url, json={"dtype": "bfloat16"}, headers=HEADERS).status_code == 400
+    assert client.post(url, json={}, headers=HEADERS).status_code in (400, 422)
+    r = client.post(url, json={"dtype": "float32"}, headers=HEADERS)
+    assert r.status_code == 200, r.text
+    assert _wait(client, r.json()["run_id"]) == "finished"
+    assert loaded == ["float32"]
+    run = client.get(f"/api/runs/{r.json()['run_id']}", headers=HEADERS).json()
+    assert run["spec"]["model"]["dtype"] == "float32"
+    assert run["spec"]["experiment"] == spec["experiment"]

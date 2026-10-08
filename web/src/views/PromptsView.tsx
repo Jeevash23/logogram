@@ -5,6 +5,7 @@ import type { IOITemplate, PromptRecord, TokenStripData } from "../api/types";
 import { TokenGrid } from "../components/TokenStrip";
 import { Button, Callout, Checkbox, Choices, Field, Input, Segmented, TextArea } from "../components/ui";
 import { plural } from "../lib/format";
+import { modelName } from "../lib/hooks";
 import { useStore } from "../store/app";
 import s from "./views.module.css";
 
@@ -343,6 +344,8 @@ function DatasetTable() {
   const dataset = useStore((st) => st.dataset);
   const index = useStore((st) => st.promptIndex);
   const setIndex = useStore((st) => st.setPromptIndex);
+  const model = useStore((st) => st.model);
+  const [busy, setBusy] = useState(false);
   const issuesByIndex = useMemo(() => {
     const map = new Map<number, string[]>();
     for (const i of dataset?.issues ?? []) map.set(i.index, [...(map.get(i.index) ?? []), i.message]);
@@ -370,6 +373,13 @@ function DatasetTable() {
         <Callout tone="error" title={`${plural(nIssues, "prompt")} can't be used with this model`}>
           Experiments refuse datasets with unusable prompts, so results never silently skip any. Fix these lines in
           the file, or regenerate the dataset with the model loaded.
+          {model.state === "ready" && model.info && dataset.records.some((r) => r.meta?.template) && (
+            <div style={{ marginTop: 8 }}>
+              <Button size="small" disabled={busy} onClick={() => void regenerate(dataset.n, model.info?.id, setBusy)}>
+                {busy ? "Generating…" : `Generate IOI prompts for ${modelName(model.info.id)}`}
+              </Button>
+            </div>
+          )}
         </Callout>
       )}
       <table className={s.table}>
@@ -409,4 +419,24 @@ function DatasetTable() {
       {dataset.n > shown.length && <p className={s.faint}>Showing the first {shown.length} prompts.</p>}
     </div>
   );
+}
+
+/** A new IOI dataset from the default templates, with only names that are single tokens for the
+ * loaded model (the server filters them), saved beside the others and selected. */
+async function regenerate(size: number, modelId: string | undefined, setBusy: (busy: boolean) => void) {
+  const st = useStore.getState();
+  setBusy(true);
+  const out = await st.guard(async () => {
+    const templates = (await api.ioiTemplates()).filter((t) => t.default).map((t) => t.id);
+    const taken = new Set((st.project?.datasets ?? []).map((d) => d.name));
+    const base = `ioi-${modelName(modelId).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`;
+    let name = base;
+    for (let k = 2; taken.has(name); k++) name = `${base}-${k}`;
+    return api.generateIOI({ name, n: Math.max(32, size), seed: 0, templates, patterns: ["ABBA", "BABA"], corruption: "flip" });
+  });
+  setBusy(false);
+  if (!out) return;
+  await st.refreshProject();
+  await st.selectDataset(out.path);
+  st.notify(`Saved ${out.path}, with names that are single tokens for ${modelName(modelId)}. Check the baseline next.`);
 }

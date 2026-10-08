@@ -13,14 +13,14 @@ permissions:
 jobs:
   privacy:
     name: Privacy check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - run: python3 scripts/check_privacy.py
 
   lint:
     name: Lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.2.0
@@ -34,8 +34,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest, python: "3.11" }
-          - { os: ubuntu-latest, python: "3.13" }
+          - { os: ubuntu-24.04, python: "3.11" }
+          - { os: ubuntu-24.04, python: "3.13" }
+          - { os: ubuntu-24.04, python: "3.14" }
           - { os: macos-latest, python: "3.12" }
           - { os: windows-latest, python: "3.12" }
     steps:
@@ -43,7 +44,7 @@ jobs:
       - uses: astral-sh/setup-uv@v10.2.0
       # CPU-only PyTorch keeps CI fast; the tests use a tiny local model and no network.
       - run: uv venv --python ${{ matrix.python }}
-      - run: uv pip install --torch-backend=cpu -e . pytest httpx
+      - run: uv pip install --torch-backend=cpu -e . pytest httpx2
       - run: uv run --no-sync pytest -q
       - run: uv run --no-sync logogram --version
       - run: uv build
@@ -52,7 +53,7 @@ jobs:
 
   web:
     name: Web app build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -76,7 +77,7 @@ jobs:
 
   browser:
     name: Offline browser workflow
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.2.0

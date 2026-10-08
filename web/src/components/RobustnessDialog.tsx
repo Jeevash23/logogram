@@ -6,7 +6,7 @@ import { experimentText } from "../lib/spec";
 import { useStore } from "../store/app";
 import { Button, Choices, Dialog, Field, Input, Select } from "./ui";
 
-type Option = "direction" | "zero" | "mean" | "resample" | "donors" | "seed" | "total" | "prompts" | "exact" | "split" | "other" | "mlps" | "pathdirection" | "whole";
+type Option = "direction" | "zero" | "mean" | "resample" | "donors" | "seed" | "total" | "prompts" | "exact" | "split" | "other" | "mlps" | "pathdirection" | "whole" | "float32";
 
 function suggest(e: ExperimentSpec): Option {
   if (e.kind === "activation_patching") return e.direction === "clean_to_corrupt" ? "direction" : "resample";
@@ -66,6 +66,9 @@ function variant(e: ExperimentSpec, option: Option, params: { donors: number; se
       return base?.kind === "resample"
         ? { kind: "ablation", baseline: { ...base, seed: params.seed } }
         : variant(e, "resample", params);
+    case "float32":
+      // The experiment stays; the model runs in float32 instead.
+      return e;
   }
 }
 
@@ -75,6 +78,7 @@ export function RobustnessDialog() {
   const job = useStore((st) => st.job);
   const run = useActiveRun();
   const exp = run.detail?.spec.experiment;
+  const dtype = run.detail?.spec.model.dtype;
   const [option, setOption] = useState<Option>("resample");
   const [donors, setDonors] = useState(10);
   const [seed, setSeed] = useState(1);
@@ -162,8 +166,16 @@ export function RobustnessDialog() {
     if (!isResample) options.push({ value: "resample", title: "Resample ablation", detail: "Replace it with its value in other prompts." });
   }
 
+  if (dtype && dtype !== "float32") {
+    options.push({
+      value: "float32",
+      title: "The same run in float32",
+      detail: `Reload the model in float32 and rerun: what rounding in ${dtype} changed. Needs about twice the memory.`,
+    });
+  }
+
   const next = variant(exp, option, { donors, seed, reference, pool });
-  const same = JSON.stringify(next) === JSON.stringify(exp);
+  const same = option !== "float32" && JSON.stringify(next) === JSON.stringify(exp);
 
   return (
     <Dialog
@@ -182,7 +194,7 @@ export function RobustnessDialog() {
             disabled={same || job?.status === "running"}
             onClick={() => {
               useStore.setState({ robustnessDialogOpen: false });
-              void start(run.id as string, next);
+              void start(run.id as string, option === "float32" ? { dtype: "float32" } : { experiment: next });
             }}
           >
             Run the check

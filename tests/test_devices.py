@@ -48,3 +48,17 @@ def test_a_device_without_float64_converts_on_the_cpu(monkeypatch):
     t = torch.tensor([1.5, -2.25], device="cuda")
     out = float64(t)
     assert out.device.type == "cpu" and torch.equal(out, t.cpu().double())
+
+
+def test_automatic_runs_on_the_cpu_on_a_mac(monkeypatch):
+    # TransformerLens reports silent errors on Apple's MPS, so it is used only when chosen.
+    from logogram.backends.transformer_lens import resolve_device
+    from logogram.system import system_report
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
+    assert resolve_device("auto") == "cpu"
+    assert resolve_device("mps") == "mps"
+    report = system_report()
+    assert report.backend == "cpu" and report.mps_available
+    assert any(i.severity == "info" and "MPS" in i.title for i in report.issues)

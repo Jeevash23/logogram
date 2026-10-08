@@ -18,6 +18,7 @@ import type {
   ProjectInfo,
   PromptRecord,
   RecentProject,
+  RobustnessChange,
   RunDetail,
   RunListing,
   ServerState,
@@ -28,7 +29,6 @@ import type {
   TokenStripData,
   Dtype,
   Device,
-  ExperimentSpec,
   NoteInput,
   ResearchNote,
   PredictionReport,
@@ -192,10 +192,8 @@ export const api = {
     post<{ run_id: string; path: string }>("/api/drafts", { spec, draft_id: draftId }),
   rerun: (id: string) =>
     post<{ run_id: string; job: Job }>(`/api/runs/${encodeURIComponent(id)}/rerun`),
-  robustness: (id: string, experiment: ExperimentSpec) =>
-    post<{ run_id: string; job: Job }>(`/api/runs/${encodeURIComponent(id)}/robustness`, {
-      experiment,
-    }),
+  robustness: (id: string, change: RobustnessChange) =>
+    post<{ run_id: string; job: Job }>(`/api/runs/${encodeURIComponent(id)}/robustness`, change),
   verify: (id: string, top: number) =>
     post<{ run_id: string; job: Job }>(`/api/runs/${encodeURIComponent(id)}/verify`, { top }),
   derived: (id: string) => get<RunListing[]>(`/api/runs/${encodeURIComponent(id)}/derived`),

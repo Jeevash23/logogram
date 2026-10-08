@@ -166,12 +166,16 @@ export interface SystemReport {
   recommended_dtype: Dtype;
   precision_note: string;
   hf_cache_free: number | null;
+  /** Apple's GPU is there, but used only when chosen (TransformerLens reports silent errors on it). */
+  mps_available: boolean;
   issues: SystemIssue[];
 }
 
 // -- spec --------------------------------------------------------------------------------------
 
 export type Dtype = "float32" | "float16" | "bfloat16";
+/** A robustness check reruns a sweep with one choice changed: the experiment, or the precision. */
+export type RobustnessChange = { experiment: ExperimentSpec } | { dtype: Dtype };
 export type Device = "auto" | "cpu" | "cuda" | "mps";
 export type StreamKind = "resid_pre" | "resid_mid" | "resid_post" | "attn_out" | "mlp_out";
 export type SiteKind = StreamKind | "head" | "sae_feature";

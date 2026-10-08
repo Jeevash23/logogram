@@ -50,7 +50,7 @@ class SystemReport:
     memory_total: int
     memory_available: int
     gpus: list[GPU]
-    backend: str  # cuda | mps | cpu
+    backend: str  # what "auto" uses: cuda or cpu (Apple's MPS only when chosen; see MPS_NOTE)
     torch: str
     torch_cuda: str | None
     transformer_lens: str | None
@@ -58,6 +58,7 @@ class SystemReport:
     recommended_dtype: str
     precision_note: str
     hf_cache_free: int | None
+    mps_available: bool = False
     issues: list[Issue] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -146,12 +147,21 @@ def hf_cache_dir() -> Path:
     return Path(constants.HF_HUB_CACHE)
 
 
+# Why "auto" doesn't choose Apple's MPS.
+MPS_NOTE = (
+    "TransformerLens reports that Apple's MPS can give silently wrong results, and Logogram hasn't "
+    "been checked on it yet, so experiments run on the CPU unless you choose MPS. MPS is faster; "
+    "check results that matter on the CPU."
+)
+
+
 def system_report() -> SystemReport:
     import torch
 
     vm = psutil.virtual_memory()
     gpus: list[GPU] = []
     backend = "cpu"
+    mps = bool(getattr(torch.backends, "mps", None) and torch.backends.mps.is_available())
     if torch.cuda.is_available():
         backend = "cuda"
         for i in range(torch.cuda.device_count()):
@@ -167,8 +177,8 @@ def system_report() -> SystemReport:
                     bf16=bool(torch.cuda.is_bf16_supported()),
                 )
             )
-    elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
-        backend = "mps"
+    elif mps:
+        # Listed, but used only when chosen (see MPS_NOTE).
         gpus.append(
             GPU(name="Apple GPU (Metal)", memory_total=int(vm.total), memory_free=None, bf16=True)
         )
@@ -197,7 +207,16 @@ def system_report() -> SystemReport:
                     reinstall_command("cu126"),
                 )
             )
-    if platform.system() == "Darwin" and backend == "cpu":
+    if mps and backend == "cpu":
+        issues.append(
+            Issue(
+                "info",
+                "The Apple GPU (MPS) is used only when you choose it",
+                MPS_NOTE,
+                "Choose MPS under Device when you load a model.",
+            )
+        )
+    if platform.system() == "Darwin" and not mps:
         if _rosetta():
             issues.append(
                 Issue(
@@ -273,6 +292,7 @@ def system_report() -> SystemReport:
         recommended_dtype="float32",
         precision_note=note,
         hf_cache_free=cache_free,
+        mps_available=mps,
         issues=issues,
     )
 

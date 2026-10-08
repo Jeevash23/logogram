@@ -86,9 +86,9 @@ function Report({ report, index }: { report: BaselineReport; index: number }) {
   return (
     <>
       <p className={s.sentence}>
-        Clean prompts prefer the answer by <strong>{signed(sum.clean_logit_diff)}</strong> logits on average (in{" "}
-        {sum.clean_prefers_answer} of {report.n}); corrupt prompts by <strong>{signed(sum.corrupt_logit_diff)}</strong>{" "}
-        (in {sum.corrupt_prefers_answer} of {report.n}). The clean–corrupt gap is <strong>{num(gap)}</strong>
+        Clean prompts prefer {preference(sum.clean_logit_diff)} on average ({sum.clean_prefers_answer} of {report.n}{" "}
+        prefer the answer); corrupt prompts prefer {preference(sum.corrupt_logit_diff)} ({sum.corrupt_prefers_answer} of{" "}
+        {report.n}). The clean–corrupt gap is <strong>{num(gap)}</strong>
         {present ? ", which is what interventions are measured against." : ". Normalized effects will be noisy or undefined."}
       </p>
       {report.issues.length > 0 && (
@@ -108,6 +108,16 @@ function Report({ report, index }: { report: BaselineReport; index: number }) {
       </div>
       <DotPlot prompts={report.prompts} selected={index} />
       {prompt && <TopTokens prompt={prompt} />}
+    </>
+  );
+}
+
+/** Which token a mean logit difference prefers, and by how much: "the answer by 2.90 logits". */
+function preference(ld: number | null) {
+  const value = ld ?? 0;
+  return (
+    <>
+      the {value >= 0 ? "answer" : <strong>distractor</strong>} by <strong>{num(Math.abs(value))}</strong> logits
     </>
   );
 }

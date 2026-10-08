@@ -140,6 +140,11 @@ def build_summary(
         )
     if "steering" in result.extra:
         norm_text = norm_text.replace("patched", "steered")
+    warnings = list(result.warnings)
+    if "steering" in result.extra:
+        from logogram.steering import control_warnings
+
+        warnings += control_warnings(result, stats, spec.statistics.ci)
     if result.measure == "estimate":
         description = (
             "first-order estimate of the change patching would cause in logit(answer) − "
@@ -181,7 +186,7 @@ def build_summary(
             "corrupt_answer_prob": [_f(x) for x in b.corrupt_prob],
         },
         "donors": result.donors,
-        "warnings": result.warnings,
+        "warnings": warnings,
         **({"direct": result.extra["direct"]} if "direct" in result.extra else {}),
         **({"steering": result.extra["steering"]} if "steering" in result.extra else {}),
         **({"features": result.extra["features"]} if "features" in result.extra else {}),
@@ -238,3 +243,23 @@ def read_site_rows(path: Path, site: int) -> dict[str, list[Any]]:
     table = pq.read_table(path, filters=[("site", "=", site)])
     table = table.sort_by("prompt")
     return {name: table.column(name).to_pylist() for name in table.column_names}
+
+
+def largest_change(a: pa.Table, b: pa.Table) -> float | None:
+    """The largest difference between two results tables' per-prompt values: 0.0 when they match
+    exactly, None when they don't hold the same rows and columns. Values a method doesn't measure
+    (a direct effect's patched probability) are NaN in both and match; Arrow's own equality never
+    matches NaN."""
+    if a.num_rows != b.num_rows or a.column_names != b.column_names:
+        return None
+    largest = 0.0
+    for name in a.column_names:
+        x, y = a.column(name), b.column(name)
+        if not pa.types.is_floating(x.type):
+            if not x.equals(y):
+                return math.inf
+            continue
+        u, v = x.to_numpy(), y.to_numpy()
+        change = np.where(np.isnan(u) & np.isnan(v), 0.0, np.abs(u - v))
+        largest = max(largest, float(np.nan_to_num(change, nan=np.inf).max(initial=0.0)))
+    return largest

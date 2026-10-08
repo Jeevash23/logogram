@@ -782,11 +782,9 @@ def _device_name(device: str) -> str:
 
 def resolve_device(device: str) -> str:
     if device == "auto":
-        if torch.cuda.is_available():
-            return "cuda"
-        if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
-            return "mps"
-        return "cpu"
+        # Apple's MPS only when asked for: TransformerLens reports that it can give silently wrong
+        # results, and Logogram hasn't been checked on it yet (see system.MPS_NOTE).
+        return "cuda" if torch.cuda.is_available() else "cpu"
     if device == "cuda" and not torch.cuda.is_available():
         raise BackendError(
             "The spec asks for CUDA, but PyTorch can't see a CUDA GPU here. Run `logogram doctor` "

@@ -9,7 +9,6 @@ import type {
   BaselineSpec,
   DatasetDetail,
   ExperimentKind,
-  ExperimentSpec,
   Job,
   PathReceiverSpec,
   SAERef,
@@ -18,6 +17,7 @@ import type {
   ModelShape,
   ModelStatus,
   ProjectInfo,
+  RobustnessChange,
   RunDetail,
   RunListing,
   ScopeSpec,
@@ -280,7 +280,7 @@ interface Store {
   pinHead: (selection: Selection) => void;
   prepareNote: (sites: SiteSpec[]) => void;
   startRun: (spec: Spec) => Promise<void>;
-  startRobustness: (runId: string, experiment: ExperimentSpec) => Promise<void>;
+  startRobustness: (runId: string, change: RobustnessChange) => Promise<void>;
   /** Patch, for real, the strongest sites an attribution patching run estimated. */
   startVerification: (runId: string, top: number) => Promise<void>;
   cancelJob: () => Promise<void>;
@@ -686,9 +686,9 @@ export const useStore = create<Store>((set, get) => ({
     void get().loadRun(out.run_id, true);
   },
 
-  startRobustness: async (runId, experiment) => {
+  startRobustness: async (runId, change) => {
     const seq = projectSeq;
-    const out = await get().guard(() => api.robustness(runId, experiment));
+    const out = await get().guard(() => api.robustness(runId, change));
     if (!out || seq !== projectSeq) return;
     get().applyJob(out.job);
     set((s) => ({

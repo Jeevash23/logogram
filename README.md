@@ -36,7 +36,7 @@ PyTorch is chosen per machine:
 |---|---|---|
 | Linux with an NVIDIA GPU | `uv tool install logogram` | The default Linux wheels include CUDA. |
 | Windows with an NVIDIA GPU | `uv tool install --torch-backend=auto logogram` | Picks the CUDA build that matches your driver. |
-| Apple Silicon | `uv tool install logogram` | Uses Metal (MPS). Use a native arm64 Python, not one under Rosetta. |
+| Apple Silicon | `uv tool install logogram` | Runs on the CPU unless you choose MPS (see Models). Use a native arm64 Python, not one under Rosetta. |
 | CPU only | `uv tool install --torch-backend=cpu logogram` | Smaller download. GPT-2 small runs well on a CPU. |
 
 Then check the setup:
@@ -77,8 +77,9 @@ This starts a local server on 127.0.0.1, prints its address and opens your brows
 4. Press **A** on a head to see its attention pattern, or right-click any cell for **Patch here**,
    **Ablate here** and **Compare across runs**.
 5. Press **Check robustness** to rerun the sweep with a different baseline, direction or donor
-   count. Logogram reports the rank correlation, the overlap of the top components and the
-   components whose conclusion changed, and flags them on the map.
+   count, or, for a run in float16 or bfloat16, in float32. Logogram reports the rank
+   correlation, the overlap of the top components and the components whose conclusion changed,
+   and flags them on the map.
 
 Keyboard: arrow keys move across the map, **Ctrl/⌘ K** opens the command palette (type `L9H9` to
 jump to a head), **1–7** switch views, **[** and **]** step through prompts, **P**, **B**, **A**
@@ -274,7 +275,7 @@ its effect at every strength with intervals. **Check robustness** offers another
 or the other direction. A mean difference steers only when the pairs differ the same way. In IOI
 prompts that mix the ABBA and BABA orders, the difference at the last token flips with the order,
 so the mean cancels and steering does no more than the control; generate prompts of one order to
-steer.
+steer. When no site and strength does more than the control, the results say so.
 
 **SAE features.** A sparse autoencoder (SAE) rewrites one of the model's activations as a few active
 features out of thousands, each a direction in the model, plus an error it misses. In
@@ -453,7 +454,11 @@ times faster on a GPU, but they round. In the IOI example on GPT-2 small and Qwe
 moved effects by at most 0.003 and bfloat16 by up to 0.03: the strongest sites stayed in place,
 but effects smaller than about 0.01 changed order. On Pythia-70m, bfloat16 doubled the clean
 logit difference and reordered the heads, and float16 overflows. Check results that matter
-against float32.
+against float32: **Check robustness** reruns a 16-bit run in float32 and compares the two.
+
+On Apple Silicon, **Automatic** runs models on the CPU. TransformerLens reports that Apple's MPS
+can give silently wrong results, and Logogram hasn't been checked on it yet, so MPS is used only
+when you choose it under **Device**. It is faster; check results that matter on the CPU.
 
 Rather than trusting a list, Logogram checks every model when it loads, on a short fixed input:
 
@@ -524,10 +529,18 @@ push a tag with the same version, such as `v0.1.0`. The Release workflow runs ev
 that commit, builds the wheel and source distribution, and uploads them to PyPI through Trusted
 Publishing, so no token is stored anywhere. PyPI never accepts the same version twice.
 
-Before tagging, manually check a first GPT-2 download, cancel and retry it, then run the example
-on each supported compute backend. CPU and CUDA are covered by local development checks; MPS
-still needs a check on Apple Silicon. Pythia and Qwen 2.5 have also been run end to end with
-their real weights; other families are checked when they load and in the tiny-model tests.
+Before tagging, manually check a first GPT-2 download, cancel and retry it, then run
+`scripts/validate_real_weights.py` on each supported compute backend. It runs every method on a
+real model in a temporary project and checks exact identities, agreement between methods and
+bit-identical reruns; `--compare-device` reruns the head sweep on a second device, and `--sae`
+adds SAE features. CPU and CUDA pass it. Apple's MPS still needs it run on a Mac:
+
+```bash
+uv run python scripts/validate_real_weights.py --device mps --compare-device cpu
+```
+
+Pythia and Qwen 2.5 have also been run end to end with their real weights; other families are
+checked when they load and in the tiny-model tests.
 
 Model access goes through `logogram.backends.base.ModelBackend`. TransformerLens is the only
 backend today; remote execution and other libraries can be added behind the same interface.

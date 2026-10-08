@@ -156,3 +156,29 @@ def test_a_run_stores_each_strength_and_the_held_out_prompts(tiny_backend, proje
     assert [p["index"] for p in detail["prompts"]] == steer["test"]
     record = load_dataset(project.datasets_dir / "ioi.jsonl")[steer["test"][0]]
     assert detail["prompts"][0]["clean"] == record.clean
+
+
+def test_a_direction_that_does_no_more_than_its_control_is_reported():
+    from types import SimpleNamespace
+
+    from logogram.sites import ResolvedSite
+    from logogram.spec import Site
+    from logogram.steering import control_warnings
+
+    site = Site(kind="resid_pre", layer=0, position={"kind": "last"})
+    variants = [(1.0, False), (1.0, True), (2.0, False), (2.0, True)]
+    sites = [
+        ResolvedSite(i, site, 0, i, "", variant={"coefficient": c, "control": control})
+        for i, (c, control) in enumerate(variants)
+    ]
+    result = SimpleNamespace(sites=sites)
+    overlapping = SimpleNamespace(
+        effect_lo=np.array([-0.1, -0.2, -0.3, -0.2]), effect_hi=np.array([0.3, 0.2, 0.1, 0.2])
+    )
+    (warning,) = control_warnings(result, overlapping, 0.95)
+    assert "95% intervals overlap" in warning
+    # One strength whose interval clears the control's is an effect of the direction.
+    apart = SimpleNamespace(
+        effect_lo=np.array([-0.1, -0.2, 0.5, -0.2]), effect_hi=np.array([0.3, 0.2, 0.9, 0.2])
+    )
+    assert control_warnings(result, apart, 0.95) == []

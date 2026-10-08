@@ -172,6 +172,12 @@ export function ModelDialog() {
           />
         </Field>
       </div>
+      {device === "mps" && (
+        <p className={s.fine}>
+          TransformerLens reports that Apple's MPS can give silently wrong results, and Logogram hasn't been checked on it
+          yet. MPS is faster; check results that matter on the CPU.
+        </p>
+      )}
       <Checkbox checked={processWeights} onChange={setProcessWeights}>
         Process weights like TransformerLens: fold LayerNorm, center writing weights and the unembedding
       </Checkbox>
@@ -192,6 +198,14 @@ export function ModelDialog() {
                 needs about <strong>{bytes(est.total)}</strong> of <strong>{bytes(est.available)}</strong> free {where}
               </span>
             </div>
+            {processWeights && est.verdict !== "fits" && est.processing > est.activations && (
+              <div className={s.row}>
+                <span>Processing the weights needs {bytes(est.processing)} for a moment while the model loads.</span>
+                <Button size="small" onClick={() => setProcessWeights(false)}>
+                  Turn processing off
+                </Button>
+              </div>
+            )}
             <div className={s.bar} aria-hidden="true">
               <span style={{ width: `${Math.min(100, (est.weights / est.available) * 100)}%` }} className={s.weights} />
               {/* The larger need beside the weights: processing them while loading, or a batch's activations. */}

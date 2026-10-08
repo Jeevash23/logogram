@@ -259,3 +259,32 @@ def run_steering(
         if on_layer is not None:
             on_layer(site.layer, list(range(first, first + len(variants))), result)
     return result
+
+
+def control_warnings(result: EngineResult, stats: Any, ci: float) -> list[str]:
+    """Warn when the direction does no more than its random control anywhere: at every site and
+    strength, the intervals of the two effects overlap."""
+    index = {
+        (rs.row, rs.variant["coefficient"], rs.variant["control"]): rs.index
+        for rs in result.sites
+        if rs.variant is not None
+    }
+    compared = beating = 0
+    for (row, coefficient, control), i in index.items():
+        j = index.get((row, coefficient, True))
+        if control or j is None:
+            continue
+        bounds = [stats.effect_lo[i], stats.effect_hi[i], stats.effect_lo[j], stats.effect_hi[j]]
+        if not np.isfinite(bounds).all():
+            continue
+        compared += 1
+        if bounds[1] < bounds[2] or bounds[0] > bounds[3]:
+            beating += 1
+    if not compared or beating:
+        return []
+    return [
+        f"At every site and strength, the direction's effect is within the random control's (their "
+        f"{ci:.0%} intervals overlap), so these results show no effect of the direction. Steering "
+        "by a mean difference needs pairs that differ the same way: in IOI prompts that mix the "
+        "ABBA and BABA orders, the differences cancel out."
+    ]

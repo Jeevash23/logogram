@@ -15,7 +15,7 @@ from typing import Any, Literal
 import anyio
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from logogram import __version__
 from logogram.backends.base import BackendError
@@ -282,7 +282,16 @@ class RunRequest(BaseModel):
 
 
 class RobustnessRequest(BaseModel):
-    experiment: dict[str, Any]
+    """One methodological choice changed: the experiment, or the precision the model runs in."""
+
+    experiment: dict[str, Any] | None = None
+    dtype: Literal["float32", "float16", "bfloat16"] | None = None
+
+    @model_validator(mode="after")
+    def _one_change(self) -> RobustnessRequest:
+        if (self.experiment is None) == (self.dtype is None):
+            raise ValueError("Change either the experiment or the dtype.")
+        return self
 
 
 class VerifyRequest(BaseModel):
@@ -910,11 +919,21 @@ def create_app(
         project = state.require_project()
         original = Spec.from_path(project.readable(project.run_dir(run_id) / "spec.json"))
         data = original.model_dump(mode="json")
-        data["experiment"] = body.experiment
+        if body.dtype is not None:
+            if body.dtype == original.model.dtype:
+                raise ValueError(f"This run already ran in {body.dtype}.")
+            # The same run in another precision: what rounding changed.
+            data["model"]["dtype"] = body.dtype
+        else:
+            data["experiment"] = body.experiment
         suffix = " · robustness"
         data["name"] = original.name[: NAME_MAX - len(suffix)].rstrip() + suffix
         variant = Spec.model_validate(data)
-        change = describe_intervention(variant.experiment)
+        change = (
+            f"In {body.dtype} instead of {original.model.dtype}"
+            if body.dtype is not None
+            else describe_intervention(variant.experiment)
+        )
         job = state.run_spec_job(
             variant, derived_from={"run": run_id, "kind": "robustness", "change": change}
         )

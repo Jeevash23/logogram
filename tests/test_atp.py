@@ -171,3 +171,23 @@ def test_a_run_is_stored_as_an_estimate_and_verified_by_patching(
 
     with pytest.raises(ValueError, match="Only attribution patching"):
         verification_spec(check, summary, top=3)
+
+
+def test_residual_stream_estimates_carry_a_warning(tiny_backend, project, spec_factory):
+    # Validated on GPT-2 small: at the residual stream where the prompts differ, patching restores
+    # the whole answer while the first-order estimate is slightly negative.
+    prompts = _prompts(tiny_backend, project)
+    experiment = {"kind": "attribution_patching", "direction": "clean_to_corrupt"}
+    resid = spec_factory(
+        experiment=experiment,
+        scope={"kind": "layer_position", "site": "resid_pre", "positions": "labels"},
+    )
+    heads = spec_factory(
+        experiment=experiment, scope={"kind": "heads", "position": {"kind": "all"}}
+    )
+    assert any(
+        "residual stream" in w for w in run_experiment(resid, tiny_backend, prompts).warnings
+    )
+    assert not any(
+        "residual stream" in w for w in run_experiment(heads, tiny_backend, prompts).warnings
+    )

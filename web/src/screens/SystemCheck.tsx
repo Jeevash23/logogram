@@ -88,7 +88,7 @@ export function SystemCheck() {
                     {bytes(gpu.memory_total)}
                     {gpu.memory_free !== null && <span className="faint"> · {bytes(gpu.memory_free)} free</span>}
                   </>
-                ) : report.backend === "mps" ? (
+                ) : report.mps_available ? (
                   <span className="faint">Shared with system memory</span>
                 ) : (
                   <span className="faint">—</span>

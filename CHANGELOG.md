@@ -2,6 +2,40 @@
 
 What changed in each version of Logogram.
 
+## 0.1.2 (unreleased)
+
+Fixes and checks that came out of validating every method on real weights.
+
+### Changed
+
+- On Apple Silicon, **Automatic** runs models on the CPU. TransformerLens reports that Apple's MPS
+  can give silently wrong results, and Logogram hasn't been checked on it yet, so MPS runs only when
+  you choose it; the system check and the model dialog say why.
+
+### Added
+
+- **Check robustness** reruns a float16 or bfloat16 run in float32 and compares the two.
+- When processing a model's weights is what doesn't fit, the model dialog offers to turn it off.
+- When a generated IOI dataset has names the loaded model splits into several tokens, one click
+  makes a new one with names it doesn't.
+- Steering results say when the direction does no more than its random control at any site and
+  strength.
+- Attribution patching of residual stream sites warns that it can miss effects there, and that
+  **Check robustness** patches every site.
+- `scripts/validate_real_weights.py` runs every method on a real model and checks identities,
+  agreement and bit-identical reruns, on one device or two. It is how a release, or Apple's MPS, is
+  checked.
+
+### Fixed
+
+- The baseline says that the clean prompts prefer the distractor, instead of preferring the answer
+  by a negative amount.
+
+### Development
+
+- Tests run on Python 3.14 too, and the Linux runners are pinned to Ubuntu 24.04.
+- The test client uses httpx2, as Starlette recommends.
+
 ## 0.1.1 (2026-10-08)
 
 Every method has now run end to end on real weights: GPT-2 small with a SAELens and an OpenAI
