@@ -6,13 +6,14 @@ import { experimentText } from "../lib/spec";
 import { useStore } from "../store/app";
 import { Button, Choices, Dialog, Field, Input, Select } from "./ui";
 
-type Option = "direction" | "zero" | "mean" | "resample" | "donors" | "seed" | "total" | "prompts" | "exact" | "split" | "other";
+type Option = "direction" | "zero" | "mean" | "resample" | "donors" | "seed" | "total" | "prompts" | "exact" | "split" | "other" | "mlps" | "pathdirection" | "whole";
 
 function suggest(e: ExperimentSpec): Option {
   if (e.kind === "activation_patching") return e.direction === "clean_to_corrupt" ? "direction" : "resample";
   if (e.kind === "direct_logit_attribution") return "total";
   if (e.kind === "attribution_patching") return "exact";
   if (e.kind === "steering") return "split";
+  if (e.kind === "path_patching") return "mlps";
   if (e.baseline.kind === "resample") return "donors";
   if (e.baseline.kind === "zero") return "mean";
   return "resample";
@@ -24,6 +25,13 @@ function variant(e: ExperimentSpec, option: Option, params: { donors: number; se
     case "total":
       // The same components, patched: their total effect, through everything downstream.
       return { kind: "activation_patching", direction: e.kind === "direct_logit_attribution" && e.prompts === "corrupt" ? "clean_to_corrupt" : "corrupt_to_clean" };
+    case "mlps":
+      return e.kind === "path_patching" ? { ...e, freeze_mlps: !e.freeze_mlps } : e;
+    case "pathdirection":
+      return e.kind === "path_patching" ? { ...e, direction: e.direction === "clean_to_corrupt" ? "corrupt_to_clean" : "clean_to_corrupt" } : e;
+    case "whole":
+      // The senders' whole effect, through every path: how much of it the receivers carry.
+      return { kind: "activation_patching", direction: e.kind === "path_patching" ? e.direction : "clean_to_corrupt" };
     case "split":
       // The same steering with the pairs split differently: does the direction depend on which
       // pairs computed it?
@@ -104,6 +112,18 @@ export function RobustnessDialog() {
       title: exp.prompts === "clean" ? "Split the corrupt prompts" : "Split the clean prompts",
       detail: "The same split on the other prompt of each pair: which direct effects the corruption changes.",
     });
+  } else if (exp.kind === "path_patching") {
+    options.push({
+      value: "mlps",
+      title: exp.freeze_mlps ? "Let the MLPs carry the path" : "Hold the MLPs too",
+      detail: exp.freeze_mlps ? "Recompute the MLPs, so paths through them count." : "Keep only the direct path through the residual stream.",
+    });
+    options.push({
+      value: "whole",
+      title: "Whole effect by patching",
+      detail: "Patch the same senders through every path, to see how much of their effect the receivers carry.",
+    });
+    options.push({ value: "pathdirection", title: "Opposite direction", detail: "The same paths, patched the other way." });
   } else if (exp.kind === "steering") {
     options.push({
       value: "split",
@@ -135,7 +155,7 @@ export function RobustnessDialog() {
     options.push({ value: "donors", title: "More donors", detail: "Same pool and seed rule, more donors per prompt." });
     options.push({ value: "seed", title: "Another donor seed", detail: "Same number of donors, drawn differently." });
   }
-  if (exp.kind !== "direct_logit_attribution" && exp.kind !== "attribution_patching" && exp.kind !== "steering") {
+  if (exp.kind !== "direct_logit_attribution" && exp.kind !== "attribution_patching" && exp.kind !== "steering" && exp.kind !== "path_patching") {
     if (!(exp.kind === "ablation" && exp.baseline.kind === "zero")) options.push({ value: "zero", title: "Zero ablation", detail: "Replace the activation with zeros." });
     if (!(exp.kind === "ablation" && exp.baseline.kind === "mean" && !isResample))
       options.push({ value: "mean", title: "Mean ablation", detail: "Replace it with its mean over a reference set." });

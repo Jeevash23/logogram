@@ -51,3 +51,37 @@
 .summaryText strong {
   font-weight: 620;
 }
+
+/* Path receivers: chips on a line, each removable. */
+.receivers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  min-height: 28px;
+}
+
+.receiver {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 4px 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  font-size: var(--text-sm);
+}
+
+.receiver button {
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+}
+
+.receiver button:hover {
+  background: var(--hover);
+  color: var(--text);
+}

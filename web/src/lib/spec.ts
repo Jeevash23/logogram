@@ -3,6 +3,7 @@
 import type {
   BaselineSpec,
   ExperimentKind,
+  PathReceiverSpec,
   ExperimentSpec,
   Measure,
   ModelInfo,
@@ -38,6 +39,11 @@ export function baselineText(b: BaselineSpec): string {
   }
 }
 
+/** A path's receiver as the results write it, for example "L9 H9 q" or "logits". */
+export function receiverLabel(r: PathReceiverSpec): string {
+  return r.kind === "logits" ? "logits" : `L${r.layer} H${r.head} ${r.input}`;
+}
+
 /** A steering strength as the results write it, for example ×2 or ×−0.5. */
 export function strengthText(c: number): string {
   return `×${String(c).replace("-", "−")}`;
@@ -54,6 +60,11 @@ export function experimentText(e: ExperimentSpec): string {
   if (e.kind === "steering") {
     const toward = e.apply_to === "clean" ? "corrupt" : "clean";
     return `Steer ${e.apply_to} prompts toward ${toward} (${e.coefficients.map(strengthText).join(", ")}${e.control ? ", random control" : ""})`;
+  }
+  if (e.kind === "path_patching") {
+    const arrow = e.direction === "clean_to_corrupt" ? "clean → corrupt" : "corrupt → clean";
+    const names = e.receivers.slice(0, 4).map(receiverLabel).join(", ") + (e.receivers.length > 4 ? ` and ${e.receivers.length - 4} more` : "");
+    return `Path patching ${arrow} into ${names} (${e.freeze_mlps ? "heads and MLPs" : "other heads"} held)`;
   }
   switch (e.baseline.kind) {
     case "zero":
@@ -72,6 +83,7 @@ export function experimentShort(e: ExperimentSpec): string {
   if (e.kind === "direct_logit_attribution") return `Direct attribution, ${e.prompts}`;
   if (e.kind === "attribution_patching") return e.direction === "clean_to_corrupt" ? "Estimated clean→corrupt" : "Estimated corrupt→clean";
   if (e.kind === "steering") return `Steer ${e.apply_to}→${e.apply_to === "clean" ? "corrupt" : "clean"}`;
+  if (e.kind === "path_patching") return `Paths ${e.direction === "clean_to_corrupt" ? "clean→corrupt" : "corrupt→clean"}`;
   return { zero: "Zero ablation", mean: "Mean ablation", resample: "Resample ablation" }[e.baseline.kind];
 }
 
@@ -101,6 +113,15 @@ export function measureWords(e: ExperimentSpec | null | undefined) {
       mean: "mean normalized effect",
       effectLegend: `Normalized effect: 1 means steering moved the ${e.apply_to} prompts as far as switching to the ${e.apply_to === "clean" ? "corrupt" : "clean"} prompt; 0 means no change.`,
       deltaLegend: "Change in logit difference (answer − distractor) caused by adding the direction.",
+    };
+  }
+  if (e?.kind === "path_patching") {
+    return {
+      effect: "Normalized effect",
+      delta: "Δ logit diff",
+      mean: "mean normalized effect",
+      effectLegend: `Normalized effect through the receivers only: 1 means the path alone ${e.direction === "clean_to_corrupt" ? "restores the clean behavior" : "shifts the output as far as the corrupt prompt does"}; 0 means nothing travels along it.`,
+      deltaLegend: "Change in logit difference (answer − distractor) when only the receivers' inputs are patched.",
     };
   }
   const restores = (e?.kind === "activation_patching" || e?.kind === "attribution_patching") && e.direction === "clean_to_corrupt";
@@ -159,6 +180,7 @@ export function directionQuestion(e: ExperimentSpec): string {
     return e.direction === "clean_to_corrupt" ? "Would this restore the behavior, to first order?" : "Would this break it, to first order?";
   }
   if (e.kind === "steering") return "Does adding this direction move the behavior, more than a random one?";
+  if (e.kind === "path_patching") return "How much of the effect travels through these receivers?";
   return "Does removing this break the behavior?";
 }
 
@@ -175,6 +197,11 @@ export function receiverText(e: ExperimentSpec): { receiver: string; source: str
       : { receiver: "clean prompt", source: "the corrupt prompt" };
   }
   if (e.kind === "steering") return { receiver: `${e.apply_to} prompt`, source: "the mean difference of the training pairs" };
+  if (e.kind === "path_patching") {
+    return e.direction === "clean_to_corrupt"
+      ? { receiver: "corrupt prompt", source: "the clean prompt, through the receivers" }
+      : { receiver: "clean prompt", source: "the corrupt prompt, through the receivers" };
+  }
   return { receiver: "clean prompt", source: baselineText(e.baseline) };
 }
 
@@ -275,6 +302,7 @@ export function workloadText(spec: Spec, rows: number): string {
   if (spec.experiment.kind === "direct_logit_attribution") return `That is one forward and one backward pass for each of the ${count(rows)} prompts.`;
   if (spec.experiment.kind === "attribution_patching") return `That is two forward passes and one backward pass for each of the ${count(rows)} prompts, for every site at once.`;
   if (spec.experiment.kind === "steering") return `That is ${count(rows)} steered forward passes on the held-out prompts.`;
+  if (spec.experiment.kind === "path_patching") return `That is ${count(rows)} paths, three forward passes each (fewer when senders come after the receivers).`;
   return `That is ${count(rows)} patched forward passes.`;
 }
 
@@ -296,6 +324,19 @@ export function scopeFor(kind: ExperimentKind, scope: ScopeSpec): ScopeSpec {
       if (sites.length) return { kind: "sites", sites };
     }
     return { kind: "layer_components", components: ["resid_pre"], position: last };
+  }
+  if (kind === "path_patching") {
+    // Paths start at heads, attention outputs or MLP outputs.
+    if (scope.kind === "layer_position") return { kind: "heads", position: { kind: "all" } };
+    if (scope.kind === "layer_components") {
+      const components = scope.components.filter((c) => c === "attn_out" || c === "mlp_out");
+      return { ...scope, components: components.length ? components : ["attn_out", "mlp_out"] };
+    }
+    if (scope.kind === "sites") {
+      const sites = scope.sites.filter((x) => x.kind === "head" || x.kind === "attn_out" || x.kind === "mlp_out");
+      return sites.length ? { kind: "sites", sites } : { kind: "heads", position: { kind: "all" } };
+    }
+    return scope;
   }
   if (kind !== "direct_logit_attribution") return scope;
   switch (scope.kind) {

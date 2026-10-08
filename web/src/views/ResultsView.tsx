@@ -319,7 +319,9 @@ function MethodsLine({ spec, n }: { spec: Spec; n: number | undefined }) {
             ? `Direct logit attribution of the ${e.prompts} prompts`
             : e.kind === "attribution_patching"
               ? `Estimate patching ${e.direction === "clean_to_corrupt" ? "clean → corrupt" : "corrupt → clean"} (attribution patching)`
-              : e.kind === "steering"
+              : e.kind === "path_patching"
+                ? `Path patching ${e.direction === "clean_to_corrupt" ? "clean → corrupt" : "corrupt → clean"} into ${e.receivers.map((x) => (x.kind === "logits" ? "logits" : `L${x.layer} H${x.head} ${x.input}`)).join(", ")}${e.freeze_mlps ? ", MLPs held" : ""}`
+                : e.kind === "steering"
                 ? `Steer ${e.apply_to} → ${e.apply_to === "clean" ? "corrupt" : "clean"} (${e.coefficients.map((c) => `×${c}`.replace("-", "−")).join(", ")}${e.control ? ", random control" : ""})`
                 : `Ablate (${baselineText(e.baseline)})`}
       </strong>

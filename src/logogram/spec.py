@@ -259,8 +259,61 @@ class Steering(_Strict):
         return self
 
 
+class HeadReceiver(_Strict):
+    """A later attention head whose query, key or value input receives the path."""
+
+    kind: Literal["head"] = "head"
+    layer: int = Field(ge=0)
+    head: int = Field(ge=0)
+    input: Literal["q", "k", "v"]
+
+
+class LogitsReceiver(_Strict):
+    """The residual stream at the end of the model, read directly by the unembedding."""
+
+    kind: Literal["logits"] = "logits"
+
+
+PathReceiver = Annotated[HeadReceiver | LogitsReceiver, Field(discriminator="kind")]
+
+
+class PathPatching(_Strict):
+    """Patch a component's effect along chosen paths only (path patching).
+
+    For each sender (a site of the scope), the receiver prompt runs with the sender's activation
+    from the source prompt and every other attention head held at its own value, so the change
+    travels only through the residual stream (and through the MLPs, unless ``freeze_mlps``). The
+    receivers' inputs from that run are recorded, then patched into an otherwise unchanged
+    receiver run, and the metric is read there. The result is the sender's effect through those
+    receivers alone. Senders must come before at least one receiver.
+    """
+
+    kind: Literal["path_patching"] = "path_patching"
+    direction: Literal["clean_to_corrupt", "corrupt_to_clean"]
+    receivers: list[PathReceiver] = Field(min_length=1, max_length=64)
+    freeze_mlps: bool
+
+    @model_validator(mode="after")
+    def _distinct(self) -> PathPatching:
+        keys = [r.model_dump_json() for r in self.receivers]
+        if len(set(keys)) != len(keys):
+            raise ValueError("path patching receivers must not repeat")
+        return self
+
+
+def receiver_text(receiver: HeadReceiver | LogitsReceiver) -> str:
+    if isinstance(receiver, LogitsReceiver):
+        return "logits"
+    return f"L{receiver.layer} H{receiver.head} {receiver.input}"
+
+
 Experiment = Annotated[
-    ActivationPatching | Ablation | DirectLogitAttribution | AttributionPatching | Steering,
+    ActivationPatching
+    | Ablation
+    | DirectLogitAttribution
+    | AttributionPatching
+    | Steering
+    | PathPatching,
     Field(discriminator="kind"),
 ]
 
@@ -361,7 +414,12 @@ class Spec(_Strict):
 
 
 def describe_intervention(
-    exp: ActivationPatching | Ablation | DirectLogitAttribution | AttributionPatching | Steering,
+    exp: ActivationPatching
+    | Ablation
+    | DirectLogitAttribution
+    | AttributionPatching
+    | Steering
+    | PathPatching,
 ) -> str:
     """The intervention in a few words, for example 'Resample-ablate (10 corrupt donors, seed 0)'."""
     if isinstance(exp, ActivationPatching):
@@ -375,6 +433,12 @@ def describe_intervention(
     if isinstance(exp, AttributionPatching):
         arrow = "clean → corrupt" if exp.direction == "clean_to_corrupt" else "corrupt → clean"
         return f"Attribution patching, estimated ({arrow})"
+    if isinstance(exp, PathPatching):
+        arrow = "clean → corrupt" if exp.direction == "clean_to_corrupt" else "corrupt → clean"
+        names = ", ".join(receiver_text(r) for r in exp.receivers[:4])
+        more = f" and {len(exp.receivers) - 4} more" if len(exp.receivers) > 4 else ""
+        frozen = "heads and MLPs" if exp.freeze_mlps else "other heads"
+        return f"Path patching {arrow} into {names}{more} ({frozen} frozen)"
     if isinstance(exp, Steering):
         toward = "corrupt" if exp.apply_to == "clean" else "clean"
         strengths = ", ".join(strength_text(c) for c in exp.coefficients)

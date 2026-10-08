@@ -1,12 +1,12 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-import type { BaselineSpec, ExperimentKind, PositionSpec, ScopeSpec, Spec, StreamKind } from "../api/types";
+import type { BaselineSpec, ExperimentKind, PathReceiverSpec, PositionSpec, ScopeSpec, Spec, StreamKind } from "../api/types";
 import { Button, Callout, Checkbox, Choices, Field, Input, Kbd, Segmented, Select, TextArea } from "../components/ui";
 import { MOD } from "../components/Header";
 import { plural, shortRevision } from "../lib/format";
 import { modelName } from "../lib/hooks";
-import { KIND_SHORT } from "../lib/sites";
-import { experimentText, scopeFor, scopeShort, scopeText, siteText, suggestName, workload, workloadText } from "../lib/spec";
+import { KIND_SHORT, parseHeadQuery } from "../lib/sites";
+import { experimentText, receiverLabel, scopeFor, scopeShort, scopeText, siteText, suggestName, workload, workloadText } from "../lib/spec";
 import { useStore, type FormState } from "../store/app";
 import s from "./views.module.css";
 import e from "./ExperimentView.module.css";
@@ -25,6 +25,11 @@ const METHODS: { value: ExperimentKind; title: string; detail: string }[] = [
     value: "direct_logit_attribution",
     title: "Direct logit attribution",
     detail: "Split the logit difference into what each component writes directly. No intervention.",
+  },
+  {
+    value: "path_patching",
+    title: "Path patching",
+    detail: "Patch a component's effect through chosen receivers only, holding the other heads.",
   },
   {
     value: "steering",
@@ -60,6 +65,9 @@ export function buildSpec(
     experiment = { kind: "activation_patching", direction: form.direction };
   } else if (form.kind === "attribution_patching") {
     experiment = { kind: "attribution_patching", direction: form.direction };
+  } else if (form.kind === "path_patching") {
+    if (form.pathReceivers.length === 0) return { error: "Add at least one receiver: a later head's query, key or value, or the logits." };
+    experiment = { kind: "path_patching", direction: form.direction, receivers: form.pathReceivers, freeze_mlps: form.pathFreezeMlps };
   } else if (form.kind === "steering") {
     if (!form.steerApplyTo) return { error: "Choose which prompts to steer." };
     const strengths = parseStrengths(form.steerStrengths);
@@ -299,6 +307,8 @@ export function ExperimentView() {
                 component does through later components, which patching measures.
               </p>
             </div>
+          ) : form.kind === "path_patching" ? (
+            <PathSettings form={form} onChange={setForm} />
           ) : form.kind === "activation_patching" || form.kind === "attribution_patching" ? (
             <div className={e.stack}>
               <Choices
@@ -491,6 +501,69 @@ export function ExperimentView() {
   );
 }
 
+const DIRECTIONS = [
+  {
+    value: "clean_to_corrupt" as const,
+    title: "Clean → corrupt",
+    detail: "Run the corrupt prompt and patch in clean activations. Does this restore the behavior?",
+  },
+  {
+    value: "corrupt_to_clean" as const,
+    title: "Corrupt → clean",
+    detail: "Run the clean prompt and patch in corrupt activations. Does this break it?",
+  },
+];
+
+function PathSettings({ form, onChange }: { form: FormState; onChange: (patch: Partial<FormState>) => void }) {
+  const [query, setQuery] = useState("");
+  const [part, setPart] = useState<"q" | "k" | "v">("q");
+  const head = parseHeadQuery(query);
+  const has = (r: PathReceiverSpec) => form.pathReceivers.some((x) => JSON.stringify(x) === JSON.stringify(r));
+  const add = (r: PathReceiverSpec) => {
+    if (!has(r)) onChange({ pathReceivers: [...form.pathReceivers, r] });
+  };
+  return (
+    <div className={e.stack}>
+      <Choices label="Direction" value={form.direction} onChange={(direction) => onChange({ direction })} columns={2} options={DIRECTIONS} />
+      <Field label="Receivers" help="Where the paths end. Each sender of the sweep is patched through these inputs only.">
+        <div className={e.receivers}>
+          {form.pathReceivers.map((r) => (
+            <span key={receiverLabel(r)} className={e.receiver}>
+              {r.kind === "logits" ? "Logits, read directly" : `L${r.layer} H${r.head} ${{ q: "query", k: "key", v: "value" }[r.input]}`}
+              <button type="button" aria-label={`Remove ${receiverLabel(r)}`} onClick={() => onChange({ pathReceivers: form.pathReceivers.filter((x) => x !== r) })}>
+                ×
+              </button>
+            </span>
+          ))}
+          {form.pathReceivers.length === 0 && <span className={e.required}>Required: add at least one.</span>}
+        </div>
+      </Field>
+      <div className={s.row}>
+        <Input value={query} onChange={(ev) => setQuery(ev.target.value)} placeholder="L9 H9" aria-label="Receiver head, like L9 H9" style={{ width: 110 }} spellCheck={false} />
+        <Select value={part} onChange={(ev) => setPart(ev.target.value as "q" | "k" | "v")} aria-label="Which input of the head">
+          <option value="q">Query</option>
+          <option value="k">Key</option>
+          <option value="v">Value</option>
+        </Select>
+        <Button size="small" disabled={!head} onClick={() => head && (add({ kind: "head", layer: head.layer, head: head.head, input: part }), setQuery(""))}>
+          Add head
+        </Button>
+        <Button size="small" disabled={has({ kind: "logits" })} onClick={() => add({ kind: "logits" })}>
+          Add the logits
+        </Button>
+      </div>
+      <Checkbox checked={form.pathFreezeMlps} onChange={(pathFreezeMlps) => onChange({ pathFreezeMlps })}>
+        Hold the MLPs as well as the other heads, leaving only the direct path through the residual stream
+      </Checkbox>
+      <p className={s.small}>
+        Each sender is patched while every other attention head keeps its own value, so its effect reaches the receivers only
+        through the residual stream{form.pathFreezeMlps ? "" : " and the MLPs"}. What the receivers read in that run is then patched
+        into an unchanged run. Senders in or after the last receiver's layer have no path and are left out.
+      </p>
+    </div>
+  );
+}
+
 function SteeringSettings({ form, onChange }: { form: FormState; onChange: (patch: Partial<FormState>) => void }) {
   const strengths = parseStrengths(form.steerStrengths);
   return (
@@ -662,6 +735,8 @@ function ScopeEditor({
   const direct = method === "direct_logit_attribution";
   // Steering adds to one residual stream site per layer, at one token of each prompt.
   const steering = method === "steering";
+  // Paths start at heads, attention outputs or MLP outputs.
+  const paths = method === "path_patching";
   const verb = method === "ablation" ? "Ablate" : "Patch";
   const position = (p: PositionSpec) => (direct ? { kind: "last" } as PositionSpec : p);
   return (
@@ -681,8 +756,14 @@ function ScopeEditor({
           {
             value: "layer_position",
             label: "Layer × position",
-            disabled: direct || steering,
-            title: direct ? "Direct effects are read at the last token only" : steering ? "Steering adds at one token" : undefined,
+            disabled: direct || steering || paths,
+            title: direct
+              ? "Direct effects are read at the last token only"
+              : steering
+                ? "Steering adds at one token"
+                : paths
+                  ? "Paths start at heads, attention outputs or MLP outputs"
+                  : undefined,
           },
           { value: "layer_components", label: steering ? "One site in every layer" : "Attention and MLP per layer" },
           ...(kind === "sites" ? [{ value: "sites" as const, label: scope.sites.length === 1 ? "Single site" : "Chosen sites" }] : []),
@@ -723,7 +804,7 @@ function ScopeEditor({
                 <Checkbox
                   key={k}
                   checked={scope.components.includes(k)}
-                  disabled={direct && k !== "attn_out" && k !== "mlp_out"}
+                  disabled={(direct || paths) && k !== "attn_out" && k !== "mlp_out"}
                   onChange={(on) =>
                     onChange({
                       ...scope,

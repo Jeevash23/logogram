@@ -430,6 +430,97 @@ class TransformerLensBackend(ModelBackend):
             raise BackendError("The model was unloaded. Load it again to continue.")
         return self.bridge
 
+    def path_patch(
+        self,
+        tokens: torch.Tensor,
+        sender: Patch,
+        frozen_heads: dict[int, torch.Tensor],
+        frozen_mlps: dict[int, torch.Tensor] | None,
+        receivers: list[tuple[str, int, int, str]],
+    ) -> torch.Tensor:
+        n = self.info.n_layers
+        tokens = tokens.to(self.device)
+
+        def hold_heads(layer: int) -> Callable[..., torch.Tensor]:
+            def fn(act: torch.Tensor, hook: Any = None) -> torch.Tensor:
+                out = frozen_heads[layer].to(device=act.device, dtype=act.dtype).clone()
+                if sender.kind == "head" and sender.layer == layer:
+                    rows = torch.arange(act.shape[0], device=act.device)
+                    heads = sender.heads.to(act.device)  # type: ignore[union-attr]
+                    values = sender.values.to(device=act.device, dtype=act.dtype)
+                    if sender.positions is None:
+                        out[rows, :, heads] = values
+                    else:
+                        out[rows, sender.positions.to(act.device), heads] = values
+                return out
+
+            return fn
+
+        def hold(value: torch.Tensor) -> Callable[..., torch.Tensor]:
+            def fn(act: torch.Tensor, hook: Any = None) -> torch.Tensor:
+                return value.to(device=act.device, dtype=act.dtype)
+
+            return fn
+
+        first: list[tuple[str, Callable[..., torch.Tensor]]] = [
+            (hook_name("head", layer), hold_heads(layer)) for layer in range(n)
+        ]
+        if sender.kind == "resid_mid":
+            first += _resid_mid_hooks(sender)
+        elif sender.kind != "head":
+            first.append((hook_name(sender.kind, sender.layer), _patch_hook(sender)))
+        for layer, value in (frozen_mlps or {}).items():
+            if not (sender.kind == "mlp_out" and sender.layer == layer):
+                first.append((hook_name("mlp_out", layer), hold(value)))
+
+        # What each receiver reads, recorded in the first pass and patched in the second.
+        reads: dict[str, list[int]] = {}
+        for kind, layer, head, part in receivers:
+            if kind == "logits":
+                reads.setdefault(hook_name("resid_post", n - 1), [])
+            else:
+                reads.setdefault(f"blocks.{layer}.attn.hook_{part}", []).append(head)
+        recorded: dict[str, torch.Tensor] = {}
+
+        def record(name: str) -> Callable[..., torch.Tensor]:
+            def fn(act: torch.Tensor, hook: Any = None) -> torch.Tensor:
+                recorded[name] = act.detach().clone()
+                return act
+
+            return fn
+
+        def replay(name: str, heads: list[int]) -> Callable[..., torch.Tensor]:
+            def fn(act: torch.Tensor, hook: Any = None) -> torch.Tensor:
+                value = recorded[name].to(dtype=act.dtype)
+                if not heads:  # the logits read the whole residual stream
+                    return value
+                act = act.clone()
+                act[:, :, heads] = value[:, :, heads]
+                return act
+
+            return fn
+
+        logits_receiver = any(kind == "logits" for kind, *_ in receivers)
+        kwargs: dict[str, Any] = {"return_type": None}
+        if not logits_receiver:
+            last = max(layer for kind, layer, *_ in receivers if kind == "head")
+            if last + 1 < n:
+                kwargs["stop_at_layer"] = last + 1
+        with self.lock, torch.no_grad():
+            bridge = self._bridge()
+            bridge.run_with_hooks(
+                tokens, fwd_hooks=first + [(name, record(name)) for name in reads], **kwargs
+            )
+            second = {"return_type": "logits"}
+            if self._logits_to_keep:
+                second["logits_to_keep"] = 1
+            logits = bridge.run_with_hooks(
+                tokens,
+                fwd_hooks=[(name, replay(name, heads)) for name, heads in reads.items()],
+                **second,
+            )
+            return logits[:, -1, :].float()
+
     def gradients(
         self,
         tokens: torch.Tensor,

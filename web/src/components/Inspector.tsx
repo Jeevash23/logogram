@@ -141,6 +141,13 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
       `Estimates, to first order, what replacing ${what} at ${position} in each ${receiver} prompt with its value from the paired ` +
       `${source} prompt would do: (${source} activation − ${receiver} activation) · the gradient of the logit difference at the ` +
       `${receiver} run. Nothing is replaced. The estimate misses saturation and can miss or even invert an effect; verify it by patching.`;
+  } else if (exp.kind === "path_patching") {
+    const [receiver, source] = exp.direction === "clean_to_corrupt" ? ["corrupt", "clean"] : ["clean", "corrupt"];
+    const into = exp.receivers.map((r) => (r.kind === "logits" ? "the logits" : `L${r.layer} H${r.head}'s ${{ q: "query", k: "key", v: "value" }[r.input]}`)).join(", ");
+    how =
+      `Runs each ${receiver} prompt with ${what} at ${position} taken from the paired ${source} prompt and every other attention head ` +
+      `held at its own value${exp.freeze_mlps ? ", MLPs too" : ""}, records what ${into} read, and patches only that into an unchanged ` +
+      `${receiver} run. The effect is what travels from this component to the receivers${exp.freeze_mlps ? " directly" : ", directly or through MLPs"}.`;
   } else if (exp.kind === "steering") {
     const toward = exp.apply_to === "clean" ? "corrupt" : "clean";
     const split = summary?.steering;
@@ -163,7 +170,7 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
           : `its value in ${b.donors} randomly drawn ${b.pool} prompts (seed ${b.seed}), averaging the result`;
     how = `Runs each clean prompt and replaces ${what} at ${position} with ${source}.`;
   }
-  const receiver = summary?.receiver ?? ((exp.kind === "activation_patching" || exp.kind === "attribution_patching") && exp.direction === "clean_to_corrupt" ? "corrupt" : "clean");
+  const receiver = summary?.receiver ?? ((exp.kind === "activation_patching" || exp.kind === "attribution_patching" || exp.kind === "path_patching") && exp.direction === "clean_to_corrupt" ? "corrupt" : "clean");
   const reference = summary?.reference ?? (receiver === "corrupt" ? "clean" : "corrupt");
   const gap = summary?.metric.denominator;
   return (

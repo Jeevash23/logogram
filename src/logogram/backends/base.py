@@ -109,6 +109,25 @@ class ModelBackend(ABC):
     def attention_pattern(self, tokens: torch.Tensor, layer: int) -> torch.Tensor:
         """Attention probabilities ``[B, H, query, key]`` in float32."""
 
+    def path_patch(
+        self,
+        tokens: torch.Tensor,
+        sender: Patch,
+        frozen_heads: dict[int, torch.Tensor],
+        frozen_mlps: dict[int, torch.Tensor] | None,
+        receivers: list[tuple[str, int, int, str]],
+    ) -> torch.Tensor:
+        """Logits at the last position, ``[B, vocab]``, after patching the sender's effect into
+        the receivers' inputs only.
+
+        First pass: the sender is patched, every attention head's output ``z`` is held at
+        ``frozen_heads`` (the receiver run's own values, ``[B, pos, H, d_head]`` per layer) except
+        the sender's, and so are MLP outputs when ``frozen_mlps`` is given; the receivers' inputs
+        are recorded. Second pass: only those inputs are patched in. Receivers are
+        ``("head", layer, head, "q" | "k" | "v")`` or ``("logits", -1, -1, "")``.
+        """
+        raise BackendError("Path patching isn't supported by this model backend.")
+
     def gradients(
         self,
         tokens: torch.Tensor,

@@ -201,11 +201,15 @@ export type BaselineSpec =
 
 export type Direction = "clean_to_corrupt" | "corrupt_to_clean";
 
+/** Where a path ends: a later head's query, key or value, or the logits read directly. */
+export type PathReceiverSpec = { kind: "head"; layer: number; head: number; input: "q" | "k" | "v" } | { kind: "logits" };
+
 export type ExperimentSpec =
   | { kind: "activation_patching"; direction: Direction }
   | { kind: "ablation"; baseline: BaselineSpec }
   | { kind: "direct_logit_attribution"; prompts: "clean" | "corrupt" }
   | { kind: "attribution_patching"; direction: Direction }
+  | { kind: "path_patching"; direction: Direction; receivers: PathReceiverSpec[]; freeze_mlps: boolean }
   | {
       kind: "steering";
       apply_to: "clean" | "corrupt";

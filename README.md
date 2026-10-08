@@ -244,6 +244,18 @@ them), at positions other than the last token, for single heads in models that n
 attention output after combining heads (Gemma 2, OLMo 2), and for models that soft-cap their
 logits.
 
+**Path patching** measures a component's effect through chosen receivers only: a later head's
+query, key or value, or the logits read directly from the final residual stream. For each sender
+(a head, attention output or MLP output of the sweep), the receiver prompt runs with the sender's
+activation from the source prompt while every other attention head is held at its own value, so the
+change travels only through the residual stream (and the MLPs, unless you hold them too). What the
+receivers read in that run is recorded and patched into an unchanged receiver run, where the metric
+is read. Senders in or after the last receiver's layer have no path, so a sweep keeps only the
+layers before it. In models that share keys and values across heads (grouped-query attention),
+only queries can be receivers. Tests check that from the last layer to the logits a path is the
+whole effect, exactly as patching measures it. **Check robustness** offers holding or releasing
+the MLPs, the opposite direction, and the senders' whole effect by patching.
+
 **Steering** adds a direction to the residual stream and measures what it does. At each steered
 site (one residual stream state per layer, or chosen ones, at one token of each prompt) the
 direction is the mean difference between the two prompts of each pair, from the prompts you steer
@@ -304,7 +316,7 @@ Every experiment is a `spec.json`. Nothing that can change a number is left impl
 | `model.revision` | A commit. `null` resolves the current main branch at run time; the saved spec pins what ran. |
 | `model.process_weights` | Fold LayerNorm and center weights, as TransformerLens does by default. Logit differences don't change; zero ablation of head outputs does, because value biases are folded. |
 | `dataset.sha256` | If set, the run refuses a dataset file that has changed. |
-| `experiment` | `{"kind": "activation_patching", "direction": "clean_to_corrupt" \| "corrupt_to_clean"}`, `{"kind": "ablation", "baseline": …}` with `{"kind": "zero"}`, `{"kind": "mean", "reference": "clean" \| "corrupt"}` or `{"kind": "resample", "pool": "clean" \| "corrupt", "donors": 10, "seed": 0}`, `{"kind": "attribution_patching", "direction": …}` (same directions as patching), `{"kind": "direct_logit_attribution", "prompts": "clean" \| "corrupt"}`, or `{"kind": "steering", "apply_to": "clean" \| "corrupt", "coefficients": [-1, 1, 2], "train_fraction": 0.5, "seed": 0, "control": true}` with a scope of one residual component per layer (`layer_components`) or residual `sites`, at one token |
+| `experiment` | `{"kind": "activation_patching", "direction": "clean_to_corrupt" \| "corrupt_to_clean"}`, `{"kind": "ablation", "baseline": …}` with `{"kind": "zero"}`, `{"kind": "mean", "reference": "clean" \| "corrupt"}` or `{"kind": "resample", "pool": "clean" \| "corrupt", "donors": 10, "seed": 0}`, `{"kind": "attribution_patching", "direction": …}` (same directions as patching), `{"kind": "direct_logit_attribution", "prompts": "clean" \| "corrupt"}`, `{"kind": "path_patching", "direction": …, "receivers": [{"kind": "head", "layer": 9, "head": 9, "input": "q" \| "k" \| "v"}, {"kind": "logits"}], "freeze_mlps": false}`, or `{"kind": "steering", "apply_to": "clean" \| "corrupt", "coefficients": [-1, 1, 2], "train_fraction": 0.5, "seed": 0, "control": true}` with a scope of one residual component per layer (`layer_components`) or residual `sites`, at one token |
 | `scope` | `{"kind": "heads", "position": …}`, `{"kind": "layer_position", "site": "resid_pre", "positions": "each" \| "labels"}`, `{"kind": "layer_components", "components": ["attn_out", "mlp_out"], "position": …}` or `{"kind": "sites", "sites": [{"kind": "head", "layer": 9, "head": 9, "position": {"kind": "label", "label": "end"}}]}` |
 | `metric.normalization` | `dataset_gap` or `prompt_gap` |
 | `execution.batch_size` | Recorded because batch shape can change floating-point results in the last digits. |

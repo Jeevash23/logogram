@@ -11,6 +11,7 @@ import type {
   ExperimentKind,
   ExperimentSpec,
   Job,
+  PathReceiverSpec,
   Layout,
   ModelShape,
   ModelStatus,
@@ -103,6 +104,9 @@ export interface FormState {
   steerTrain: number;
   steerSeed: number;
   steerControl: boolean;
+  /** Path patching: where the paths end (at least one), and whether MLPs are held too. */
+  pathReceivers: PathReceiverSpec[];
+  pathFreezeMlps: boolean;
   scope: ScopeSpec;
   normalization: "dataset_gap" | "prompt_gap";
   bootstrap: number;
@@ -133,6 +137,8 @@ export const DEFAULT_FORM: FormState = {
   steerTrain: 0.5,
   steerSeed: 0,
   steerControl: true,
+  pathReceivers: [],
+  pathFreezeMlps: false,
   scope: { kind: "heads", position: { kind: "all" } },
   normalization: "dataset_gap",
   bootstrap: 1000,
@@ -154,7 +160,7 @@ export function formFromSpec(spec: Spec): FormState {
     name: spec.name,
     nameEdited: true,
     kind: e.kind,
-    direction: e.kind === "activation_patching" ? e.direction : "clean_to_corrupt",
+    direction: e.kind === "activation_patching" || e.kind === "attribution_patching" || e.kind === "path_patching" ? e.direction : "clean_to_corrupt",
     baseline: e.kind === "ablation" ? e.baseline : null,
     dlaPrompts: e.kind === "direct_logit_attribution" ? e.prompts : null,
     steerApplyTo: e.kind === "steering" ? e.apply_to : null,
@@ -162,6 +168,8 @@ export function formFromSpec(spec: Spec): FormState {
     steerTrain: e.kind === "steering" ? e.train_fraction : DEFAULT_FORM.steerTrain,
     steerSeed: e.kind === "steering" ? e.seed : DEFAULT_FORM.steerSeed,
     steerControl: e.kind === "steering" ? e.control : DEFAULT_FORM.steerControl,
+    pathReceivers: e.kind === "path_patching" ? e.receivers : [],
+    pathFreezeMlps: e.kind === "path_patching" ? e.freeze_mlps : false,
     scope: spec.scope,
     normalization: spec.metric.normalization,
     bootstrap: spec.statistics.bootstrap,
