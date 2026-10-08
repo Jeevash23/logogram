@@ -11,6 +11,22 @@ import { useStore } from "../store/app";
 import s from "./views.module.css";
 import f from "./FeaturesView.module.css";
 
+/** The activation an SAE reads, in words. */
+function siteOf(info: SAEInfo): string {
+  switch (info.site) {
+    case "resid_pre":
+      return `the residual stream entering layer ${info.layer}`;
+    case "resid_post":
+      return `the residual stream leaving layer ${info.layer}`;
+    case "attn_out":
+      return `layer ${info.layer}'s attention output`;
+    case "mlp_out":
+      return `layer ${info.layer}'s MLP output`;
+    default:
+      return `the ${KIND_NAMES[info.site]} of layer ${info.layer}`;
+  }
+}
+
 /** Below this, an SAE describes too little of the activations for its features to mean much. */
 const POOR_FIT = 0.6;
 
@@ -161,7 +177,7 @@ function Loaded({ info }: { info: SAEInfo }) {
             <p className={s.eyebrow}>{info.repo}</p>
             <h3 className={f.cardTitle}>{info.path || "(top level)"}</h3>
             <p className={s.small}>
-              Reads the {KIND_NAMES[info.site]} of layer {info.layer} · {count(info.d_sae)} features ·{" "}
+              Reads {siteOf(info)} · {count(info.d_sae)} features ·{" "}
               {info.activation === "topk" ? `the top ${info.k} per token` : info.activation === "jumprelu" ? "JumpReLU" : "ReLU"}
               {info.normalize === "layer_norm" ? " · inputs standardized per token" : ""}
             </p>

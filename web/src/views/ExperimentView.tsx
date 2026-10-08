@@ -294,7 +294,7 @@ export function ExperimentView() {
             label="Method"
             value={form.kind}
             onChange={(kind) => setForm({ kind, scope: scopeFor(kind, form.scope) })}
-            columns={3}
+            columns={2}
             options={METHODS}
           />
           {form.kind === "steering" ? (
