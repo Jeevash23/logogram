@@ -119,3 +119,61 @@ def test_a_taken_port_moves_to_the_next_one():
             second.close()
     finally:
         first.close()
+
+
+def test_the_summary_names_each_method_s_values(
+    tiny_backend, project, spec_factory, capsys, tmp_path
+):
+    from logogram.cli import _print_summary
+    from logogram.runner import run_spec
+    from test_sae import exact_sae
+
+    sae = exact_sae(tmp_path / "sae", tiny_backend.info.d_model)
+    cases = [
+        (
+            {
+                "experiment": {"kind": "direct_logit_attribution", "prompts": "clean"},
+                "scope": {"kind": "heads", "position": {"kind": "last"}},
+            },
+            ["share", "splits into attention"],
+        ),
+        (
+            {"experiment": {"kind": "attribution_patching", "direction": "clean_to_corrupt"}},
+            ["estimated"],
+        ),
+        (
+            {
+                "experiment": {
+                    "kind": "steering",
+                    "apply_to": "corrupt",
+                    "coefficients": [1.0],
+                    "train_fraction": 0.5,
+                    "seed": 0,
+                    "control": True,
+                },
+                "scope": {
+                    "kind": "layer_components",
+                    "components": ["resid_pre"],
+                    "position": {"kind": "last"},
+                },
+            },
+            ["flipped", "held-out pairs"],
+        ),
+        (
+            {
+                "sae": {"repo": "local/exact", "path": "", "revision": "test"},
+                "experiment": {"kind": "attribution_patching", "direction": "clean_to_corrupt"},
+                "scope": {"kind": "features", "position": {"kind": "last"}, "top": 3},
+            },
+            ["explains 100.0%", "the features carry"],
+        ),
+    ]
+    for overrides, expected in cases:
+        outcome = run_spec(spec_factory(**overrides), project, backend=tiny_backend, sae=sae)
+        assert outcome.status == "finished", outcome.manifest.get("error")
+        _print_summary(outcome.summary, 3)
+        out = capsys.readouterr().out
+        for text in expected:
+            assert text in out, (text, out)
+        if overrides["experiment"]["kind"] != "steering":
+            assert "flipped" not in out

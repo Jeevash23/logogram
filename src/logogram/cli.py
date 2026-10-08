@@ -414,17 +414,51 @@ def _print_summary(summary: dict, top: int) -> None:  # type: ignore[type-arg]
     typer.echo(
         f"Confidence intervals: {ci}% {stats['method']}, {stats['bootstrap']} resamples, seed {stats['seed']}"
     )
+    # What the values are depends on the method: patched runs, estimates of them, or terms of a
+    # split; only patched runs can flip a prompt.
+    measure = summary.get("measure", "intervention")
+    value, change = {
+        "intervention": ("effect", "Δ logit diff"),
+        "estimate": ("estimated", "estimated Δ"),
+        "attribution": ("share", "direct"),
+    }.get(measure, ("effect", "Δ logit diff"))
+    flips = measure == "intervention"
     sites = sorted(summary["sites"], key=lambda s: -abs(s["effect"]["mean"] or 0.0))[:top]
     typer.echo("")
-    header = f"{'site':<22} {'effect':>8}  {f'{ci}% CI':<19} {'Δ logit diff':>12}  {'flipped':>8}"
-    typer.echo(header)
+    header = f"{'site':<22} {value:>9}  {f'{ci}% CI':<19} {change:>12}"
+    typer.echo(header + (f"  {'flipped':>8}" if flips else ""))
     for s in sites:
         e = s["effect"]
         interval = f"[{_fmt(e['lo'])}, {_fmt(e['hi'])}]"
-        typer.echo(
-            f"{s['label']:<22} {_fmt(e['mean']):>8}  {interval:<19} {_fmt(s['delta']['mean']):>12}  "
-            f"{s['sign_flips']:>3} / {s['n']:<3}"
+        line = (
+            f"{s['label']:<22} {_fmt(e['mean']):>9}  {interval:<19} {_fmt(s['delta']['mean']):>12}"
         )
+        typer.echo(line + (f"  {s['sign_flips']:>3} / {s['n']:<3}" if flips else ""))
+    if summary.get("direct"):
+        d = summary["direct"]
+        typer.echo(
+            f"\nThe mean {d['prompts']} logit difference {_fmt(d['logit_diff'])} splits into attention "
+            f"{_fmt(d['attention'])}, MLPs {_fmt(d['mlp'])}, embeddings {_fmt(d['embeddings'])} "
+            f"and biases {_fmt(d['biases'])}."
+        )
+    if summary.get("steering"):
+        st = summary["steering"]
+        typer.echo(
+            f"\nDirections from {len(st['train'])} training pairs; measured on the "
+            f"{len(st['test'])} held-out pairs."
+        )
+    if summary.get("features"):
+        f = summary["features"]
+        fit = f.get("fit") or {}
+        typer.echo(
+            f"\nSAE {f['sae']['repo']} {f['sae']['path']}: explains "
+            f"{fit.get('variance_explained', float('nan')):.1%} of the variance on these prompts."
+        )
+        if f.get("features_estimate") is not None:
+            typer.echo(
+                f"Estimated effect of the whole site {_fmt(f['site_estimate'])}, of which the "
+                f"features carry {_fmt(f['features_estimate'])}."
+            )
     for warning in summary.get("warnings") or []:
         typer.echo(f"\nNote: {warning}")
 
