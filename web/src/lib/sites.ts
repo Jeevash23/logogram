@@ -13,13 +13,16 @@ export interface Selection {
   kind?: ResidKind;
   /** Which variant of the site, such as a steering strength ("×2" or "random ×2"). */
   variantKey?: string;
+  /** A feature of the run's SAE (part "feature"). */
+  feature?: number;
 }
 
-export type MapPart = "resid" | "head" | "attn" | "mlp";
+export type MapPart = "resid" | "head" | "attn" | "mlp" | "feature";
 export type ResidKind = "resid_pre" | "resid_mid" | "resid_post";
 
 export function partOfKind(kind: SiteKind): MapPart {
   if (kind === "head") return "head";
+  if (kind === "sae_feature") return "feature";
   if (kind === "attn_out") return "attn";
   if (kind === "mlp_out") return "mlp";
   return "resid";
@@ -37,6 +40,7 @@ export function selectionOfSite(site: SiteBase): Selection {
     positionKey: site.position_key === "all" ? undefined : site.position_key,
     kind: isResidKind(site.kind) ? site.kind : undefined,
     variantKey: site.variant_key ?? undefined,
+    feature: site.feature ?? undefined,
   };
 }
 
@@ -48,7 +52,8 @@ export function sameSelection(a: Selection | null, b: Selection | null): boolean
     (a.head ?? -1) === (b.head ?? -1) &&
     (a.positionKey ?? "") === (b.positionKey ?? "") &&
     (a.kind ?? "") === (b.kind ?? "") &&
-    (a.variantKey ?? "") === (b.variantKey ?? "")
+    (a.variantKey ?? "") === (b.variantKey ?? "") &&
+    (a.feature ?? -1) === (b.feature ?? -1)
   );
 }
 
@@ -59,6 +64,7 @@ export function sitesOnComponent<T extends SiteBase>(sites: T[], sel: Selection)
       s.layer === sel.layer &&
       partOfKind(s.kind) === sel.part &&
       (sel.part !== "head" || s.head === sel.head) &&
+      (sel.part !== "feature" || s.feature === sel.feature) &&
       (sel.kind === undefined || s.kind === sel.kind) &&
       (sel.variantKey === undefined || (s.variant_key ?? undefined) === sel.variantKey),
   );
@@ -90,8 +96,8 @@ export function fitSelection<T extends SiteBase>(sites: T[], sel: Selection): Se
 }
 
 /** What a site measures, independent of its index in a run: comparable across runs. */
-export function siteKey(site: { kind: SiteKind; layer: number; head?: number | null; position_key: string; variant_key?: string | null }): string {
-  return `${site.kind}|${site.layer}|${site.head ?? ""}|${site.position_key}|${site.variant_key ?? ""}`;
+export function siteKey(site: { kind: SiteKind; layer: number; head?: number | null; feature?: number | null; position_key: string; variant_key?: string | null }): string {
+  return `${site.kind}|${site.layer}|${site.head ?? ""}|${site.feature ?? ""}|${site.position_key}|${site.variant_key ?? ""}`;
 }
 
 export function siteAt<T extends SiteBase>(sites: T[], row: number, col: number): T | null {
@@ -107,6 +113,8 @@ export function componentLabel(sel: Selection): string {
       return `L${sel.layer} attn${pos}`;
     case "mlp":
       return `L${sel.layer} mlp${pos}`;
+    case "feature":
+      return `L${sel.layer} F${sel.feature}${pos}`;
     default:
       return `L${sel.layer} ${sel.kind ? KIND_SHORT[sel.kind] : "resid"}${pos}`;
   }
@@ -119,6 +127,7 @@ export const KIND_NAMES: Record<SiteKind, string> = {
   attn_out: "attention output",
   mlp_out: "MLP output",
   head: "attention head output (z)",
+  sae_feature: "SAE feature",
 };
 
 export const KIND_SHORT: Record<SiteKind, string> = {
@@ -128,6 +137,7 @@ export const KIND_SHORT: Record<SiteKind, string> = {
   attn_out: "attn out",
   mlp_out: "mlp out",
   head: "head",
+  sae_feature: "feature",
 };
 
 export function layoutTitle(layout: Layout): string {

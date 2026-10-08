@@ -11,6 +11,10 @@ import type {
   Job,
   ModelPreset,
   ModelStatus,
+  SAEFit,
+  SAEStatus,
+  TokenFeatures,
+  FeatureReport,
   ProjectInfo,
   PromptRecord,
   RecentProject,
@@ -195,6 +199,16 @@ export const api = {
   verify: (id: string, top: number) =>
     post<{ run_id: string; job: Job }>(`/api/runs/${encodeURIComponent(id)}/verify`, { top }),
   derived: (id: string) => get<RunListing[]>(`/api/runs/${encodeURIComponent(id)}/derived`),
+
+  saeSuggestions: (model: string) => get<{ repo: string; detail: string }[]>(`/api/sae/suggestions?model=${encodeURIComponent(model)}`),
+  saeFolders: (repo: string) => get<{ repo: string; revision: string; folders: string[] }>(`/api/sae/folders?repo=${encodeURIComponent(repo)}`),
+  loadSae: (ref: { repo: string; path: string; revision: string | null }) => post<Job>("/api/sae/load", ref),
+  unloadSae: () => post<SAEStatus>("/api/sae/unload"),
+  saeFit: (dataset: string, options: Partial<AnalysisOptions>) => post<SAEFit>("/api/sae/fit", { dataset, ...options }),
+  saeTokens: (dataset: string, index: number, which: "clean" | "corrupt", options: Partial<AnalysisOptions>) =>
+    post<TokenFeatures>("/api/sae/tokens", { dataset, index, which, ...options }),
+  saeFeature: (dataset: string, index: number, which: "clean" | "corrupt", feature: number, options: Partial<AnalysisOptions>) =>
+    post<FeatureReport>("/api/sae/feature", { dataset, index, which, feature, ...options }),
   siteDetail: (id: string, site: number) =>
     get<SiteDetail>(`/api/runs/${encodeURIComponent(id)}/sites/${site}`),
   compare: (a: string, b: string) =>

@@ -153,6 +153,8 @@ export function scopeText(s: ScopeSpec): string {
       return `${s.components.join(" and ")} per layer, ${positionText(s.position)}`;
     case "sites":
       return `${s.sites.length} chosen site${s.sites.length === 1 ? "" : "s"}`;
+    case "features":
+      return `every SAE feature, ${positionText(s.position)}, keeping the top ${s.top}`;
   }
 }
 
@@ -167,6 +169,8 @@ export function scopeShort(s: ScopeSpec): string {
       return s.components.length === 2 && s.components.includes("attn_out") && s.components.includes("mlp_out") ? "Attn and MLP" : "Components per layer";
     case "sites":
       return s.sites.length === 1 ? "Single site" : "Chosen sites";
+    case "features":
+      return "SAE features";
   }
 }
 
@@ -207,7 +211,7 @@ export function receiverText(e: ExperimentSpec): { receiver: string; source: str
 
 export function siteFromSelection(sel: Selection, residKind: SiteSpec["kind"] = sel.kind ?? "resid_pre"): SiteSpec {
   const kind: SiteSpec["kind"] =
-    sel.part === "head" ? "head" : sel.part === "attn" ? "attn_out" : sel.part === "mlp" ? "mlp_out" : residKind;
+    sel.part === "head" ? "head" : sel.part === "attn" ? "attn_out" : sel.part === "mlp" ? "mlp_out" : sel.part === "feature" ? "sae_feature" : residKind;
   const position: PositionSpec =
     sel.positionKey === undefined
       ? { kind: "all" }
@@ -216,7 +220,13 @@ export function siteFromSelection(sel: Selection, residKind: SiteSpec["kind"] = 
         : /^-?\d+$/.test(sel.positionKey)
           ? { kind: "index", index: Number(sel.positionKey) }
           : { kind: "label", label: sel.positionKey };
-  return { kind, layer: sel.layer, head: sel.part === "head" ? sel.head : null, position };
+  return {
+    kind,
+    layer: sel.layer,
+    head: sel.part === "head" ? sel.head : null,
+    ...(sel.part === "feature" ? { feature: sel.feature } : {}),
+    position,
+  };
 }
 
 export function defaultSpec(opts: {
@@ -251,13 +261,16 @@ export function suggestName(spec: Pick<Spec, "experiment" | "scope">): string {
   const what = experimentShort(spec.experiment);
   const where = spec.scope.kind === "sites" && spec.scope.sites.length === 1
     ? siteText(spec.scope.sites[0])
-    : scopeShort(spec.scope).toLowerCase();
+    : spec.scope.kind === "features"
+      ? "SAE features"
+      : scopeShort(spec.scope).toLowerCase();
   return `${what} · ${where}`;
 }
 
 export function siteText(site: SiteSpec): string {
   const pos = site.position.kind === "all" ? "" : ` @ ${positionKey(site.position)}`;
   if (site.kind === "head") return `L${site.layer} H${site.head}${pos}`;
+  if (site.kind === "sae_feature") return `L${site.layer} F${site.feature}${pos}`;
   const name = { resid_pre: "resid pre", resid_mid: "resid mid", resid_post: "resid post", attn_out: "attn", mlp_out: "mlp" }[site.kind];
   return `L${site.layer} ${name}${pos}`;
 }
@@ -289,6 +302,7 @@ export function workload(spec: Spec, n: number, nLayers: number, nHeads: number,
   if (s.kind === "heads") sites = nLayers * nHeads;
   else if (s.kind === "layer_components") sites = nLayers * s.components.length;
   else if (s.kind === "sites") sites = s.sites.length;
+  else if (s.kind === "features") return n; // only attribution patching sweeps every feature
   else if (s.positions === "each") {
     if (nPositions === null) return null;
     sites = nLayers * nPositions;
@@ -310,6 +324,8 @@ export function workloadText(spec: Spec, rows: number): string {
  * at the last token where the logit difference is measured. */
 export function scopeFor(kind: ExperimentKind, scope: ScopeSpec): ScopeSpec {
   const last: PositionSpec = { kind: "last" };
+  // Only attribution patching sweeps every SAE feature; other methods patch chosen ones.
+  if (scope.kind === "features" && kind !== "attribution_patching") return { kind: "heads", position: { kind: "all" } };
   if (kind === "steering") {
     // Steering adds to one residual stream site per layer, at one token.
     const single = (p: PositionSpec) => (p.kind === "all" ? last : p);
@@ -354,5 +370,7 @@ export function scopeFor(kind: ExperimentKind, scope: ScopeSpec): ScopeSpec {
         .map((x) => ({ ...x, position: last }));
       return sites.length ? { kind: "sites", sites } : { kind: "heads", position: last };
     }
+    case "features":
+      return { kind: "heads", position: last };
   }
 }

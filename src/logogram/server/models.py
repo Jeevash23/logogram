@@ -56,7 +56,7 @@ class ModelStatus(_Out):
 
 class JobInfo(_Out):
     id: str
-    kind: Literal["load_model", "run"]
+    kind: Literal["load_model", "load_sae", "run"]
     title: str
     status: Literal["running", "finished", "failed", "cancelled"]
     run_id: str | None
@@ -145,6 +145,7 @@ class ServerState(_Out):
     theme: Literal["light", "dark", "system"]
     projects_parent: str
     update: UpdateStatus
+    sae: dict[str, Any] = {"state": "none"}
 
 
 class Settings(BaseModel):
@@ -379,6 +380,7 @@ class ComparisonChange(_Out):
     kind: str
     layer: int
     head: int | None
+    feature: int | None = None
     position_key: str
     variant_key: str | None = None
     index_a: int

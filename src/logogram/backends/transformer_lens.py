@@ -430,6 +430,28 @@ class TransformerLensBackend(ModelBackend):
             raise BackendError("The model was unloaded. Load it again to continue.")
         return self.bridge
 
+    def edit_logits(
+        self,
+        tokens: torch.Tensor,
+        kind: str,
+        layer: int,
+        edit: Any,
+    ) -> torch.Tensor:
+        if kind not in ("resid_pre", "resid_post", "attn_out", "mlp_out"):
+            raise BackendError(f"Editing {kind} activations isn't supported.")
+
+        def fn(act: torch.Tensor, hook: Any = None) -> torch.Tensor:
+            return edit(act).to(dtype=act.dtype)
+
+        kwargs: dict[str, Any] = {"return_type": "logits"}
+        if self._logits_to_keep:
+            kwargs["logits_to_keep"] = 1
+        with self.lock, torch.no_grad():
+            logits = self._bridge().run_with_hooks(
+                tokens.to(self.device), fwd_hooks=[(hook_name(kind, layer), fn)], **kwargs
+            )
+            return logits[:, -1, :].float()
+
     def path_patch(
         self,
         tokens: torch.Tensor,

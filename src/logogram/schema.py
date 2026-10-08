@@ -28,9 +28,12 @@ class Stat(_Model):
 
 class SiteRef(_Model):
     index: int
-    kind: Literal["resid_pre", "resid_mid", "resid_post", "attn_out", "mlp_out", "head"]
+    kind: Literal[
+        "resid_pre", "resid_mid", "resid_post", "attn_out", "mlp_out", "head", "sae_feature"
+    ]
     layer: int
     head: int | None
+    feature: int | None = None
     position: dict[str, Any]
     position_key: str
     row: int
@@ -136,6 +139,17 @@ class SteeringInfo(_Model):
     norms: list[float]
 
 
+class FeatureRun(_Model):
+    """Runs on SAE features: the SAE, how well it fits these prompts, and for attribution
+    patching how much of the site's estimated effect its features account for."""
+
+    sae: dict[str, Any]
+    fit: dict[str, Any]
+    site_estimate: float | None = None
+    features_estimate: float | None = None
+    evaluated: int | None = None
+
+
 class Summary(_Model):
     logogram_summary: Literal[1] = 1
     run_id: str
@@ -158,6 +172,7 @@ class Summary(_Model):
     warnings: list[str]
     direct: DirectSplit | None = None
     steering: SteeringInfo | None = None
+    features: FeatureRun | None = None
 
 
 # -- manifest.json -----------------------------------------------------------------------------
@@ -209,6 +224,7 @@ class Manifest(_Model):
     device: DeviceInfo | None = None
     dtype: str | None = None
     dataset: DatasetProvenance | None = None
+    sae: dict[str, Any] | None = None
 
 
 # -- live events (WebSocket) -------------------------------------------------------------------

@@ -30,9 +30,11 @@ from logogram.spec import (
     AllPositions,
     AttributionPatching,
     DirectLogitAttribution,
+    FeaturesScope,
     MeanBaseline,
     PathPatching,
     ResampleBaseline,
+    SitesScope,
     Spec,
     Steering,
     ZeroBaseline,
@@ -282,6 +284,16 @@ def run_experiment(
     **kwargs: Any,
 ) -> EngineResult:
     """Run whichever experiment the spec describes. The app and the CLI both come through here."""
+    sae = kwargs.pop("sae", None)
+    if isinstance(spec.scope, FeaturesScope) or (
+        isinstance(spec.scope, SitesScope)
+        and any(s.kind == "sae_feature" for s in spec.scope.sites)
+    ):
+        if sae is None:
+            raise EngineError("This spec measures SAE features, but no SAE is loaded.")
+        from logogram.features import run_features
+
+        return run_features(spec, backend, prompts, sae, **kwargs)
     if isinstance(spec.experiment, DirectLogitAttribution):
         from logogram.direct import run_direct_effects
 

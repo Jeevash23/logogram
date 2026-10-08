@@ -74,6 +74,7 @@ function ComponentHeader({ selection }: { selection: Selection }) {
   if (selection.part === "head") kind = `Attention head ${selection.head} in layer ${selection.layer}. Its output z, before the output projection.`;
   else if (selection.part === "attn") kind = `The attention output of layer ${selection.layer}: all heads, after the output projection.`;
   else if (selection.part === "mlp") kind = `The MLP output of layer ${selection.layer}.`;
+  else if (selection.part === "feature") kind = `Feature ${selection.feature} of the SAE on layer ${selection.layer}: a direction in the model the SAE finds active on some tokens.`;
   else {
     const resid = selection.kind ?? sitesOnComponent(run.sites, selection)[0]?.kind;
     kind = resid ? `The ${KIND_NAMES[resid]} (layer ${selection.layer}).` : `The residual stream at layer ${selection.layer}.`;
@@ -104,7 +105,9 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
         ? "the attention output"
         : selection.part === "mlp"
           ? "the MLP output"
-          : resid
+          : selection.part === "feature"
+            ? `feature ${selection.feature} of the SAE`
+            : resid
             ? `the ${KIND_NAMES[resid]}`
             : "the residual stream";
   let how: string;
@@ -135,7 +138,19 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
       </section>
     );
   }
-  if (exp.kind === "attribution_patching") {
+  if (selection.part === "feature" && (exp.kind === "activation_patching" || exp.kind === "ablation")) {
+    const [receiver, source] = exp.kind === "activation_patching" && exp.direction === "clean_to_corrupt" ? ["corrupt", "clean"] : ["clean", "corrupt"];
+    const to = exp.kind === "ablation" ? "zero" : `its value in the paired ${source} prompt`;
+    how =
+      `Runs each ${receiver} prompt, encodes the activation the SAE reads, and changes only ${what} at ${position} to ${to}. ` +
+      "The activation moves along the feature's decoder direction, and what the SAE misses (its error) is kept as it was.";
+  } else if (selection.part === "feature" && exp.kind === "attribution_patching") {
+    const [receiver, source] = exp.direction === "clean_to_corrupt" ? ["corrupt", "clean"] : ["clean", "corrupt"];
+    how =
+      `Estimates, to first order, what changing ${what} at ${position} in each ${receiver} prompt to its value in the paired ${source} ` +
+      `prompt would do: (${source} − ${receiver} feature activation) × the gradient of the logit difference along the feature's ` +
+      "decoder direction. Nothing is changed; verify the strongest by patching.";
+  } else if (exp.kind === "attribution_patching") {
     const [receiver, source] = exp.direction === "clean_to_corrupt" ? ["corrupt", "clean"] : ["clean", "corrupt"];
     how =
       `Estimates, to first order, what replacing ${what} at ${position} in each ${receiver} prompt with its value from the paired ` +

@@ -13,6 +13,7 @@ from logogram.backends.base import ModelInfo
 from logogram.prompts import PreparedPrompt, common_labels
 from logogram.spec import (
     AllPositions,
+    FeaturesScope,
     HeadsScope,
     IndexPosition,
     LabelPosition,
@@ -70,6 +71,7 @@ class ResolvedSite:
             "kind": self.kind,
             "layer": self.layer,
             "head": self.head,
+            "feature": self.site.feature,
             "position": self.site.position.model_dump(),
             "position_key": self.position_key(),
             "row": self.row,
@@ -94,6 +96,8 @@ def site_label(site: Site) -> str:
     pos = "" if isinstance(site.position, AllPositions) else f" @ {position_key(site.position)}"
     if site.kind == "head":
         return f"L{site.layer} H{site.head}{pos}"
+    if site.kind == "sae_feature":
+        return f"L{site.layer} F{site.feature}{pos}"
     return f"L{site.layer} {COMPONENT_LABELS[site.kind]}{pos}"
 
 
@@ -126,6 +130,8 @@ def _check_site(site: Site, info: ModelInfo) -> None:
         raise ScopeError(
             f"Layer {site.layer} doesn't exist; this model has {info.n_layers} layers."
         )
+    if site.kind == "sae_feature":
+        return  # checked against the SAE, which knows its layer and features
     if site.kind not in info.site_kinds:
         raise ScopeError(f"This model has no {site.kind} site in TransformerLens.")
     if site.kind == "head" and site.head is not None and site.head >= info.n_heads:
@@ -224,6 +230,11 @@ def expand_scope(
             "rows": [{"key": str(i), "label": site_label(s)} for i, s in enumerate(scope.sites)],
             "cols": [{"key": "effect", "label": "effect"}],
         }
+    elif isinstance(scope, FeaturesScope):
+        raise ScopeError(
+            "Sweeping every SAE feature needs attribution patching, which estimates them all at "
+            "once. To patch features for real, choose them as sites."
+        )
     else:  # pragma: no cover - exhaustive
         raise ScopeError(f"Unknown scope {scope!r}")
 

@@ -184,6 +184,7 @@ def build_summary(
         "warnings": result.warnings,
         **({"direct": result.extra["direct"]} if "direct" in result.extra else {}),
         **({"steering": result.extra["steering"]} if "steering" in result.extra else {}),
+        **({"features": result.extra["features"]} if "features" in result.extra else {}),
     }
     return Summary.model_validate(summary).model_dump(mode="json")
 
@@ -204,6 +205,10 @@ def results_table(result: EngineResult, stats: SiteStats) -> pa.Table:
         "layer": np.array([sites[i].layer for i in site_idx], dtype=np.int16),
         "head": np.array(
             [-1 if sites[i].head is None else sites[i].head for i in site_idx], dtype=np.int16
+        ),
+        "feature": np.array(
+            [-1 if sites[i].site.feature is None else sites[i].site.feature for i in site_idx],
+            dtype=np.int32,
         ),
         "position": pa.array(
             [sites[i].position_key() for i in site_idx], type=pa.dictionary(pa.int16(), pa.string())

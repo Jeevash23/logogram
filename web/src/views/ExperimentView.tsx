@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
-import type { BaselineSpec, ExperimentKind, PathReceiverSpec, PositionSpec, ScopeSpec, Spec, StreamKind } from "../api/types";
+import type { BaselineSpec, ExperimentKind, PathReceiverSpec, PositionSpec, SAEInfo, ScopeSpec, Spec, StreamKind } from "../api/types";
 import { Button, Callout, Checkbox, Choices, Field, Input, Kbd, Segmented, Select, TextArea } from "../components/ui";
 import { MOD } from "../components/Header";
 import { plural, shortRevision } from "../lib/format";
@@ -57,6 +57,7 @@ export function buildSpec(
     model: ReturnType<typeof useStore.getState>["model"];
     datasetPath: string | null;
     datasetSha: string | null;
+    sae?: ReturnType<typeof useStore.getState>["sae"];
   },
 ): { spec: Spec } | { error: string } {
   if (!ctx.datasetPath) return { error: "Choose prompts first (Prompts view)." };
@@ -117,6 +118,14 @@ export function buildSpec(
         device: "auto",
         process_weights: true,
       });
+  // SAE features belong to an SAE: the loaded one, or the one a saved spec names.
+  const usesFeatures = scope.kind === "features" || (scope.kind === "sites" && scope.sites.some((x) => x.kind === "sae_feature"));
+  const loaded = ctx.sae?.state === "ready" && ctx.sae.info ? { repo: ctx.sae.info.repo, path: ctx.sae.info.path, revision: ctx.sae.info.revision } : null;
+  const sae = usesFeatures ? (loaded ?? form.saeRef) : null;
+  if (usesFeatures && !sae) return { error: "Load the SAE these features belong to (Explore → Features)." };
+  if (scope.kind === "features" && experiment.kind !== "attribution_patching") {
+    return { error: "Only attribution patching estimates every SAE feature. Choose it, or patch chosen features." };
+  }
   const spec: Spec = {
     logogram_spec: 1,
     name: form.name.trim() || suggestName({ experiment, scope }),
@@ -130,6 +139,7 @@ export function buildSpec(
     statistics: { bootstrap: form.bootstrap, ci: form.ci, seed: form.statSeed },
     execution: { batch_size: form.batchSize },
     predictions: form.predictions,
+    ...(sae ? { sae } : {}),
   };
   return { spec };
 }
@@ -182,7 +192,8 @@ export function ExperimentView() {
   const lengths = dataset?.lengths ?? null;
   const uniformLength = lengths ? lengths.length === 1 : null;
 
-  const built = buildSpec(form, { model, datasetPath, datasetSha: dataset?.sha256 ?? null });
+  const sae = useStore((st) => st.sae);
+  const built = buildSpec(form, { model, datasetPath, datasetSha: dataset?.sha256 ?? null, sae });
   const differences = savedDifferences(form, model, datasetPath, dataset?.sha256 ?? null);
   const spec = "spec" in built ? built.spec : null;
   const busy = job?.status === "running";
@@ -347,6 +358,7 @@ export function ExperimentView() {
           <h3 className={e.sectionTitle}>What to sweep</h3>
           <ScopeEditor
             method={form.kind}
+            saeLoaded={sae.state === "ready" ? sae.info ?? null : null}
             scope={form.scope}
             onChange={(scope) => setForm({ scope })}
             labels={labels}
@@ -717,6 +729,7 @@ const LAST_TOKEN_NOTE = "Read at the last token, where the logit difference is m
 
 function ScopeEditor({
   method,
+  saeLoaded,
   scope,
   onChange,
   labels,
@@ -724,6 +737,8 @@ function ScopeEditor({
   lengths,
 }: {
   method: ExperimentKind;
+  /** The loaded SAE: attribution patching can then estimate every one of its features. */
+  saeLoaded: SAEInfo | null;
   scope: ScopeSpec;
   onChange: (s: ScopeSpec) => void;
   labels: string[];
@@ -745,7 +760,8 @@ function ScopeEditor({
         label="Sweep"
         value={kind}
         onChange={(k) => {
-          if (k === "layer_components" && steering) onChange({ kind: "layer_components", components: ["resid_pre"], position: { kind: "last" } });
+          if (k === "features") onChange({ kind: "features", position: { kind: "last" }, top: 50 });
+          else if (k === "layer_components" && steering) onChange({ kind: "layer_components", components: ["resid_pre"], position: { kind: "last" } });
           else if (k === "heads") onChange({ kind: "heads", position: position({ kind: "all" }) });
           else if (k === "layer_position")
             onChange({ kind: "layer_position", site: "resid_pre", positions: uniformLength === false && labels.length ? "labels" : "each" });
@@ -766,9 +782,25 @@ function ScopeEditor({
                   : undefined,
           },
           { value: "layer_components", label: steering ? "One site in every layer" : "Attention and MLP per layer" },
+          ...(method === "attribution_patching" && (saeLoaded || kind === "features")
+            ? [{ value: "features" as const, label: "Every SAE feature" }]
+            : []),
           ...(kind === "sites" ? [{ value: "sites" as const, label: scope.sites.length === 1 ? "Single site" : "Chosen sites" }] : []),
         ]}
       />
+      {scope.kind === "features" && (
+        <div className={s.grid2}>
+          <Field label="Estimate each feature at">
+            <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} />
+          </Field>
+          <Field
+            label="Keep the strongest"
+            help={saeLoaded ? `Of the ${saeLoaded.d_sae.toLocaleString("en-US")} features of the SAE on layer ${saeLoaded.layer}, by the size of their estimated effect.` : "By the size of their estimated effect."}
+          >
+            <Input type="number" min={1} max={500} value={scope.top} onChange={(ev) => onChange({ ...scope, top: Math.max(1, Math.min(500, Number(ev.target.value) || 1)) })} aria-label="Number of features to keep" />
+          </Field>
+        </div>
+      )}
       {scope.kind === "heads" &&
         (direct ? (
           <Field label="Each head's output (z), through its share of the output projection">

@@ -18,6 +18,6 @@ export default defineConfig({
     url: "http://127.0.0.1:8877/api/state",
     timeout: 120_000,
     reuseExistingServer: false,
-    env: { HF_HUB_OFFLINE: "1", HF_HUB_DISABLE_TELEMETRY: "1", OMP_NUM_THREADS: "1", MKL_NUM_THREADS: "1" },
+    env: { HF_HUB_OFFLINE: "1", HF_HUB_DISABLE_TELEMETRY: "1", OMP_NUM_THREADS: "1", MKL_NUM_THREADS: "1", LOGOGRAM_FIXTURE_SAE: "1" },
   },
 });

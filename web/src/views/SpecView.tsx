@@ -48,10 +48,11 @@ export function SpecView() {
   const model = useStore((st) => st.model);
   const dataset = useStore((st) => st.dataset);
   const datasetPath = useStore((st) => st.datasetPath);
+  const sae = useStore((st) => st.sae);
   const [copied, setCopied] = useState(false);
   const guard = useStore((st) => st.guard);
 
-  const draft = buildSpec(form, { model, datasetPath, datasetSha: dataset?.sha256 ?? null });
+  const draft = buildSpec(form, { model, datasetPath, datasetSha: dataset?.sha256 ?? null, sae });
   const runSpec: Spec | undefined = run.detail?.spec;
   const showing: "run" | "draft" = source === "run" && runSpec ? "run" : "draft";
   const spec = showing === "run" ? runSpec : "spec" in draft ? draft.spec : undefined;

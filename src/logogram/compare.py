@@ -26,6 +26,7 @@ def site_key(site: dict[str, Any]) -> tuple[Any, ...]:
         site["kind"],
         site["layer"],
         site.get("head"),
+        site.get("feature"),
         site["position_key"],
         site.get("variant_key"),
     )
@@ -117,6 +118,7 @@ def compare_summaries(
             "kind": sa["kind"],
             "layer": sa["layer"],
             "head": sa.get("head"),
+            "feature": sa.get("feature"),
             "position_key": sa["position_key"],
             "variant_key": sa.get("variant_key"),
             "index_a": sa["index"],

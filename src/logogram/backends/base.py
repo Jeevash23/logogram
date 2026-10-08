@@ -109,6 +109,18 @@ class ModelBackend(ABC):
     def attention_pattern(self, tokens: torch.Tensor, layer: int) -> torch.Tensor:
         """Attention probabilities ``[B, H, query, key]`` in float32."""
 
+    def edit_logits(
+        self,
+        tokens: torch.Tensor,
+        kind: str,
+        layer: int,
+        edit: Any,
+    ) -> torch.Tensor:
+        """Logits at the last position, ``[B, vocab]``, with the activation at ``(kind, layer)``
+        replaced by ``edit(activation)``: ``[B, pos, d]`` in, the same shape out. For
+        residual-stream sites the edit changes the stream itself, as patching does."""
+        raise BackendError("Editing activations isn't supported by this model backend.")
+
     def path_patch(
         self,
         tokens: torch.Tensor,

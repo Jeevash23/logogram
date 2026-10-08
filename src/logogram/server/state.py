@@ -158,6 +158,10 @@ class AppState:
         self.backend: ModelBackend | None = None
         self.model_status: dict[str, Any] = {"state": "none"}
         self.model_ref: ModelRef | None = None  # what the user asked for (device may be "auto")
+        # The loaded sparse autoencoder, if any. It belongs to the loaded model: changing the
+        # model drops it.
+        self.sae: Any = None
+        self.sae_status: dict[str, Any] = {"state": "none"}
         self.job: Job | None = None
         self._job_lock = threading.Lock()
         self._stop = threading.Event()
@@ -317,6 +321,7 @@ class AppState:
         if self.backend is not None:
             old, self.backend = self.backend, None
             old.close()
+        self._drop_sae()
         self._set_model_status(state="loading", id=ref.id, stage="resolving")
 
         last = {"stage": None, "time": 0.0}
@@ -361,6 +366,81 @@ class AppState:
         if backend is not None:
             backend.close()  # waits for an analysis that is using it
         self._set_model_status(state="none")
+        self._drop_sae()
+
+    # -- sparse autoencoder ------------------------------------------------------------------
+
+    def sae_payload(self) -> dict[str, Any]:
+        payload = dict(self.sae_status)
+        if self.sae is not None:
+            payload["info"] = self.sae.describe()
+        return payload
+
+    def _set_sae_status(self, **status: Any) -> None:
+        self.sae_status = status
+        self.hub.publish("sae", self.sae_payload())
+
+    def _drop_sae(self) -> None:
+        if self.sae is not None or self.sae_status.get("state") != "none":
+            self.sae = None
+            self._set_sae_status(state="none")
+
+    def load_sae(self, ref: Any, cancel: threading.Event | None = None) -> Any:
+        """Load (or reuse) an SAE for the loaded model. Runs on a worker thread."""
+        from logogram.sae import load_sae, sae_matches
+
+        backend = self.require_backend()
+        if sae_matches(self.sae, ref):
+            return self.sae
+        self.sae = None
+        self._set_sae_status(state="loading", repo=ref.repo, path=ref.path, stage="downloading")
+        last = {"time": 0.0}
+
+        def progress(done: int, total: int, file: str) -> None:
+            now = time.monotonic()
+            if done == total or now - last["time"] >= 0.1:
+                last["time"] = now
+                self._set_sae_status(
+                    state="loading",
+                    repo=ref.repo,
+                    path=ref.path,
+                    stage="downloading",
+                    done=done,
+                    total=total,
+                )
+
+        try:
+            sae = load_sae(ref, backend.info.device, progress, cancel)
+            info = backend.info
+            if sae.params.d_in != info.d_model:
+                raise ValueError(
+                    f"This SAE reads {sae.params.d_in}-dimensional activations, but "
+                    f"{info.id}'s are {info.d_model}-dimensional: it was made for another model."
+                )
+            if sae.layer >= info.n_layers or sae.site not in info.site_kinds:
+                raise ValueError(
+                    f"This SAE reads {sae.site} in layer {sae.layer}, which {info.id} doesn't have."
+                )
+        except Cancelled:
+            self._set_sae_status(state="none")
+            raise
+        except Exception as exc:
+            self._set_sae_status(state="error", repo=ref.repo, path=ref.path, error=str(exc))
+            raise
+        self.sae = sae
+        self._set_sae_status(state="ready")
+        return sae
+
+    def load_sae_job(self, ref: Any) -> Job:
+        def work(job: Job) -> None:
+            self.load_sae(ref, cancel=job.cancel)
+
+        return self.start_job("load_sae", f"Load the SAE {ref.repo}", work)
+
+    def unload_sae(self) -> None:
+        if self.job is not None and self.job.status == "running":
+            raise Conflict("Wait for the running job to finish, or cancel it, before unloading.")
+        self._drop_sae()
 
     # -- jobs --------------------------------------------------------------------------------
 
@@ -455,6 +535,8 @@ class AppState:
                 on_event=on_event,
                 cancel=job.cancel,
                 derived_from=derived_from,
+                sae=self.sae,
+                sae_provider=lambda ref, backend: self.load_sae(ref, cancel=job.cancel),
             )
             if outcome.backend is not None and outcome.backend is not self.backend:
                 self.backend = outcome.backend

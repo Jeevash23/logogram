@@ -64,6 +64,12 @@ def main() -> None:
         state.model_ref = spec.model
         state.update_settings(system_check_seen=True)
         state.open_project(project)
+        if os.environ.get("LOGOGRAM_FIXTURE_SAE"):
+            # A tiny SAE that reconstructs layer 1's residual stream exactly, for checking by eye.
+            from test_sae import exact_sae
+
+            state.sae = exact_sae(root / "sae", backend.info.d_model)
+            state.sae_status = {"state": "ready"}
         uvicorn.run(app, host="127.0.0.1", port=8877, log_level="warning", access_log=False)
 
 

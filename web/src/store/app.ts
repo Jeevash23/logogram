@@ -12,6 +12,8 @@ import type {
   ExperimentSpec,
   Job,
   PathReceiverSpec,
+  SAERef,
+  SAEStatus,
   Layout,
   ModelShape,
   ModelStatus,
@@ -38,6 +40,7 @@ export type View =
   | "explore"
   | "heads"
   | "predictions"
+  | "features"
   | "notes"
   | "prompts"
   | "baseline"
@@ -58,12 +61,13 @@ export const VIEWS: { id: View; label: string }[] = [
   { id: "explore", label: "Model explorer" },
   { id: "heads", label: "Head comparison" },
   { id: "predictions", label: "Layer predictions" },
+  { id: "features", label: "Features" },
   { id: "notes", label: "Research notes" },
 ];
 
 export type Workspace = "explore" | "experiment" | "evidence";
 export function workspaceFor(view: View): Workspace {
-  if (["explore", "attention", "heads", "predictions"].includes(view)) return "explore";
+  if (["explore", "attention", "heads", "predictions", "features"].includes(view)) return "explore";
   if (["prompts", "baseline", "experiment", "spec"].includes(view)) return "experiment";
   return "evidence";
 }
@@ -107,6 +111,8 @@ export interface FormState {
   /** Path patching: where the paths end (at least one), and whether MLPs are held too. */
   pathReceivers: PathReceiverSpec[];
   pathFreezeMlps: boolean;
+  /** The SAE a saved spec's features belong to; used when no SAE is loaded. */
+  saeRef: SAERef | null;
   scope: ScopeSpec;
   normalization: "dataset_gap" | "prompt_gap";
   bootstrap: number;
@@ -139,6 +145,7 @@ export const DEFAULT_FORM: FormState = {
   steerControl: true,
   pathReceivers: [],
   pathFreezeMlps: false,
+  saeRef: null,
   scope: { kind: "heads", position: { kind: "all" } },
   normalization: "dataset_gap",
   bootstrap: 1000,
@@ -170,6 +177,7 @@ export function formFromSpec(spec: Spec): FormState {
     steerControl: e.kind === "steering" ? e.control : DEFAULT_FORM.steerControl,
     pathReceivers: e.kind === "path_patching" ? e.receivers : [],
     pathFreezeMlps: e.kind === "path_patching" ? e.freeze_mlps : false,
+    saeRef: spec.sae ?? null,
     scope: spec.scope,
     normalization: spec.metric.normalization,
     bootstrap: spec.statistics.bootstrap,
@@ -206,6 +214,8 @@ interface Store {
 
   project: ProjectInfo | null;
   model: ModelStatus;
+  /** The loaded sparse autoencoder; it belongs to the loaded model. */
+  sae: SAEStatus;
   job: Job | null;
   runs: RunListing[];
 
@@ -322,6 +332,7 @@ export const useStore = create<Store>((set, get) => ({
 
   project: null,
   model: { state: "none" },
+  sae: { state: "none" },
   job: null,
   runs: [],
 
@@ -370,6 +381,7 @@ export const useStore = create<Store>((set, get) => ({
       projectsParent: s.projects_parent,
       themeSetting: s.theme,
       update: s.update ?? null,
+      sae: s.sae ?? { state: "none" },
     });
     get().handleEvent({ type: "model", ...s.model });
     if (s.job) get().applyJob(s.job);
@@ -777,6 +789,7 @@ export const useStore = create<Store>((set, get) => ({
           void get().refreshRuns();
           if (job.status === "failed" && job.error) get().notify(job.error, "error");
           if (job.kind === "load_model" && job.status === "finished") get().notify("Model loaded.");
+          if (job.kind === "load_sae" && job.status === "finished") get().notify("SAE loaded. Measure its fit on these prompts before trusting its features.");
         }
         break;
       }
@@ -849,6 +862,11 @@ export const useStore = create<Store>((set, get) => ({
           }
         });
         if (status === "cancelled" && !data.replay) get().notify("Run cancelled. The spec and any dataset snapshot remain; partial results were discarded.");
+        break;
+      }
+      case "sae": {
+        const { type: _type, ...rest } = event;
+        set({ sae: rest as unknown as SAEStatus });
         break;
       }
       case "update": {

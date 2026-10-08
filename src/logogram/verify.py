@@ -20,7 +20,13 @@ def verification_spec(spec: Spec, summary: dict[str, Any], top: int) -> Spec:
     if not ranked:
         raise ValueError("This run has no estimated effects to verify.")
     sites = [
-        Site(kind=s["kind"], layer=s["layer"], head=s["head"], position=s["position"])
+        Site(
+            kind=s["kind"],
+            layer=s["layer"],
+            head=s["head"],
+            feature=s.get("feature"),
+            position=s["position"],
+        )
         for s in ranked
     ]
     suffix = " · verified"

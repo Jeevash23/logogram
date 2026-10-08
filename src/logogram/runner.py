@@ -33,11 +33,12 @@ from logogram.results import (
     write_results,
 )
 from logogram.schema import Manifest
-from logogram.spec import ModelRef, Spec
+from logogram.spec import ModelRef, SAERef, Spec
 from logogram.stats import resample_counts
 
 EventFn = Callable[[str, dict[str, Any]], None]
 ModelProvider = Callable[[ModelRef], ModelBackend]
+SAEProvider = Callable[[SAERef, ModelBackend], Any]
 
 
 class RunError(RuntimeError):
@@ -140,8 +141,13 @@ def run_spec(
     on_event: EventFn | None = None,
     cancel: threading.Event | None = None,
     derived_from: dict[str, Any] | None = None,
+    sae: Any = None,
+    sae_provider: SAEProvider | None = None,
 ) -> RunOutcome:
-    """Execute ``spec`` and write ``experiments/<run_id>/`` in ``project``."""
+    """Execute ``spec`` and write ``experiments/<run_id>/`` in ``project``.
+
+    ``sae`` is an already loaded SAE, used when it is the one the spec names; otherwise
+    ``sae_provider`` (by default, a download from Hugging Face) loads it."""
     emit = on_event or (lambda kind, data: None)
     configure_determinism(spec.statistics.seed)
     run_id = run_id or project.new_run_id(spec.name)
@@ -256,6 +262,31 @@ def run_spec(
         )
         write_manifest(folder / "manifest.json", manifest)
 
+        if spec.sae is not None:
+            from logogram.sae import load_sae, sae_matches
+
+            if not sae_matches(sae, spec.sae):
+                emit("status", {"message": f"Loading the SAE {spec.sae.repo}"})
+                sae = (
+                    sae_provider(spec.sae, backend)
+                    if sae_provider is not None
+                    else load_sae(spec.sae, info.device, cancel=cancel)
+                )
+            spec = spec.model_copy(
+                update={"sae": spec.sae.model_copy(update={"revision": sae.revision})}
+            )
+            write_json(folder / "spec.json", spec.model_dump(mode="json"))
+            manifest["sae"] = {
+                "repo": sae.repo,
+                "path": sae.path,
+                "revision": sae.revision,
+                "format": sae.params.format,
+                "site": sae.site,
+                "layer": sae.layer,
+                "d_sae": sae.d_sae,
+            }
+            write_manifest(folder / "manifest.json", manifest)
+
         prompts = prepare_prompts(backend, records, spec.tokenization.prepend_bos)
         # Bootstrap resamples over the prompts a method measures (steering measures held-out
         # prompts only), drawn once per run so every site shares them.
@@ -338,6 +369,7 @@ def run_spec(
             on_layer=on_layer,
             on_start=on_start,
             cancel=cancel,
+            sae=sae,
         )
         stats = compute_stats(spec, result, counts_for(result))
         summary = build_summary(spec, result, stats, run_id, model_shape)

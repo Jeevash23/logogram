@@ -131,6 +131,43 @@ MODEL_SUGGESTIONS = [
 ]
 
 
+# Published SAEs for the suggested models, by model id. Each is checked against the loaded model when
+# it loads and measured on the project's prompts before its features are trusted.
+SAE_SUGGESTIONS: dict[str, list[dict[str, str]]] = {
+    "openai-community/gpt2": [
+        {
+            "repo": "jbloom/GPT2-Small-SAEs-Reformatted",
+            "detail": "Residual stream before each layer · 24,576 features",
+        },
+        {
+            "repo": "jbloom/GPT2-Small-OAI-v5-32k-resid-post-SAEs",
+            "detail": "OpenAI's TopK SAEs · residual stream after each layer · 32,768 features",
+        },
+    ],
+    "EleutherAI/pythia-70m": [
+        {
+            "repo": "EleutherAI/sae-pythia-70m-32k",
+            "detail": "TopK SAEs · each layer's output, attention and MLP · 32,768 features",
+        }
+    ],
+    "EleutherAI/pythia-70m-deduped": [
+        {
+            "repo": "EleutherAI/sae-pythia-70m-deduped-32k",
+            "detail": "TopK SAEs · each layer's output, attention and MLP · 32,768 features",
+        }
+    ],
+    "HuggingFaceTB/SmolLM2-135M": [
+        {"repo": "EleutherAI/sae-smollm2-135m-64x", "detail": "TopK SAEs · MLP outputs"}
+    ],
+    "meta-llama/Llama-3.2-1B": [
+        {
+            "repo": "EleutherAI/sae-llama-3.2-1b-131k",
+            "detail": "TopK SAEs · MLP outputs · 131,072 features",
+        }
+    ],
+}
+
+
 def web_dist() -> Path:
     return Path(str(resources.files("logogram") / "web_dist"))
 
@@ -209,6 +246,28 @@ class PredictionRequest(AnalysisRequest):
     dataset: str
     index: int = Field(ge=0)
     settings: PredictionSettings
+
+
+class SAELoadRequest(BaseModel):
+    repo: str = Field(min_length=1)
+    path: str = ""
+    revision: str | None = None
+
+
+class SAEAnalysisRequest(AnalysisRequest):
+    dataset: str
+
+
+class TokenFeaturesRequest(SAEAnalysisRequest):
+    index: int = Field(default=0, ge=0)
+    which: Literal["clean", "corrupt"] = "clean"
+    top_k: int = Field(default=8, ge=1, le=32)
+
+
+class FeatureRequest(SAEAnalysisRequest):
+    index: int = Field(default=0, ge=0)
+    which: Literal["clean", "corrupt"] = "clean"
+    feature: int = Field(ge=0)
 
 
 class NoteUpdate(NoteInput):
@@ -310,6 +369,7 @@ def create_app(
             "theme": settings.get("theme", "light"),
             "projects_parent": str(default_projects_parent()),
             "update": state.update_status(),
+            "sae": state.sae_payload(),
         }
 
     @app.post("/api/settings", response_model=M.Settings)
@@ -664,6 +724,91 @@ def create_app(
                 records,
                 index=body.index,
                 settings=body.settings,
+                prepend_bos=body.prepend_bos,
+                batch_size=body.batch_size,
+            )
+
+    # -- sparse autoencoders -----------------------------------------------------------------
+
+    @app.get("/api/sae/suggestions")
+    def sae_suggestions(model: str) -> list[dict[str, str]]:
+        return SAE_SUGGESTIONS.get(model, [])
+
+    @app.get("/api/sae/folders")
+    def sae_folders(repo: str, revision: str | None = None) -> dict[str, Any]:
+        """The SAEs in a Hugging Face repository (one per folder), at its exact revision."""
+        from logogram.backends.saes import list_saes
+
+        sha, folders = list_saes(repo, revision)
+        if not folders:
+            raise ValueError(
+                f"{repo} has no SAE that Logogram can read: it looks for cfg.json with "
+                "sae_weights.safetensors or sae.safetensors."
+            )
+        return {"repo": repo, "revision": sha, "folders": folders}
+
+    @app.post("/api/sae/load", response_model=M.JobInfo)
+    def sae_load(body: SAELoadRequest) -> dict[str, Any]:
+        from logogram.spec import SAERef
+
+        state.require_backend()
+        ref = SAERef(repo=body.repo, path=body.path, revision=body.revision)
+        return state.load_sae_job(ref).to_dict()
+
+    @app.post("/api/sae/unload")
+    def sae_unload() -> dict[str, Any]:
+        state.unload_sae()
+        return state.sae_payload()
+
+    def _sae() -> Any:
+        if state.sae is None:
+            raise Missing("Load an SAE first.")
+        return state.sae
+
+    @app.post("/api/sae/fit")
+    def sae_fit(body: SAEAnalysisRequest) -> dict[str, Any]:
+        from logogram.analysis import sae_fit_report
+
+        backend, sae = _analysis_backend(body), _sae()
+        records = _records(body.dataset, body.limit, body.dataset_sha256)
+        with backend.lock:
+            fit = sae_fit_report(
+                backend, sae, records, prepend_bos=body.prepend_bos, batch_size=body.batch_size
+            )
+        state.hub.publish("sae", state.sae_payload())
+        return fit
+
+    @app.post("/api/sae/tokens")
+    def sae_tokens(body: TokenFeaturesRequest) -> dict[str, Any]:
+        from logogram.analysis import token_features_report
+
+        backend, sae = _analysis_backend(body), _sae()
+        records = _records(body.dataset, body.limit, body.dataset_sha256)
+        with backend.lock:
+            return token_features_report(
+                backend,
+                sae,
+                records,
+                index=body.index,
+                which=body.which,
+                prepend_bos=body.prepend_bos,
+                top_k=body.top_k,
+            )
+
+    @app.post("/api/sae/feature")
+    def sae_feature(body: FeatureRequest) -> dict[str, Any]:
+        from logogram.analysis import feature_report
+
+        backend, sae = _analysis_backend(body), _sae()
+        records = _records(body.dataset, body.limit, body.dataset_sha256)
+        with backend.lock:
+            return feature_report(
+                backend,
+                sae,
+                records,
+                feature=body.feature,
+                index=body.index,
+                which=body.which,
                 prepend_bos=body.prepend_bos,
                 batch_size=body.batch_size,
             )

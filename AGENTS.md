@@ -26,7 +26,7 @@ traceability come before features.
 * Project folders come from other people. Write into them only through `Project.writable` /
   `prepare_run_dir` / `dataset_file` and the `fileio` helpers (which never follow a symlink at the
   file), and read files only after checking they are regular files inside the project.
-* Never unpickle untrusted files. Load weights from safetensors only.
+* Never unpickle untrusted files. Load weights, SAEs included, from safetensors only.
 * Run `python3 scripts/check_privacy.py` before committing. CI runs it on every push.
 
 ## Science rules
@@ -96,7 +96,14 @@ src/logogram/
   datasets.py, ioi.py  JSONL datasets and the IOI generator
   prompts.py           tokenization, alignment checks, length groups
   sites.py             scope expansion and result layouts
-  engine.py            the sweep: captures, patches, streams per layer, cancels
+  engine.py            the sweep: captures, patches, streams per layer, cancels; routes methods
+  direct.py            direct logit attribution
+  atp.py               attribution patching (first-order estimates of patching)
+  verify.py            the spec that verifies an estimate by patching its strongest sites
+  steering.py          steering with held-out prompts and a random control
+  paths.py             path patching
+  features.py          SAE features: patching and attribution patching
+  sae.py               SAE encode, decode and fit
   stats.py             bootstrap and summary statistics
   results.py           summary.json and results.parquet
   schema.py            schemas for run files, history listings and live events
@@ -104,7 +111,8 @@ src/logogram/
   runner.py            run a spec end to end (used by the app and the CLI)
   compare.py           robustness checks and run comparisons
   analysis.py          token strip, baseline check, attention patterns
-  backends/            ModelBackend interface, TransformerLens backend, Hugging Face access
+  backends/            ModelBackend interface, TransformerLens backend, Hugging Face access,
+                       published SAE formats
   server/              FastAPI app, security, response models, job and event handling
   system.py            hardware report, doctor, memory estimates
   updates.py           opt-in version check against PyPI, update commands

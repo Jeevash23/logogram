@@ -268,6 +268,27 @@ results show both: a layer × strength map with the control columns muted, and, 
 its effect at every strength with intervals. **Check robustness** offers another split of the pairs
 or the other direction.
 
+**SAE features.** A sparse autoencoder (SAE) rewrites one of the model's activations as a few active
+features out of thousands, each a direction in the model, plus an error it misses. In
+**Explore → Features**, load a published SAE from Hugging Face (Logogram suggests ones made for the
+suggested models, or give any repository), then **Measure the fit** on your prompts: the fraction
+of the activations' variance the SAE explains, how many features fire per token, and the logit
+difference with the SAE's reconstruction spliced in. SAEs only fit activations like those they were
+trained on, so a poor fit (for example with TransformerLens's weight processing switched the other
+way) is shown before anything else. The view then lists the features that fire on each token of a
+prompt and, for one feature, its activation along the prompt and the prompts where it fires most,
+all computed from your own prompts. Feature descriptions live on sites like Neuronpedia, which
+Logogram doesn't contact.
+
+Features are sites like any other (`sae_feature`, with a feature index). **Patching a feature**
+encodes the receiver's activation and changes only that feature, to its value in the source prompt
+(or to zero, for zero ablation): the activation moves along the feature's decoder direction, and the
+SAE's error is kept. **Attribution patching** can sweep **every SAE feature** at once and keep the
+strongest, then verify them by patching; the results also show how much of the whole site's
+estimated effect the features account for (the rest is the SAE's error). Logogram reads the
+SAELens and EleutherAI formats from safetensors files only; Gemma Scope's NumPy archives are
+refused, as are SAEs whose input scaling or architecture it can't reproduce exactly.
+
 **Sites** are abstract: `resid_pre`, `resid_mid`, `resid_post`, `attn_out`, `mlp_out` and `head`
 (an attention head's output `z`), each at a layer, head and position. Positions are `all`,
 `last`, a token `index` or a named `label`. **Sweeps** cover every head at one position
@@ -317,7 +338,8 @@ Every experiment is a `spec.json`. Nothing that can change a number is left impl
 | `model.process_weights` | Fold LayerNorm and center weights, as TransformerLens does by default. Logit differences don't change; zero ablation of head outputs does, because value biases are folded. |
 | `dataset.sha256` | If set, the run refuses a dataset file that has changed. |
 | `experiment` | `{"kind": "activation_patching", "direction": "clean_to_corrupt" \| "corrupt_to_clean"}`, `{"kind": "ablation", "baseline": …}` with `{"kind": "zero"}`, `{"kind": "mean", "reference": "clean" \| "corrupt"}` or `{"kind": "resample", "pool": "clean" \| "corrupt", "donors": 10, "seed": 0}`, `{"kind": "attribution_patching", "direction": …}` (same directions as patching), `{"kind": "direct_logit_attribution", "prompts": "clean" \| "corrupt"}`, `{"kind": "path_patching", "direction": …, "receivers": [{"kind": "head", "layer": 9, "head": 9, "input": "q" \| "k" \| "v"}, {"kind": "logits"}], "freeze_mlps": false}`, or `{"kind": "steering", "apply_to": "clean" \| "corrupt", "coefficients": [-1, 1, 2], "train_fraction": 0.5, "seed": 0, "control": true}` with a scope of one residual component per layer (`layer_components`) or residual `sites`, at one token |
-| `scope` | `{"kind": "heads", "position": …}`, `{"kind": "layer_position", "site": "resid_pre", "positions": "each" \| "labels"}`, `{"kind": "layer_components", "components": ["attn_out", "mlp_out"], "position": …}` or `{"kind": "sites", "sites": [{"kind": "head", "layer": 9, "head": 9, "position": {"kind": "label", "label": "end"}}]}` |
+| `scope` | `{"kind": "heads", "position": …}`, `{"kind": "layer_position", "site": "resid_pre", "positions": "each" \| "labels"}`, `{"kind": "layer_components", "components": ["attn_out", "mlp_out"], "position": …}` `{"kind": "sites", "sites": [{"kind": "head", "layer": 9, "head": 9, "position": {"kind": "label", "label": "end"}}]}` (feature sites are `{"kind": "sae_feature", "layer": 8, "feature": 1234, "position": …}`), or, for attribution patching, `{"kind": "features", "position": …, "top": 50}` |
+| `sae` | The SAE that feature sites belong to: `{"repo": "…", "path": "blocks.8.hook_resid_pre", "revision": "…"}`. The revision is pinned when a run starts. |
 | `metric.normalization` | `dataset_gap` or `prompt_gap` |
 | `execution.batch_size` | Recorded because batch shape can change floating-point results in the last digits. |
 
@@ -366,7 +388,8 @@ treating them as equivalent.
   fonts or scripts from the internet; its fonts are bundled.
 * Logogram goes online in two cases only. When you load a model, it asks Hugging Face to resolve
   its revision, read its size for the memory estimate and download it once (your own Hugging
-  Face login is used for gated models; Hugging Face telemetry is turned off). And if you allow
+  Face login is used for gated models; Hugging Face telemetry is turned off); loading an SAE
+  downloads it the same way. And if you allow
   it, it asks pypi.org for the newest Logogram version number once a day (see Updating). Nothing
   about you, your machine or your work is sent.
 * The server listens on 127.0.0.1 only. Every request needs the random session token from the
@@ -485,9 +508,9 @@ tiny-model tests, but not yet run end to end with their real weights.
 
 Model access goes through `logogram.backends.base.ModelBackend`. TransformerLens is the only
 backend today; remote execution and other libraries can be added behind the same interface.
-Out of scope for v0.1, with room left for them: sparse autoencoders and feature dashboards,
-attribution graphs and attribution patching, steering, remote compute, a native desktop wrapper,
-plugins and assistants.
+Not built yet, with room left for them: attribution graphs with transcoders, Gemma Scope's NumPy
+SAE files, steering with SAE features, remote compute, a native desktop wrapper, plugins and
+assistants.
 
 ## License
 

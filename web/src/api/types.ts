@@ -69,7 +69,7 @@ export interface ModelStatus {
 export interface Job {
   project_session?: string | null;
   id: string;
-  kind: "load_model" | "run";
+  kind: "load_model" | "load_sae" | "run";
   title: string;
   status: "running" | "finished" | "failed" | "cancelled";
   run_id: string | null;
@@ -124,6 +124,7 @@ export interface ServerState {
   theme: ThemeSetting;
   projects_parent: string;
   update: UpdateStatus;
+  sae?: SAEStatus;
 }
 
 export interface RecentProject {
@@ -173,7 +174,7 @@ export interface SystemReport {
 export type Dtype = "float32" | "float16" | "bfloat16";
 export type Device = "auto" | "cpu" | "cuda" | "mps";
 export type StreamKind = "resid_pre" | "resid_mid" | "resid_post" | "attn_out" | "mlp_out";
-export type SiteKind = StreamKind | "head";
+export type SiteKind = StreamKind | "head" | "sae_feature";
 
 export type PositionSpec =
   | { kind: "all" }
@@ -185,14 +186,80 @@ export interface SiteSpec {
   kind: SiteKind;
   layer: number;
   head?: number | null;
+  /** A feature of the spec's SAE (kind sae_feature). */
+  feature?: number | null;
   position: PositionSpec;
+}
+
+/** A published sparse autoencoder: repository, folder and exact commit. */
+export interface SAERef {
+  repo: string;
+  path: string;
+  revision: string | null;
+}
+
+export interface SAEFit {
+  variance_explained: number;
+  l0: number;
+  tokens: number;
+  logit_diff?: number | null;
+  spliced_logit_diff?: number | null;
+  n?: number;
+  skipped?: number;
+}
+
+export interface SAEInfo extends SAERef {
+  site: StreamKind;
+  layer: number;
+  d_in: number;
+  d_sae: number;
+  activation: string;
+  k: number | null;
+  normalize: string;
+  format: string;
+  note: string;
+  fit: SAEFit | null;
+}
+
+export interface SAEStatus {
+  state: "none" | "loading" | "ready" | "error";
+  repo?: string;
+  path?: string;
+  stage?: string;
+  done?: number;
+  total?: number;
+  error?: string;
+  info?: SAEInfo;
+}
+
+export interface TokenFeatures {
+  index: number;
+  which: "clean" | "corrupt";
+  tokens: string[];
+  labels: Record<string, number>;
+  features: { feature: number; activation: number }[][];
+  active: number[];
+  first_real_token: number;
+}
+
+export interface FeatureReport {
+  feature: number;
+  which: "clean" | "corrupt";
+  index: number;
+  tokens: string[];
+  activations: number[];
+  top: { index: number; max: number; position: number; token: string; text: string }[];
+  active_prompts: number;
+  n: number;
 }
 
 export type ScopeSpec =
   | { kind: "heads"; position: PositionSpec }
   | { kind: "layer_position"; site: StreamKind; positions: "each" | "labels" }
   | { kind: "layer_components"; components: StreamKind[]; position: PositionSpec }
-  | { kind: "sites"; sites: SiteSpec[] };
+  | { kind: "sites"; sites: SiteSpec[] }
+  /** Every feature of the spec's SAE; attribution patching keeps the top ones. */
+  | { kind: "features"; position: PositionSpec; top: number };
 
 export type BaselineSpec =
   | { kind: "zero" }
@@ -243,6 +310,7 @@ export interface Spec {
   statistics: { bootstrap: number; ci: number; seed: number };
   execution: { batch_size: number };
   predictions?: PredictionSettings | null;
+  sae?: SAERef | null;
 }
 
 export interface PredictionSettings {
@@ -294,6 +362,7 @@ export interface SiteBase {
   kind: SiteKind;
   layer: number;
   head: number | null;
+  feature?: number | null;
   position: PositionSpec;
   position_key: string;
   row: number;
@@ -388,6 +457,15 @@ export interface Summary {
   /** Steering: the prompts that trained the directions, the held-out ones measured, and the
    * length of each row's direction. */
   steering?: { train: number[]; test: number[]; norms: number[] } | null;
+  /** Runs on SAE features: the SAE, its fit on these prompts, and (attribution patching) how much
+   * of the site's estimated effect its features account for. */
+  features?: {
+    sae: SAEInfo;
+    fit: SAEFit;
+    site_estimate?: number | null;
+    features_estimate?: number | null;
+    evaluated?: number | null;
+  } | null;
 }
 
 export interface DirectSplit {

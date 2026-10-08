@@ -157,7 +157,31 @@ export function ResultsView() {
 
       {summary && (
         <dl className={r.figures} aria-label="The run at a glance">
-          {summary.steering ? (
+          {summary.features ? (
+            <>
+              <div>
+                <dt>SAE variance explained</dt>
+                <dd className="figure">{pct(summary.features.fit.variance_explained)}</dd>
+              </div>
+              {summary.features.site_estimate != null && summary.features.features_estimate != null ? (
+                <>
+                  <div>
+                    <dt>Estimated effect of the whole site</dt>
+                    <dd className="figure">{signed(summary.features.site_estimate)}</dd>
+                  </div>
+                  <div>
+                    <dt>Of it, through the features</dt>
+                    <dd className="figure">{signed(summary.features.features_estimate)}</dd>
+                  </div>
+                </>
+              ) : (
+                <div>
+                  <dt>Features per token</dt>
+                  <dd className="figure">{num(summary.features.fit.l0, 1)}</dd>
+                </div>
+              )}
+            </>
+          ) : summary.steering ? (
             <>
               <div>
                 <dt>Held-out prompts measured</dt>
@@ -301,9 +325,11 @@ function MethodsLine({ spec, n }: { spec: Spec; n: number | undefined }) {
         ? scope.site.replace("_", " ")
         : scope.kind === "layer_components"
           ? scope.components.map((c) => c.replace("_", " ")).join(", ")
-          : `${scope.sites.length} chosen site${scope.sites.length === 1 ? "" : "s"}`;
+          : scope.kind === "features"
+            ? `every feature of the SAE (keeping the top ${scope.top})`
+            : `${scope.sites.length} chosen site${scope.sites.length === 1 ? "" : "s"}`;
   const position =
-    scope.kind === "heads" || scope.kind === "layer_components"
+    scope.kind === "heads" || scope.kind === "layer_components" || scope.kind === "features"
       ? positionText(scope.position)
       : scope.kind === "layer_position"
         ? scope.positions === "each"

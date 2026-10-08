@@ -252,3 +252,168 @@ def prediction_report(
         "distractor": target.record.distractor,
         "issues": [issue.to_dict() for issue in issues],
     }
+
+
+# -- sparse autoencoder features -------------------------------------------------------------
+
+
+def _first_real_token(prepend_bos: bool) -> int:
+    """Where real tokens start: SAEs aren't trained on the beginning-of-sequence token, whose
+    activations are unlike any other, so fits and splices leave it alone."""
+    return 1 if prepend_bos else 0
+
+
+def sae_fit_report(
+    backend: ModelBackend,
+    sae: Any,
+    records: list[PromptRecord],
+    *,
+    prepend_bos: bool,
+    batch_size: int,
+) -> dict[str, Any]:
+    """How well the SAE fits these prompts: the variance of the activations it explains, how many
+    features fire per token, and what the logit difference becomes when the model runs on the
+    SAE's reconstruction instead of the activation (its error removed)."""
+    from logogram.sae import fit_on
+
+    prepared, issues = prepare_with_issues(backend, records, prepend_bos)
+    if not prepared:
+        raise ValueError("None of these prompts can be used with the loaded model.")
+    start = _first_real_token(prepend_bos)
+    key = (sae.site, sae.layer)
+    acts, clean, spliced = [], [], []
+
+    def splice(x: torch.Tensor) -> torch.Tensor:
+        out = x.float().clone()
+        f, stats = sae.encode(out[:, start:])
+        out[:, start:] = sae.decode(f, stats)
+        return out
+
+    for group in group_by_length(prepared):
+        for begin in range(0, len(group.members), batch_size):
+            idx = group.members[begin : begin + batch_size]
+            tokens = group.clean[begin : begin + batch_size]
+            acts.append(backend.capture(tokens, [key])[key][:, start:].float())
+            answers = torch.tensor([prepared[i].answer_id for i in idx])
+            distractors = torch.tensor([prepared[i].distractor_id for i in idx])
+            rows = torch.arange(len(idx))
+            plain = backend.final_logits(tokens)
+            edited = backend.edit_logits(tokens, sae.site, sae.layer, splice)
+            clean.append((plain[rows, answers] - plain[rows, distractors]).double())
+            spliced.append((edited[rows, answers] - edited[rows, distractors]).double())
+    flat = torch.cat([a.reshape(-1, a.shape[-1]) for a in acts])
+    fit = fit_on(sae, flat)
+    ld, ld_spliced = torch.cat(clean), torch.cat(spliced)
+    fit.update(
+        {
+            "logit_diff": _f(ld.mean()),
+            "spliced_logit_diff": _f(ld_spliced.mean()),
+            "n": len(prepared),
+            "skipped": len(issues),
+        }
+    )
+    sae.fit = fit
+    return fit
+
+
+def _single(backend: ModelBackend, records: list[PromptRecord], index: int, prepend_bos: bool):  # type: ignore[no-untyped-def]
+    prepared, _ = prepare_with_issues(backend, records, prepend_bos)
+    target = next((p for p in prepared if p.index == index), None)
+    if target is None:
+        raise ValueError(f"Prompt {index} can't be used; fix it in the dataset first.")
+    return prepared, target
+
+
+def token_features_report(
+    backend: ModelBackend,
+    sae: Any,
+    records: list[PromptRecord],
+    *,
+    index: int,
+    which: str,
+    prepend_bos: bool,
+    top_k: int = 8,
+) -> dict[str, Any]:
+    """The features that fire most on each token of one prompt."""
+    _, target = _single(backend, records, index, prepend_bos)
+    tokenized = target.clean if which == "clean" else target.corrupt
+    tokens = torch.tensor([tokenized.ids], dtype=torch.long)
+    key = (sae.site, sae.layer)
+    f, _ = sae.encode(backend.capture(tokens, [key])[key][0].float())
+    values, ids = f.topk(min(top_k, f.shape[-1]), dim=-1)
+    per_token = [
+        [
+            {"feature": int(i), "activation": float(v)}
+            for v, i in zip(values[p].tolist(), ids[p].tolist(), strict=True)
+            if v > 0
+        ]
+        for p in range(f.shape[0])
+    ]
+    return {
+        "index": index,
+        "which": which,
+        "tokens": tokenized.tokens,
+        "labels": target.labels,
+        "features": per_token,
+        "active": [int((f[p] > 0).sum()) for p in range(f.shape[0])],
+        "first_real_token": _first_real_token(prepend_bos),
+    }
+
+
+def feature_report(
+    backend: ModelBackend,
+    sae: Any,
+    records: list[PromptRecord],
+    *,
+    feature: int,
+    index: int,
+    which: str,
+    prepend_bos: bool,
+    batch_size: int,
+    top: int = 10,
+) -> dict[str, Any]:
+    """Where one feature fires: along one prompt's tokens, and on which prompts of the dataset
+    most strongly (all computed here, from the project's own prompts)."""
+    if not 0 <= feature < sae.d_sae:
+        raise ValueError(f"The SAE has {sae.d_sae} features; there is no feature {feature}.")
+    prepared, target = _single(backend, records, index, prepend_bos)
+    key = (sae.site, sae.layer)
+    start = _first_real_token(prepend_bos)
+    strongest: list[dict[str, Any]] = []
+    along: list[float] = []
+    for group in group_by_length(prepared):
+        tokens = group.clean if which == "clean" else group.corrupt
+        for begin in range(0, len(group.members), batch_size):
+            idx = group.members[begin : begin + batch_size]
+            f, _ = sae.encode(
+                backend.capture(tokens[begin : begin + batch_size], [key])[key].float()
+            )
+            column = f[..., feature].double().cpu()  # [B, pos]
+            for row, p in enumerate(idx):
+                prompt = prepared[p]
+                values = column[row]
+                if prompt.index == index:
+                    along = [float(v) for v in values]
+                best = int(values[start:].argmax()) + start if values.shape[0] > start else 0
+                seq = prompt.clean if which == "clean" else prompt.corrupt
+                strongest.append(
+                    {
+                        "index": prompt.index,
+                        "max": float(values[best]),
+                        "position": best,
+                        "token": seq.tokens[best],
+                        "text": prompt.record.clean if which == "clean" else prompt.record.corrupt,
+                    }
+                )
+    strongest.sort(key=lambda r: (-r["max"], r["index"]))
+    tokenized = target.clean if which == "clean" else target.corrupt
+    return {
+        "feature": feature,
+        "which": which,
+        "index": index,
+        "tokens": tokenized.tokens,
+        "activations": along,
+        "top": [r for r in strongest[:top] if r["max"] > 0],
+        "active_prompts": sum(1 for r in strongest if r["max"] > 0),
+        "n": len(strongest),
+    }

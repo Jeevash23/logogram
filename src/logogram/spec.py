@@ -21,7 +21,9 @@ NAME_MAX = 200
 SPEC_VERSION = 1
 
 StreamSiteKind = Literal["resid_pre", "resid_mid", "resid_post", "attn_out", "mlp_out"]
-SiteKind = Literal["resid_pre", "resid_mid", "resid_post", "attn_out", "mlp_out", "head"]
+SiteKind = Literal[
+    "resid_pre", "resid_mid", "resid_post", "attn_out", "mlp_out", "head", "sae_feature"
+]
 
 SITE_KIND_LABELS: dict[str, str] = {
     "resid_pre": "residual stream before the layer",
@@ -30,6 +32,7 @@ SITE_KIND_LABELS: dict[str, str] = {
     "attn_out": "attention output",
     "mlp_out": "MLP output",
     "head": "attention head output (z)",
+    "sae_feature": "SAE feature",
 }
 
 
@@ -90,6 +93,8 @@ class Site(_Strict):
     kind: SiteKind
     layer: int = Field(ge=0)
     head: int | None = Field(default=None, ge=0)
+    # A feature of the spec's SAE (kind sae_feature): its index among the SAE's features.
+    feature: int | None = Field(default=None, ge=0)
     position: Position = Field(default_factory=AllPositions)
 
     @model_validator(mode="after")
@@ -98,6 +103,10 @@ class Site(_Strict):
             raise ValueError("a head site needs a head index")
         if self.kind != "head" and self.head is not None:
             raise ValueError(f"a {self.kind} site has no head index")
+        if self.kind == "sae_feature" and self.feature is None:
+            raise ValueError("an SAE feature site needs a feature index")
+        if self.kind != "sae_feature" and self.feature is not None:
+            raise ValueError(f"a {self.kind} site has no feature index")
         return self
 
 
@@ -143,8 +152,21 @@ class SitesScope(_Strict):
     sites: list[Site] = Field(min_length=1)
 
 
+class FeaturesScope(_Strict):
+    """Every feature of the spec's SAE, at one position (or summed over all of them).
+
+    Only attribution patching can sweep every feature: it estimates them all from one gradient
+    and keeps the ``top`` with the largest estimated effects (by magnitude) as the run's sites,
+    ready to verify by patching.
+    """
+
+    kind: Literal["features"] = "features"
+    position: Position = Field(default_factory=AllPositions)
+    top: int = Field(ge=1, le=500)
+
+
 Scope = Annotated[
-    HeadsScope | LayerPositionScope | LayerComponentsScope | SitesScope,
+    HeadsScope | LayerPositionScope | LayerComponentsScope | SitesScope | FeaturesScope,
     Field(discriminator="kind"),
 ]
 
@@ -348,6 +370,15 @@ class DatasetRef(_Strict):
     limit: int | None = Field(default=None, ge=1, description="Use only the first n prompts")
 
 
+class SAERef(_Strict):
+    """A published sparse autoencoder on Hugging Face: the repository, the folder holding it
+    (empty for the top level) and the exact commit, pinned when a run starts."""
+
+    repo: str = Field(min_length=1)
+    path: str = ""
+    revision: str | None = None
+
+
 class Tokenization(_Strict):
     prepend_bos: bool = True
 
@@ -404,6 +435,18 @@ class Spec(_Strict):
     statistics: Statistics = Field(default_factory=Statistics)
     execution: Execution = Field(default_factory=Execution)
     predictions: PredictionSettings | None = None
+    # The SAE whose features sae_feature sites and the features scope refer to.
+    sae: SAERef | None = None
+
+    @model_validator(mode="after")
+    def _features_have_an_sae(self) -> Spec:
+        uses = isinstance(self.scope, FeaturesScope) or (
+            isinstance(self.scope, SitesScope)
+            and any(s.kind == "sae_feature" for s in self.scope.sites)
+        )
+        if uses and self.sae is None:
+            raise ValueError("SAE features need the spec's sae: the SAE they belong to")
+        return self
 
     def to_json(self) -> str:
         return json.dumps(self.model_dump(mode="json"), indent=2) + "\n"
@@ -466,6 +509,10 @@ def describe_experiment(spec: Spec) -> str:
         where = f"{scope.site} at every layer and {unit}"
     elif isinstance(scope, LayerComponentsScope):
         where = f"{' and '.join(scope.components)} per layer, {describe_position(scope.position)}"
+    elif isinstance(scope, FeaturesScope):
+        where = (
+            f"every SAE feature, {describe_position(scope.position)}, keeping the top {scope.top}"
+        )
     else:
         where = f"{len(scope.sites)} chosen site{'s' if len(scope.sites) != 1 else ''}"
     return f"{what} · {where}"

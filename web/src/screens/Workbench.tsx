@@ -19,6 +19,7 @@ import { ExperimentView } from "../views/ExperimentView";
 import { ExploreView } from "../views/ExploreView";
 import { HeadComparisonView } from "../views/HeadComparisonView";
 import { PredictionsView } from "../views/PredictionsView";
+import { FeaturesView } from "../views/FeaturesView";
 import { PromptsView } from "../views/PromptsView";
 import { ResearchView, NoteEditorDialog } from "../views/ResearchView";
 import { ResultsView } from "../views/ResultsView";
@@ -26,7 +27,7 @@ import { SpecView } from "../views/SpecView";
 import s from "./Workbench.module.css";
 
 const WORKSPACES: { id: Workspace; label: string; views: { id: View; label: string }[] }[] = [
-  { id: "explore", label: "Explore", views: [{ id: "explore", label: "Model" }, { id: "attention", label: "Attention" }, { id: "heads", label: "Head comparison" }, { id: "predictions", label: "Layer predictions" }] },
+  { id: "explore", label: "Explore", views: [{ id: "explore", label: "Model" }, { id: "attention", label: "Attention" }, { id: "heads", label: "Head comparison" }, { id: "predictions", label: "Layer predictions" }, { id: "features", label: "Features" }] },
   { id: "experiment", label: "Experiment", views: [{ id: "prompts", label: "Prompts" }, { id: "baseline", label: "Baseline" }, { id: "experiment", label: "Configure" }, { id: "spec", label: "Spec" }] },
   { id: "evidence", label: "Evidence", views: [{ id: "results", label: "Results" }, { id: "compare", label: "Compare runs" }, { id: "notes", label: "Research notes" }] },
 ];
@@ -122,6 +123,7 @@ function ActiveView({ view }: { view: View }) {
     case "explore": return <ExploreView />;
     case "heads": return <HeadComparisonView />;
     case "predictions": return <PredictionsView />;
+    case "features": return <FeaturesView />;
     case "notes": return <ResearchView />;
     case "prompts": return <PromptsView />;
     case "baseline": return <BaselineView />;

@@ -124,3 +124,23 @@ test("project changes clear the other tab and reject its stale writes", async ({
   await expect(page.getByRole("button", { name: /Saved prompts of this run/ })).toBeVisible();
   await second.close();
 });
+
+test("an SAE's features are read, estimated and verified by patching", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.getByRole("button", { name: "Explore", exact: true }).click();
+  await page.getByRole("button", { name: "Features", exact: true }).click();
+  const card = page.getByLabel("The loaded SAE");
+  await card.getByRole("button", { name: "Measure the fit" }).click();
+  await expect(card.getByText("Variance explained")).toBeVisible();
+  await expect(card.getByText("100%")).toBeVisible();
+  await page.getByLabel("Features on each token").locator("button[aria-pressed]").first().click();
+  await expect(page.getByText("Where it fires most")).toBeVisible();
+  await page.getByRole("button", { name: "Estimate every feature" }).click();
+  await expect(page.getByRole("radio", { name: /Attribution patching/ })).toHaveAttribute("aria-checked", "true");
+  await page.getByRole("button", { name: "Run", exact: true }).click();
+  await expect(page.getByText("SAE variance explained")).toBeVisible({ timeout: 60_000 });
+  await page.getByRole("button", { name: "Verify top 10 by patching" }).click();
+  await expect(page.getByText("No estimate has the wrong sign.")).toBeVisible({ timeout: 60_000 });
+  expect(errors).toEqual([]);
+});
