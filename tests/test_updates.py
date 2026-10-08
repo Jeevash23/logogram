@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import urllib.error
 from datetime import UTC, date, datetime, timedelta
 
@@ -119,6 +120,10 @@ def test_consent_and_check_now(app):
     now = client.post("/api/update/check", headers=HEADERS).json()
     assert now["available"] and now["latest"] == "9.9.9" and now["automatic"] is None
     client.post("/api/settings", json={"update_check": True}, headers=HEADERS)
+    # Saying yes starts a check in the background; let it finish before editing its cache.
+    for thread in threading.enumerate():
+        if thread.name == "logogram-update":
+            thread.join(timeout=10)
     assert client.get("/api/update", headers=HEADERS).json()["automatic"] is True
     # Just checked: the daily check waits for a day to pass.
     calls = len(app.state.calls)
