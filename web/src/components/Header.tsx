@@ -1,5 +1,5 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 
 import { api } from "../api/client";
 import { FolderPicker } from "./FolderPicker";
@@ -12,15 +12,15 @@ import s from "./Header.module.css";
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 export const MOD = isMac ? "⌘" : "Ctrl";
 
-/** The context bar, on fog: which project, which model, which prompts, and what to do next. */
-export function Header({ next }: { next?: ReactNode } = {}) {
+/** The open project: its name, and where to go from here. */
+export function ProjectMenu() {
   const project = useStore((st) => st.project);
   const [picker, setPicker] = useState(false);
   const guard = useStore((st) => st.guard);
   const enter = useStore((st) => st.enterProject);
 
   return (
-    <header className={s.header}>
+    <>
       <DropdownMenu.Root>
         <DropdownMenu.Trigger className={s.project}>
           <span className={s.projectName}>{project?.name ?? "Logogram"}</span>
@@ -53,13 +53,6 @@ export function Header({ next }: { next?: ReactNode } = {}) {
           </DropdownMenu.Content>
         </DropdownMenu.Portal>
       </DropdownMenu.Root>
-
-      <span className={s.divider} aria-hidden="true" />
-      <ModelChip />
-      <DatasetChip />
-
-      <div className={s.spacer} />
-      {next}
       <FolderPicker
         open={picker}
         onOpenChange={setPicker}
@@ -72,11 +65,11 @@ export function Header({ next }: { next?: ReactNode } = {}) {
           if (next) await enter(next);
         }}
       />
-    </header>
+    </>
   );
 }
 
-function ModelChip() {
+export function ModelChip() {
   const model = useStore((st) => st.model);
   const open = () => useStore.setState({ modelDialogOpen: true });
   if (model.state === "loading") {
@@ -115,7 +108,7 @@ function ModelChip() {
   );
 }
 
-function DatasetChip() {
+export function DatasetChip() {
   const context = useAnalysisContext();
   const project = useStore((st) => st.project);
   const datasetPath = useStore((st) => st.datasetPath);

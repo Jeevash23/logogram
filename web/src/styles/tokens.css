@@ -1,84 +1,72 @@
-/* Design tokens, after Arrival: fog around everything, paper where the work happens, ink for
-   text and logograms, the dark shell as the one solid shape, and signal orange (the hazmat suits)
-   for actions and live state. Effect colors stay reserved for data (see lib/color.ts). */
+/* Design tokens. Pure white and deep black, with color that means something: three workspace
+   colors (green for exploring, signal orange for experimenting, pink for evidence), green for a
+   live model, and the effect scale (lib/color.ts), which is reserved for data. No grey washes,
+   no drop shadows on the page: things are separated by space and hairlines. */
 
 :root,
 :root[data-theme="light"] {
-  /* Fog: the air around the work. */
-  --bg: #d9dfe1;
-  --fog-2: #cdd5d8;
-  /* Paper: the sheets work happens on. */
-  --surface: #f5f7f6;
-  --surface-2: #eaeeee;
-  --raised: #fbfcfb;
-  --line: #c3cbce;
-  --line-soft: #dde2e3;
-  /* Ink. Use --muted, not --faint, for text sitting directly on fog. */
-  --text: #11171a;
-  --muted: #4c5960;
-  --faint: #5f6d75;
-  --hover: rgba(17, 23, 26, 0.055);
-  --press: rgba(17, 23, 26, 0.1);
-  --mark: rgba(240, 106, 43, 0.24);
-  --scrim: rgba(12, 17, 20, 0.45);
-  --shadow: 0 1px 2px rgba(17, 23, 26, 0.08), 0 14px 36px rgba(17, 23, 26, 0.16);
-  --sheet-shadow: 0 0 0 1px rgba(17, 23, 26, 0.05), 0 1px 3px rgba(17, 23, 26, 0.07);
-  --alert: #8f2f17;
-  --on-ink: #f5f7f6;
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #f4f4f6;
+  --raised: #ffffff;
+  --line: #e3e3e8;
+  --line-soft: #efeff3;
+  --text: #0a0a0b;
+  --muted: #5d5d66;
+  --faint: #6f6f78;
+  --hover: rgba(10, 10, 11, 0.045);
+  --press: rgba(10, 10, 11, 0.085);
+  --mark: rgba(255, 46, 126, 0.18);
+  --scrim: rgba(10, 10, 11, 0.32);
+  /* Only things that float (menus, dialogs, tooltips) cast a shadow. */
+  --shadow: 0 1px 2px rgba(10, 10, 11, 0.06), 0 16px 40px rgba(10, 10, 11, 0.14);
+  --sheet-shadow: none;
+  --alert: #c21e1e;
+  --on-ink: #ffffff;
 
-  /* The shell: the dark monolith that holds navigation. */
-  --rail: #121a1e;
-  --rail-2: #1c272d;
-  --rail-line: #26333a;
-  --rail-text: #dce3e5;
-  --rail-muted: #8d9ca4;
+  /* Color with a job. Text on these is ink. */
+  --explore: #00c389;
+  --experiment: #ff5a1f;
+  --evidence: #ff2e7e;
+  --live: #00c389;
+  --accent: #ff5a1f;
+  --accent-hover: #ff6f3c;
+  --on-accent: #0a0a0b;
+  --accent-text: #c2410c;
+  --accent-soft: rgba(255, 90, 31, 0.12);
 
-  /* Signal orange: primary actions, the active place, live state. Never data. */
-  --accent: #f06a2b;
-  --accent-hover: #f57f45;
-  --on-accent: #11171a;
-  --accent-text: #b2451a;
-  --accent-soft: rgba(240, 106, 43, 0.13);
-
-  /* Film grain over fog and shell: fractal noise, alpha only (data URIs pass the page's CSP). */
-  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .09 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
   color-scheme: light;
 }
 
 :root[data-theme="dark"] {
-  /* Inside the shell: near-black stone, the lit screen as paper. */
-  --bg: #0b1013;
-  --fog-2: #121a1e;
-  --surface: #141c20;
-  --surface-2: #10171a;
-  --raised: #1b252a;
-  --line: #27343b;
-  --line-soft: #1d282e;
-  --text: #e6ecec;
-  --muted: #9cabb1;
-  --faint: #8a9ca4;
-  --hover: rgba(230, 236, 236, 0.055);
-  --press: rgba(230, 236, 236, 0.1);
-  --mark: rgba(240, 106, 43, 0.32);
-  --scrim: rgba(3, 6, 8, 0.62);
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 16px 40px rgba(0, 0, 0, 0.5);
-  --sheet-shadow: 0 0 0 1px rgba(230, 236, 236, 0.045), 0 1px 3px rgba(0, 0, 0, 0.35);
-  --alert: #f0a58c;
-  --on-ink: #0b1013;
+  --bg: #000000;
+  --surface: #000000;
+  --surface-2: #121215;
+  --raised: #141417;
+  --line: #26262c;
+  --line-soft: #1a1a1f;
+  --text: #f5f5f7;
+  --muted: #a3a3ad;
+  --faint: #8e8e98;
+  --hover: rgba(245, 245, 247, 0.06);
+  --press: rgba(245, 245, 247, 0.11);
+  --mark: rgba(255, 46, 126, 0.32);
+  --scrim: rgba(0, 0, 0, 0.62);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 18px 44px rgba(0, 0, 0, 0.7);
+  --sheet-shadow: none;
+  --alert: #ff6b6b;
+  --on-ink: #000000;
 
-  --rail: #06090b;
-  --rail-2: #131c20;
-  --rail-line: #1b262c;
-  --rail-text: #dce3e5;
-  --rail-muted: #82939b;
+  --explore: #19e0a3;
+  --experiment: #ff6a33;
+  --evidence: #ff4d93;
+  --live: #19e0a3;
+  --accent: #ff6a33;
+  --accent-hover: #ff8256;
+  --on-accent: #000000;
+  --accent-text: #ff8f63;
+  --accent-soft: rgba(255, 106, 51, 0.16);
 
-  --accent: #f26d2e;
-  --accent-hover: #f68550;
-  --on-accent: #0b1013;
-  --accent-text: #ff9b68;
-  --accent-soft: rgba(242, 109, 46, 0.16);
-
-  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .055 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
   color-scheme: dark;
 }
 
@@ -94,7 +82,7 @@
   --text-lg: 15px;
   --text-xl: 20px;
   --text-2xl: 30px;
-  --text-3xl: 44px;
+  --text-3xl: 46px;
 
   /* Instrument Sans has a narrow word space (0.2em); this brings it to a readable 0.27em. */
   --word-space: 0.07em;
@@ -110,16 +98,19 @@
   --space-8: 32px;
   --space-10: 40px;
 
-  --radius-sm: 3px;
-  --radius: 5px;
-  --radius-lg: 9px;
-  --radius-sheet: 12px;
+  --radius-sm: 4px;
+  --radius: 7px;
+  --radius-lg: 12px;
+  --radius-sheet: 16px;
+  --radius-pill: 999px;
 
-  --control-h: 28px;
-  --header-h: 52px;
+  --control-h: 30px;
+  --header-h: 60px;
   --status-h: 30px;
-  --rail-w: 76px;
 
   --ease: cubic-bezier(0.2, 0, 0, 1);
   --dur: 160ms;
+
+  /* No texture: the page is clean white or clean black. */
+  --grain: none;
 }

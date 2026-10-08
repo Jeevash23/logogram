@@ -17,24 +17,24 @@ interface Stops {
 
 const DIVERGING: Record<ResolvedTheme, Stops> = {
   light: {
-    neg: "#86560f",
-    negMid: "#d29a3c",
-    zero: "#e8ecec",
-    posMid: "#7aa0d8",
-    pos: "#1f4795",
+    neg: "#9a5b00",
+    negMid: "#f0a830",
+    zero: "#efeff2",
+    posMid: "#6f9bff",
+    pos: "#1f4fe0",
   },
   dark: {
-    neg: "#f0bd62",
-    negMid: "#9c7130",
-    zero: "#1f292e",
-    posMid: "#3f679f",
-    pos: "#a9c6f5",
+    neg: "#ffc65c",
+    negMid: "#a3680f",
+    zero: "#16161a",
+    posMid: "#2f56d6",
+    pos: "#a9c1ff",
   },
 };
 
 const INK: Record<ResolvedTheme, [string, string]> = {
-  light: ["#f5f7f6", "#11171a"],
-  dark: ["#141c20", "#e6ecec"],
+  light: ["#f4f4f6", "#0a0a0b"],
+  dark: ["#121215", "#f5f5f7"],
 };
 
 function labInterpolator(stops: string[], domain: number[]) {
@@ -92,8 +92,18 @@ export function inkScale(max: number, theme: ResolvedTheme): ColorScale {
 /** A readable text color on top of a data color. */
 export function textOn(color: string, theme: ResolvedTheme): string {
   const l = lab(color).l;
-  if (theme === "light") return l < 58 ? "#f5f7f6" : "#11171a";
-  return l > 62 ? "#0b1013" : "#e6ecec";
+  if (theme === "light") return l < 58 ? "#ffffff" : "#0a0a0b";
+  return l > 62 ? "#000000" : "#f5f5f7";
+}
+
+/**
+ * The color of a mark (a dot) whose position already shows its size: the sign's color at a
+ * strength that stays visible on white or black. Exactly zero is neutral.
+ */
+export function markColor(scale: ColorScale, value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value) || value === 0) return "var(--muted)";
+  const strength = Math.max(0.6, Math.min(1, Math.abs(value) / scale.max));
+  return scale(Math.sign(value) * strength * scale.max);
 }
 
 /** Smallest scale bound per metric, so negligible effects never fill the color range. */

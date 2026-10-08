@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import type { SystemReport } from "../api/types";
 import { CopyCommand } from "../components/CopyCommand";
+import { UpdateDetails } from "../components/UpdateNotice";
 import { Button, Callout, Spinner } from "../components/ui";
 import { bytes } from "../lib/format";
 import { useStore } from "../store/app";
@@ -126,6 +127,11 @@ export function SystemCheck() {
           </>
         )}
 
+        <section className={s.updates} aria-label="Updates">
+          <h3 className={s.sectionTitle}>Updates</h3>
+          <UpdateDetails />
+        </section>
+
         <div className={s.actions}>
           <Button variant="primary" size="large" onClick={openExample} disabled={opening}>
             {opening ? "Opening…" : "Open the example project"}
@@ -142,7 +148,8 @@ export function SystemCheck() {
           </Button>
         </div>
         <p className={s.privacy}>
-          No account, no telemetry. The only network access is model downloads from Hugging Face that you start.
+          No account, no telemetry. Logogram goes online only to download models from Hugging Face when you ask, and to
+          ask pypi.org for the newest version number if you allow it above.
         </p>
       </div>
     </Welcome>

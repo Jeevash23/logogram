@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import logging
 import os
+import threading
 from importlib import resources
 from pathlib import Path
 from typing import Any, Literal
@@ -163,6 +164,8 @@ class RobustnessRequest(BaseModel):
 class SettingsRequest(BaseModel):
     system_check_seen: bool | None = None
     theme: Literal["light", "dark", "system"] | None = None
+    # Whether Logogram may ask PyPI about new versions once a day. Off until the user says yes.
+    update_check: bool | None = None
 
 
 # -- app factory -------------------------------------------------------------------------------
@@ -174,6 +177,7 @@ def create_app(
     state: AppState | None = None,
     initial_project: Path | None = None,
     serve_web: bool = True,
+    check_updates: bool = False,
 ) -> FastAPI:
     hub = state.hub if state else EventHub()
     state = state or AppState(hub)
@@ -181,7 +185,10 @@ def create_app(
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
         hub.bind(asyncio.get_running_loop())
+        if check_updates:
+            state.start_update_checks()
         yield
+        state.stop()
 
     app = FastAPI(
         title="Logogram",
@@ -235,13 +242,31 @@ def create_app(
             "first_run": not settings.get("system_check_seen", False),
             "theme": settings.get("theme", "light"),
             "projects_parent": str(default_projects_parent()),
+            "update": state.update_status(),
         }
 
     @app.post("/api/settings", response_model=M.Settings)
     def post_settings(body: SettingsRequest) -> dict[str, Any]:
         values = {k: v for k, v in body.model_dump().items() if v is not None}
         state.update_settings(**values)
+        if values.get("update_check") is True:
+            # Allowed just now: check right away rather than at the next hourly look.
+            threading.Thread(
+                target=state.check_updates, name="logogram-update", daemon=True
+            ).start()
+        elif "update_check" in values:
+            state.hub.publish("update", state.update_status())
         return state.settings()
+
+    @app.get("/api/update", response_model=M.UpdateStatus)
+    def get_update() -> dict[str, Any]:
+        """What is known about newer versions. Never contacts the network."""
+        return state.update_status()
+
+    @app.post("/api/update/check", response_model=M.UpdateStatus)
+    def check_update() -> dict[str, Any]:
+        """Ask PyPI now: the user pressed Check now."""
+        return state.check_updates()
 
     @app.get("/api/system", response_model=SystemReport)
     def get_system() -> dict[str, Any]:

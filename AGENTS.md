@@ -15,9 +15,11 @@ traceability come before features.
   in anything written into a project (specs, manifests, summaries).
 * Don't commit run outputs from your machine: manifests record the device and GPU model. The
   bundled example ships a spec and a dataset only.
-* No telemetry, analytics, crash reporting, update checks, CDNs or remote fonts. Bundle assets
-  locally. The only network access is Hugging Face downloads that the user starts, using their
-  own login.
+* No telemetry, analytics, crash reporting, CDNs or remote fonts. Bundle assets locally. Network
+  access is limited to Hugging Face downloads the user starts (with their own login) and the
+  version check in `src/logogram/updates.py`: one GET of pypi.org's JSON for `logogram`, carrying
+  only the version in its User-Agent, run when the user asks or once a day if they opted in
+  (`update_check` in settings, off until they say yes). Keep it opt-in and keep it that small.
 * The server binds 127.0.0.1, requires the session token on every HTTP and WebSocket request,
   checks Host, Origin and Fetch Metadata, and sends no CORS headers. Keep it that way. The token
   never goes on a command line (the browser gets a single-use launch code).
@@ -47,20 +49,23 @@ traceability come before features.
 
 ## Design rules
 
-* After *Arrival*: fog, paper, ink and the dark shell. Work sits on paper sheets laid on fog
-  (`--surface` on `--bg`); the shell, the dark rail that holds navigation, is the one solid
-  shape. The model map and each run's logogram are the bold elements; everything around them
-  stays quiet. Fog and shell carry a faint film grain (`--grain`).
-* Chrome is fog, paper and ink (tokens in `web/src/styles/tokens.css`). One accent, signal
-  orange (`--accent`, the hazmat suits), marks the primary action, the active place and live
-  state; it never encodes data. Effects use the diverging cobalt–neutral–ochre scale, symmetric
-  around zero, always with a legend. Attention uses the single-hue ink ramp.
+* White and black, with color that means something. The page is pure white (or pure black); regions
+  are separated by space and hairlines, never grey washes or drop shadows (only menus, dialogs and
+  tooltips float). Navigation runs across the top; there is no sidebar.
+* Color has jobs (tokens in `web/src/styles/tokens.css`):
+  * each workspace has one: green Explore (`--explore`), orange Experiment (`--experiment`), pink
+    Evidence (`--evidence`). The open workspace's pill, its tab underline, its progress and its
+    radio marks use it (`--ws` holds the current one);
+  * green (`--live`) means a loaded model;
+  * effects use the diverging cobalt–neutral–amber scale, symmetric around zero, always with a
+    legend, and nothing else uses those hues. Attention uses the single-hue ink ramp.
+  * Primary buttons are solid ink (white in the dark theme), not colored.
 * Selection is circled in ink (`inkRing` in `web/src/lib/canvas.ts`), not a new color.
 * Logograms (`web/src/lib/logogram.ts`) are data, not decoration. A run's glyph is written by its
   results: layers clockwise from the top, the ink swelling outward where a layer's strongest
   effect is positive and inward where it is negative, bleeding in the effect colors. Glyphs from
-  a seed alone mark identity only: the brand (`BRAND_SEED`), projects, empty states. Glyphs are
-  pure functions of seed and profile; keep them deterministic.
+  a seed alone mark identity only: the brand (`BRAND_SEED`), projects, empty states. The welcome
+  screens' color bloom behind the brand glyph is the one decorative use of color.
 * One typeface, Instrument Sans (weight and width axes): condensed widths for titles and big
   figures (`--display-stretch`, `.figure`), tabular figures for numbers. Its word space is
   narrow, so body text widens it (`--word-space`). Monospace appears only in the spec view.
@@ -69,14 +74,14 @@ traceability come before features.
   appearing, or panels opening. Respect reduced motion.
 * Copy uses plain verbs that say exactly what happens. Errors say what went wrong and how to fix
   it. Titles say what a view found or is for; they don't repeat the tab's name.
-* Avoid the generic AI-app look: no decorative gradients (the welcome screen's lit screen is the
-  one illustration), glassmorphism, glow, sparkle icons, emoji, chat panels, grids of identical
-  rounded cards, purple-blue palettes, or 3D brains and node galaxies.
+* Avoid the generic AI-app look and the enterprise look: no sidebars of icons, grey dashboards,
+  decorative gradients, glassmorphism, glow, sparkle icons, emoji, chat panels, grids of
+  identical rounded cards, purple-blue palettes, or 3D brains and node galaxies.
 * Draw the model map and heatmaps on canvas. Use Radix primitives for menus, dialogs, tooltips
   and popovers, Zustand for state, d3-scale and d3-color for scales, CSS variables and CSS
   modules for styling. No component kits or chart libraries.
-* Every view must work with the keyboard and in both light (fog) and dark (inside the shell)
-  themes, and down to an 800-pixel window, where the rail lies across the top.
+* Every view must work with the keyboard and in both the white and black themes, and down to an
+  800-pixel window.
 
 ## Layout of the code
 
@@ -97,6 +102,7 @@ src/logogram/
   backends/            ModelBackend interface, TransformerLens backend, Hugging Face access
   server/              FastAPI app, security, response models, job and event handling
   system.py            hardware report, doctor, memory estimates
+  updates.py           opt-in version check against PyPI, update commands
   cli.py               typer command line
   web_dist/            built web app (generated by `npm run build` in web/, committed)
   examples/ioi-gpt2/   the bundled example project

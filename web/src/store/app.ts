@@ -25,6 +25,7 @@ import type {
   SiteSpec,
   PredictionSettings,
   NoteInput,
+  UpdateStatus,
 } from "../api/types";
 import type { ResolvedTheme } from "../lib/color";
 import { siteFromSelection } from "../lib/spec";
@@ -190,6 +191,8 @@ interface Store {
   scaleMode: "auto" | "unit";
   /** Print each heatmap cell's value. Off by default: color carries the pattern. */
   cellValues: boolean;
+  /** What is known about newer versions; checked only as the user allows. */
+  update: UpdateStatus | null;
   compareIds: [string | null, string | null];
   compareMode: "side" | "diff";
   flags: Record<string, { against: string; sites: number[] }>;
@@ -223,6 +226,8 @@ interface Store {
   reloadDataset: () => Promise<void>;
   setPromptIndex: (i: number) => void;
   applyJob: (job: Job) => void;
+  checkUpdates: () => Promise<void>;
+  setUpdateConsent: (allowed: boolean) => Promise<void>;
   fitSelection: () => void;
 
   openRun: (id: string | null, view?: View) => Promise<void>;
@@ -299,6 +304,7 @@ export const useStore = create<Store>((set, get) => ({
   mapMetric: "effect",
   scaleMode: "auto",
   cellValues: false,
+  update: null,
   compareIds: [null, null],
   compareMode: "side",
   flags: {},
@@ -331,6 +337,7 @@ export const useStore = create<Store>((set, get) => ({
       firstRun: s.first_run,
       projectsParent: s.projects_parent,
       themeSetting: s.theme,
+      update: s.update ?? null,
     });
     get().handleEvent({ type: "model", ...s.model });
     if (s.job) get().applyJob(s.job);
@@ -340,6 +347,18 @@ export const useStore = create<Store>((set, get) => ({
       if (s.project) void get().enterProject(s.project);
       else get().leaveProject();
     }
+  },
+
+  checkUpdates: async () => {
+    const update = await get().guard(() => api.checkUpdate());
+    if (update) set({ update });
+  },
+
+  setUpdateConsent: async (allowed) => {
+    const saved = await get().guard(() => api.settings({ update_check: allowed }));
+    if (!saved) return;
+    const update = await api.update().catch(() => null);
+    if (update) set({ update });
   },
 
   applyJob: (job) => {
@@ -778,6 +797,11 @@ export const useStore = create<Store>((set, get) => ({
           }
         });
         if (status === "cancelled" && !data.replay) get().notify("Run cancelled. The spec and any dataset snapshot remain; partial results were discarded.");
+        break;
+      }
+      case "update": {
+        const { type: _type, ...rest } = event;
+        set({ update: rest as unknown as UpdateStatus });
         break;
       }
       case "project": {

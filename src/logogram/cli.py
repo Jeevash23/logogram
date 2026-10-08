@@ -103,6 +103,7 @@ def _serve(
             f"Development UI (npm run dev):\n\n  {dev_list[0]}/api/session?token={security.token}\n"
         )
     typer.echo("Everything runs on this machine. Press Ctrl+C to stop.")
+    _update_notice()
 
     import uvicorn
 
@@ -110,7 +111,9 @@ def _serve(
     from logogram.server.app import create_app
 
     configure_determinism()
-    application = create_app(security, initial_project=project, serve_web=not dev)
+    application = create_app(
+        security, initial_project=project, serve_web=not dev, check_updates=True
+    )
     config = uvicorn.Config(
         application,
         host="127.0.0.1",
@@ -130,6 +133,39 @@ def _serve(
 PortOption = typer.Option(
     min=0, max=65535, help="Port to listen on (127.0.0.1 only; 0 picks any free port)."
 )
+
+
+def _update_notice() -> None:
+    """One line about newer versions, from what is already known (no network here)."""
+    from logogram import updates
+    from logogram.project import config_dir
+
+    choice = _settings().get("update_check")
+    info = updates.status(
+        choice if isinstance(choice, bool) else None,
+        updates.read_cache(config_dir() / "updates.json"),
+    )
+    if info.available:
+        typer.echo(
+            f"\nLogogram {info.latest} is out (you have {info.current}). Update: {info.command}"
+        )
+    elif info.old:
+        typer.echo(
+            f"\nThis version of Logogram is from {info.released}. "
+            "Newer ones may be out: logogram check-updates"
+        )
+
+
+def _settings() -> dict:  # type: ignore[type-arg]
+    import json
+
+    from logogram.project import config_dir
+
+    try:
+        data = json.loads((config_dir() / "settings.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 @app.callback()
@@ -178,6 +214,27 @@ def serve(
     _serve(port=port, open_browser=not (no_browser or dev), project=project, dev=dev)
 
 
+@app.command("check-updates")
+def check_updates_cmd() -> None:
+    """Ask PyPI whether a newer Logogram is out (sends nothing about you or your work)."""
+    from logogram import updates
+    from logogram.project import config_dir
+
+    path = config_dir() / "updates.json"
+    cache = updates.check(path)
+    choice = _settings().get("update_check")
+    info = updates.status(choice if isinstance(choice, bool) else None, cache)
+    if info.error:
+        typer.echo(info.error)
+    if info.available:
+        typer.echo(f"Logogram {info.latest} is out (you have {info.current}).")
+        typer.echo(f"Update: {info.command}")
+        if info.notes_url:
+            typer.echo(f"What's new: {info.notes_url}")
+    elif info.latest:
+        typer.echo(f"Logogram {info.current} is the newest version.")
+
+
 @app.command()
 def doctor() -> None:
     """Report the environment and hardware, with fixes for common problems."""
@@ -209,6 +266,7 @@ def doctor() -> None:
         ("PyTorch", report.torch + (f" (CUDA {report.torch_cuda})" if report.torch_cuda else "")),
         ("TransformerLens", report.transformer_lens or "not installed"),
         ("Transformers", report.transformers or "not installed"),
+        ("Updates", _updates_row()),
     ]
     width = max(len(k) for k, _ in rows)
     for key, value in rows:
@@ -225,6 +283,24 @@ def doctor() -> None:
         if issue.fix:
             typer.echo(f"  Fix: {issue.fix}")
         typer.echo("")
+
+
+def _updates_row() -> str:
+    from logogram import updates
+    from logogram.project import config_dir
+
+    choice = _settings().get("update_check")
+    info = updates.status(
+        choice if isinstance(choice, bool) else None,
+        updates.read_cache(config_dir() / "updates.json"),
+    )
+    automatic = {True: "checked daily", False: "automatic checks off", None: "not set up"}[
+        info.automatic
+    ]
+    known = (
+        f"{info.latest} available" if info.available else "up to date" if info.latest else "unknown"
+    )
+    return f"{known} · {automatic} · check now with logogram check-updates"
 
 
 @app.command()

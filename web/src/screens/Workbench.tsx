@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-import { Header } from "../components/Header";
+import { DatasetChip, ModelChip } from "../components/Header";
 import { History } from "../components/History";
 import { Inspector } from "../components/Inspector";
 import { ModelDialog } from "../components/ModelDialog";
@@ -8,7 +8,7 @@ import { RobustnessDialog } from "../components/RobustnessDialog";
 import { Splitter } from "../components/Splitter";
 import { StatusLine } from "../components/StatusLine";
 import { TokenStrip } from "../components/TokenStrip";
-import { Rail } from "../components/Rail";
+import { TopBar } from "../components/TopBar";
 import { Button, Dialog, Icon } from "../components/ui";
 import { useAnalysisContext } from "../lib/hooks";
 import { useStore, workspaceFor, type View, type Workspace } from "../store/app";
@@ -67,27 +67,29 @@ export function Workbench() {
   const goWorkspace = (w: Workspace) =>
     w === "experiment" && staged > 0 ? useStore.getState().configureStaged() : setView(lastView.current[w]);
 
-  return <div className={s.workbench}>
-    <Rail workspace={workspace} onWorkspace={goWorkspace} onHistory={() => setDrawer("history")} runs={runs} staged={staged} />
-    <div className={s.main}>
-      <Header next={<NextStep />} />
-      <div className={s.body}>
-        <main className={s.sheet}>
-          <div className={s.viewBar}>
-            <nav className={s.tabs} aria-label={`${workspace} views`}>{WORKSPACES.find(w => w.id === workspace)?.views.map(v => <button key={v.id} type="button" className={s.tab} aria-current={view === v.id ? "page" : undefined} onClick={() => setView(v.id)}>{v.label}{v.id === "heads" && pins > 0 && <span className={s.count}>{pins}/2</span>}</button>)}</nav>
-            <Button size="small" variant="ghost" aria-expanded={showInspector || drawer === "inspector"} onClick={() => narrow || !supportsInspector ? setDrawer("inspector") : setInspector(!inspector)}>{showInspector ? "Hide inspector" : "Inspector"}</Button>
-          </div>
-          <div className={s.view} ref={viewPane}><ActiveView view={view} /></div>
-          {!["notes", "compare", "spec"].includes(view) && <TokenStrip />}
-        </main>
-        {showInspector && <><Splitter orientation="vertical" label="Resize the inspector" onReset={() => setInspectorWidth(320)} onResize={(delta, phase) => {
-          if (phase === "start") { startWidth.current = inspectorWidth; return; }
-          const next = Math.max(280, Math.min(480, startWidth.current - delta)); setInspectorWidth(next);
-          if (phase === "end") { try { localStorage.setItem("logogram.inspectorWidth", String(next)); } catch { /* use session size */ } }
-        }} /><aside className={`${s.sheet} ${s.inspector}`} style={{ width: inspectorWidth }} aria-label="Inspector"><Inspector /></aside></>}
+  return <div className={s.workbench} style={{ ["--ws" as string]: `var(--${workspace})` }}>
+    <TopBar workspace={workspace} onWorkspace={goWorkspace} onHistory={() => setDrawer("history")} runs={runs} staged={staged} />
+    <div className={s.subbar}>
+      <nav className={s.tabs} aria-label={`${workspace} views`}>{WORKSPACES.find(w => w.id === workspace)?.views.map(v => <button key={v.id} type="button" className={s.tab} aria-current={view === v.id ? "page" : undefined} onClick={() => setView(v.id)}>{v.label}{v.id === "heads" && pins > 0 && <span className={s.count}>{pins}/2</span>}</button>)}</nav>
+      <div className={s.context}>
+        <NextStep />
+        <ModelChip />
+        <DatasetChip />
+        <Button size="small" variant="ghost" aria-expanded={showInspector || drawer === "inspector"} onClick={() => narrow || !supportsInspector ? setDrawer("inspector") : setInspector(!inspector)}>{showInspector ? "Hide inspector" : "Inspector"}</Button>
       </div>
-      <StatusLine />
     </div>
+    <div className={s.body}>
+      <main className={s.center}>
+        <div className={s.view} ref={viewPane}><ActiveView view={view} /></div>
+        {!["notes", "compare", "spec"].includes(view) && <TokenStrip />}
+      </main>
+      {showInspector && <><Splitter orientation="vertical" label="Resize the inspector" onReset={() => setInspectorWidth(320)} onResize={(delta, phase) => {
+        if (phase === "start") { startWidth.current = inspectorWidth; return; }
+        const next = Math.max(280, Math.min(480, startWidth.current - delta)); setInspectorWidth(next);
+        if (phase === "end") { try { localStorage.setItem("logogram.inspectorWidth", String(next)); } catch { /* use session size */ } }
+      }} /><aside className={s.inspector} style={{ width: inspectorWidth }} aria-label="Inspector"><Inspector /></aside></>}
+    </div>
+    <StatusLine />
     <ModelDialog />
     <RobustnessDialog />
     <NoteEditorDialog />

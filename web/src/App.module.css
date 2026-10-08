@@ -3,7 +3,7 @@
   display: grid;
   place-items: center;
   color: var(--muted);
-  background: var(--bg) var(--grain);
+  background: var(--bg);
 }
 
 /* While the app connects: the mark, breathing slowly. */

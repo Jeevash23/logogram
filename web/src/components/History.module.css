@@ -118,7 +118,7 @@
 
 .item[aria-current="true"] {
   background: var(--surface-2);
-  box-shadow: inset 3px 0 0 var(--accent);
+  box-shadow: inset 3px 0 0 var(--evidence);
 }
 
 /* Each run's logogram, written by its results. */

@@ -166,6 +166,7 @@ logogram                 start the app and open the browser
 logogram open PATH       start with a project open
 logogram run SPEC.json   run an experiment headlessly and print a summary
 logogram doctor          environment and hardware report, with fixes
+logogram check-updates   ask PyPI whether a newer Logogram is out
 logogram serve --dev     API only, for working on the web app
 logogram --version
 ```
@@ -313,11 +314,13 @@ treating them as equivalent.
 
 ## Privacy
 
-* Everything runs locally. There is no account, no telemetry, no analytics and no update check.
-  The app loads no fonts or scripts from the internet; its fonts are bundled.
-* The only network access is to Hugging Face, when you load a model: to resolve its revision,
-  read its size for the memory estimate and download it once. Your own Hugging Face login is
-  used for gated models. Hugging Face telemetry is turned off.
+* Everything runs locally. There is no account, no telemetry and no analytics. The app loads no
+  fonts or scripts from the internet; its fonts are bundled.
+* Logogram goes online in two cases only. When you load a model, it asks Hugging Face to resolve
+  its revision, read its size for the memory estimate and download it once (your own Hugging
+  Face login is used for gated models; Hugging Face telemetry is turned off). And if you allow
+  it, it asks pypi.org for the newest Logogram version number once a day (see Updating). Nothing
+  about you, your machine or your work is sent.
 * The server listens on 127.0.0.1 only. Every request needs the random session token from the
   address printed in the terminal (exchanged for a same-site cookie when the page opens). The
   browser is opened with a single-use code instead, because other users of a shared machine can
@@ -330,6 +333,30 @@ treating them as equivalent.
   files.
 * Settings and the list of recent projects are kept in your user configuration folder, not in
   projects.
+
+## Updating
+
+Logogram tells you when a new version is out, in the way you choose:
+
+* **Never online by itself.** Each version knows its release date. A few months after it, the
+  app and the terminal suggest checking for a newer one.
+* **Check now.** Press it in the update panel (or the System check), or run
+  `logogram check-updates`. Logogram asks pypi.org for the newest version number.
+* **Daily, if you allow it.** The System check asks once whether Logogram may look once a day.
+  You can change your mind in the update panel at any time.
+
+When a newer version is known, a small **Logogram 0.x.y** button appears in the top bar with what's
+new and the exact update command for how you installed it, and starting `logogram` prints it in
+the terminal. Updating never touches your projects, results or settings:
+
+| Installed with | Update with |
+|---|---|
+| `uv tool install logogram` | `uv tool upgrade logogram` |
+| `uv tool install .` from a copy of this repository | `git pull`, then `uv tool install --reinstall .` |
+| `uv sync` (development) | `git pull`, then `uv sync` |
+
+A check is one HTTPS request for Logogram's public package information on pypi.org. It carries
+Logogram's version number and nothing else.
 
 ## Models
 
@@ -374,6 +401,10 @@ The browser fixture never opens the user's projects or cached models. CI runs th
 on Linux, and the Python suite plus an installed-wheel smoke check on Linux, macOS and Windows.
 The wheel check covers the CLI, bundled example and fonts, authenticated API and served web
 assets. Source distributions include the web sources and lockfiles so the bundle can be rebuilt.
+
+Releasing: raise `__version__` and set `__released__` to the release date in
+`src/logogram/__init__.py` (the date drives the "this version is getting old" hint), then publish
+to PyPI so update checks see it.
 
 Before publishing a release, require all CI jobs to pass and manually check a first GPT-2 download,
 cancel and retry it, then run the example on each supported compute backend. CPU and CUDA are

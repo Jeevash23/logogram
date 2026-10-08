@@ -2,6 +2,8 @@ import { scaleLinear } from "d3-scale";
 import { useMemo, useRef } from "react";
 
 import { useElementSize } from "../lib/canvas";
+import { divergingScale, markColor, niceBound } from "../lib/color";
+import { useStore } from "../store/app";
 import { num, signed } from "../lib/format";
 import s from "./Distribution.module.css";
 
@@ -35,6 +37,11 @@ export function Distribution({
   const ref = useRef<HTMLDivElement>(null);
   const { width } = useElementSize(ref);
   const finite = values.filter((v): v is { index: number; value: number } => v.value !== null && Number.isFinite(v.value));
+  const theme = useStore((st) => st.theme);
+  const signScale = useMemo(
+    () => divergingScale(niceBound(finite.map((v) => v.value), 0.1), theme),
+    [finite, theme],
+  );
 
   const plot = useMemo(() => {
     if (width === 0 || finite.length === 0) return null;
@@ -103,6 +110,7 @@ export function Distribution({
                       <circle
                         key={p.index}
                         className={plot.dense ? s.dotDense : s.dot}
+                        style={{ fill: markColor(signScale, p.value) }}
                         cx={p.cx}
                         cy={mid + p.dy}
                         r={R}

@@ -1,19 +1,18 @@
-/* First screens: the chamber on the left, paper on the right. */
+/* First screens: the logogram and what Logogram is for on the left, the work on the right. */
 .welcome {
   display: grid;
-  grid-template-columns: minmax(300px, 0.9fr) minmax(0, 1.4fr);
+  grid-template-columns: minmax(340px, 1fr) minmax(0, 1.3fr);
   height: 100%;
-  background: var(--bg) var(--grain);
+  background: var(--bg);
 }
 
-.chamber {
-  position: relative;
+.hero {
   display: flex;
   flex-direction: column;
-  gap: 28px;
-  padding: 32px 36px 36px;
-  background: var(--rail) var(--grain);
-  color: var(--rail-text);
+  justify-content: space-between;
+  gap: 24px;
+  padding: 36px 44px 44px;
+  border-right: 1px solid var(--line);
   overflow: hidden;
 }
 
@@ -24,45 +23,67 @@
 }
 
 .wordmark {
-  font-weight: 640;
+  font-weight: 680;
   font-size: var(--text-xl);
   font-stretch: var(--display-stretch);
   letter-spacing: -0.01em;
 }
 
 .version {
-  color: var(--rail-muted);
+  color: var(--faint);
   font-size: var(--text-xs);
 }
 
-/* The lit screen of the shell, with the ink floating on it. */
-.screen {
-  flex: 1;
-  min-height: 240px;
-  max-height: 520px;
+/* Ink dropped into colored water: three soft blooms under the glyph. */
+.stage {
+  position: relative;
   display: grid;
   place-items: center;
-  border-radius: 18px;
-  background:
-    radial-gradient(ellipse at 50% 42%, #f8faf9 0%, #e6ebeb 62%, #d3dadb 100%);
-  color: #11171a;
-  box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.5),
-    0 30px 80px rgba(0, 0, 0, 0.35);
+  flex: 1;
+  min-height: 260px;
 }
 
-:root[data-theme="dark"] .screen {
-  background: radial-gradient(ellipse at 50% 42%, #dfe5e5 0%, #c3cccd 62%, #a9b4b6 100%);
+.stage > span {
+  position: absolute;
+  width: 46%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  filter: blur(42px);
+  opacity: 0.55;
+}
+
+:root[data-theme="dark"] .stage > span {
+  opacity: 0.42;
+}
+
+.bloomExplore {
+  background: var(--explore);
+  transform: translate(-34%, -22%);
+}
+
+.bloomExperiment {
+  background: var(--experiment);
+  transform: translate(32%, -8%);
+}
+
+.bloomEvidence {
+  background: var(--evidence);
+  transform: translate(-4%, 32%);
 }
 
 .heroGlyph {
-  width: min(300px, 58%);
+  position: relative;
+  width: min(280px, 64%);
   height: auto;
+  color: var(--text);
 }
 
 @media (prefers-reduced-motion: no-preference) {
   .heroGlyph {
     animation: ink 1600ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+  .stage > span {
+    animation: bloom 2200ms cubic-bezier(0.16, 1, 0.3, 1) both;
   }
   @keyframes ink {
     from {
@@ -76,28 +97,20 @@
       filter: none;
     }
   }
-}
-
-.chamberText {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-width: 420px;
+  @keyframes bloom {
+    from {
+      opacity: 0;
+    }
+  }
 }
 
 .tagline {
-  font-size: var(--text-2xl);
-  font-weight: 600;
+  font-size: 34px;
+  font-weight: 640;
   font-stretch: var(--display-stretch);
-  letter-spacing: -0.02em;
-  line-height: 1.1;
-  text-wrap: balance;
-}
-
-.chamberNote {
-  color: var(--rail-muted);
-  font-size: var(--text-sm);
-  line-height: 1.55;
+  letter-spacing: -0.022em;
+  line-height: 1.08;
+  max-width: 520px;
 }
 
 .paper {
@@ -132,23 +145,27 @@
     grid-template-rows: auto 1fr;
     overflow: auto;
   }
-  .chamber {
+  .hero {
     flex-direction: row;
     align-items: center;
-    gap: 16px;
+    gap: 14px;
     padding: 14px 18px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
   }
-  .screen {
+  .stage {
     flex: none;
-    width: 64px;
-    min-height: 64px;
-    height: 64px;
-    border-radius: 12px;
+    width: 56px;
+    min-height: 56px;
+    height: 56px;
+  }
+  .stage > span {
+    filter: blur(14px);
   }
   .heroGlyph {
-    width: 48px;
+    width: 44px;
   }
-  .chamberText {
+  .tagline {
     display: none;
   }
   .paper {
@@ -156,6 +173,7 @@
     overflow: visible;
   }
 }
+
 
 .lead {
   color: var(--muted);
@@ -175,10 +193,7 @@
   display: grid;
   grid-template-columns: 190px 1fr;
   margin: 6px 0 0;
-  padding: 4px 20px;
-  border-radius: var(--radius-sheet);
-  background: var(--surface);
-  box-shadow: var(--sheet-shadow);
+  border-top: 2px solid var(--text);
 }
 
 .facts dt,
@@ -259,10 +274,8 @@
 .recent {
   list-style: none;
   margin: 0;
-  padding: 6px;
-  border-radius: var(--radius-sheet);
-  background: var(--surface);
-  box-shadow: var(--sheet-shadow);
+  padding: 0;
+  border-top: 2px solid var(--text);
 }
 
 .recentItem {
@@ -271,9 +284,9 @@
   align-items: center;
   gap: 2px 14px;
   width: 100%;
-  padding: 10px 12px;
+  padding: 12px 8px;
   border: 0;
-  border-radius: var(--radius-lg);
+  border-bottom: 1px solid var(--line);
   background: transparent;
   text-align: left;
 }
@@ -357,4 +370,13 @@
   color: var(--text);
   text-decoration: underline;
   text-underline-offset: 3px;
+}
+
+.updates {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  max-width: 460px;
 }

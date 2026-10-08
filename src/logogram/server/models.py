@@ -123,6 +123,19 @@ class FolderListing(_Out):
     entries: list[FolderEntry]
 
 
+class UpdateStatus(_Out):
+    current: str
+    released: str | None
+    automatic: bool | None
+    latest: str | None
+    available: bool
+    old: bool
+    checked_at: str | None
+    error: str | None
+    notes_url: str | None
+    command: str
+
+
 class ServerState(_Out):
     version: str
     project: ProjectInfo | None
@@ -131,6 +144,7 @@ class ServerState(_Out):
     first_run: bool
     theme: Literal["light", "dark", "system"]
     projects_parent: str
+    update: UpdateStatus
 
 
 class Settings(BaseModel):
@@ -138,6 +152,7 @@ class Settings(BaseModel):
 
     system_check_seen: bool | None = None
     theme: str | None = None
+    update_check: bool | None = None
 
 
 class OkOut(_Out):

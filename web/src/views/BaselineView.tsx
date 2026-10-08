@@ -5,6 +5,7 @@ import { api } from "../api/client";
 import type { BaselinePrompt, BaselineReport, TopToken } from "../api/types";
 import { Button, Callout, Empty } from "../components/ui";
 import { useElementSize } from "../lib/canvas";
+import { divergingScale, markColor, niceBound } from "../lib/color";
 import { num, plural, prob, signed, visibleToken } from "../lib/format";
 import { modelName, useAnalysisContext } from "../lib/hooks";
 import { analysisContext } from "../lib/analysis";
@@ -131,6 +132,9 @@ function DotPlot({ prompts, selected }: { prompts: BaselinePrompt[]; selected: n
   const { width } = useElementSize(ref);
   const setIndex = useStore((st) => st.setPromptIndex);
   const values = prompts.flatMap((p) => [p.clean_logit_diff ?? 0, p.corrupt_logit_diff ?? 0, 0]);
+  const theme = useStore((st) => st.theme);
+  // Positive: the model prefers the answer (cobalt); negative: the distractor (amber).
+  const signScale = divergingScale(niceBound(values, 1), theme);
   const x = scaleLinear()
     .domain([Math.min(...values), Math.max(...values)])
     .nice()
@@ -163,6 +167,7 @@ function DotPlot({ prompts, selected }: { prompts: BaselinePrompt[]; selected: n
                     onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setIndex(p.index); } }}
                     key={p.index}
                     className={isSel ? b.dotSelected : b.dot}
+                    style={isSel ? undefined : { fill: markColor(signScale, v) }}
                     cx={x(v)}
                     cy={row.y}
                     r={isSel ? 5 : 3.5}

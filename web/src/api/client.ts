@@ -28,6 +28,7 @@ import type {
   ResearchNote,
   PredictionReport,
   PredictionSettings,
+  UpdateStatus,
 } from "./types";
 
 export class ApiError extends Error {
@@ -112,7 +113,9 @@ const post = <T>(path: string, body: unknown = {}) => request<T>("POST", path, b
 
 export const api = {
   state: () => get<ServerState>("/api/state"),
-  settings: (values: { system_check_seen?: boolean; theme?: ThemeSetting }) =>
+  update: () => get<UpdateStatus>("/api/update"),
+  checkUpdate: () => post<UpdateStatus>("/api/update/check"),
+  settings: (values: { system_check_seen?: boolean; theme?: ThemeSetting; update_check?: boolean }) =>
     post<Record<string, unknown>>("/api/settings", values),
   system: () => get<SystemReport>("/api/system"),
 

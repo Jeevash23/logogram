@@ -1,4 +1,4 @@
-/* A gap of fog between two sheets; a grip appears on hover. */
+/* A hairline with a wider grip; it lights up in the workspace's color. */
 .vertical,
 .horizontal {
   position: relative;
@@ -7,46 +7,29 @@
 }
 
 .vertical {
-  width: 10px;
+  width: 1px;
+  margin: 0 -4px;
+  padding: 0 4px;
   cursor: col-resize;
+  background-clip: content-box;
+  background-color: var(--line);
+  box-sizing: content-box;
 }
 
 .horizontal {
-  height: 10px;
+  height: 1px;
+  margin: -4px 0;
+  padding: 4px 0;
   cursor: row-resize;
+  background-clip: content-box;
+  background-color: var(--line);
+  box-sizing: content-box;
 }
 
-.vertical::after,
-.horizontal::after {
-  content: "";
-  position: absolute;
-  border-radius: 2px;
-  background: transparent;
-  transition: background var(--dur) var(--ease);
-}
-
-.vertical::after {
-  left: 4px;
-  width: 2px;
-  top: 30%;
-  bottom: 30%;
-}
-
-.horizontal::after {
-  top: 4px;
-  height: 2px;
-  left: 30%;
-  right: 30%;
-}
-
-.vertical:hover::after,
-.horizontal:hover::after,
-.vertical:focus-visible::after,
-.horizontal:focus-visible::after {
-  background: var(--accent);
-}
-
+.vertical:hover,
+.horizontal:hover,
 .vertical:focus-visible,
 .horizontal:focus-visible {
+  background-color: var(--ws, var(--text));
   outline: none;
 }

@@ -69,8 +69,9 @@ function useCommands(query: string): Command[] {
     cmds.push(
       { id: "projects", label: "All projects", group: "Project", run: () => st.goto("projects") },
       { id: "system", label: "System check", group: "Project", keywords: "gpu cuda doctor hardware", run: () => st.goto("system") },
-      { id: "light", label: "Light appearance", group: "Appearance", keywords: "theme", run: () => st.setTheme("light") },
-      { id: "dark", label: "Dark appearance", group: "Appearance", keywords: "theme", run: () => st.setTheme("dark") },
+      { id: "updates", label: "Check for updates", group: "Project", keywords: "version upgrade new release pypi", run: () => void st.checkUpdates() },
+      { id: "light", label: "White appearance", group: "Appearance", keywords: "theme light", run: () => st.setTheme("light") },
+      { id: "dark", label: "Black appearance", group: "Appearance", keywords: "theme dark", run: () => st.setTheme("dark") },
       { id: "system-theme", label: "Match the system appearance", group: "Appearance", keywords: "theme", run: () => st.setTheme("system") },
     );
 

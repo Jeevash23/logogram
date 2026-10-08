@@ -160,6 +160,59 @@ class AppState:
         self.model_ref: ModelRef | None = None  # what the user asked for (device may be "auto")
         self.job: Job | None = None
         self._job_lock = threading.Lock()
+        self._stop = threading.Event()
+        self._update_lock = threading.Lock()
+
+    # -- updates -----------------------------------------------------------------------------
+
+    @staticmethod
+    def updates_path() -> Path:
+        return config_dir() / "updates.json"
+
+    # Replaced in tests; the only network call Logogram makes on its own, and only with consent.
+    fetch_updates = None
+
+    def update_status(self) -> dict[str, Any]:
+        from logogram import updates
+
+        choice = self.settings().get("update_check")
+        cache = updates.read_cache(self.updates_path())
+        return updates.status(choice if isinstance(choice, bool) else None, cache).to_dict()
+
+    def check_updates(self) -> dict[str, Any]:
+        """Ask PyPI for the newest version now, then tell every open tab."""
+        from logogram import updates
+
+        with self._update_lock:  # one check at a time
+            updates.check(self.updates_path(), fetch=self.fetch_updates or updates.fetch_pypi)
+        payload = self.update_status()
+        self.hub.publish("update", payload)
+        return payload
+
+    def maybe_check_updates(self) -> bool:
+        """The daily check: only with the user's consent, and only once the last one is a day old."""
+        from logogram import updates
+
+        if self.settings().get("update_check") is not True:
+            return False
+        if not updates.due(updates.read_cache(self.updates_path())):
+            return False
+        self.check_updates()
+        return True
+
+    def start_update_checks(self) -> None:
+        """While the server runs, look once an hour whether a daily check is allowed and due."""
+
+        def loop() -> None:
+            wait = 5.0  # let the server start first
+            while not self._stop.wait(wait):
+                wait = 3600.0
+                self.maybe_check_updates()
+
+        threading.Thread(target=loop, name="logogram-updates", daemon=True).start()
+
+    def stop(self) -> None:
+        self._stop.set()
 
     # -- settings ----------------------------------------------------------------------------
 

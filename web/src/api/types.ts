@@ -71,6 +71,22 @@ export interface ProjectInfo {
   datasets: DatasetListing[];
 }
 
+/** What is known about newer versions of Logogram (see src/logogram/updates.py). */
+export interface UpdateStatus {
+  current: string;
+  released: string | null;
+  /** The user's choice about daily checks; null until asked. */
+  automatic: boolean | null;
+  latest: string | null;
+  available: boolean;
+  /** This version is months old and nothing newer is known: worth a look. */
+  old: boolean;
+  checked_at: string | null;
+  error: string | null;
+  notes_url: string | null;
+  command: string;
+}
+
 export interface ServerState {
   version: string;
   project: ProjectInfo | null;
@@ -79,6 +95,7 @@ export interface ServerState {
   first_run: boolean;
   theme: ThemeSetting;
   projects_parent: string;
+  update: UpdateStatus;
 }
 
 export interface RecentProject {

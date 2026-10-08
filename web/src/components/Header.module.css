@@ -1,27 +1,19 @@
-/* The context bar sits directly on fog. Chips are small sheets of paper. */
-.header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: var(--header-h);
-  padding: 0 14px 0 12px;
-  flex: none;
-}
-
+/* The project menu (top bar) and the context chips (model, prompts). */
 .project {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  height: 32px;
+  gap: 6px;
+  height: 36px;
   padding: 0 10px;
   border: 0;
-  border-radius: var(--radius);
+  border-radius: var(--radius-pill);
   background: transparent;
   font-size: var(--text-lg);
-  font-weight: 640;
+  font-weight: 650;
   font-stretch: var(--display-stretch);
   letter-spacing: -0.01em;
   max-width: 300px;
+  min-width: 0;
 }
 
 .project:hover,
@@ -31,6 +23,7 @@
 
 .project svg:last-child {
   color: var(--muted);
+  flex: none;
 }
 
 .projectName {
@@ -39,27 +32,19 @@
   white-space: nowrap;
 }
 
-.divider {
-  width: 1px;
-  height: 20px;
-  background: var(--line);
-  margin: 0 4px;
-}
-
 .chip {
   display: inline-flex;
   align-items: center;
   gap: 7px;
   height: 30px;
-  padding: 0 11px;
-  border: 1px solid transparent;
-  border-radius: 15px;
-  background: var(--surface);
-  box-shadow: var(--sheet-shadow);
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: transparent;
   font-size: var(--text-sm);
-  font-weight: 560;
+  font-weight: 580;
   white-space: nowrap;
-  max-width: 360px;
+  max-width: 300px;
   overflow: hidden;
 }
 
@@ -70,7 +55,7 @@
 
 .chip:hover,
 .chip[data-state="open"] {
-  border-color: var(--line);
+  border-color: var(--text);
 }
 
 .chip svg {
@@ -78,16 +63,13 @@
   flex: none;
 }
 
-/* Nothing chosen yet: an outline on fog, waiting to be filled. */
+/* Nothing chosen yet. */
 .chipEmpty {
-  background: transparent;
-  box-shadow: none;
-  border-color: var(--line);
   color: var(--muted);
+  border-style: dashed;
 }
 
 .chipEmpty:hover {
-  border-color: var(--muted);
   color: var(--text);
 }
 
@@ -96,23 +78,14 @@
   font-weight: 500;
 }
 
-/* A loaded model: signal orange, steady. */
+/* A loaded model: green, steady. */
 .live {
-  position: relative;
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--accent);
+  background: var(--live);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--live) 28%, transparent);
   flex: none;
-}
-
-.live::after {
-  content: "";
-  position: absolute;
-  inset: -3px;
-  border-radius: 50%;
-  border: 1px solid var(--accent);
-  opacity: 0.35;
 }
 
 .ring {
@@ -123,13 +96,15 @@
   flex: none;
 }
 
-.spacer {
-  flex: 1;
+@media (max-width: 1180px) {
+  .chip {
+    max-width: 220px;
+  }
 }
 
 @media (max-width: 920px) {
-  .header { flex-wrap: wrap; height: auto; min-height: var(--header-h); padding: 6px 10px; gap: 6px; }
-  .project { max-width: 190px; font-size: var(--text-md); }
-  .chip { max-width: 240px; }
-  .divider { display: none; }
+  .project {
+    max-width: 190px;
+    font-size: var(--text-md);
+  }
 }
