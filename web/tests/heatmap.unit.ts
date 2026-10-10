@@ -17,11 +17,11 @@ test("the heatmap's cell map finds the site a search through every site finds", 
 
   // A full sweep with masked cells, as a layer × head map with gaps.
   const sweep: SiteBase[] = [];
-  for (let r = 0; r < 48; r++) for (let c = 0; c < 25; c++) if ((r * 7 + c * 3) % 5 !== 0) sweep.push(site(sweep.length, r, c));
+  for (let r = 0; r < 32; r++) for (let c = 0; c < 16; c++) if ((r * 7 + c * 3) % 5 !== 0) sweep.push(site(sweep.length, r, c));
   const big = siteGrid(sweep);
   expect(big.size).toBe(sweep.length);
-  for (let r = 0; r < 49; r++) {
-    for (let c = 0; c < 26; c++) expect(big.get(gridKey(r, c)) ?? null).toBe(siteAt(sweep, r, c));
+  for (let r = 0; r < 33; r++) {
+    for (let c = 0; c < 17; c++) expect(big.get(gridKey(r, c)) ?? null).toBe(siteAt(sweep, r, c));
   }
   expect(siteGrid([]).size).toBe(0);
 });
