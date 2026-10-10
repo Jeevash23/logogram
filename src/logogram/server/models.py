@@ -413,7 +413,9 @@ class ComparisonChange(_Out):
     effect_b: dict[str, float | None]
     rank_a: int
     rank_b: int
-    flags: list[Literal["sign", "left_top", "entered_top"]]
+    flags: list[Literal["sign", "left_top", "entered_top", "differs"]]
+    # b - a in per-prompt effects, when both runs measured the same prompts.
+    difference: dict[str, float] | None = None
 
 
 class DiffCell(_Out):
@@ -446,3 +448,5 @@ class Comparison(_Out):
     diff: list[DiffCell]
     same_layout: bool
     spec_differences: list[SpecDifference]
+    paired: bool = False
+    n_differs: int = 0

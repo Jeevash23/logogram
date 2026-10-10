@@ -49,13 +49,11 @@ from logogram.server import models as M
 from logogram.server.security import SecurityConfig, SecurityMiddleware
 from logogram.server.state import AppState, Conflict, EventHub, Missing, request_project
 from logogram.spec import (
-    NAME_MAX,
     SINGLE_POSITION_METRICS,
     Metric,
     ModelRef,
     PredictionSettings,
     Spec,
-    describe_intervention,
 )
 from logogram.system import SystemReport
 
@@ -967,24 +965,11 @@ def create_app(
 
     @app.post("/api/runs/{run_id}/robustness", response_model=M.StartedRun)
     def robustness(run_id: str, body: RobustnessRequest) -> dict[str, Any]:
+        from logogram.robustness import robustness_spec
+
         project = state.require_project()
         original = Spec.from_path(project.readable(project.run_dir(run_id) / "spec.json"))
-        data = original.model_dump(mode="json")
-        if body.dtype is not None:
-            if body.dtype == original.model.dtype:
-                raise ValueError(f"This run already ran in {body.dtype}.")
-            # The same run in another precision: what rounding changed.
-            data["model"]["dtype"] = body.dtype
-        else:
-            data["experiment"] = body.experiment
-        suffix = " · robustness"
-        data["name"] = original.name[: NAME_MAX - len(suffix)].rstrip() + suffix
-        variant = Spec.model_validate(data)
-        change = (
-            f"In {body.dtype} instead of {original.model.dtype}"
-            if body.dtype is not None
-            else describe_intervention(variant.experiment)
-        )
+        variant, change = robustness_spec(original, experiment=body.experiment, dtype=body.dtype)
         job = state.run_spec_job(
             variant, derived_from={"run": run_id, "kind": "robustness", "change": change}
         )
@@ -1028,18 +1013,9 @@ def create_app(
 
     @app.get("/api/compare", response_model=M.Comparison)
     def compare(a: str, b: str) -> dict[str, Any]:
-        from logogram.compare import compare_summaries
+        from logogram.compare import compare_runs
 
-        project = state.require_project()
-        ra, rb = _read_run(project, a), _read_run(project, b)
-        if not ra["summary"] or not rb["summary"]:
-            raise ValueError("Both runs need to have finished.")
-        return compare_summaries(
-            ra["summary"],
-            rb["summary"],
-            Spec.model_validate(ra["spec"]),
-            Spec.model_validate(rb["spec"]),
-        )
+        return compare_runs(state.require_project(), a, b)
 
     @app.post("/api/jobs/cancel", response_model=M.CancelOut)
     async def cancel() -> dict[str, Any]:
