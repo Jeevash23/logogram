@@ -3,60 +3,142 @@ name: CI
 on:
   push:
     branches: ["**"]
+  # A pull request from a branch of this repository is already checked by its push, so the jobs
+  # below run for pull requests from forks only (see each job's `if`).
   pull_request:
+  workflow_dispatch:
   # The release workflow runs these checks on the tagged commit before publishing.
   workflow_call:
 
 permissions:
   contents: read
 
+concurrency:
+  # A fixed prefix rather than github.workflow: called from the release workflow, that names the
+  # caller, and the two runs would wait on each other.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   privacy:
     name: Privacy check
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - run: python3 scripts/check_privacy.py
 
   lint:
     name: Lint
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - run: uvx ruff@0.16.10 check src tests scripts
       - run: uvx ruff@0.16.10 format --check src tests scripts
 
+  lock:
+    name: Lockfile matches pyproject.toml
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: uv.lock is up to date (run `uv lock` and commit it if not)
+        run: uv lock --check
+
   test:
     name: Tests (${{ matrix.os }}, Python ${{ matrix.python }})
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include:
           - { os: ubuntu-24.04, python: "3.11" }
-          - { os: ubuntu-24.04, python: "3.13" }
+          - os: ubuntu-24.04
+            python: "3.13"
+            pytest-args: --cov=logogram --cov-report=term --cov-fail-under=85
           - { os: ubuntu-24.04, python: "3.14" }
           - { os: macos-latest, python: "3.12" }
           - { os: windows-latest, python: "3.12" }
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       # CPU-only PyTorch keeps CI fast; the tests use a tiny local model and no network.
       - run: uv venv --python ${{ matrix.python }}
-      - run: uv pip install --torch-backend=cpu -e . pytest httpx2
+      - run: uv pip install --torch-backend=cpu -e . pytest httpx2 pytest-cov
       - run: uv run --no-sync pytest -q
+        env:
+          PYTEST_ADDOPTS: ${{ matrix.pytest-args }}
       - run: uv run --no-sync logogram --version
       - run: uv build
       - name: Install and smoke test the built wheel
         run: uv run --no-sync python -c "import pathlib, subprocess, sys; wheel = next(pathlib.Path('dist').glob('*.whl')); subprocess.run(['uv', 'pip', 'install', '--python', sys.executable, '--reinstall', '--no-deps', str(wheel)], check=True); subprocess.run([sys.executable, 'scripts/smoke_wheel.py'], check=True)"
 
+  minimum-versions:
+    name: Tests at the lowest declared versions
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      # Every direct dependency at the lowest version pyproject.toml allows (their own
+      # dependencies at the highest that fit), on the oldest supported Python.
+      - run: uv venv --python 3.11
+      - run: uv pip install --resolution lowest-direct --torch-backend=cpu -e . --group dev
+      # The finite-difference check on the tiny random GPT-2 is skipped: transformers before 5.15
+      # initializes that model differently, and on that model float32 differences stray past the
+      # test's tolerance (the gradients match float64 differences there to 1e-6).
+      - run: uv run --no-sync pytest -q --deselect "tests/test_atp.py::test_the_gradients_match_finite_differences[gpt2]"
+
+  audit:
+    name: Known vulnerabilities in dependencies
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Python dependencies, as locked in uv.lock
+        run: |
+          uv export --frozen --format requirements-txt --no-dev --no-emit-project --quiet --output-file "$RUNNER_TEMP/requirements.txt"
+          uvx pip-audit@2.10.1 --disable-pip --requirement "$RUNNER_TEMP/requirements.txt"
+      - name: Web app dependencies, as locked in package-lock.json
+        run: npm audit --audit-level=high
+        working-directory: web
+
   web:
     name: Web app build
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -77,11 +159,15 @@ jobs:
 
   browser:
     name: Offline browser workflow
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.2.0
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
