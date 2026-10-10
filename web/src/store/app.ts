@@ -295,6 +295,8 @@ interface Store {
   robustnessDialogOpen: boolean;
   /** Asking whether to cancel the running job, which discards its partial results. */
   cancelConfirmOpen: boolean;
+  /** The sheet of keyboard shortcuts (? or the command palette). */
+  shortcutsOpen: boolean;
   notices: Notice[];
 
   // actions
@@ -436,6 +438,7 @@ export const useStore = create<Store>((set, get) => ({
   modelDialogOpen: false,
   robustnessDialogOpen: false,
   cancelConfirmOpen: false,
+  shortcutsOpen: false,
   notices: [],
 
   boot: async () => {

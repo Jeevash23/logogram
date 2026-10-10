@@ -97,6 +97,7 @@ function useCommands(query: string): Command[] {
       { id: "projects", label: "All projects", group: "Project", run: () => st.goto("projects") },
       { id: "system", label: "System check", group: "Project", keywords: "gpu cuda doctor hardware", run: () => st.goto("system") },
       { id: "updates", label: "Check for updates", group: "Project", keywords: "version upgrade new release pypi", run: () => void st.checkUpdates() },
+      { id: "shortcuts", label: "Show keyboard shortcuts", group: "Help", keywords: "keys hotkeys keyboard help", shortcut: "?", run: () => useStore.setState({ shortcutsOpen: true }) },
       { id: "light", label: "White appearance", group: "Appearance", keywords: "theme light", run: () => st.setTheme("light") },
       { id: "dark", label: "Black appearance", group: "Appearance", keywords: "theme dark", run: () => st.setTheme("dark") },
       { id: "system-theme", label: "Match the system appearance", group: "Appearance", keywords: "theme", run: () => st.setTheme("system") },

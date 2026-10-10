@@ -69,7 +69,13 @@ export function useGlobalKeys(): void {
         useStore.setState({ paletteOpen: !st.paletteOpen });
         return;
       }
-      if (st.screen !== "workbench" || st.paletteOpen || st.modelDialogOpen || st.robustnessDialogOpen || st.cancelConfirmOpen) return;
+      // The list of shortcuts, from anywhere but a text field or an open dialog.
+      if (e.key === "?" && !mod && !e.altKey && !e.defaultPrevented && !overlayOpen && !typing(e.target) && !st.paletteOpen) {
+        e.preventDefault();
+        useStore.setState({ shortcutsOpen: true });
+        return;
+      }
+      if (st.screen !== "workbench" || st.paletteOpen || st.modelDialogOpen || st.robustnessDialogOpen || st.cancelConfirmOpen || st.shortcutsOpen) return;
       // Undo and redo the experiment form while it is open, except in a text field, whose own
       // undo goes first.
       const step = historyKey(e);
