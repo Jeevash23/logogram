@@ -4,21 +4,32 @@ A spec is stored as ``experiments/<id>/spec.json``. Every methodological choice 
 a number (direction, baseline, position, metric, normalization, seeds, batch size, dtype) lives
 here explicitly, so a run can always be traced back to how it was produced.
 
+Version 2 specs state every such choice: no field that can change a number has a default. Version
+1 specs (Logogram 0.1) are still read: the fields they leave out take the values version 1 gave
+them, and :attr:`Spec.upgraded_fields` lists which, so a run can say so instead of assuming
+silently.
+
 Specs refer to abstract sites (``resid_pre``, ``attn_out``, ``head``, ...). Backend-specific hook
 names never appear in a spec.
 """
 
 from __future__ import annotations
 
+import copy
 import json
+import re
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
+from pydantic.functional_validators import ModelWrapValidatorHandler
 
 NAME_MAX = 200
 
-SPEC_VERSION = 1
+SPEC_VERSION = 2
+
+# Seeds are drawn into 32-bit generators on some paths: keep every seed in that range.
+SEED_MAX = 2**32
 
 StreamSiteKind = Literal["resid_pre", "resid_mid", "resid_post", "attn_out", "mlp_out"]
 SiteKind = Literal[
@@ -39,6 +50,8 @@ SITE_KIND_LABELS: dict[str, str] = {
 class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+
+Seed = Annotated[int, Field(ge=0, lt=SEED_MAX)]
 
 # ---------------------------------------------------------------------------------------------
 # Positions
@@ -74,6 +87,8 @@ Position = Annotated[
     AllPositions | LastPosition | IndexPosition | LabelPosition, Field(discriminator="kind")
 ]
 
+ALL_POSITIONS = AllPositions(kind="all")
+
 
 def describe_position(position: AllPositions | LastPosition | IndexPosition | LabelPosition) -> str:
     if isinstance(position, AllPositions):
@@ -95,7 +110,7 @@ class Site(_Strict):
     head: int | None = Field(default=None, ge=0)
     # A feature of the spec's SAE (kind sae_feature): its index among the SAE's features.
     feature: int | None = Field(default=None, ge=0)
-    position: Position = Field(default_factory=AllPositions)
+    position: Position
 
     @model_validator(mode="after")
     def _head_matches_kind(self) -> Site:
@@ -114,7 +129,7 @@ class HeadsScope(_Strict):
     """Every attention head in every layer, at one position: a layer x head grid."""
 
     kind: Literal["heads"] = "heads"
-    position: Position = Field(default_factory=AllPositions)
+    position: Position
 
 
 class LayerPositionScope(_Strict):
@@ -125,16 +140,16 @@ class LayerPositionScope(_Strict):
     """
 
     kind: Literal["layer_position"] = "layer_position"
-    site: StreamSiteKind = "resid_pre"
-    positions: Literal["each", "labels"] = "each"
+    site: StreamSiteKind
+    positions: Literal["each", "labels"]
 
 
 class LayerComponentsScope(_Strict):
     """Attention and MLP outputs of every layer, at one position: a layer x component grid."""
 
     kind: Literal["layer_components"] = "layer_components"
-    components: list[StreamSiteKind] = Field(default_factory=lambda: ["attn_out", "mlp_out"])
-    position: Position = Field(default_factory=AllPositions)
+    components: list[StreamSiteKind]
+    position: Position
 
     @model_validator(mode="after")
     def _non_empty(self) -> LayerComponentsScope:
@@ -161,18 +176,100 @@ class FeaturesScope(_Strict):
     """
 
     kind: Literal["features"] = "features"
-    position: Position = Field(default_factory=AllPositions)
+    position: Position
     top: int = Field(ge=1, le=500)
 
 
+# What "the rest of the model" is made of, for sets that intervene on everything but their sites.
+UniverseKind = Literal["head", "attn_out", "mlp_out"]
+# Sites a set can hold: components that write into the residual stream, and the stream itself
+# before or after a layer (between attention and MLP it isn't a single hook, so not in a set).
+SET_SITE_KINDS = ("head", "attn_out", "mlp_out", "resid_pre", "resid_post")
+
+
+class SiteSet(_Strict):
+    """Sites intervened on together, in one forward pass.
+
+    With ``complement``, the intervention covers every component of the scope's universe except
+    these sites: a set of heads then reads as "keep this circuit, replace the rest". A site at one
+    position keeps only that position of its component; the component's other positions are
+    replaced with the rest. A complement set with no sites replaces the whole universe.
+    """
+
+    label: str = Field(min_length=1, max_length=80)
+    sites: list[Site] = Field(max_length=4096)
+    complement: bool
+
+    @model_validator(mode="after")
+    def _usable(self) -> SiteSet:
+        if not self.complement and not self.sites:
+            raise ValueError(f"the set {self.label!r} has no sites to intervene on")
+        for site in self.sites:
+            if site.kind not in SET_SITE_KINDS:
+                raise ValueError(
+                    f"a set can't hold {site.kind} sites; use heads, attention or MLP outputs, "
+                    "or the residual stream before or after a layer"
+                )
+        return self
+
+
+class SiteSetsScope(_Strict):
+    """Sets of sites, each intervened on at once: one result per set.
+
+    A circuit is evaluated with a few sets: the circuit alone (``complement``: everything else is
+    replaced), the circuit removed, and everything removed. Each set's effect is also reported as
+    a share of the set that replaces the whole universe, when the scope has one.
+    """
+
+    kind: Literal["site_sets"] = "site_sets"
+    universe: list[UniverseKind] | None
+    sets: list[SiteSet] = Field(min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def _consistent(self) -> SiteSetsScope:
+        labels = [s.label for s in self.sets]
+        if len(set(labels)) != len(labels):
+            raise ValueError("set labels must not repeat")
+        complements = [s for s in self.sets if s.complement]
+        if complements and not self.universe:
+            raise ValueError(
+                "a set that replaces everything but its sites needs the scope's universe: the "
+                "components that make up the rest of the model"
+            )
+        if self.universe is not None:
+            if not self.universe or len(set(self.universe)) != len(self.universe):
+                raise ValueError("the universe must list each component kind once")
+            if "head" in self.universe and "attn_out" in self.universe:
+                raise ValueError(
+                    "the universe can't hold both heads and attention outputs: a layer's "
+                    "attention output is the sum of its heads"
+                )
+        for s in complements:
+            for site in s.sites:
+                if site.kind not in (self.universe or []):
+                    raise ValueError(
+                        f"the set {s.label!r} keeps a {site.kind} site, which isn't part of the "
+                        "universe it replaces"
+                    )
+        return self
+
+
 Scope = Annotated[
-    HeadsScope | LayerPositionScope | LayerComponentsScope | SitesScope | FeaturesScope,
+    HeadsScope
+    | LayerPositionScope
+    | LayerComponentsScope
+    | SitesScope
+    | FeaturesScope
+    | SiteSetsScope,
     Field(discriminator="kind"),
 ]
 
 
 # ---------------------------------------------------------------------------------------------
 # Experiments
+
+
+Direction = Literal["clean_to_corrupt", "corrupt_to_clean"]
 
 
 class ActivationPatching(_Strict):
@@ -184,7 +281,7 @@ class ActivationPatching(_Strict):
     """
 
     kind: Literal["activation_patching"] = "activation_patching"
-    direction: Literal["clean_to_corrupt", "corrupt_to_clean"]
+    direction: Direction
 
 
 class ZeroBaseline(_Strict):
@@ -200,7 +297,7 @@ class MeanBaseline(_Strict):
     """
 
     kind: Literal["mean"] = "mean"
-    reference: Literal["clean", "corrupt"] = "corrupt"
+    reference: Literal["clean", "corrupt"]
 
 
 class ResampleBaseline(_Strict):
@@ -211,9 +308,9 @@ class ResampleBaseline(_Strict):
     """
 
     kind: Literal["resample"] = "resample"
-    pool: Literal["clean", "corrupt"] = "corrupt"
-    donors: int = Field(default=10, ge=1, le=1000)
-    seed: int = 0
+    pool: Literal["clean", "corrupt"]
+    donors: int = Field(ge=1, le=1000)
+    seed: Seed
 
 
 Baseline = Annotated[ZeroBaseline | MeanBaseline | ResampleBaseline, Field(discriminator="kind")]
@@ -241,17 +338,33 @@ class DirectLogitAttribution(_Strict):
 
 
 class AttributionPatching(_Strict):
-    """Estimate activation patching at every site from one gradient (attribution patching).
+    """Estimate activation patching at every site from gradients (attribution patching).
 
     For each site, the change patching would cause is estimated as (source activation - receiver
-    activation) · the gradient of the logit difference at the receiver run, from one forward and
-    backward pass per batch of prompts instead of one patched run per site. It is a first-order
-    estimate: it misses saturation (in attention, normalization and the softmax) and can miss or
-    even invert an effect, so verify the strongest sites with activation patching.
+    activation) · a gradient of the metric. With ``method="gradient"`` the gradient is taken at the
+    receiver run: one forward and backward pass per batch of prompts instead of one patched run
+    per site. It is a first-order estimate: it misses saturation (in attention, normalization and
+    the softmax) and can miss or even invert an effect.
+
+    With ``method="integrated_gradients"`` the gradient is averaged over ``steps`` runs whose input
+    embeddings lie evenly between the receiver's and the source's (midpoints of equal intervals),
+    as in EAP-IG. It follows the metric along the way from one prompt to the other, which corrects
+    much of the saturation a single gradient misses, at ``steps`` times the cost. Verify the
+    strongest sites with activation patching either way.
     """
 
     kind: Literal["attribution_patching"] = "attribution_patching"
-    direction: Literal["clean_to_corrupt", "corrupt_to_clean"]
+    direction: Direction
+    method: Literal["gradient", "integrated_gradients"]
+    steps: int | None = Field(ge=2, le=64)
+
+    @model_validator(mode="after")
+    def _steps_match_method(self) -> AttributionPatching:
+        if self.method == "integrated_gradients" and self.steps is None:
+            raise ValueError("integrated gradients need a number of steps (2 to 64)")
+        if self.method == "gradient" and self.steps is not None:
+            raise ValueError("a single gradient takes no steps; set steps to null")
+        return self
 
 
 class Steering(_Strict):
@@ -269,7 +382,7 @@ class Steering(_Strict):
     apply_to: Literal["clean", "corrupt"]
     coefficients: list[float] = Field(min_length=1, max_length=16)
     train_fraction: float = Field(gt=0.0, lt=1.0)
-    seed: int
+    seed: Seed
     control: bool
 
     @model_validator(mode="after")
@@ -311,7 +424,7 @@ class PathPatching(_Strict):
     """
 
     kind: Literal["path_patching"] = "path_patching"
-    direction: Literal["clean_to_corrupt", "corrupt_to_clean"]
+    direction: Direction
     receivers: list[PathReceiver] = Field(min_length=1, max_length=64)
     freeze_mlps: bool
 
@@ -350,61 +463,196 @@ def strength_text(coefficient: float) -> str:
 # Model, data, metric, statistics
 
 
+def check_revision(value: str | None, what: str) -> str | None:
+    """A commit, tag or branch name. Revisions name folders in the Hugging Face cache, so one that
+    climbs out of it ('..'), or is a path, is refused."""
+    if value is None:
+        return value
+    if (
+        not value
+        or value.startswith("/")
+        or "\\" in value
+        or any(part in ("", "..") for part in value.split("/"))
+    ):
+        raise ValueError(f"{what} must be a commit, tag or branch name")
+    return value
+
+
 class ModelRef(_Strict):
     id: str = Field(min_length=1, description="Hugging Face model id")
     revision: str | None = Field(
-        default=None, description="Exact commit. None resolves the current main branch at run time."
+        description="Exact commit. None resolves the current main branch at run time."
     )
-    dtype: Literal["float32", "float16", "bfloat16"] = "float32"
-    device: Literal["auto", "cpu", "cuda", "mps"] = "auto"
+    dtype: Literal["float32", "float16", "bfloat16"]
+    device: Literal["auto", "cpu", "cuda", "mps"]
     process_weights: bool = Field(
-        default=True,
         description="Fold LayerNorm weights and center writing weights and the unembedding, as "
         "TransformerLens does by default. Logit differences are unchanged by this.",
     )
 
+    @model_validator(mode="after")
+    def _revision(self) -> ModelRef:
+        check_revision(self.revision, "model.revision")
+        return self
+
+
+DATASET_PATH_HELP = (
+    "a path inside the project, written with forward slashes and without '..', such as "
+    "datasets/ioi.jsonl"
+)
+
+
+def check_relative_path(value: str, what: str) -> str:
+    """Refuse absolute paths, drive letters and '..': specs travel between machines, and a path
+    that names the machine it was made on, or leaves the project, has no place in one."""
+    text = value.replace("\\", "/")
+    if (
+        text.startswith("/")
+        or re.match(r"^[A-Za-z]:", text)
+        or any(part == ".." for part in text.split("/"))
+    ):
+        raise ValueError(f"{what} must be {DATASET_PATH_HELP}")
+    return value
+
 
 class DatasetRef(_Strict):
     path: str = Field(min_length=1, description="Project-relative path to a JSONL dataset")
-    sha256: str | None = Field(default=None, description="Expected hash of the file, if pinned")
-    limit: int | None = Field(default=None, ge=1, description="Use only the first n prompts")
+    sha256: str | None = Field(description="Expected hash of the file, if pinned")
+    limit: int | None = Field(ge=1, description="Use only the first n prompts")
+
+    @model_validator(mode="after")
+    def _relative(self) -> DatasetRef:
+        check_relative_path(self.path, "dataset.path")
+        return self
 
 
 class SAERef(_Strict):
-    """A published sparse autoencoder on Hugging Face: the repository, the folder holding it
-    (empty for the top level) and the exact commit, pinned when a run starts."""
+    """A published sparse autoencoder (or transcoder) on Hugging Face: the repository, the folder
+    holding it (empty for the top level) and the exact commit, pinned when a run starts."""
 
     repo: str = Field(min_length=1)
-    path: str = ""
-    revision: str | None = None
+    path: str
+    revision: str | None
+
+    @model_validator(mode="after")
+    def _relative(self) -> SAERef:
+        if self.path:
+            check_relative_path(self.path, "sae.path")
+        check_revision(self.revision, "sae.revision")
+        return self
 
 
 class Tokenization(_Strict):
-    prepend_bos: bool = True
+    prepend_bos: bool
 
 
-class Metric(_Strict):
-    """Logit difference at the last position: logit(answer) - logit(distractor).
+Normalization = Literal["dataset_gap", "prompt_gap"]
 
-    The normalized effect for each prompt is (patched - receiver) divided by either the
-    dataset's mean gap (``dataset_gap``) or that prompt's own gap (``prompt_gap``). The gap is
-    source - receiver for patching, and corrupt - clean for ablation. 0 means no change and 1
-    means a change as large as swapping to the other prompt.
-    """
+
+class LogitDiffMetric(_Strict):
+    """logit(answer) - logit(distractor) at the last position. Answers and distractors are single
+    tokens (or sets of single tokens, read through the log of their summed probability)."""
 
     kind: Literal["logit_diff"] = "logit_diff"
-    normalization: Literal["dataset_gap", "prompt_gap"] = "dataset_gap"
+    normalization: Normalization
+
+
+class LogProbDiffMetric(_Strict):
+    """log P(answer) - log P(distractor): with answers of several tokens, each continuation's
+    log-probability is the sum over its tokens, each predicted from the prompt and the tokens
+    before it. For single tokens it equals the logit difference."""
+
+    kind: Literal["logprob_diff"] = "logprob_diff"
+    normalization: Normalization
+
+
+class LogProbMetric(_Strict):
+    """log P(answer): the answer's log-probability (summed over its tokens)."""
+
+    kind: Literal["logprob"] = "logprob"
+    normalization: Normalization
+
+
+class ProbMetric(_Strict):
+    """P(answer): the answer's probability (the product over its tokens; the sum over a set)."""
+
+    kind: Literal["prob"] = "prob"
+    normalization: Normalization
+
+
+class ProbDiffMetric(_Strict):
+    """P(answer) - P(distractor), as in the greater-than task's probability difference."""
+
+    kind: Literal["prob_diff"] = "prob_diff"
+    normalization: Normalization
+
+
+class KLMetric(_Strict):
+    """KL(P_target || P): how far the next-token distribution at the last position is from the
+    ``target`` prompt's own. It reads the whole distribution, not only the answer.
+
+    Normalized like the others, it becomes the share of the divergence an intervention closes or
+    opens: with the target being the source prompt, 1 means the patched run predicts exactly what
+    the source prompt predicts."""
+
+    kind: Literal["kl"] = "kl"
+    target: Literal["clean", "corrupt"]
+    normalization: Normalization
+
+
+Metric = Annotated[
+    LogitDiffMetric | LogProbDiffMetric | LogProbMetric | ProbMetric | ProbDiffMetric | KLMetric,
+    Field(discriminator="kind"),
+]
+
+METRIC_LABELS: dict[str, str] = {
+    "logit_diff": "logit difference",
+    "logprob_diff": "log-probability difference",
+    "logprob": "answer log-probability",
+    "prob": "answer probability",
+    "prob_diff": "probability difference",
+    "kl": "KL divergence",
+}
+
+# Metrics read at the last position only: they can't score answers of several tokens.
+SINGLE_POSITION_METRICS = ("logit_diff", "kl")
+
+
+def describe_metric(metric: Any) -> str:
+    """The metric in words, for example 'KL divergence from the clean prompt's prediction'."""
+    if metric.kind == "kl":
+        return f"KL divergence from the {metric.target} prompt's next-token distribution"
+    return {
+        "logit_diff": "logit(answer) − logit(distractor) at the last position",
+        "logprob_diff": "log P(answer) − log P(distractor)",
+        "logprob": "log P(answer)",
+        "prob": "P(answer)",
+        "prob_diff": "P(answer) − P(distractor)",
+    }[metric.kind]
+
+
+CLUSTER_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,63}$")
 
 
 class Statistics(_Strict):
-    bootstrap: int = Field(default=1000, ge=100, le=100_000)
-    ci: float = Field(default=0.95, gt=0.5, lt=1.0)
-    seed: int = 0
+    """Percentile bootstrap over prompts. With ``cluster``, the bootstrap resamples groups of
+    prompts that share a value of that ``meta`` field (for example ``template``) instead of single
+    prompts, since prompts from one template aren't independent."""
+
+    bootstrap: int = Field(ge=100, le=100_000)
+    ci: float = Field(gt=0.5, lt=1.0)
+    seed: Seed
+    cluster: str | None
+
+    @model_validator(mode="after")
+    def _cluster_key(self) -> Statistics:
+        if self.cluster is not None and not CLUSTER_KEY.match(self.cluster):
+            raise ValueError("statistics.cluster must name a field of the prompts' meta")
+        return self
 
 
 class Execution(_Strict):
     batch_size: int = Field(
-        default=64,
         ge=1,
         le=4096,
         description="Rows per forward pass. Part of the spec because batch shape can change "
@@ -423,20 +671,38 @@ class PredictionSettings(_Strict):
 
 
 class Spec(_Strict):
-    logogram_spec: Literal[1] = SPEC_VERSION
+    logogram_spec: Literal[2]
     name: str = Field(min_length=1, max_length=NAME_MAX)
     notes: str = ""
     model: ModelRef
     dataset: DatasetRef
-    tokenization: Tokenization = Field(default_factory=Tokenization)
+    tokenization: Tokenization
     experiment: Experiment
     scope: Scope
-    metric: Metric = Field(default_factory=Metric)
-    statistics: Statistics = Field(default_factory=Statistics)
-    execution: Execution = Field(default_factory=Execution)
+    metric: Metric
+    statistics: Statistics
+    execution: Execution
     predictions: PredictionSettings | None = None
-    # The SAE whose features sae_feature sites and the features scope refer to.
+    # The SAE (or transcoder) whose features sae_feature sites and the features scope refer to.
     sae: SAERef | None = None
+
+    # Fields a version 1 spec left out, which took the values version 1 gave them.
+    _upgraded: list[str] = PrivateAttr(default_factory=list)
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _upgrade(cls, data: Any, handler: ModelWrapValidatorHandler[Spec]) -> Spec:
+        filled: list[str] = []
+        if isinstance(data, dict) and data.get("logogram_spec", 1) == 1:
+            data, filled = upgrade_v1(data)
+        spec = handler(data)
+        if filled:
+            spec._upgraded = filled
+        return spec
+
+    @property
+    def upgraded_fields(self) -> list[str]:
+        return list(self._upgraded)
 
     @model_validator(mode="after")
     def _features_have_an_sae(self) -> Spec:
@@ -454,6 +720,96 @@ class Spec(_Strict):
     @classmethod
     def from_path(cls, path: str | Path) -> Spec:
         return cls.model_validate_json(Path(path).read_text(encoding="utf-8"))
+
+
+# ---------------------------------------------------------------------------------------------
+# Version 1 specs
+
+
+def upgrade_v1(data: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """A version 1 spec as version 2, and the fields that took version 1's values because the
+    spec left them out. Fields new in version 2 take the value that reproduces version 1 (no
+    clustering, a single gradient) and aren't listed: they didn't exist to be chosen."""
+    data = copy.deepcopy(data)
+    filled: list[str] = []
+
+    def fill(obj: Any, key: str, value: Any, path: str, report: bool = True) -> None:
+        if isinstance(obj, dict) and key not in obj:
+            obj[key] = copy.deepcopy(value)
+            if report:
+                filled.append(f"{path} = {_show(value)}")
+
+    all_positions = {"kind": "all"}
+    data["logogram_spec"] = 2
+    model = data.get("model")
+    if isinstance(model, dict):
+        fill(model, "revision", None, "model.revision")
+        fill(model, "dtype", "float32", "model.dtype")
+        fill(model, "device", "auto", "model.device")
+        fill(model, "process_weights", True, "model.process_weights")
+    dataset = data.get("dataset")
+    if isinstance(dataset, dict):
+        fill(dataset, "sha256", None, "dataset.sha256", report=False)
+        fill(dataset, "limit", None, "dataset.limit")
+    fill(data, "tokenization", {"prepend_bos": True}, "tokenization")
+    if isinstance(data.get("tokenization"), dict):
+        fill(data["tokenization"], "prepend_bos", True, "tokenization.prepend_bos")
+    fill(data, "metric", {"kind": "logit_diff", "normalization": "dataset_gap"}, "metric")
+    if isinstance(data.get("metric"), dict):
+        fill(data["metric"], "kind", "logit_diff", "metric.kind")
+        fill(data["metric"], "normalization", "dataset_gap", "metric.normalization")
+    fill(data, "statistics", {"bootstrap": 1000, "ci": 0.95, "seed": 0}, "statistics")
+    stats = data.get("statistics")
+    if isinstance(stats, dict):
+        fill(stats, "bootstrap", 1000, "statistics.bootstrap")
+        fill(stats, "ci", 0.95, "statistics.ci")
+        fill(stats, "seed", 0, "statistics.seed")
+        fill(stats, "cluster", None, "statistics.cluster", report=False)
+    fill(data, "execution", {"batch_size": 64}, "execution")
+    if isinstance(data.get("execution"), dict):
+        fill(data["execution"], "batch_size", 64, "execution.batch_size")
+    sae = data.get("sae")
+    if isinstance(sae, dict):
+        fill(sae, "path", "", "sae.path")
+        fill(sae, "revision", None, "sae.revision", report=False)
+
+    exp = data.get("experiment")
+    if isinstance(exp, dict):
+        kind = exp.get("kind")
+        if kind == "attribution_patching":
+            fill(exp, "method", "gradient", "experiment.method", report=False)
+            fill(exp, "steps", None, "experiment.steps", report=False)
+        baseline = exp.get("baseline") if kind == "ablation" else None
+        if isinstance(baseline, dict):
+            if baseline.get("kind") == "mean":
+                fill(baseline, "reference", "corrupt", "experiment.baseline.reference")
+            elif baseline.get("kind") == "resample":
+                fill(baseline, "pool", "corrupt", "experiment.baseline.pool")
+                fill(baseline, "donors", 10, "experiment.baseline.donors")
+                fill(baseline, "seed", 0, "experiment.baseline.seed")
+
+    scope = data.get("scope")
+    if isinstance(scope, dict):
+        kind = scope.get("kind")
+        if kind in ("heads", "layer_components", "features"):
+            fill(scope, "position", all_positions, "scope.position")
+        if kind == "layer_position":
+            fill(scope, "site", "resid_pre", "scope.site")
+            fill(scope, "positions", "each", "scope.positions")
+        if kind == "layer_components":
+            fill(scope, "components", ["attn_out", "mlp_out"], "scope.components")
+        if kind == "sites":
+            for i, site in enumerate(scope.get("sites") or []):
+                fill(site, "position", all_positions, f"scope.sites[{i}].position")
+    return data, filled
+
+
+def _show(value: Any) -> str:
+    return json.dumps(value)
+
+
+# ---------------------------------------------------------------------------------------------
+# Descriptions
 
 
 def describe_intervention(
@@ -475,6 +831,8 @@ def describe_intervention(
         return f"Direct logit attribution ({exp.prompts} prompts)"
     if isinstance(exp, AttributionPatching):
         arrow = "clean → corrupt" if exp.direction == "clean_to_corrupt" else "corrupt → clean"
+        if exp.method == "integrated_gradients":
+            return f"Attribution patching, estimated with integrated gradients ({exp.steps} steps, {arrow})"
         return f"Attribution patching, estimated ({arrow})"
     if isinstance(exp, PathPatching):
         arrow = "clean → corrupt" if exp.direction == "clean_to_corrupt" else "corrupt → clean"
@@ -513,6 +871,10 @@ def describe_experiment(spec: Spec) -> str:
         where = (
             f"every SAE feature, {describe_position(scope.position)}, keeping the top {scope.top}"
         )
+    elif isinstance(scope, SiteSetsScope):
+        n = len(scope.sets)
+        where = f"{n} set{'s' if n != 1 else ''} of sites, each at once"
     else:
         where = f"{len(scope.sites)} chosen site{'s' if len(scope.sites) != 1 else ''}"
-    return f"{what} · {where}"
+    metric = "" if spec.metric.kind == "logit_diff" else f" · {METRIC_LABELS[spec.metric.kind]}"
+    return f"{what} · {where}{metric}"

@@ -6,6 +6,7 @@ import torch
 
 from logogram.datasets import PromptRecord, load_dataset
 from logogram.engine import EngineError, draw_donors, run_engine
+from logogram.metrics import Target
 from logogram.prompts import PreparedPrompt, PromptError, group_by_length, prepare_prompts
 from logogram.results import compute_stats
 from logogram.sites import ScopeError, expand_scope
@@ -36,7 +37,7 @@ def test_resample_whole_residual_reproduces_each_donor(tiny_backend, project, sp
         expected = np.mean(
             [_manual_ld(tiny_backend, prompts[j].clean.ids, prompts[i]) for j in donors]
         )
-        assert result.patched_ld[0, i] == pytest.approx(expected, abs=1e-4)
+        assert result.patched[0, i] == pytest.approx(expected, abs=1e-4)
 
 
 def test_zero_ablation_of_whole_residual_ignores_the_prompt(tiny_backend, project, spec_factory):
@@ -50,7 +51,7 @@ def test_zero_ablation_of_whole_residual_ignores_the_prompt(tiny_backend, projec
     by_pair: dict[tuple[int, int], set[float]] = {}
     for i, p in enumerate(prompts):
         by_pair.setdefault((p.answer_id, p.distractor_id), set()).add(
-            round(result.patched_ld[0, i], 4)
+            round(result.patched[0, i], 4)
         )
     assert all(len(v) == 1 for v in by_pair.values())
 
@@ -76,7 +77,7 @@ def test_mean_ablation_uses_the_stated_reference(tiny_backend, project, spec_fac
         )[0, -1]
     p = prompts[group.members[0]]
     expected = float(logits[p.answer_id] - logits[p.distractor_id])
-    assert result.patched_ld[0, group.members[0]] == pytest.approx(expected, abs=1e-4)
+    assert result.patched[0, group.members[0]] == pytest.approx(expected, abs=1e-4)
 
 
 def test_donors_are_deterministic_distinct_and_never_self(tiny_backend, project):
@@ -131,7 +132,7 @@ def test_mixed_lengths_run_in_separate_batches(tiny_backend, project, spec_facto
     result = run_engine(spec, tiny_backend, prompts)
     stats = compute_stats(spec, result)
     assert np.isfinite(stats.effect_mean).all()
-    assert result.patched_ld.shape == (tiny_backend.info.n_layers * tiny_backend.info.n_heads, 12)
+    assert result.patched.shape == (tiny_backend.info.n_layers * tiny_backend.info.n_heads, 12)
 
 
 def test_single_position_patch_only_touches_that_position(tiny_backend, project, spec_factory):
@@ -149,7 +150,7 @@ def test_single_position_patch_only_touches_that_position(tiny_backend, project,
         }
     )
     result = run_engine(spec, tiny_backend, prompts)
-    np.testing.assert_allclose(result.patched_ld[0], result.receiver_ld, atol=1e-4)
+    np.testing.assert_allclose(result.patched[0], result.receiver_metric, atol=1e-4)
 
 
 def test_unusable_prompts_are_reported_clearly(tiny_backend):
@@ -183,8 +184,8 @@ def _same_prompt_twice(backend, n=2):
             record=record,
             clean=tokens,
             corrupt=tokens,
-            answer_id=backend.single_token_id(" Mary"),
-            distractor_id=backend.single_token_id(" John"),
+            answer=Target(ids=(backend.single_token_id(" Mary"),)),
+            distractor=Target(ids=(backend.single_token_id(" John"),)),
         )
         for i in range(n)
     ]
@@ -227,7 +228,7 @@ def test_batch_size_does_not_change_results(tiny_backend, project, spec_factory)
         for size in (1, 5, 64)
     ]
     for other in results[1:]:
-        np.testing.assert_allclose(other.patched_ld, results[0].patched_ld, rtol=0, atol=1e-5)
+        np.testing.assert_allclose(other.patched, results[0].patched, rtol=0, atol=1e-5)
 
 
 def test_mean_ablation_at_a_named_position_spans_lengths(tiny_backend, project, spec_factory):
@@ -265,7 +266,7 @@ def test_mean_ablation_at_a_named_position_spans_lengths(tiny_backend, project, 
             return_type="logits",
         )[0, -1]
     expected = float(logits[target.answer_id] - logits[target.distractor_id])
-    assert result.patched_ld[0, len(prompts) - 1] == pytest.approx(expected, abs=1e-4)
+    assert result.patched[0, len(prompts) - 1] == pytest.approx(expected, abs=1e-4)
 
 
 def test_resample_at_a_named_position_uses_each_donors_own_position(
@@ -305,4 +306,4 @@ def test_resample_at_a_named_position_uses_each_donors_own_position(
             return_type="logits",
         )[0, -1]
     expected = float(logits[receiver.answer_id] - logits[receiver.distractor_id])
-    assert result.patched_ld[0, i] == pytest.approx(expected, abs=1e-4)
+    assert result.patched[0, i] == pytest.approx(expected, abs=1e-4)

@@ -29,7 +29,14 @@ class Stat(_Model):
 class SiteRef(_Model):
     index: int
     kind: Literal[
-        "resid_pre", "resid_mid", "resid_post", "attn_out", "mlp_out", "head", "sae_feature"
+        "resid_pre",
+        "resid_mid",
+        "resid_post",
+        "attn_out",
+        "mlp_out",
+        "head",
+        "sae_feature",
+        "site_set",
     ]
     layer: int
     head: int | None
@@ -42,17 +49,31 @@ class SiteRef(_Model):
     # A variant of the site, such as a steering strength; None for one measurement per site.
     variant: dict[str, Any] | None = None
     variant_key: str | None = None
+    # The sites of a set intervened on together (kind site_set).
+    members: list[dict[str, Any]] | None = None
+
+
+class Band(_Model):
+    lo: float
+    hi: float
 
 
 class SiteSummary(SiteRef):
     n: int
     effect: Stat
     delta: Stat
+    # The spec's metric, patched (older runs measured the logit difference only).
+    patched_metric: float | None = None
+    # log P(answer) - log P(distractor), patched: the logit difference for single tokens.
     patched_logit_diff: float | None
     answer_prob: float | None
     answer_prob_delta: float | None
     sign_flips: int
     opposite_sign: int
+    # Corrected for the number of sites: a band that holds for all sites together, and the
+    # Benjamini-Hochberg q-value. Only in a finished run's summary.
+    band: Band | None = None
+    q: float | None = None
 
 
 class LayoutAxis(BaseModel):
@@ -63,7 +84,7 @@ class LayoutAxis(BaseModel):
 
 
 class Layout(_Model):
-    kind: Literal["heads", "layer_position", "layer_components", "sites", "steering"]
+    kind: Literal["heads", "layer_position", "layer_components", "sites", "steering", "site_sets"]
     site: str | None = None
     row_title: str
     col_title: str
@@ -80,9 +101,11 @@ class GroupStats(_Model):
 
 
 class PromptSetStats(_Model):
+    # log P(answer) - log P(distractor): the logit difference for single tokens.
     logit_diff: GroupStats
     answer_prob: GroupStats
     prefers_answer: int
+    metric: GroupStats | None = None
 
 
 class BaselineSummary(_Model):
@@ -93,6 +116,8 @@ class BaselineSummary(_Model):
 
 class MetricInfo(_Model):
     kind: str
+    target: Literal["clean", "corrupt"] | None = None
+    label: str | None = None
     normalization: Literal["dataset_gap", "prompt_gap"]
     denominator: float | None
     description: str
@@ -104,6 +129,11 @@ class StatisticsInfo(_Model):
     ci: float
     seed: int
     method: str
+    cluster: str | None = None
+    clusters: int | None = None
+    # The two-sided tail each site's simultaneous band keeps, and what the bands and q-values mean.
+    band_level: float | None = None
+    multiple_comparisons: str | None = None
 
 
 class ModelShape(_Model):
@@ -130,6 +160,20 @@ class DirectSplit(_Model):
     biases: float | None
 
 
+class ControlComparison(_Model):
+    """A steered site and strength against its random control, from the same resamples: the
+    difference of their effects' magnitudes, |direction| - |control|."""
+
+    row: int
+    coefficient: float
+    index: int
+    control_index: int
+    difference: float | None
+    lo: float | None
+    hi: float | None
+    beats_control: bool
+
+
 class SteeringInfo(_Model):
     """Which prompts trained the steering directions and which measured them, and how long each
     site's direction is (one per row of the layout)."""
@@ -137,6 +181,7 @@ class SteeringInfo(_Model):
     train: list[int]
     test: list[int]
     norms: list[float]
+    control: list[ControlComparison] | None = None
 
 
 class FeatureRun(_Model):
@@ -148,6 +193,33 @@ class FeatureRun(_Model):
     site_estimate: float | None = None
     features_estimate: float | None = None
     evaluated: int | None = None
+
+
+class CircuitRow(_Model):
+    """One set of a site_sets run against the set that replaces the whole universe: its share of
+    that set's effect, and for sets that keep their sites (complements), the faithfulness:
+    1 - share, the part of the model's behavior the kept sites carry alone."""
+
+    index: int
+    label: str
+    complement: bool
+    size: int
+    share: Stat | None = None
+    faithfulness: Stat | None = None
+
+
+class CircuitInfo(_Model):
+    universe: list[str] | None
+    # The set that replaces the whole universe, if the scope has one (the "everything" set).
+    everything: int | None
+    rows: list[CircuitRow] = []
+
+
+class AttributionInfo(_Model):
+    """How attribution patching estimated: one gradient, or integrated gradients over steps."""
+
+    method: Literal["gradient", "integrated_gradients"]
+    steps: int | None = None
 
 
 class Summary(_Model):
@@ -173,6 +245,8 @@ class Summary(_Model):
     direct: DirectSplit | None = None
     steering: SteeringInfo | None = None
     features: FeatureRun | None = None
+    circuit: CircuitInfo | None = None
+    attribution: AttributionInfo | None = None
 
 
 # -- manifest.json -----------------------------------------------------------------------------

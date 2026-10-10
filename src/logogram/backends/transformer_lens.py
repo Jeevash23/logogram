@@ -25,6 +25,8 @@ from logogram.backends.base import (
     ModelBackend,
     ModelInfo,
     Patch,
+    Patches,
+    ScoreFn,
     Tokenized,
     float64,
 )
@@ -71,7 +73,8 @@ def _resid_mid_hooks(patch: Patch) -> list[tuple[str, Callable[..., torch.Tensor
         act = act.clone()
         values = patch.values.to(dtype=act.dtype, device=act.device)
         if patch.positions is None:
-            act[...] = values - pre.to(act.dtype)
+            n = values.shape[1]  # the prompt; appended tokens are never patched
+            act[:, :n] = values - pre[:, :n].to(act.dtype)
         else:
             rows = torch.arange(act.shape[0], device=act.device)
             pos = patch.positions.to(act.device)
@@ -89,19 +92,59 @@ def _patch_hook(patch: Patch) -> Callable[..., torch.Tensor]:
         act = act.clone()
         values = patch.values.to(dtype=act.dtype, device=act.device)
         rows = torch.arange(act.shape[0], device=act.device)
-        if patch.kind == "head":
+        if patch.mask is not None:
+            n = values.shape[1]  # the prompt's positions; appended tokens are never patched
+            mask = patch.mask.to(act.device)[..., None]
+            act[:, :n] = torch.where(mask, values, act[:, :n])
+        elif patch.kind == "head":
             heads = patch.heads.to(act.device)  # type: ignore[union-attr]
             if patch.positions is None:
-                act[rows, :, heads] = values  # [B, pos, d_head]
+                n = values.shape[1]
+                act[rows, :n, heads] = values  # [B, pos, d_head]
             else:
                 act[rows, patch.positions.to(act.device), heads] = values  # [B, d_head]
         elif patch.positions is None:
-            act[...] = values  # [B, pos, d_model]
+            n = values.shape[1]
+            act[:, :n] = values  # [B, pos, d_model]
         else:
             act[rows, patch.positions.to(act.device)] = values  # [B, d_model]
         return act
 
     return fn
+
+
+def _patch_hooks(patch: Patches) -> list[tuple[str, Callable[..., torch.Tensor]]]:
+    """Hooks that apply every patch in one forward pass. Patches at the same hook run in order."""
+    patches = [] if patch is None else patch if isinstance(patch, list) else [patch]
+    hooks: list[tuple[str, Callable[..., torch.Tensor]]] = []
+    for p in patches:
+        if p.kind == "resid_mid":
+            hooks += _resid_mid_hooks(p)
+        else:
+            hooks.append((hook_name(p.kind, p.layer), _patch_hook(p)))
+    return _combine(hooks)
+
+
+def _combine(
+    hooks: list[tuple[str, Callable[..., torch.Tensor]]],
+) -> list[tuple[str, Callable[..., torch.Tensor]]]:
+    """One hook per hook point, applying that point's functions in order."""
+    grouped: dict[str, list[Callable[..., torch.Tensor]]] = {}
+    for name, fn in hooks:
+        grouped.setdefault(name, []).append(fn)
+
+    def chain(fns: list[Callable[..., torch.Tensor]]) -> Callable[..., torch.Tensor]:
+        if len(fns) == 1:
+            return fns[0]
+
+        def fn(act: torch.Tensor, hook: Any = None) -> torch.Tensor:
+            for f in fns:
+                act = f(act, hook)
+            return act
+
+        return fn
+
+    return [(name, chain(fns)) for name, fns in grouped.items()]
 
 
 @dataclass
@@ -283,6 +326,10 @@ class TransformerLensBackend(ModelBackend):
         n_params: int | None = None,
     ) -> TransformerLensBackend:
         bridge.eval()
+        # Gradients are only ever taken with respect to activations (attribution patching, direct
+        # effects); weight gradients would make autograd keep every layer's inputs for nothing.
+        for parameter in bridge.parameters():
+            parameter.requires_grad_(False)
         cfg = bridge.cfg
         probe = _probe_tokens(int(cfg.d_vocab), str(cfg.device))
         with torch.no_grad():
@@ -415,22 +462,19 @@ class TransformerLensBackend(ModelBackend):
 
     # -- forward passes ----------------------------------------------------------------------
 
-    def final_logits(self, tokens: torch.Tensor, patch: Patch | None = None) -> torch.Tensor:
+    def logits(self, tokens: torch.Tensor, patch: Patches = None, keep: int = 1) -> torch.Tensor:
         kwargs: dict[str, Any] = {"return_type": "logits"}
         if self._logits_to_keep:
-            kwargs["logits_to_keep"] = 1
+            kwargs["logits_to_keep"] = keep
         with self.lock, torch.no_grad():
             bridge = self._bridge()
             tokens = tokens.to(self.device)
-            if patch is None:
+            hooks = _patch_hooks(patch)
+            if not hooks:
                 logits = bridge(tokens, **kwargs)
             else:
-                if patch.kind == "resid_mid":
-                    hooks = _resid_mid_hooks(patch)
-                else:
-                    hooks = [(hook_name(patch.kind, patch.layer), _patch_hook(patch))]
                 logits = bridge.run_with_hooks(tokens, fwd_hooks=hooks, **kwargs)
-            return logits[:, -1, :].float()
+            return logits[:, -keep:, :].float()
 
     def capture(
         self, tokens: torch.Tensor, sites: list[tuple[str, int]]
@@ -468,6 +512,7 @@ class TransformerLensBackend(ModelBackend):
         kind: str,
         layer: int,
         edit: Any,
+        keep: int = 1,
     ) -> torch.Tensor:
         if kind not in ("resid_pre", "resid_post", "attn_out", "mlp_out"):
             raise BackendError(f"Editing {kind} activations isn't supported.")
@@ -477,12 +522,12 @@ class TransformerLensBackend(ModelBackend):
 
         kwargs: dict[str, Any] = {"return_type": "logits"}
         if self._logits_to_keep:
-            kwargs["logits_to_keep"] = 1
+            kwargs["logits_to_keep"] = keep
         with self.lock, torch.no_grad():
             logits = self._bridge().run_with_hooks(
                 tokens.to(self.device), fwd_hooks=[(hook_name(kind, layer), fn)], **kwargs
             )
-            return logits[:, -1, :].float()
+            return logits[:, -keep:, :].float()
 
     def path_patch(
         self,
@@ -528,12 +573,12 @@ class TransformerLensBackend(ModelBackend):
                 first.append((hook_name("mlp_out", layer), hold(value)))
 
         # What each receiver reads, recorded in the first pass and patched in the second.
+        final = hook_name("resid_post", n - 1)
         reads: dict[str, list[int]] = {}
         for kind, layer, head, part in receivers:
-            if kind == "logits":
-                reads.setdefault(hook_name("resid_post", n - 1), [])
-            else:
+            if kind != "logits":
                 reads.setdefault(f"blocks.{layer}.attn.hook_{part}", []).append(head)
+        logits_receiver = any(kind == "logits" for kind, *_ in receivers)
         recorded: dict[str, torch.Tensor] = {}
 
         def record(name: str) -> Callable[..., torch.Tensor]:
@@ -545,42 +590,61 @@ class TransformerLensBackend(ModelBackend):
 
         def replay(name: str, heads: list[int]) -> Callable[..., torch.Tensor]:
             def fn(act: torch.Tensor, hook: Any = None) -> torch.Tensor:
-                value = recorded[name].to(dtype=act.dtype)
-                if not heads:  # the logits read the whole residual stream
-                    return value
                 act = act.clone()
-                act[:, :, heads] = value[:, :, heads]
+                act[:, :, heads] = recorded[name].to(dtype=act.dtype)[:, :, heads]
                 return act
 
             return fn
 
-        logits_receiver = any(kind == "logits" for kind, *_ in receivers)
+        def add_direct(act: torch.Tensor, hook: Any = None) -> torch.Tensor:
+            if not reads:  # the logits are the only receiver: the first pass's stream, exactly
+                return recorded[final].to(dtype=act.dtype)
+            # The final residual stream also carries what the head receivers changed in this
+            # pass: add only the change the sender made there directly (first pass minus the
+            # receiver's own run), so neither path overwrites the other.
+            change = recorded[final] - recorded["own"]
+            return act + change.to(dtype=act.dtype)
+
+        def keep_own(act: torch.Tensor, hook: Any = None) -> torch.Tensor:
+            recorded["own"] = act.detach().clone()
+            return act
+
         kwargs: dict[str, Any] = {"return_type": None}
         if not logits_receiver:
             last = max(layer for kind, layer, *_ in receivers if kind == "head")
             if last + 1 < n:
                 kwargs["stop_at_layer"] = last + 1
+        recording = [(name, record(name)) for name in reads]
+        if logits_receiver:
+            recording.append((final, record(final)))
         with self.lock, torch.no_grad():
             bridge = self._bridge()
-            bridge.run_with_hooks(
-                tokens, fwd_hooks=first + [(name, record(name)) for name in reads], **kwargs
-            )
-            second = {"return_type": "logits"}
+            bridge.run_with_hooks(tokens, fwd_hooks=_combine(first + recording), **kwargs)
+            if logits_receiver and reads:
+                # The receiver run's own final residual stream, with every head held as in the
+                # first pass, so the difference is the sender's direct effect alone.
+                held = [(hook_name("head", layer), hold(frozen_heads[layer])) for layer in range(n)]
+                for layer, value in (frozen_mlps or {}).items():
+                    held.append((hook_name("mlp_out", layer), hold(value)))
+                bridge.run_with_hooks(
+                    tokens, fwd_hooks=_combine(held + [(final, keep_own)]), return_type=None
+                )
+            second: dict[str, Any] = {"return_type": "logits"}
             if self._logits_to_keep:
                 second["logits_to_keep"] = 1
-            logits = bridge.run_with_hooks(
-                tokens,
-                fwd_hooks=[(name, replay(name, heads)) for name, heads in reads.items()],
-                **second,
-            )
+            hooks = [(name, replay(name, heads)) for name, heads in reads.items()]
+            if logits_receiver:
+                hooks.append((final, add_direct))
+            logits = bridge.run_with_hooks(tokens, fwd_hooks=_combine(hooks), **second)
             return logits[:, -1, :].float()
 
     def gradients(
         self,
         tokens: torch.Tensor,
-        answers: torch.Tensor,
-        distractors: torch.Tensor,
         sites: list[tuple[str, int]],
+        score: ScoreFn,
+        keep: int = 1,
+        embeddings: torch.Tensor | None = None,
     ) -> tuple[dict[tuple[str, int], torch.Tensor], dict[tuple[str, int], torch.Tensor]]:
         # A zero tensor added at each hook point: the gradient with respect to it is the gradient
         # with respect to the activation there, through every later use, without cutting the graph.
@@ -608,6 +672,15 @@ class TransformerLensBackend(ModelBackend):
             return fn
 
         hooks: list[tuple[str, Callable[..., torch.Tensor]]] = []
+        if embeddings is not None:
+            # Replace the stream entering the first layer before anything reads or probes it.
+            def interpolate(act: torch.Tensor, hook: Any = None) -> torch.Tensor:
+                act = act.clone()
+                n = embeddings.shape[1]
+                act[:, :n] = embeddings.to(dtype=act.dtype, device=act.device)
+                return act
+
+            hooks.append((hook_name("resid_pre", 0), interpolate))
         for kind, layer in dict.fromkeys(sites):
             if kind == "resid_mid":
                 hooks.append((hook_name("resid_mid", layer), value((kind, layer))))
@@ -616,15 +689,15 @@ class TransformerLensBackend(ModelBackend):
                 hooks.append((hook_name(kind, layer), probe((kind, layer))))
         kwargs: dict[str, Any] = {"return_type": "logits"}
         if self._logits_to_keep:
-            kwargs["logits_to_keep"] = 1
+            kwargs["logits_to_keep"] = keep
         with self.lock, torch.enable_grad():
             bridge = self._bridge()
-            logits = bridge.run_with_hooks(tokens.to(self.device), fwd_hooks=hooks, **kwargs)
-            last = logits[:, -1, :].float()
-            rows = torch.arange(last.shape[0], device=last.device)
-            ld = last[rows, answers.to(last.device)] - last[rows, distractors.to(last.device)]
+            logits = bridge.run_with_hooks(
+                tokens.to(self.device), fwd_hooks=_combine(hooks), **kwargs
+            )
+            values = score(logits[:, -keep:, :])
             order = list(zeros)
-            grads = torch.autograd.grad(ld.sum(), [zeros[s] for s in order])
+            grads = torch.autograd.grad(values.sum(), [zeros[s] for s in order])
         return kept, {site: g.detach() for site, g in zip(order, grads, strict=True)}
 
     def direct_effects(

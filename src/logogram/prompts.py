@@ -1,7 +1,8 @@
 """Tokenize prompt pairs for a model and check that they can be used in an experiment.
 
 A usable pair has clean and corrupt prompts of the same token length (so positions line up), and
-an answer and distractor that are each a single token.
+an answer and a distractor the metric can read: single tokens, sets of single tokens, or (for the
+log-probability and probability metrics) continuations of several tokens.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import torch
 
 from logogram.backends.base import ModelBackend, Tokenized
 from logogram.datasets import PromptRecord
+from logogram.metrics import Target
 
 
 @dataclass
@@ -31,13 +33,22 @@ class PreparedPrompt:
     record: PromptRecord
     clean: Tokenized
     corrupt: Tokenized
-    answer_id: int
-    distractor_id: int
+    answer: Target
+    distractor: Target
     labels: dict[str, int] = field(default_factory=dict)
 
     @property
     def length(self) -> int:
         return len(self.clean.ids)
+
+    @property
+    def answer_id(self) -> int:
+        """The answer's token, for methods that read one token (it must be a single token)."""
+        return _single_id(self.answer, "answer")
+
+    @property
+    def distractor_id(self) -> int:
+        return _single_id(self.distractor, "distractor")
 
     def differing_positions(self) -> list[int]:
         return [
@@ -45,6 +56,15 @@ class PreparedPrompt:
             for i, (a, b) in enumerate(zip(self.clean.ids, self.corrupt.ids, strict=True))
             if a != b
         ]
+
+
+def _single_id(target: Target, what: str) -> int:
+    if not target.single:
+        raise ValueError(
+            f"This analysis reads the {what} as one token, and this prompt's {what} is "
+            f"{'a set of tokens' if target.alternatives else 'several tokens'}."
+        )
+    return target.ids[0]
 
 
 class PromptError(ValueError):
@@ -70,9 +90,65 @@ def label_position(tokenized: Tokenized, span: tuple[int, int]) -> int | None:
     return found
 
 
+def _target(
+    backend: ModelBackend,
+    value: str | list[str],
+    what: str,
+    index: int,
+    continuations: bool,
+    issues: list[PromptIssue],
+) -> Target | None:
+    """The answer or distractor as tokens, or None (with an issue) if the metric can't read it."""
+    if isinstance(value, list):
+        ids = []
+        for text in value:
+            token = backend.single_token_id(text)
+            if token is None:
+                issues.append(
+                    PromptIssue(
+                        index,
+                        f"{what}_tokens",
+                        f"the {what} set's {text!r} is several tokens "
+                        f"({_show_tokens(backend, text)}). Every member of a set must be a single "
+                        "token.",
+                    )
+                )
+                return None
+            ids.append(token)
+        if len(set(ids)) != len(ids):
+            issues.append(
+                PromptIssue(index, f"{what}_tokens", f"the {what} set names the same token twice.")
+            )
+            return None
+        return Target(ids=tuple(ids), alternatives=True)
+    token = backend.single_token_id(value)
+    if token is not None:
+        return Target(ids=(token,))
+    pieces = backend.tokenize(value, prepend_bos=False).ids
+    if not continuations or not pieces:
+        issues.append(
+            PromptIssue(
+                index,
+                f"{what}_tokens",
+                f"the {what} {value!r} is several tokens ({_show_tokens(backend, value)}). The "
+                "logit difference and the KL divergence read one position: use a single-token "
+                f"{what} (often with a leading space), or a log-probability or probability metric, "
+                "which read continuations of several tokens.",
+            )
+        )
+        return None
+    return Target(ids=tuple(int(i) for i in pieces))
+
+
 def prepare_prompt(
-    backend: ModelBackend, record: PromptRecord, index: int, prepend_bos: bool
+    backend: ModelBackend,
+    record: PromptRecord,
+    index: int,
+    prepend_bos: bool,
+    continuations: bool = False,
 ) -> tuple[PreparedPrompt | None, list[PromptIssue], Tokenized, Tokenized]:
+    """Tokenize one pair and check it. ``continuations``: whether the metric can read answers and
+    distractors of several tokens."""
     issues: list[PromptIssue] = []
     clean = backend.tokenize(record.clean, prepend_bos)
     corrupt = backend.tokenize(record.corrupt, prepend_bos)
@@ -85,27 +161,8 @@ def prepare_prompt(
                 "positions can't be aligned. Make both prompts tokenize to the same length.",
             )
         )
-    answer_id = backend.single_token_id(record.answer)
-    if answer_id is None:
-        issues.append(
-            PromptIssue(
-                index,
-                "answer_tokens",
-                f"the answer {record.answer!r} is several tokens "
-                f"({_show_tokens(backend, record.answer)}). Use a single-token answer, often "
-                "with a leading space.",
-            )
-        )
-    distractor_id = backend.single_token_id(record.distractor)
-    if distractor_id is None:
-        issues.append(
-            PromptIssue(
-                index,
-                "distractor_tokens",
-                f"the distractor {record.distractor!r} is several tokens "
-                f"({_show_tokens(backend, record.distractor)}). Use a single-token distractor.",
-            )
-        )
+    answer = _target(backend, record.answer, "answer", index, continuations, issues)
+    distractor = _target(backend, record.distractor, "distractor", index, continuations, issues)
     if clean.ids == corrupt.ids:
         issues.append(
             PromptIssue(
@@ -114,12 +171,30 @@ def prepare_prompt(
                 "the clean and corrupt prompts are the same, so there is nothing to patch.",
             )
         )
-    if answer_id is not None and answer_id == distractor_id:
-        issues.append(
-            PromptIssue(index, "same_answer", "the answer and distractor are the same token.")
-        )
+    if answer is not None and distractor is not None:
+        if answer == distractor:
+            issues.append(
+                PromptIssue(index, "same_answer", "the answer and distractor are the same token.")
+            )
+        elif answer.alternatives or distractor.alternatives:
+            shared = set(answer.ids) & set(distractor.ids)
+            if shared and answer.positions == 1 and distractor.positions == 1:
+                names = ", ".join(repr(backend.token_str(t)) for t in sorted(shared)[:5])
+                issues.append(
+                    PromptIssue(
+                        index,
+                        "same_answer",
+                        f"the answer and the distractor share {names}, so a token would count "
+                        "for both.",
+                    )
+                )
     n_ctx = backend.info.n_ctx
-    if max(len(clean.ids), len(corrupt.ids)) > n_ctx:
+    longest = (
+        max(len(clean.ids), len(corrupt.ids))
+        + max(answer.positions if answer else 1, distractor.positions if distractor else 1)
+        - 1
+    )
+    if longest > n_ctx:
         issues.append(
             PromptIssue(index, "too_long", f"the prompt is longer than the model's {n_ctx} tokens.")
         )
@@ -138,26 +213,29 @@ def prepare_prompt(
             labels[label] = pos
     if issues:
         return None, issues, clean, corrupt
-    assert answer_id is not None and distractor_id is not None
+    assert answer is not None and distractor is not None
     prepared = PreparedPrompt(
         index=index,
         record=record,
         clean=clean,
         corrupt=corrupt,
-        answer_id=answer_id,
-        distractor_id=distractor_id,
+        answer=answer,
+        distractor=distractor,
         labels=labels,
     )
     return prepared, [], clean, corrupt
 
 
 def prepare_prompts(
-    backend: ModelBackend, records: list[PromptRecord], prepend_bos: bool
+    backend: ModelBackend,
+    records: list[PromptRecord],
+    prepend_bos: bool,
+    continuations: bool = False,
 ) -> list[PreparedPrompt]:
     prepared: list[PreparedPrompt] = []
     issues: list[PromptIssue] = []
     for i, record in enumerate(records):
-        p, prompt_issues, _, _ = prepare_prompt(backend, record, i, prepend_bos)
+        p, prompt_issues, _, _ = prepare_prompt(backend, record, i, prepend_bos, continuations)
         issues.extend(prompt_issues)
         if p is not None:
             prepared.append(p)

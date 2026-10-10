@@ -268,7 +268,11 @@ def test_cancelling_a_model_load_leaves_no_model(app, monkeypatch):
         raise Cancelled()
 
     monkeypatch.setattr("logogram.backends.transformer_lens.load_model", slow_load)
-    job = state.load_model_job(ModelRef(id="some/model"))
+    job = state.load_model_job(
+        ModelRef(
+            id="some/model", revision=None, dtype="float32", device="auto", process_weights=True
+        )
+    )
     assert started.wait(5)
     state.cancel_job()
     deadline = time.time() + 5

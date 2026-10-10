@@ -19,7 +19,6 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
-import numpy as np
 import torch
 
 from logogram.backends.base import Cancelled, ModelBackend, ModelInfo
@@ -27,14 +26,16 @@ from logogram.engine import (
     EngineResult,
     LayerFn,
     ProgressFn,
-    _answer_tensors,
     _build_patch,
     _chunks,
     _LayerSources,
-    _metric,
     _Row,
+    check_finite,
     check_gap,
+    check_values,
     compute_baselines,
+    empty_values,
+    make_scorer,
 )
 from logogram.prompts import PreparedPrompt, group_by_length
 from logogram.sites import ResolvedSite, ScopeError, expand_scope
@@ -111,7 +112,15 @@ def run_path_patching(
     if on_start is not None:
         on_start(sites, layout)
     groups = group_by_length(prompts)
-    baselines = compute_baselines(backend, prompts, groups, batch_size, cancel)
+    scorer = make_scorer(spec, prompts)
+    if not scorer.single_position():
+        raise ScopeError(
+            "Path patching reads the metric at the last prompt position, so answers and "
+            "distractors must be single tokens or sets of single tokens. Use activation patching "
+            "for continuations of several tokens."
+        )
+    baselines = compute_baselines(backend, prompts, groups, batch_size, cancel, scorer)
+    check_finite(baselines, info.dtype)
     receiver, source = (
         ("corrupt", "clean") if exp.direction == "clean_to_corrupt" else ("clean", "corrupt")
     )
@@ -129,8 +138,7 @@ def run_path_patching(
     n_layers = info.n_layers
     model_dtype = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
     dtype = model_dtype[info.dtype]
-    patched_ld = np.zeros((len(sites), n))
-    patched_prob = np.zeros((len(sites), n))
+    patched, patched_prob, patched_pref = empty_values(len(sites), n)
     result = EngineResult(
         sites=sites,
         layout=layout,
@@ -138,8 +146,9 @@ def run_path_patching(
         baselines=baselines,
         receiver=receiver,
         reference=reference,
-        patched_ld=patched_ld,
+        patched=patched,
         patched_prob=patched_prob,
+        patched_pref=patched_pref,
         warnings=warnings,
     )
     held = [("head", layer) for layer in range(n_layers)]
@@ -189,16 +198,31 @@ def run_path_patching(
                         if exp.freeze_mlps
                         else None
                     )
-                    logits = backend.path_patch(
-                        tokens[local], sender, frozen_heads, frozen_mlps, receivers
-                    )
-                    ld, prob = _metric(logits, *_answer_tensors(prompts, [r.prompt for r in chunk]))
-                    for r, value_ld, value_prob in zip(chunk, ld, prob, strict=True):
-                        patched_ld[r.site.index, r.prompt] = value_ld
-                        patched_prob[r.site.index, r.prompt] = value_prob
+
+                    def forward(
+                        toks: torch.Tensor,
+                        keep: int,
+                        sender: Any = sender,
+                        frozen_heads: Any = frozen_heads,
+                        frozen_mlps: Any = frozen_mlps,
+                    ) -> torch.Tensor:
+                        assert keep == 1  # checked above: everything is read at one position
+                        logits = backend.path_patch(
+                            toks, sender, frozen_heads, frozen_mlps, receivers
+                        )
+                        return logits[:, None, :]
+
+                    scores = scorer.score(forward, tokens[local], [r.prompt for r in chunk])
+                    for r, value, prob, pref in zip(
+                        chunk, scores.metric, scores.prob, scores.pref, strict=True
+                    ):
+                        patched[r.site.index, r.prompt] = value
+                        patched_prob[r.site.index, r.prompt] = prob
+                        patched_pref[r.site.index, r.prompt] = pref
                     done += len(chunk)
                     if on_progress is not None:
                         on_progress(done, total, layer)
         if on_layer is not None:
             on_layer(layer, [rs.index for rs in layer_sites], result)
+    warnings.extend(check_values(patched, "patched values", info.dtype))
     return result

@@ -24,12 +24,15 @@ from logogram.engine import (
     EngineResult,
     LayerFn,
     ProgressFn,
-    _answer_tensors,
     _chunks,
     _LayerSources,
-    _metric,
+    check_finite,
     check_gap,
+    check_values,
     compute_baselines,
+    empty_values,
+    make_scorer,
+    patched_forward,
 )
 from logogram.prompts import PreparedPrompt, group_by_length
 from logogram.sites import (
@@ -169,11 +172,12 @@ def run_steering(
 
     test_groups = group_by_length(test)
     train_groups = group_by_length(train)
-    baselines = compute_baselines(backend, test, test_groups, batch_size, cancel)
+    scorer = make_scorer(spec, test)
+    baselines = compute_baselines(backend, test, test_groups, batch_size, cancel, scorer)
+    check_finite(baselines, info.dtype)
     warnings = check_gap(spec, baselines, test, receiver, reference)
     n = len(test)
-    patched_ld = np.zeros((len(sites), n))
-    patched_prob = np.zeros((len(sites), n))
+    patched, patched_prob, patched_pref = empty_values(len(sites), n)
     result = EngineResult(
         sites=sites,
         layout=layout,
@@ -181,8 +185,9 @@ def run_steering(
         baselines=baselines,
         receiver=receiver,
         reference=reference,
-        patched_ld=patched_ld,
+        patched=patched,
         patched_prob=patched_prob,
+        patched_pref=patched_pref,
         warnings=warnings,
         extra={
             "steering": {
@@ -248,43 +253,76 @@ def run_steering(
                     positions=torch.tensor([positions[p] for _, p in chunk], dtype=torch.long),
                 )
                 local = torch.tensor([local_of[p] for _, p in chunk], dtype=torch.long)
-                logits = backend.final_logits(tokens[local], patch)
-                ld, prob = _metric(logits, *_answer_tensors(test, [p for _, p in chunk]))
-                for (v, p), value_ld, value_prob in zip(chunk, ld, prob, strict=True):
-                    patched_ld[first + v, p] = value_ld
-                    patched_prob[first + v, p] = value_prob
+                scores = scorer.score(
+                    patched_forward(backend, patch), tokens[local], [p for _, p in chunk]
+                )
+                for (v, p), value, prob, pref in zip(
+                    chunk, scores.metric, scores.prob, scores.pref, strict=True
+                ):
+                    patched[first + v, p] = value
+                    patched_prob[first + v, p] = prob
+                    patched_pref[first + v, p] = pref
                 done += len(chunk)
                 if on_progress is not None:
                     on_progress(done, total, site.layer)
         if on_layer is not None:
             on_layer(site.layer, list(range(first, first + len(variants))), result)
+    warnings.extend(check_values(patched, "steered values", info.dtype))
     return result
 
 
-def control_warnings(result: EngineResult, stats: Any, ci: float) -> list[str]:
-    """Warn when the direction does no more than its random control anywhere: at every site and
-    strength, the intervals of the two effects overlap."""
+def control_comparison(result: EngineResult, stats: Any, ci: float) -> list[dict[str, Any]]:
+    """Each steered site and strength against its random control, paired: the same held-out
+    prompts and the same resamples measure both, so the difference of their effects' magnitudes,
+    |direction| - |control|, gets its own interval. A direction beats its control where that
+    interval lies above zero (pushing harder in either direction counts; a direction that does
+    significantly less than chance doesn't)."""
     index = {
         (rs.row, rs.variant["coefficient"], rs.variant["control"]): rs.index
         for rs in result.sites
         if rs.variant is not None
     }
-    compared = beating = 0
-    for (row, coefficient, control), i in index.items():
+    boot = stats.effect_boot
+    out: list[dict[str, Any]] = []
+    if boot is None:
+        return out
+    alpha = (1.0 - ci) / 2.0
+    for (row, coefficient, control), i in sorted(index.items(), key=lambda kv: kv[1]):
         j = index.get((row, coefficient, True))
         if control or j is None:
             continue
-        bounds = [stats.effect_lo[i], stats.effect_hi[i], stats.effect_lo[j], stats.effect_hi[j]]
-        if not np.isfinite(bounds).all():
-            continue
-        compared += 1
-        if bounds[1] < bounds[2] or bounds[0] > bounds[3]:
-            beating += 1
-    if not compared or beating:
+        difference = np.abs(boot[i]) - np.abs(boot[j])
+        if not np.isfinite(difference).all() or stats.n < 2:
+            lo = hi = None
+            beats = False
+        else:
+            lo, hi = (float(x) for x in np.quantile(difference, [alpha, 1.0 - alpha]))
+            beats = lo > 0
+        mean = abs(float(stats.effect_mean[i])) - abs(float(stats.effect_mean[j]))
+        out.append(
+            {
+                "row": row,
+                "coefficient": float(coefficient),
+                "index": i,
+                "control_index": j,
+                "difference": mean if np.isfinite(mean) else None,
+                "lo": lo,
+                "hi": hi,
+                "beats_control": beats,
+            }
+        )
+    return out
+
+
+def control_warnings(comparison: list[dict[str, Any]], ci: float) -> list[str]:
+    """Warn when the direction beats its random control at no site and strength."""
+    compared = [c for c in comparison if c["lo"] is not None]
+    if not compared or any(c["beats_control"] for c in compared):
         return []
     return [
-        f"At every site and strength, the direction's effect is within the random control's (their "
-        f"{ci:.0%} intervals overlap), so these results show no effect of the direction. Steering "
-        "by a mean difference needs pairs that differ the same way: in IOI prompts that mix the "
-        "ABBA and BABA orders, the differences cancel out."
+        f"At no site and strength does the direction move the prompts further than its random "
+        f"control (the {ci:.0%} interval of the paired difference |direction| − |control| never "
+        "lies above zero), so these results show no effect of the direction. Steering by a mean "
+        "difference needs pairs that differ the same way: in IOI prompts that mix the ABBA and "
+        "BABA orders, the differences cancel out."
     ]

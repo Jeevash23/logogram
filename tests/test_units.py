@@ -105,7 +105,16 @@ def test_site_stats_ratio_of_means_and_ci():
     patched = receiver[None, :] + np.array([[0.0], [2.0], [4.0]]) + rng.normal(0, 0.1, (3, 40))
     counts = resample_counts(40, 500, seed=0)
     stats = compute_site_stats(
-        patched, patched * 0, receiver, source, receiver * 0, "dataset_gap", counts, 0.95
+        patched=patched,
+        patched_prob=patched * 0,
+        patched_pref=patched,
+        receiver=receiver,
+        reference=source,
+        receiver_prob=receiver * 0,
+        receiver_pref=receiver,
+        normalization="dataset_gap",
+        counts=counts,
+        ci=0.95,
     )
     gap = (source - receiver).mean()
     expected = (patched - receiver).mean(axis=1) / gap
@@ -122,9 +131,10 @@ def test_a_model_that_prefers_the_distractor_is_flagged():
     from logogram.engine import Baselines, behavior_warnings
 
     ones = np.ones(4)
-    solves = Baselines(np.array([2.0, 1.0, -0.5, 3.0]), -ones, ones, ones)
-    assert behavior_warnings(solves) == []
-    fails = Baselines(np.array([-1.0, 0.5, -0.8, -0.2]), ones, ones, ones)
+    solves = np.array([2.0, 1.0, -0.5, 3.0])
+    assert behavior_warnings(Baselines(solves, -ones, ones, ones, solves, -ones)) == []
+    fails = np.array([-1.0, 0.5, -0.8, -0.2])
+    fails = Baselines(fails, ones, ones, ones, fails, ones)
     (warning,) = behavior_warnings(fails)
     assert "prefers the distractor" in warning and "1 of 4 prefer the answer" in warning
 
@@ -213,14 +223,16 @@ def test_spec_differences_ignore_names():
 def test_one_prompt_has_no_confidence_interval():
     counts = resample_counts(1, 50, 0)
     stats = compute_site_stats(
-        np.array([[1.0], [2.0]]),
-        np.array([[0.5], [0.5]]),
-        np.array([0.0]),
-        np.array([2.0]),
-        np.array([0.1]),
-        "dataset_gap",
-        counts,
-        0.95,
+        patched=np.array([[1.0], [2.0]]),
+        patched_prob=np.array([[0.5], [0.5]]),
+        patched_pref=np.array([[1.0], [2.0]]),
+        receiver=np.array([0.0]),
+        reference=np.array([2.0]),
+        receiver_prob=np.array([0.1]),
+        receiver_pref=np.array([0.0]),
+        normalization="dataset_gap",
+        counts=counts,
+        ci=0.95,
     )
     assert np.isnan(stats.effect_lo).all() and np.isnan(stats.delta_hi).all()
     assert stats.effect_mean.tolist() == [0.5, 1.0]

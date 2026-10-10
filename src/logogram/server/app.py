@@ -48,7 +48,15 @@ from logogram.schema import Manifest, RunListing, Summary
 from logogram.server import models as M
 from logogram.server.security import SecurityConfig, SecurityMiddleware
 from logogram.server.state import AppState, Conflict, EventHub, Missing, request_project
-from logogram.spec import NAME_MAX, ModelRef, PredictionSettings, Spec, describe_intervention
+from logogram.spec import (
+    NAME_MAX,
+    SINGLE_POSITION_METRICS,
+    Metric,
+    ModelRef,
+    PredictionSettings,
+    Spec,
+    describe_intervention,
+)
 from logogram.system import SystemReport
 
 log = logging.getLogger(__name__)
@@ -211,17 +219,21 @@ class PairRequest(BaseModel):
 
 
 class AnalysisRequest(BaseModel):
+    """An interactive analysis. The choices that change its numbers are stated, as in a spec."""
+
     model: ModelRef | None = None
     dataset_sha256: str | None = None
-    prepend_bos: bool = True
-    limit: int | None = Field(default=None, ge=1)
-    batch_size: int = Field(default=64, ge=1)
+    prepend_bos: bool
+    limit: int | None = Field(default=None, ge=1, le=1_000_000)
+    batch_size: int = Field(ge=1, le=4096)
 
 
 class TokenizeRequest(AnalysisRequest):
     dataset: str | None = None
     index: int = 0
     record: PromptRecord | None = None
+    # The metric the prompts are for: it decides whether answers of several tokens can be read.
+    metric: Metric
 
 
 class EstimateRequest(BaseModel):
@@ -234,6 +246,7 @@ class EstimateRequest(BaseModel):
 
 class BaselineRequest(AnalysisRequest):
     dataset: str
+    metric: Metric
 
 
 class AttentionRequest(AnalysisRequest):
@@ -616,7 +629,12 @@ def create_app(
             record = records[body.index]
         else:
             raise ValueError("Send a dataset and index, or a prompt pair.")
-        return tokenize_pair(backend, record, body.prepend_bos)
+        return tokenize_pair(
+            backend,
+            record,
+            body.prepend_bos,
+            continuations=body.metric.kind not in SINGLE_POSITION_METRICS,
+        )
 
     # -- models ------------------------------------------------------------------------------
 
@@ -703,7 +721,11 @@ def create_app(
         records = _records(body.dataset, body.limit, body.dataset_sha256)
         with backend.lock:  # unloading waits until the analysis is done
             return baseline_report(
-                backend, records, prepend_bos=body.prepend_bos, batch_size=body.batch_size
+                backend,
+                records,
+                prepend_bos=body.prepend_bos,
+                batch_size=body.batch_size,
+                metric=body.metric,
             )
 
     @app.post("/api/attention", response_model=M.AttentionData)
@@ -991,7 +1013,8 @@ def create_app(
         )
 
     @app.post("/api/jobs/cancel", response_model=M.CancelOut)
-    def cancel() -> dict[str, Any]:
+    async def cancel() -> dict[str, Any]:
+        # On the event loop, not the thread pool: queued analyses can't hold up a cancel.
         job = state.cancel_job()
         return {"job": job.to_dict() if job else None}
 
@@ -1063,6 +1086,17 @@ def create_app(
     async def headers(request: Request, call_next):  # type: ignore[no-untyped-def]
         project = state.project
         expected = request.headers.get("x-logogram-project")
+        if (
+            expected is None
+            and _project_scoped(request.url.path)
+            and "authorization" not in request.headers
+        ):
+            # A browser tab (authenticated by its cookie) must say which project it is showing,
+            # so a stale tab can't read or change the project another tab opened since.
+            return JSONResponse(
+                {"error": "This request didn't say which project it is for. Reload the page."},
+                status_code=409,
+            )
         # Browser requests carry an ephemeral project identity. Capture the object as well:
         # an open/close concurrent with dispatch must never retarget a pending operation.
         if expected is not None and expected != (project.session_id if project else "none"):
@@ -1090,6 +1124,36 @@ def create_app(
         return response
 
     return SecuredApp(app, security)  # type: ignore[return-value]
+
+
+# Routes that read or change the open project. A browser tab sends the project it shows with each
+# of them (``x-logogram-project``); scripts using the bearer token address the open project.
+PROJECT_SCOPED = (
+    "/api/project",
+    "/api/research",
+    "/api/dataset",
+    "/api/datasets/",
+    "/api/tokenize",
+    "/api/baseline",
+    "/api/attention",
+    "/api/predictions",
+    "/api/sae/fit",
+    "/api/sae/tokens",
+    "/api/sae/feature",
+    "/api/runs",
+    "/api/drafts",
+    "/api/compare",
+)
+
+
+def _project_scoped(path: str) -> bool:
+    for prefix in PROJECT_SCOPED:
+        if prefix.endswith("/"):
+            if path.startswith(prefix):
+                return True
+        elif path == prefix or path.startswith(prefix + "/"):
+            return True
+    return False
 
 
 class SecuredApp:

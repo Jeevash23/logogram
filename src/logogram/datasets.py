@@ -9,6 +9,11 @@ Each line is one JSON object::
 
 ``positions`` is optional. It names character spans in the clean prompt; a label points to the
 last token that overlaps its span. ``id`` and ``meta`` are optional and carried through.
+
+``answer`` and ``distractor`` are usually single tokens. Either can also be a continuation of
+several tokens (``" Buenos Aires"``), read by the log-probability metrics, or a list of single
+tokens that all count (``["33", "34", ...]``, as in the greater-than task), read through the sum of
+their probabilities.
 """
 
 from __future__ import annotations
@@ -17,7 +22,7 @@ import hashlib
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
@@ -30,16 +35,29 @@ class DatasetError(ValueError):
     """A dataset file can't be read. The message says where and how to fix it."""
 
 
+AnswerText = Annotated[str, Field(min_length=1)]
+# An answer or distractor: one string (a token, or a continuation of several), or a set of single
+# tokens any of which counts.
+Answer = AnswerText | Annotated[list[AnswerText], Field(min_length=1, max_length=1000)]
+
+
 class PromptRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     clean: str = Field(min_length=1)
     corrupt: str = Field(min_length=1)
-    answer: str = Field(min_length=1)
-    distractor: str = Field(min_length=1)
+    answer: Answer
+    distractor: Answer
     positions: dict[str, tuple[int, int]] | None = None
     id: str | None = None
     meta: dict[str, Any] | None = None
+
+    @field_validator("answer", "distractor")
+    @classmethod
+    def _distinct_alternatives(cls, value: str | list[str]) -> str | list[str]:
+        if isinstance(value, list) and len(set(value)) != len(value):
+            raise ValueError("a set of answers must not repeat a token")
+        return value
 
     @field_validator("positions")
     @classmethod

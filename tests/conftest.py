@@ -229,9 +229,12 @@ def project(tmp_path: Path) -> Any:
 
 
 def make_spec(**overrides: Any) -> Any:
-    from logogram.spec import Spec
+    """A complete version 2 spec. Overrides replace whole sections; the fields an override leaves
+    out take version 1's values (as a convenience for tests only: real specs state them)."""
+    from logogram.spec import Spec, upgrade_v1
 
     data: dict[str, Any] = {
+        "logogram_spec": 1,
         "name": "test",
         "model": {"id": "tiny-gpt2", "revision": "test", "device": "cpu"},
         "dataset": {"path": "datasets/ioi.jsonl"},
@@ -241,7 +244,13 @@ def make_spec(**overrides: Any) -> Any:
         "statistics": {"bootstrap": 200, "seed": 0},
     }
     data.update(overrides)
+    data, _ = upgrade_v1(data)
     return Spec.model_validate(data)
+
+
+def spec_dict(**overrides: Any) -> dict[str, Any]:
+    """``make_spec`` as JSON, the way the app sends it."""
+    return make_spec(**overrides).model_dump(mode="json")
 
 
 @pytest.fixture

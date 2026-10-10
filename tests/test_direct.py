@@ -111,7 +111,7 @@ def test_the_parts_add_up_to_the_whole_logit_difference(
     split = result.extra["direct"]
     stats = compute_stats(spec, result)
     assert result.measure == "attribution"
-    assert np.isnan(result.patched_ld).all()
+    assert np.isnan(result.patched).all()
     total = stats.delta_mean.sum() + split["embeddings"] + split["biases"]
     assert total == pytest.approx(split["logit_diff"], abs=1e-6)
     assert split["logit_diff"] == pytest.approx(float(result.gap.mean()), abs=1e-4)

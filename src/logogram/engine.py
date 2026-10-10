@@ -21,10 +21,12 @@ from typing import Any
 import numpy as np
 import torch
 
-from logogram.backends.base import Cancelled, ModelBackend, Patch, float64
+from logogram.backends.base import Cancelled, ModelBackend, Patch, Patches
+from logogram.metrics import Scorer
 from logogram.prompts import LengthGroup, PreparedPrompt, group_by_length
 from logogram.sites import ResolvedSite, expand_scope, resolve_position
 from logogram.spec import (
+    METRIC_LABELS,
     Ablation,
     ActivationPatching,
     AllPositions,
@@ -34,6 +36,7 @@ from logogram.spec import (
     MeanBaseline,
     PathPatching,
     ResampleBaseline,
+    SiteSetsScope,
     SitesScope,
     Spec,
     Steering,
@@ -47,16 +50,24 @@ class EngineError(ValueError):
 
 @dataclass
 class Baselines:
-    clean_ld: np.ndarray
-    corrupt_ld: np.ndarray
+    """The unpatched clean and corrupt runs: the metric, P(answer) and the preference
+    log P(answer) − log P(distractor) (the logit difference for single tokens), per prompt."""
+
+    clean: np.ndarray
+    corrupt: np.ndarray
     clean_prob: np.ndarray
     corrupt_prob: np.ndarray
+    clean_pref: np.ndarray
+    corrupt_pref: np.ndarray
 
-    def ld(self, which: str) -> np.ndarray:
-        return self.clean_ld if which == "clean" else self.corrupt_ld
+    def metric(self, which: str) -> np.ndarray:
+        return self.clean if which == "clean" else self.corrupt
 
     def prob(self, which: str) -> np.ndarray:
         return self.clean_prob if which == "clean" else self.corrupt_prob
+
+    def pref(self, which: str) -> np.ndarray:
+        return self.clean_pref if which == "clean" else self.corrupt_pref
 
 
 @dataclass
@@ -67,8 +78,9 @@ class EngineResult:
     baselines: Baselines
     receiver: str
     reference: str
-    patched_ld: np.ndarray  # [S, n]; NaN where nothing was run patched
+    patched: np.ndarray  # [S, n] the metric; NaN where nothing was run patched
     patched_prob: np.ndarray  # [S, n]; NaN where not measured
+    patched_pref: np.ndarray  # [S, n]; NaN where not measured
     donors: list[list[int]] | None = None
     warnings: list[str] = field(default_factory=list)
     # What the per-prompt values are: "intervention" (a patched forward pass), "estimate" (a
@@ -82,16 +94,29 @@ class EngineResult:
     extra: dict[str, Any] = field(default_factory=dict)
 
     @property
-    def receiver_ld(self) -> np.ndarray:
-        return self.baselines.ld(self.receiver)
+    def receiver_metric(self) -> np.ndarray:
+        return self.baselines.metric(self.receiver)
 
     @property
-    def reference_ld(self) -> np.ndarray:
-        return self.baselines.ld(self.reference)
+    def reference_metric(self) -> np.ndarray:
+        return self.baselines.metric(self.reference)
 
     @property
     def receiver_prob(self) -> np.ndarray:
         return self.baselines.prob(self.receiver)
+
+    @property
+    def receiver_pref(self) -> np.ndarray:
+        return self.baselines.pref(self.receiver)
+
+    @property
+    def reference_pref(self) -> np.ndarray:
+        return self.baselines.pref(self.reference)
+
+
+def empty_values(n_sites: int, n: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Zeroed arrays for the metric, P(answer) and the preference of S sites over n prompts."""
+    return np.zeros((n_sites, n)), np.zeros((n_sites, n)), np.zeros((n_sites, n))
 
 
 ProgressFn = Callable[[int, int, int], None]  # (rows done, rows total, current layer)
@@ -103,22 +128,27 @@ def _chunks(n: int, size: int) -> Iterator[slice]:
         yield slice(start, min(start + size, n))
 
 
-def _metric(
-    logits: torch.Tensor, answers: torch.Tensor, distractors: torch.Tensor
-) -> tuple[np.ndarray, np.ndarray]:
-    rows = torch.arange(logits.shape[0], device=logits.device)
-    answers = answers.to(logits.device)
-    distractors = distractors.to(logits.device)
-    ld = logits[rows, answers] - logits[rows, distractors]
-    prob = torch.log_softmax(logits, dim=-1)[rows, answers].exp()
-    return float64(ld).cpu().numpy(), float64(prob).cpu().numpy()
-
-
-def _answer_tensors(prompts: list[PreparedPrompt], idx: list[int]) -> tuple[torch.Tensor, ...]:
+def answer_tensors(prompts: list[PreparedPrompt], idx: list[int]) -> tuple[torch.Tensor, ...]:
+    """The answer and distractor tokens of single-token prompts, for methods that read one."""
     return (
         torch.tensor([prompts[i].answer_id for i in idx], dtype=torch.long),
         torch.tensor([prompts[i].distractor_id for i in idx], dtype=torch.long),
     )
+
+
+def make_scorer(spec: Spec, prompts: list[PreparedPrompt]) -> Scorer:
+    return Scorer(spec.metric, prompts)
+
+
+def patched_forward(
+    backend: ModelBackend, patch: Patches
+) -> Callable[[torch.Tensor, int], torch.Tensor]:
+    """A forward pass with ``patch`` applied, as the scorer calls it."""
+
+    def forward(tokens: torch.Tensor, keep: int) -> torch.Tensor:
+        return backend.logits(tokens, patch, keep)
+
+    return forward
 
 
 def compute_baselines(
@@ -127,9 +157,32 @@ def compute_baselines(
     groups: list[LengthGroup],
     batch_size: int,
     cancel: threading.Event | None = None,
+    scorer: Scorer | None = None,
 ) -> Baselines:
+    """Run every clean and corrupt prompt unpatched. For the KL divergence, the target prompts'
+    own predictions are recorded first, in the same batches, so a target's divergence from itself
+    is exactly zero."""
+    from logogram.spec import LogitDiffMetric
+
+    scorer = scorer or Scorer(
+        LogitDiffMetric(kind="logit_diff", normalization="dataset_gap"), prompts
+    )
     n = len(prompts)
-    out = {k: np.zeros(n) for k in ("clean_ld", "corrupt_ld", "clean_prob", "corrupt_prob")}
+    if scorer.kind == "kl" and len(scorer.target_logits) < n:
+        target = scorer.target
+        for group in groups:
+            tokens = group.clean if target == "clean" else group.corrupt
+            for sl in _chunks(len(group.members), batch_size):
+                if cancel is not None and cancel.is_set():
+                    raise Cancelled()
+                logits = backend.logits(tokens[sl], None, 1)[:, 0].float().cpu()
+                for row, p in enumerate(group.members[sl]):
+                    scorer.target_logits[p] = logits[row]
+    out = {
+        k: np.zeros(n)
+        for k in ("clean", "corrupt", "clean_prob", "corrupt_prob", "clean_pref", "corrupt_pref")
+    }
+    plain = patched_forward(backend, None)
     for which in ("clean", "corrupt"):
         for group in groups:
             tokens = group.clean if which == "clean" else group.corrupt
@@ -137,10 +190,10 @@ def compute_baselines(
                 if cancel is not None and cancel.is_set():
                     raise Cancelled()
                 idx = group.members[sl]
-                logits = backend.final_logits(tokens[sl])
-                ld, prob = _metric(logits, *_answer_tensors(prompts, idx))
-                out[f"{which}_ld"][idx] = ld
-                out[f"{which}_prob"][idx] = prob
+                scores = scorer.score(plain, tokens[sl], idx)
+                out[which][idx] = scores.metric
+                out[f"{which}_prob"][idx] = scores.prob
+                out[f"{which}_pref"][idx] = scores.pref
     return Baselines(**out)
 
 
@@ -148,14 +201,45 @@ def behavior_warnings(baselines: Baselines) -> list[str]:
     """Warn when the model doesn't do the task: the answer is defined by the clean prompt, so a
     model that prefers the distractor there doesn't show the behavior the prompts test, and every
     effect describes something else."""
-    clean = baselines.clean_ld
-    if not len(clean) or float(clean.mean()) >= 0:
+    clean = baselines.clean_pref
+    if not len(clean) or not np.isfinite(clean).all() or float(clean.mean()) >= 0:
         return []
     return [
-        f"On the clean prompts the model prefers the distractor (mean logit difference "
-        f"{float(clean.mean()):.3f}; {int((clean > 0).sum())} of {len(clean)} prefer the answer), "
-        "so it doesn't show the behavior these prompts test. Check the baseline, or use prompts "
-        "this model solves."
+        f"On the clean prompts the model prefers the distractor (mean log P(answer) − "
+        f"log P(distractor) {float(clean.mean()):.3f}; {int((clean > 0).sum())} of {len(clean)} "
+        "prefer the answer), so it doesn't show the behavior these prompts test. Check the "
+        "baseline, or use prompts this model solves."
+    ]
+
+
+def check_finite(baselines: Baselines, dtype: str) -> None:
+    """Refuse a run whose unpatched prompts already give values that aren't finite numbers: every
+    effect would be undefined. This happens when a 16-bit dtype overflows on these prompts."""
+    for which in ("clean", "corrupt"):
+        values = np.concatenate([baselines.metric(which), baselines.pref(which)])
+        bad = int((~np.isfinite(values)).sum())
+        if bad:
+            fix = (
+                "Run it in float32, which has a far wider range."
+                if dtype != "float32"
+                else "Check the model's weights: delete it from the Hugging Face cache and load it again."
+            )
+            raise EngineError(
+                f"The unpatched {which} prompts give values that aren't finite numbers in "
+                f"{dtype} ({bad} of them), so no effect can be measured. {fix}"
+            )
+
+
+def check_values(values: np.ndarray, what: str, dtype: str) -> list[str]:
+    """Warn when patched or estimated values aren't finite numbers (their statistics are left
+    out)."""
+    bad = int((~np.isfinite(values)).sum())
+    if not bad:
+        return []
+    fix = "Run it in float32." if dtype != "float32" else "Check the model and the prompts."
+    return [
+        f"{bad} {what} aren't finite numbers (an overflow in {dtype}); the sites they belong to "
+        f"have no statistics. {fix}"
     ]
 
 
@@ -169,12 +253,18 @@ def check_gap(
     """Refuse a normalization the gap can't support, and warn when it is unreliable."""
     warnings: list[str] = behavior_warnings(baselines)
     n = len(prompts)
-    gap = baselines.ld(reference) - baselines.ld(receiver)
+    what = METRIC_LABELS[spec.metric.kind]
+    gap = baselines.metric(reference) - baselines.metric(receiver)
     mean_gap = float(gap.mean())
+    if not np.isfinite(mean_gap):
+        raise EngineError(
+            f"The clean–corrupt gap in the {what} isn't a finite number, so effects can't be "
+            "normalized. Run the baseline check, and use float32 if the model overflows."
+        )
     if spec.metric.normalization == "dataset_gap":
         if abs(mean_gap) < 1e-3:
             raise EngineError(
-                "The clean and corrupt prompts give almost the same logit difference "
+                f"The clean and corrupt prompts give almost the same {what} "
                 f"(mean gap {mean_gap:.4f}), so a normalized effect is undefined. Run the "
                 "baseline check: the model may not show the behavior on these prompts."
             )
@@ -325,6 +415,10 @@ def run_experiment(
         from logogram.paths import run_path_patching
 
         return run_path_patching(spec, backend, prompts, **kwargs)
+    if isinstance(spec.scope, SiteSetsScope):
+        from logogram.circuits import run_site_sets
+
+        return run_site_sets(spec, backend, prompts, **kwargs)
     return run_engine(spec, backend, prompts, **kwargs)
 
 
@@ -356,7 +450,9 @@ def run_engine(
     n = len(prompts)
     warnings: list[str] = []
 
-    baselines = compute_baselines(backend, prompts, groups, batch_size, cancel)
+    scorer = make_scorer(spec, prompts)
+    baselines = compute_baselines(backend, prompts, groups, batch_size, cancel, scorer)
+    check_finite(baselines, info.dtype)
 
     exp = spec.experiment
     baseline_kind: str
@@ -398,8 +494,7 @@ def run_engine(
                 "mean is their own activation."
             )
 
-    patched_ld = np.zeros((len(sites), n))
-    patched_prob = np.zeros((len(sites), n))
+    patched, patched_prob, patched_pref = empty_values(len(sites), n)
     # Shares the arrays being filled, so per-layer callbacks can summarize finished sites.
     partial = EngineResult(
         sites=sites,
@@ -408,8 +503,9 @@ def run_engine(
         baselines=baselines,
         receiver=receiver,
         reference=reference,
-        patched_ld=patched_ld,
+        patched=patched,
         patched_prob=patched_prob,
+        patched_pref=patched_pref,
         donors=donors,
         warnings=warnings,
     )
@@ -464,17 +560,24 @@ def run_engine(
                         backend.device,
                     )
                     local_idx = torch.tensor([r.local for r in chunk], dtype=torch.long)
-                    logits = backend.final_logits(receiver_tokens[local_idx], patch)
-                    ld, prob = _metric(logits, *_answer_tensors(prompts, [r.prompt for r in chunk]))
-                    for r, v_ld, v_prob in zip(chunk, ld, prob, strict=True):
-                        patched_ld[r.site.index, r.prompt] += v_ld / k
-                        patched_prob[r.site.index, r.prompt] += v_prob / k
+                    scores = scorer.score(
+                        patched_forward(backend, patch),
+                        receiver_tokens[local_idx],
+                        [r.prompt for r in chunk],
+                    )
+                    for r, value, prob, pref in zip(
+                        chunk, scores.metric, scores.prob, scores.pref, strict=True
+                    ):
+                        patched[r.site.index, r.prompt] += value / k
+                        patched_prob[r.site.index, r.prompt] += prob / k
+                        patched_pref[r.site.index, r.prompt] += pref / k
                     done_rows += len(chunk)
                     if on_progress is not None:
                         on_progress(done_rows, total_rows, layer)
         if on_layer is not None:
             on_layer(layer, [s.index for s in layer_sites], partial)
 
+    warnings.extend(check_values(patched, "patched values", info.dtype))
     return partial
 
 

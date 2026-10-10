@@ -359,10 +359,13 @@ class AppState:
         return backend
 
     def unload_model(self) -> None:
-        if self.job is not None and self.job.status == "running":
-            raise Conflict("Wait for the running job to finish, or cancel it, before unloading.")
-        backend, self.backend = self.backend, None
-        self.model_ref = None
+        with self._job_lock:  # a job can't start with the model while it is being unloaded
+            if self.job is not None and self.job.status == "running":
+                raise Conflict(
+                    "Wait for the running job to finish, or cancel it, before unloading."
+                )
+            backend, self.backend = self.backend, None
+            self.model_ref = None
         if backend is not None:
             backend.close()  # waits for an analysis that is using it
         self._set_model_status(state="none")
@@ -438,9 +441,12 @@ class AppState:
         return self.start_job("load_sae", f"Load the SAE {ref.repo}", work)
 
     def unload_sae(self) -> None:
-        if self.job is not None and self.job.status == "running":
-            raise Conflict("Wait for the running job to finish, or cancel it, before unloading.")
-        self._drop_sae()
+        with self._job_lock:
+            if self.job is not None and self.job.status == "running":
+                raise Conflict(
+                    "Wait for the running job to finish, or cancel it, before unloading."
+                )
+            self._drop_sae()
 
     # -- jobs --------------------------------------------------------------------------------
 

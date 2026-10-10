@@ -63,8 +63,10 @@ def test_websocket_needs_origin_and_token(client):
     with pytest.raises(WebSocketDisconnect), no_origin as ws:
         ws.receive_json()
     no_token = client.websocket_connect(WS_URL, headers=ORIGIN)
-    with pytest.raises(WebSocketDisconnect), no_token as ws:
+    with pytest.raises(WebSocketDisconnect) as closed, no_token as ws:
         ws.receive_json()
+    # A tab whose session ended learns why: the close code says the token isn't valid.
+    assert closed.value.code == 4401
     with client.websocket_connect(WS_URL, headers={**AUTH, **ORIGIN}) as ws:
         assert ws.receive_json()["type"] == "hello"
 
@@ -96,8 +98,12 @@ def test_gui_flow_end_to_end(app, client, tiny_backend, tmp_path: Path, spec_fac
         client.post("/api/datasets/ioi", json={"name": "ioi"}, headers=headers).status_code == 400
     )
 
+    logit_diff = {"kind": "logit_diff", "normalization": "dataset_gap"}
+    context = {"prepend_bos": True, "batch_size": 64}
     strip = client.post(
-        "/api/tokenize", json={"dataset": "datasets/ioi.jsonl", "index": 0}, headers=headers
+        "/api/tokenize",
+        json={"dataset": "datasets/ioi.jsonl", "index": 0, "metric": logit_diff, **context},
+        headers=headers,
     ).json()
     assert strip["aligned"] and strip["differs"] and not strip["issues"]
     assert strip["answer"]["id"] is not None
@@ -108,16 +114,27 @@ def test_gui_flow_end_to_end(app, client, tiny_backend, tmp_path: Path, spec_fac
         "answer": " Mary Mary",
         "distractor": " John",
     }
-    strip = client.post("/api/tokenize", json={"record": bad}, headers=headers).json()
+    strip = client.post(
+        "/api/tokenize", json={"record": bad, "metric": logit_diff, **context}, headers=headers
+    ).json()
     assert not strip["aligned"] and {i["kind"] for i in strip["issues"]} == {
         "length_mismatch",
         "answer_tokens",
     }
+    # A log-probability reads an answer of several tokens as a continuation.
+    logprob = {"kind": "logprob_diff", "normalization": "dataset_gap"}
+    strip = client.post(
+        "/api/tokenize", json={"record": bad, "metric": logprob, **context}, headers=headers
+    ).json()
+    assert {i["kind"] for i in strip["issues"]} == {"length_mismatch"}
 
     base = client.post(
-        "/api/baseline", json={"dataset": "datasets/ioi.jsonl"}, headers=headers
+        "/api/baseline",
+        json={"dataset": "datasets/ioi.jsonl", "metric": logit_diff, **context},
+        headers=headers,
     ).json()
     assert base["n"] == 10 and len(base["prompts"][0]["clean_top"]) == 5
+    assert base["summary"]["metric"]["clean"] == pytest.approx(base["summary"]["clean_logit_diff"])
 
     spec = spec_factory(dataset={"path": "datasets/ioi.jsonl"}).model_dump(mode="json")
     started = client.post("/api/runs", json={"spec": spec}, headers=headers).json()
@@ -133,7 +150,7 @@ def test_gui_flow_end_to_end(app, client, tiny_backend, tmp_path: Path, spec_fac
 
     attention = client.post(
         "/api/attention",
-        json={"dataset": "datasets/ioi.jsonl", "index": 2, "layer": 1, "head": 0},
+        json={"dataset": "datasets/ioi.jsonl", "index": 2, "layer": 1, "head": 0, **context},
         headers=headers,
     ).json()
     n_tok = len(attention["tokens"])

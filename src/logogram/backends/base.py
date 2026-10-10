@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import threading
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -71,6 +72,13 @@ class Patch:
     ``heads`` gives each row's head for head sites. ``positions`` gives each row's single
     position, or is ``None`` to replace every position. ``values`` is ``[B, pos, d]`` when every
     position is replaced and ``[B, d]`` otherwise (``d`` is ``d_head`` for heads).
+
+    With ``mask``, the patch replaces any entries at once: ``values`` is the whole activation,
+    ``[B, pos, d]`` (``[B, pos, H, d_head]`` for heads), and ``mask`` (``[B, pos]``, or
+    ``[B, pos, H]`` for heads) says which entries take it; ``heads`` and ``positions`` are unused.
+
+    A forward pass can be longer than the patch when tokens are appended to the prompt (an
+    answer's continuation): every patch covers the prompt's positions only.
     """
 
     kind: str
@@ -78,6 +86,13 @@ class Patch:
     values: torch.Tensor
     heads: torch.Tensor | None = None
     positions: torch.Tensor | None = None
+    mask: torch.Tensor | None = None
+
+
+Patches = Patch | list[Patch] | None
+
+# score(logits [B, keep, vocab]) -> [B]: what a gradient is taken of, row by row.
+ScoreFn = Callable[[torch.Tensor], torch.Tensor]
 
 
 class BackendError(RuntimeError):
@@ -107,8 +122,13 @@ class ModelBackend(ABC):
     def token_str(self, token_id: int) -> str: ...
 
     @abstractmethod
-    def final_logits(self, tokens: torch.Tensor, patch: Patch | None = None) -> torch.Tensor:
+    def logits(self, tokens: torch.Tensor, patch: Patches = None, keep: int = 1) -> torch.Tensor:
+        """Logits at the last ``keep`` positions, ``[B, keep, vocab]`` in float32, with the patches
+        applied (all at once)."""
+
+    def final_logits(self, tokens: torch.Tensor, patch: Patches = None) -> torch.Tensor:
         """Logits at the last position, ``[B, vocab]`` in float32."""
+        return self.logits(tokens, patch, 1)[:, -1]
 
     @abstractmethod
     def capture(
@@ -126,10 +146,11 @@ class ModelBackend(ABC):
         kind: str,
         layer: int,
         edit: Any,
+        keep: int = 1,
     ) -> torch.Tensor:
-        """Logits at the last position, ``[B, vocab]``, with the activation at ``(kind, layer)``
-        replaced by ``edit(activation)``: ``[B, pos, d]`` in, the same shape out. For
-        residual-stream sites the edit changes the stream itself, as patching does."""
+        """Logits at the last ``keep`` positions, ``[B, keep, vocab]``, with the activation at
+        ``(kind, layer)`` replaced by ``edit(activation)``: ``[B, pos, d]`` in, the same shape
+        out. For residual-stream sites the edit changes the stream itself, as patching does."""
         raise BackendError("Editing activations isn't supported by this model backend.")
 
     def path_patch(
@@ -154,14 +175,19 @@ class ModelBackend(ABC):
     def gradients(
         self,
         tokens: torch.Tensor,
-        answers: torch.Tensor,
-        distractors: torch.Tensor,
         sites: list[tuple[str, int]],
+        score: ScoreFn,
+        keep: int = 1,
+        embeddings: torch.Tensor | None = None,
     ) -> tuple[dict[tuple[str, int], torch.Tensor], dict[tuple[str, int], torch.Tensor]]:
-        """Activations at ``(kind, layer)`` sites and the gradient of logit(answer) -
-        logit(distractor) at the last position with respect to each, in one forward and backward
-        pass. Shapes as in :meth:`capture`. The gradient of a residual-stream site is with respect
-        to the residual stream itself, not only to what the next component reads."""
+        """Activations at ``(kind, layer)`` sites and the gradient of ``score`` (summed over rows)
+        with respect to each, in one forward and backward pass. ``score`` gets the logits at the
+        last ``keep`` positions. Shapes as in :meth:`capture`, over the whole (possibly extended)
+        sequence. The gradient of a residual-stream site is with respect to the residual stream
+        itself, not only to what the next component reads.
+
+        ``embeddings`` (``[B, L, d_model]``) replaces the residual stream entering the first layer
+        at the first ``L`` positions: integrated gradients run on interpolated inputs."""
         raise BackendError("Gradients aren't supported by this model backend.")
 
     def direct_effects(

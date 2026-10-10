@@ -20,16 +20,19 @@ from typing import Any
 import numpy as np
 import torch
 
+from logogram.atp import metric_gradients
 from logogram.backends.base import Cancelled, ModelBackend, float64
 from logogram.engine import (
     EngineResult,
     LayerFn,
     ProgressFn,
-    _answer_tensors,
     _chunks,
-    _metric,
+    check_finite,
     check_gap,
+    check_values,
     compute_baselines,
+    empty_values,
+    make_scorer,
 )
 from logogram.prompts import PreparedPrompt, group_by_length
 from logogram.sae import SAE, fit_on
@@ -126,7 +129,9 @@ def _patching(
     if on_start is not None:
         on_start(sites, layout)
     groups = group_by_length(prompts)
-    baselines = compute_baselines(backend, prompts, groups, batch_size, cancel)
+    scorer = make_scorer(spec, prompts)
+    baselines = compute_baselines(backend, prompts, groups, batch_size, cancel, scorer)
+    check_finite(baselines, backend.info.dtype)
     receiver, source, reference = _directions(exp)
     receiver = receiver_override or receiver
     source = source_override or source
@@ -135,8 +140,7 @@ def _patching(
     features = sorted({rs.site.feature for rs in sites if rs.site.feature is not None})
     column = {f: j for j, f in enumerate(features)}
     n = len(prompts)
-    patched_ld = np.zeros((len(sites), n))
-    patched_prob = np.zeros((len(sites), n))
+    patched, patched_prob, patched_pref = empty_values(len(sites), n)
     result = EngineResult(
         sites=sites,
         layout=layout,
@@ -144,8 +148,9 @@ def _patching(
         baselines=baselines,
         receiver=receiver,
         reference=reference,
-        patched_ld=patched_ld,
+        patched=patched,
         patched_prob=patched_prob,
+        patched_pref=patched_pref,
         warnings=warnings,
     )
     receiver_acts: list[torch.Tensor] = []
@@ -176,8 +181,11 @@ def _patching(
                 x: torch.Tensor,
                 chunk: list[tuple[ResolvedSite, int]] = chunk,
                 targets: dict[int, torch.Tensor] = targets,
+                length: int = group.length,
             ) -> torch.Tensor:
-                f, stats = sae.encode(x)
+                # Only the prompt's positions: tokens appended to read a continuation stay as
+                # they are.
+                f, stats = sae.encode(x[:, :length])
                 out = x.float().clone()
                 for b, (rs, p) in enumerate(chunk):
                     i = int(rs.site.feature or 0)
@@ -193,14 +201,21 @@ def _patching(
                         keep[at] = change[at]
                         change = keep
                     row_stats = None if stats is None else (stats[0][b], stats[1][b])
-                    out[b] = out[b] + change[:, None] * sae.feature_direction(i, row_stats)
+                    out[b, :length] = out[b, :length] + change[:, None] * sae.feature_direction(
+                        i, row_stats
+                    )
                 return out
 
-            logits = backend.edit_logits(tokens[local], sae.site, sae.layer, edit)
-            ld, prob = _metric(logits, *_answer_tensors(prompts, [p for _, p in chunk]))
-            for (rs, p), value_ld, value_prob in zip(chunk, ld, prob, strict=True):
-                patched_ld[rs.index, p] = value_ld
-                patched_prob[rs.index, p] = value_prob
+            def forward(toks: torch.Tensor, keep: int, edit: Any = edit) -> torch.Tensor:
+                return backend.edit_logits(toks, sae.site, sae.layer, edit, keep)
+
+            scores = scorer.score(forward, tokens[local], [p for _, p in chunk])
+            for (rs, p), value, prob, pref in zip(
+                chunk, scores.metric, scores.prob, scores.pref, strict=True
+            ):
+                patched[rs.index, p] = value
+                patched_prob[rs.index, p] = prob
+                patched_pref[rs.index, p] = pref
             done += len(chunk)
             if on_progress is not None:
                 on_progress(done, total, sae.layer)
@@ -208,6 +223,7 @@ def _patching(
         "sae": sae.describe() | {"fit": None},
         "fit": _fit(sae, receiver_acts, spec.tokenization.prepend_bos),
     }
+    warnings.extend(check_values(patched, "patched values", backend.info.dtype))
     if on_layer is not None:
         on_layer(sae.layer, [rs.index for rs in sites], result)
     return result
@@ -243,11 +259,18 @@ def _attribution(
         for prompt in prompts:
             resolve_position(position, prompt)
     groups = group_by_length(prompts)
-    baselines = compute_baselines(backend, prompts, groups, batch_size, cancel)
+    scorer = make_scorer(spec, prompts)
+    baselines = compute_baselines(backend, prompts, groups, batch_size, cancel, scorer)
+    check_finite(baselines, backend.info.dtype)
     receiver, source, reference = _directions(exp)
     receiver = receiver_override or receiver
     source = source_override or source
     warnings = check_gap(spec, baselines, prompts, receiver, reference)
+    if exp.method != "gradient":
+        raise ScopeError(
+            "SAE features are estimated from a single gradient. Choose that method, or estimate "
+            "the model's components with integrated gradients."
+        )
     key = (sae.site, sae.layer)
     n, d_sae = len(prompts), sae.d_sae
     W_dec = sae.params.W_dec
@@ -265,9 +288,7 @@ def _attribution(
                 raise Cancelled()
             idx = group.members[sl]
             x_src = backend.capture(source_tokens[sl], [key])[key].float()
-            acts, grads = backend.gradients(
-                receiver_tokens[sl], *_answer_tensors(prompts, idx), [key]
-            )
+            acts, grads = metric_gradients(backend, scorer, receiver_tokens[sl], idx, [key])
             x_rec, grad = acts[key].float(), grads[key].float()
             receiver_acts.append(x_rec)
             positions = range(x_rec.shape[1])
@@ -312,7 +333,15 @@ def _attribution(
                         at = [resolve_position(rs.site.position, prompts[p]) for p in idx]
                         values = term[torch.arange(len(idx)), at]
                     estimates[rs.index, idx] = float64(values).cpu().numpy()
-                site_total[idx] = float64(per_position.sum(1)).cpu().numpy()
+                # The whole site at the chosen sites' position, when they share one.
+                shared = {rs.site.position.model_dump_json() for rs in chosen}
+                if len(shared) == 1 and not isinstance(chosen[0].site.position, AllPositions):
+                    at = [resolve_position(chosen[0].site.position, prompts[p]) for p in idx]
+                    site_total[idx] = (
+                        float64(per_position[torch.arange(len(idx)), at]).cpu().numpy()
+                    )
+                else:
+                    site_total[idx] = float64(per_position.sum(1)).cpu().numpy()
             done += len(idx)
             if on_progress is not None:
                 on_progress(done, n, sae.layer)
@@ -340,7 +369,7 @@ def _attribution(
         sites = chosen
         delta = estimates
         features_sum = None
-    receiver_ld = baselines.ld(receiver)
+    warnings.extend(check_values(delta, "estimates", backend.info.dtype))
     result = EngineResult(
         sites=sites,
         layout=layout,
@@ -348,8 +377,9 @@ def _attribution(
         baselines=baselines,
         receiver=receiver,
         reference=reference,
-        patched_ld=receiver_ld[None, :] + delta,
+        patched=baselines.metric(receiver)[None, :] + delta,
         patched_prob=np.full(delta.shape, np.nan),
+        patched_pref=np.full(delta.shape, np.nan),
         warnings=warnings,
         measure="estimate",
         delta=delta,

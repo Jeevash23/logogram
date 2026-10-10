@@ -105,7 +105,13 @@ def note_value():
     return NoteInput(
         title="Candidate heads",
         body="Compare across prompt templates.",
-        model={"id": "tiny-gpt2", "revision": "test", "device": "cpu"},
+        model={
+            "id": "tiny-gpt2",
+            "revision": "test",
+            "dtype": "float32",
+            "device": "cpu",
+            "process_weights": True,
+        },
         sites=[{"kind": "head", "layer": 0, "head": 1, "position": {"kind": "last"}}],
     )
 
@@ -181,7 +187,18 @@ def test_new_routes_require_session_and_preserve_prediction_context(
         )
         assert (
             client.post(
-                "/api/predictions", json={**body, "model": {"id": "other"}}, headers=auth
+                "/api/predictions",
+                json={
+                    **body,
+                    "model": {
+                        "id": "other",
+                        "revision": None,
+                        "dtype": "float32",
+                        "device": "cpu",
+                        "process_weights": True,
+                    },
+                },
+                headers=auth,
             ).status_code
             == 409
         )

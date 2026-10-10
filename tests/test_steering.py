@@ -80,9 +80,7 @@ def test_steering_by_the_exact_difference_reproduces_the_other_prompt(
     by_key = {s.variant_key: s.index for s in result.sites}
     # At the embeddings every pair differs by the same vector, so its mean is exact: adding it to a
     # corrupt prompt turns it into its clean prompt, prompt by prompt.
-    np.testing.assert_allclose(
-        result.patched_ld[by_key["×1"]], result.baselines.clean_ld, atol=1e-4
-    )
+    np.testing.assert_allclose(result.patched[by_key["×1"]], result.baselines.clean, atol=1e-4)
     assert stats.effect_mean[by_key["×1"]] == pytest.approx(1.0, abs=1e-4)
     # Strength 0 changes nothing (up to the rounding of a hooked forward pass, as in the sanity tests).
     np.testing.assert_allclose(stats.effect[by_key["×0"]], 0.0, atol=1e-4)
@@ -108,7 +106,7 @@ def test_the_control_has_the_direction_s_length(tiny_backend, project, spec_fact
     assert {(s.row, s.col) for s in result.sites} == {(r, c) for r in range(2) for c in range(2)}
     assert result.layout["kind"] == "steering" and result.layout["row_title"] == "Layer"
     again = run_experiment(spec, tiny_backend, prompts)
-    np.testing.assert_array_equal(result.patched_ld, again.patched_ld)
+    np.testing.assert_array_equal(result.patched, again.patched)
 
 
 def test_steering_needs_one_residual_site_at_one_token(tiny_backend, project, spec_factory):
@@ -163,7 +161,7 @@ def test_a_direction_that_does_no_more_than_its_control_is_reported():
 
     from logogram.sites import ResolvedSite
     from logogram.spec import Site
-    from logogram.steering import control_warnings
+    from logogram.steering import control_comparison, control_warnings
 
     site = Site(kind="resid_pre", layer=0, position={"kind": "last"})
     variants = [(1.0, False), (1.0, True), (2.0, False), (2.0, True)]
@@ -172,13 +170,23 @@ def test_a_direction_that_does_no_more_than_its_control_is_reported():
         for i, (c, control) in enumerate(variants)
     ]
     result = SimpleNamespace(sites=sites)
-    overlapping = SimpleNamespace(
-        effect_lo=np.array([-0.1, -0.2, -0.3, -0.2]), effect_hi=np.array([0.3, 0.2, 0.1, 0.2])
-    )
-    (warning,) = control_warnings(result, overlapping, 0.95)
-    assert "95% intervals overlap" in warning
-    # One strength whose interval clears the control's is an effect of the direction.
-    apart = SimpleNamespace(
-        effect_lo=np.array([-0.1, -0.2, 0.5, -0.2]), effect_hi=np.array([0.3, 0.2, 0.9, 0.2])
-    )
-    assert control_warnings(result, apart, 0.95) == []
+    rng = np.random.default_rng(0)
+    noise = rng.normal(0, 0.05, size=(4, 400))
+
+    def stats(means):
+        boot = np.asarray(means)[:, None] + noise
+        return SimpleNamespace(effect_boot=boot, effect_mean=boot.mean(1), n=20)
+
+    # The direction moves the prompts about as far as its random control: no effect.
+    same = control_comparison(result, stats([0.2, 0.2, 0.3, 0.3]), 0.95)
+    assert [c["beats_control"] for c in same] == [False, False]
+    (warning,) = control_warnings(same, 0.95)
+    assert "random control" in warning and "|direction| − |control|" in warning
+    # One strength that clearly moves them further is an effect of the direction.
+    apart = control_comparison(result, stats([0.2, 0.2, 0.9, 0.3]), 0.95)
+    assert [c["beats_control"] for c in apart] == [False, True]
+    assert control_warnings(apart, 0.95) == []
+    # A direction that does significantly less than its control doesn't beat it.
+    less = control_comparison(result, stats([0.0, 0.6, 0.0, 0.6]), 0.95)
+    assert not any(c["beats_control"] for c in less)
+    assert len(control_warnings(less, 0.95)) == 1

@@ -242,7 +242,7 @@ def test_patching_a_feature_moves_the_activation_along_its_decoder_row(
     answers = torch.tensor([prompts[i].answer_id for i in group.members])
     distractors = torch.tensor([prompts[i].distractor_id for i in group.members])
     expected = (logits[rows, answers] - logits[rows, distractors]).double().numpy()
-    np.testing.assert_allclose(result.patched_ld[0, group.members], expected, atol=1e-4)
+    np.testing.assert_allclose(result.patched[0, group.members], expected, atol=1e-4)
     assert result.extra["features"]["fit"]["variance_explained"] == pytest.approx(1.0, abs=1e-5)
 
     same = run_experiment(
@@ -253,7 +253,7 @@ def test_patching_a_feature_moves_the_activation_along_its_decoder_row(
         receiver_override="corrupt",
         source_override="corrupt",
     )
-    np.testing.assert_allclose(same.patched_ld, same.receiver_ld[None, :], atol=1e-4)
+    np.testing.assert_allclose(same.patched, same.receiver_metric[None, :], atol=1e-4)
 
 
 def test_with_an_exact_sae_the_feature_estimates_add_up_to_the_site(
@@ -384,7 +384,7 @@ def test_the_server_loads_fits_and_explores_an_sae(tiny_backend, tmp_path, monke
     sae = client.get("/api/state", headers=headers).json()["sae"]
     assert sae["state"] == "ready" and sae["info"]["d_sae"] == 2 * tiny_backend.info.d_model
 
-    body = {"dataset": "datasets/ioi.jsonl"}
+    body = {"dataset": "datasets/ioi.jsonl", "prepend_bos": True, "batch_size": 64}
     fit = client.post("/api/sae/fit", json=body, headers=headers).json()
     assert fit["variance_explained"] == pytest.approx(1.0, abs=1e-5)
     # An exact SAE spliced in changes nothing.

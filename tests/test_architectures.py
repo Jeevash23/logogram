@@ -74,7 +74,7 @@ def test_patching_a_whole_layer_reproduces_the_source(
     stats = compute_stats(spec, result)
     np.testing.assert_allclose(stats.effect_mean, 1.0, atol=TOL)
     np.testing.assert_allclose(
-        result.patched_ld, np.broadcast_to(result.reference_ld, result.patched_ld.shape), atol=TOL
+        result.patched, np.broadcast_to(result.reference_metric, result.patched.shape), atol=TOL
     )
 
 

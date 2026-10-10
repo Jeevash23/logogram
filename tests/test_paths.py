@@ -53,8 +53,8 @@ def test_from_the_last_layer_to_the_logits_a_path_is_the_whole_effect(
         backend,
         prompts,
     )
-    np.testing.assert_allclose(paths.patched_ld, patched.patched_ld, atol=TOL)
-    assert np.abs(paths.patched_ld - paths.receiver_ld[None, :]).max() > 1e-3
+    np.testing.assert_allclose(paths.patched, patched.patched, atol=TOL)
+    assert np.abs(paths.patched - paths.receiver_metric[None, :]).max() > 1e-3
 
 
 def test_holding_the_mlps_leaves_only_the_direct_path(tiny_backend, project, spec_factory):
@@ -70,7 +70,7 @@ def test_holding_the_mlps_leaves_only_the_direct_path(tiny_backend, project, spe
     direct = run_experiment(
         spec_factory(experiment=path(LOGITS, freeze_mlps=True), scope=scope), tiny_backend, prompts
     )
-    assert np.abs(through.patched_ld - direct.patched_ld).max() > 1e-4
+    assert np.abs(through.patched - direct.patched).max() > 1e-4
 
 
 def test_only_senders_before_a_receiver_are_swept(tiny_backend, project, spec_factory):
@@ -82,7 +82,7 @@ def test_only_senders_before_a_receiver_are_swept(tiny_backend, project, spec_fa
     assert {rs.layer for rs in result.sites} == {0}
     assert len(result.layout["rows"]) == 1 and len(result.sites) == tiny_backend.info.n_heads
     assert [rs.index for rs in result.sites] == list(range(len(result.sites)))
-    assert np.isfinite(result.patched_ld).all()
+    assert np.isfinite(result.patched).all()
     with pytest.raises(ScopeError, match="No sender comes before"):
         late = {
             "kind": "sites",
@@ -115,8 +115,8 @@ def test_a_head_receiver_changes_only_through_its_input(tiny_backend, project, s
         tiny_backend,
         prompts,
     )
-    assert np.abs(every.patched_ld - every.receiver_ld).max() > 1e-4
-    assert not np.allclose(every.patched_ld, one.patched_ld)
+    assert np.abs(every.patched - every.receiver_metric).max() > 1e-4
+    assert not np.allclose(every.patched, one.patched)
 
 
 def test_shared_keys_and_values_are_refused(arch_backend, project, spec_factory):
@@ -139,7 +139,7 @@ def test_shared_keys_and_values_are_refused(arch_backend, project, spec_factory)
         backend,
         prompts,
     )
-    assert np.isfinite(result.patched_ld).all()
+    assert np.isfinite(result.patched).all()
 
 
 def test_receivers_must_be_distinct_and_senders_components(tiny_backend, project, spec_factory):

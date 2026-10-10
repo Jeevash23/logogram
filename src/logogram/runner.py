@@ -26,6 +26,7 @@ from logogram.fileio import atomic_output, write_text_atomic
 from logogram.project import Project, now_iso
 from logogram.prompts import prepare_prompts
 from logogram.results import (
+    bootstrap_counts,
     build_summary,
     compute_stats,
     results_table,
@@ -33,8 +34,7 @@ from logogram.results import (
     write_results,
 )
 from logogram.schema import Manifest
-from logogram.spec import ModelRef, SAERef, Spec
-from logogram.stats import resample_counts
+from logogram.spec import SINGLE_POSITION_METRICS, ModelRef, SAERef, Spec
 
 EventFn = Callable[[str, dict[str, Any]], None]
 ModelProvider = Callable[[ModelRef], ModelBackend]
@@ -43,6 +43,33 @@ SAEProvider = Callable[[SAERef, ModelBackend], Any]
 
 class RunError(RuntimeError):
     pass
+
+
+def scrub_paths(message: str, *roots: Path | str | None) -> str:
+    """``message`` without the absolute paths of this machine: the project folder, the Hugging Face
+    cache and the home folder become placeholders. Run files are shared, and an error from a
+    library often names a file by its full path, which includes the user's name."""
+    places: list[tuple[str, str]] = []
+    for root, label in ((r, "<project>") for r in roots if r):
+        places.append((str(Path(root).resolve()), label))
+        places.append((str(root), label))
+    try:
+        from huggingface_hub import constants
+
+        places.append((str(Path(constants.HF_HUB_CACHE).resolve()), "<huggingface cache>"))
+        places.append((str(constants.HF_HUB_CACHE), "<huggingface cache>"))
+    except Exception:  # noqa: BLE001 - no cache to name
+        pass
+    home = Path.home()
+    places.append((str(home.resolve()), "~"))
+    places.append((str(home), "~"))
+    # Longest first, so a project inside the home folder reads as <project>, not ~/...
+    for path, label in sorted(
+        {p for p in places if p[0] not in ("", "/", ".")}, key=lambda p: -len(p[0])
+    ):
+        message = message.replace(path, label)
+        message = message.replace(path.replace("\\", "/"), label)
+    return message
 
 
 def configure_determinism(seed: int = 0) -> None:
@@ -149,6 +176,7 @@ def run_spec(
     ``sae`` is an already loaded SAE, used when it is the one the spec names; otherwise
     ``sae_provider`` (by default, a download from Hugging Face) loads it."""
     emit = on_event or (lambda kind, data: None)
+    upgraded = spec.upgraded_fields
     configure_determinism(spec.statistics.seed)
     run_id = run_id or project.new_run_id(spec.name)
     folder = project.prepare_run_dir(run_id)
@@ -287,16 +315,21 @@ def run_spec(
             }
             write_manifest(folder / "manifest.json", manifest)
 
-        prompts = prepare_prompts(backend, records, spec.tokenization.prepend_bos)
+        prompts = prepare_prompts(
+            backend,
+            records,
+            spec.tokenization.prepend_bos,
+            continuations=spec.metric.kind not in SINGLE_POSITION_METRICS,
+        )
         # Bootstrap resamples over the prompts a method measures (steering measures held-out
         # prompts only), drawn once per run so every site shares them.
-        resamples: dict[int, np.ndarray] = {}
+        resamples: dict[tuple[int, ...], np.ndarray] = {}
 
         def counts_for(result: Any) -> np.ndarray:
-            n = len(result.prompts)
-            if n not in resamples:
-                resamples[n] = resample_counts(n, spec.statistics.bootstrap, spec.statistics.seed)
-            return resamples[n]
+            key = tuple(p.index for p in result.prompts)
+            if key not in resamples:
+                resamples[key] = bootstrap_counts(spec, result)
+            return resamples[key]
 
         model_shape = {
             "id": info.id,
@@ -371,6 +404,12 @@ def run_spec(
             cancel=cancel,
             sae=sae,
         )
+        if upgraded:
+            result.warnings.insert(
+                0,
+                "This spec is version 1, which left some choices out; they took version 1's "
+                f"values: {'; '.join(upgraded)}. The saved spec states every value.",
+            )
         stats = compute_stats(spec, result, counts_for(result))
         summary = build_summary(spec, result, stats, run_id, model_shape)
         write_results(folder / "results.parquet", results_table(result, stats))
@@ -390,7 +429,21 @@ def run_spec(
         emit("cancelled", {"run_id": run_id})
         return outcome
     except Exception as exc:  # noqa: BLE001 - recorded in the manifest and reported
-        message = str(exc) or type(exc).__name__
+        from logogram.backends.transformer_lens import is_out_of_memory, release_memory
+
+        if is_out_of_memory(exc):
+            device = backend.info.device if backend is not None else "the device"
+            where = {"cuda": "GPU memory", "mps": "unified memory"}.get(device, "memory")
+            message = (
+                f"The run ran out of {where} at a batch of {spec.execution.batch_size} rows. Lower "
+                "execution.batch_size in the spec (it is part of the spec because it can change "
+                "results in the last digits), use fewer prompts, or a smaller model."
+            )
+            del exc
+            release_memory()
+        else:
+            message = str(exc) or type(exc).__name__
+        message = scrub_paths(message, project.root)
         outcome = fail("failed", message)
         emit("failed", {"run_id": run_id, "error": message})
         return outcome

@@ -200,6 +200,8 @@ class AnswerTokens(_Out):
     text: str
     tokens: list[str]
     id: int | None
+    # A set of single tokens, any of which counts (its tokens are the members).
+    alternatives: bool = False
 
 
 class TokenStrip(_Out):
@@ -228,12 +230,25 @@ class BaselinePrompt(_Out):
     corrupt: str
     answer: str
     distractor: str
+    # log P(answer) - log P(distractor): the logit difference for single tokens.
     clean_logit_diff: float | None
     corrupt_logit_diff: float | None
     clean_answer_prob: float | None
     corrupt_answer_prob: float | None
+    clean_metric: float | None = None
+    corrupt_metric: float | None = None
     clean_top: list[TopToken]
     corrupt_top: list[TopToken]
+
+
+class BaselineMetric(_Out):
+    kind: str
+    target: Literal["clean", "corrupt"] | None
+    label: str
+    description: str
+    clean: float | None
+    corrupt: float | None
+    gap: float | None
 
 
 class BaselineSummaryOut(_Out):
@@ -244,6 +259,7 @@ class BaselineSummaryOut(_Out):
     corrupt_prefers_answer: int
     clean_answer_prob: float | None
     corrupt_answer_prob: float | None
+    metric: BaselineMetric | None = None
 
 
 class BaselineReport(_Out):
@@ -286,6 +302,8 @@ class PredictionReport(_Out):
     batch_members: list[int]
     answer: str
     distractor: str
+    # How the lens reads the answer: one token, a set (summed), or a continuation's first token.
+    answer_reading: Literal["token", "set", "first_token"] = "token"
     issues: list[PromptIssue]
 
 
@@ -354,6 +372,9 @@ class PromptEvidence(_Out):
     distractor: str | None
     effect: float | None
     delta: float | None
+    patched_metric: float | None = None
+    receiver_metric: float | None = None
+    reference_metric: float | None = None
     patched_logit_diff: float | None
     receiver_logit_diff: float | None
     reference_logit_diff: float | None

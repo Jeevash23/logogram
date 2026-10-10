@@ -22,10 +22,12 @@ from logogram.engine import (
     EngineResult,
     LayerFn,
     ProgressFn,
-    _answer_tensors,
     _chunks,
+    answer_tensors,
     behavior_warnings,
+    check_finite,
     compute_baselines,
+    make_scorer,
 )
 from logogram.prompts import PreparedPrompt, group_by_length
 from logogram.sites import ResolvedSite, ScopeError, expand_scope, resolve_position
@@ -42,6 +44,14 @@ def check_direct_sites(
     sites: list[ResolvedSite], info: ModelInfo, prompts: list[PreparedPrompt]
 ) -> None:
     """Refuse sites, or models, for which a direct effect isn't defined."""
+    for prompt in prompts:
+        if not (prompt.answer.single and prompt.distractor.single):
+            raise ScopeError(
+                f"Prompt {prompt.index} has an answer or distractor that isn't a single token. "
+                "Direct logit attribution splits the logit difference between two tokens, which "
+                "is linear in the residual stream; sets and continuations aren't. Use single-token "
+                "answers, or activation patching."
+            )
     extra = info.extra
     if not str(extra.get("block_structure", "")).startswith(("sequential", "parallel")):
         raise ScopeError(
@@ -96,6 +106,11 @@ def run_direct_effects(
 ) -> EngineResult:
     exp = spec.experiment
     assert isinstance(exp, DirectLogitAttribution)
+    if spec.metric.kind != "logit_diff":
+        raise ScopeError(
+            "Direct logit attribution splits the logit difference, the one metric that is a sum "
+            "of what each component writes. Choose the logit difference as the metric."
+        )
     info = backend.info
     batch_size = spec.execution.batch_size
     sites, layout = expand_scope(spec, info, prompts)
@@ -103,7 +118,10 @@ def run_direct_effects(
     if on_start is not None:
         on_start(sites, layout)
     groups = group_by_length(prompts)
-    baselines = compute_baselines(backend, prompts, groups, batch_size, cancel)
+    baselines = compute_baselines(
+        backend, prompts, groups, batch_size, cancel, make_scorer(spec, prompts)
+    )
+    check_finite(baselines, info.dtype)
     which = exp.prompts
     n, n_layers = len(prompts), info.n_layers
     heads = any(rs.kind == "head" for rs in sites)
@@ -125,14 +143,14 @@ def run_direct_effects(
             if cancel is not None and cancel.is_set():
                 raise Cancelled()
             idx = group.members[sl]
-            out = backend.direct_effects(tokens[sl], *_answer_tensors(prompts, idx), heads)
+            out = backend.direct_effects(tokens[sl], *answer_tensors(prompts, idx), heads)
             for key, values in out.items():
                 terms[key][idx] = values.numpy()
             done += len(idx)
             if on_progress is not None:
                 on_progress(done, n, n_layers - 1)
 
-    gap = baselines.ld(which)
+    gap = baselines.metric(which)
     warnings: list[str] = behavior_warnings(baselines)
     mean_gap = float(gap.mean())
     if spec.metric.normalization == "dataset_gap" and abs(mean_gap) < 1e-3:
@@ -180,8 +198,9 @@ def run_direct_effects(
         baselines=baselines,
         receiver=which,
         reference=which,
-        patched_ld=nan,
+        patched=nan,
         patched_prob=nan.copy(),
+        patched_pref=nan.copy(),
         warnings=warnings,
         measure="attribution",
         delta=delta,

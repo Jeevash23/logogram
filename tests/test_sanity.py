@@ -46,7 +46,7 @@ def test_patching_all_clean_activations_at_a_layer_gives_effect_one(
     np.testing.assert_allclose(stats.effect_mean, 1.0, atol=TOL)
     # The patched run *is* the source run, prompt by prompt.
     np.testing.assert_allclose(
-        result.patched_ld, np.broadcast_to(result.reference_ld, result.patched_ld.shape), atol=TOL
+        result.patched, np.broadcast_to(result.reference_metric, result.patched.shape), atol=TOL
     )
     if normalization == "prompt_gap":
         np.testing.assert_allclose(stats.effect, 1.0, atol=1e-3)
@@ -139,6 +139,6 @@ def test_resid_mid_patch_changes_the_residual_stream(tiny_backend, project, spec
         }
     )
     result = run_engine(spec, tiny_backend, prompts)
-    np.testing.assert_allclose(result.patched_ld[0], result.patched_ld[1], atol=TOL)
-    np.testing.assert_allclose(result.patched_ld[2], result.patched_ld[3], atol=TOL)
-    assert np.abs(result.patched_ld[0] - result.receiver_ld).max() > 1e-3  # it does change things
+    np.testing.assert_allclose(result.patched[0], result.patched[1], atol=TOL)
+    np.testing.assert_allclose(result.patched[2], result.patched[3], atol=TOL)
+    assert np.abs(result.patched[0] - result.receiver_metric).max() > 1e-3  # it does change things
