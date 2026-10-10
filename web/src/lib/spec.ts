@@ -305,6 +305,15 @@ export function positionKey(p: PositionSpec): string {
   }
 }
 
+/** How many of n prompts a seeded split gives its first part, as the server rounds it (Python's
+ * round: halves go to the even neighbor). */
+export function splitCount(n: number, share: number): number {
+  const x = n * share;
+  const floor = Math.floor(x);
+  if (Math.abs(x - floor - 0.5) < 1e-9) return floor % 2 === 0 ? floor : floor + 1;
+  return Math.round(x);
+}
+
 /** Rows the sweep will run: sites × prompts × donors. A decomposition runs each prompt once, an
  * estimate once per prompt (once per step of integrated gradients). */
 export function workload(spec: Spec, n: number, nLayers: number, nHeads: number, nPositions: number | null, nLabels: number): number | null {
@@ -316,7 +325,7 @@ export function workload(spec: Spec, n: number, nLayers: number, nHeads: number,
   if (spec.experiment.kind === "steering") {
     const e = spec.experiment;
     const sites = s.kind === "layer_components" ? nLayers : s.kind === "sites" ? s.sites.length : 0;
-    const test = n - Math.round(n * e.train_fraction);
+    const test = n - splitCount(n, e.train_fraction);
     return sites * e.coefficients.length * (e.control ? 2 : 1) * Math.max(0, test);
   }
   let sites = 0;

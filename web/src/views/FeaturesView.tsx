@@ -335,7 +335,7 @@ function FeaturePanel({ info, feature }: { info: SAEInfo; feature: number }) {
   const estimate = () => {
     const st = useStore.getState();
     st.setView("experiment");
-    st.replaceForm({ ...st.form, kind: "attribution_patching", saeRef: ref, scope: { kind: "features", position: { kind: "last" }, top: 50, choose_on: null, seed: null }, nameEdited: false, draftId: null });
+    st.replaceForm({ ...st.form, kind: "attribution_patching", atpMethod: "gradient", saeRef: ref, scope: { kind: "features", position: { kind: "last" }, top: 50, choose_on: null, seed: null }, nameEdited: false, draftId: null });
   };
 
   return (

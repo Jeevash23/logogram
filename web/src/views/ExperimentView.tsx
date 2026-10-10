@@ -7,7 +7,7 @@ import { plural, shortRevision } from "../lib/format";
 import { modelName } from "../lib/hooks";
 import { EVERYTHING, SET_SITE_KINDS } from "../lib/circuits";
 import { KIND_SHORT, parseHeadQuery } from "../lib/sites";
-import { buildSpec, datasetFacts, parseStrengths, savedDifferences } from "../lib/buildSpec";
+import { buildSpec, datasetFacts, parseStrengths, savedDifferences, usesFeatures } from "../lib/buildSpec";
 import { experimentText, receiverLabel, scopeFor, scopeShort, scopeText, siteText, suggestName, workload, workloadText } from "../lib/spec";
 import { useStore, type FormState } from "../store/app";
 import { metricWords } from "../lib/metrics";
@@ -216,7 +216,7 @@ export function ExperimentView() {
                   },
                 ]}
               />
-              {form.kind === "attribution_patching" && <AttributionSettings form={form} onChange={setForm} />}
+              {form.kind === "attribution_patching" && <AttributionSettings form={form} onChange={setForm} features={usesFeatures(form.scope)} />}
             </div>
           ) : (
             <BaselineChooser baseline={form.baseline} onChange={(baseline) => setForm({ baseline })} />
@@ -425,7 +425,7 @@ function PathSettings({ form, onChange }: { form: FormState; onChange: (patch: P
 }
 
 /** How attribution patching estimates: one gradient, or integrated gradients over some steps. */
-function AttributionSettings({ form, onChange }: { form: FormState; onChange: (patch: Partial<FormState>) => void }) {
+function AttributionSettings({ form, onChange, features }: { form: FormState; onChange: (patch: Partial<FormState>) => void; features: boolean }) {
   const steps = form.atpSteps;
   const valid = Number.isInteger(steps) && steps >= 2 && steps <= 64;
   return (
@@ -444,10 +444,16 @@ function AttributionSettings({ form, onChange }: { form: FormState; onChange: (p
           {
             value: "integrated_gradients",
             title: "Integrated gradients",
-            detail: "The gradient averaged over runs between the two prompts, which corrects much of that saturation. Each step costs another forward and backward pass.",
+            detail: features
+              ? "SAE features are estimated from one gradient only. Estimate the model's components to use integrated gradients."
+              : "The gradient averaged over runs between the two prompts, which corrects much of that saturation. Each step costs another forward and backward pass.",
+            disabled: features,
           },
         ]}
       />
+      {features && form.atpMethod === "integrated_gradients" && (
+        <p className={e.required}>Required: SAE features are estimated from one gradient. Choose it above.</p>
+      )}
       {form.atpMethod === "integrated_gradients" && (
         <div className={s.grid3}>
           <Field

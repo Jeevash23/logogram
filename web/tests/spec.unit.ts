@@ -8,7 +8,7 @@ import { analysisContext } from "../src/lib/analysis";
 import { buildSpec, datasetFacts, metricOf } from "../src/lib/buildSpec";
 import { DEFAULT_FORM, formFromSpec, type FormState } from "../src/lib/formState";
 import { METRIC_KINDS, metricWords } from "../src/lib/metrics";
-import { measureWords, workload, workloadText } from "../src/lib/spec";
+import { measureWords, splitCount, workload, workloadText } from "../src/lib/spec";
 import { useStore } from "../src/store/app";
 
 const model: ModelStatus = {
@@ -131,6 +131,27 @@ test("the every-feature sweep chooses its features on a seeded share of the prom
   expect(built(held, { sae }).scope).toEqual({ kind: "features", position: { kind: "last" }, top: 20, choose_on: 0.25, seed: 3 });
   expect(refused({ ...held, scope: { ...held.scope, choose_on: 1 } }, { sae })).toContain("between 0 and 100%");
   expect(refused({ ...held, scope: { ...held.scope, seed: null } }, { sae })).toContain("Give the split of the prompts a seed");
+});
+
+test("SAE features, splits of the prompts and donors are refused before a run as the server refuses them", () => {
+  const sae = { state: "ready" as const, info: { repo: "owner/sae", path: "layer_1", revision: "abc", site: "resid_pre" as const, layer: 1, d_in: 32, d_sae: 64, activation: "relu", k: null, normalize: "none", format: "test", note: "", fit: null } };
+  const feature = { kind: "sae_feature" as const, layer: 1, feature: 3, position: { kind: "last" as const } };
+  const every = form({ kind: "attribution_patching", scope: { kind: "features", position: { kind: "last" }, top: 20, choose_on: null, seed: null } });
+  // Features are estimated from one gradient only.
+  expect(refused({ ...every, atpMethod: "integrated_gradients" }, { sae })).toContain("SAE features are estimated from a single gradient");
+  expect(refused(form({ kind: "attribution_patching", atpMethod: "integrated_gradients", scope: { kind: "sites", sites: [feature] } }), { sae })).toContain("single gradient");
+  // Patched or zero-ablated, in a run of their own.
+  expect(refused(form({ kind: "ablation", baseline: { kind: "mean", reference: "corrupt" }, scope: { kind: "sites", sites: [feature] } }), { sae })).toContain("can be patched, zero-ablated");
+  expect(built(form({ kind: "ablation", baseline: { kind: "zero" }, scope: { kind: "sites", sites: [feature] } }), { sae }).scope.kind).toBe("sites");
+  expect(refused(form({ scope: { kind: "sites", sites: [feature, { kind: "head", layer: 1, head: 0, position: { kind: "last" } }] } }), { sae })).toContain("either SAE features or model components");
+
+  // A split rounds as Python does, halves to the even neighbor.
+  expect([splitCount(5, 0.5), splitCount(3, 0.5), splitCount(7, 0.5), splitCount(10, 0.25), splitCount(8, 0.75)]).toEqual([2, 2, 4, 2, 6]);
+  const three = datasetFacts(dataset([record(), record(), record()]), null);
+  expect(refused({ ...every, scope: { ...every.scope, choose_on: 0.5, seed: 0 } as FormState["scope"] }, { sae, facts: three })).toContain("leaves 2 to choose them and 1 to report them");
+  expect(refused(form({ kind: "steering", steerApplyTo: "corrupt", scope: { kind: "layer_components", components: ["resid_pre"], position: { kind: "last" } } }), { facts: datasetFacts(dataset([record(), record()]), null) }))
+    .toContain("leaves 1 and 1");
+  expect(refused(form({ kind: "ablation", baseline: { kind: "resample", pool: "corrupt", donors: 3, seed: 0 } }), { facts: three })).toContain("draws 3 donors from the other prompts, but there are only 2");
 });
 
 test("the metric's own words name a run's values; direct attribution stays with the logit difference", () => {

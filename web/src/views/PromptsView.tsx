@@ -261,7 +261,7 @@ function DatasetTable() {
         <Callout tone="error" title={`${plural(nIssues, "prompt")} can't be used with this model`}>
           Experiments refuse datasets with unusable prompts, so results never silently skip any. Fix these lines in
           the file, or regenerate the dataset with the model loaded.
-          {model.state === "ready" && model.info && dataset.records.some((r) => r.meta?.template) && (
+          {model.state === "ready" && model.info && dataset.records.some((r) => r.meta?.template && r.meta?.pattern) && (
             <div style={{ marginTop: 8 }}>
               <Button size="small" disabled={busy} onClick={() => void regenerate(dataset.n, model.info?.id, setBusy)}>
                 {busy ? "Generating…" : `Generate IOI prompts for ${modelName(model.info.id)}`}

@@ -103,7 +103,7 @@ export function ResultsView() {
         <div className={r.heroText}>
           <span className="eyebrow">{provenance}</span>
           <h1 className={r.title}>{spec?.name ?? run.id}</h1>
-          {spec && <MethodsLine spec={spec} n={summary?.n_prompts ?? run.live?.nPrompts} />}
+          {spec && <MethodsLine spec={spec} n={summary?.n_prompts ?? run.live?.nPrompts} clusters={summary?.statistics.clusters} />}
         </div>
         <div className={r.heroActions}>
           {status === "finished" && (
@@ -476,7 +476,7 @@ function ResultsHeatmap({
 }
 
 /** The method as one quiet line: every choice that can change a number, in reading order. */
-function MethodsLine({ spec, n }: { spec: Spec; n: number | undefined }) {
+function MethodsLine({ spec, n, clusters }: { spec: Spec; n: number | undefined; clusters?: number | null }) {
   const e = spec.experiment;
   const scope = spec.scope;
   const site =
@@ -522,7 +522,7 @@ function MethodsLine({ spec, n }: { spec: Spec; n: number | undefined }) {
         ? `logit difference, as a share of ${spec.metric.normalization === "dataset_gap" ? "the mean" : "each prompt's"}`
         : `${metricWords(spec.metric).label}, normalized by ${spec.metric.normalization === "dataset_gap" ? "the dataset gap" : "each prompt's gap"}`}
       {n !== undefined && <><span className={r.sep}>·</span>n = {count(n)}</>}
-      <span className={r.sep}>·</span>{Math.round(spec.statistics.ci * 100)}% CI{spec.statistics.cluster ? `, resampling clusters of prompts with the same ${spec.statistics.cluster}` : ""}, {count(spec.statistics.bootstrap)} resamples, seed {spec.statistics.seed}
+      <span className={r.sep}>·</span>{Math.round(spec.statistics.ci * 100)}% CI{spec.statistics.cluster ? `, resampling ${clusters ? `${count(clusters)} clusters` : "clusters"} of prompts with the same ${spec.statistics.cluster}` : ""}, {count(spec.statistics.bootstrap)} resamples, seed {spec.statistics.seed}
       <span className={r.sep}>·</span>{modelName(spec.model.id)}{spec.model.revision ? ` @ ${shortRevision(spec.model.revision)}` : ""}, {spec.model.dtype}
     </p>
   );

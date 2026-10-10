@@ -7,7 +7,7 @@ import type { DatasetDetail, MetricSpec, ModelStatus, PositionSpec, SAEStatus, S
 import { siteSetsError } from "./circuits";
 import { plural, visibleToken } from "./format";
 import type { FormState } from "./formState";
-import { suggestName } from "./spec";
+import { splitCount, suggestName } from "./spec";
 
 /** What the form knows about the prompts it will run on. */
 export interface DatasetFacts {
@@ -74,6 +74,11 @@ export function metricOf(form: Pick<FormState, "metric" | "klTarget" | "normaliz
 
 const SEED_MAX = 2 ** 32;
 const isSeed = (v: number) => Number.isInteger(v) && v >= 0 && v < SEED_MAX;
+
+/** Whether a scope measures SAE features (which then belong to the spec's SAE). */
+export function usesFeatures(scope: ScopeSpec): boolean {
+  return scope.kind === "features" || (scope.kind === "sites" && scope.sites.some((x) => x.kind === "sae_feature"));
+}
 
 /** Whether the scope intervenes on every position of a component somewhere. */
 function everyPosition(scope: ScopeSpec): boolean {
@@ -158,6 +163,19 @@ export function buildSpec(
     const err = siteSetsError(scope.universe, scope.sets, ctx.model.info ?? null);
     if (err) return { error: err };
   }
+  // SAE features (src/logogram/features.py): patched, zero-ablated or estimated from one gradient,
+  // in a run of their own.
+  if (scope.kind === "sites" && scope.sites.some((x) => x.kind === "sae_feature")) {
+    if (scope.sites.some((x) => x.kind !== "sae_feature")) {
+      return { error: "A run measures either SAE features or model components. Put the features in a run of their own." };
+    }
+    const allowed = experiment.kind === "activation_patching" || experiment.kind === "attribution_patching" ||
+      (experiment.kind === "ablation" && experiment.baseline.kind === "zero");
+    if (!allowed) return { error: "SAE features can be patched, zero-ablated, or estimated by attribution patching. Choose one of those." };
+  }
+  if (usesFeatures(scope) && experiment.kind === "attribution_patching" && experiment.method !== "gradient") {
+    return { error: "SAE features are estimated from a single gradient. Choose one gradient, or estimate the model's components with integrated gradients." };
+  }
 
   // The metric, and what the method and the answers allow.
   const metric = metricOf(form);
@@ -192,6 +210,22 @@ export function buildSpec(
       (scope.kind === "sites" && scope.sites.some((x) => x.kind === "sae_feature" && x.position.kind === "all"));
     if (several > 0 && featuresEverywhere) {
       return { error: "With answers of several tokens, SAE features are patched or estimated at one position of the prompt (the last token, or a named position), not at every position." };
+    }
+    // Splits of the prompts need enough on each side (features.py, steering.py).
+    if (scope.kind === "features" && scope.choose_on !== null && facts.n > 0) {
+      const choose = splitCount(facts.n, scope.choose_on);
+      if (choose < 1 || facts.n - choose < 2) {
+        return { error: `Choosing features on ${Math.round(scope.choose_on * 100)}% of ${plural(facts.n, "prompt")} leaves ${choose} to choose them and ${facts.n - choose} to report them, but it needs at least one and two. Use more prompts, or another share.` };
+      }
+    }
+    if (experiment.kind === "steering" && facts.n > 0) {
+      const train = splitCount(facts.n, experiment.train_fraction);
+      if (train < 1 || facts.n - train < 2) {
+        return { error: `Steering needs at least one pair to compute the direction and two to measure it on, but ${plural(facts.n, "pair")} with a training share of ${Math.round(experiment.train_fraction * 100)}% leaves ${train} and ${facts.n - train}. Use more prompts or another training share.` };
+      }
+    }
+    if (experiment.kind === "ablation" && experiment.baseline.kind === "resample" && facts.n > 0 && experiment.baseline.donors > facts.n - 1) {
+      return { error: `Each prompt draws ${plural(experiment.baseline.donors, "donor")} from the other prompts, but there ${facts.n - 1 === 1 ? "is" : "are"} only ${facts.n - 1}. Lower the donor count, or use more prompts.` };
     }
   }
 
@@ -230,10 +264,10 @@ export function buildSpec(
         process_weights: true,
       });
   // SAE features belong to an SAE: the loaded one, or the one a saved spec names.
-  const usesFeatures = scope.kind === "features" || (scope.kind === "sites" && scope.sites.some((x) => x.kind === "sae_feature"));
+  const features = usesFeatures(scope);
   const loaded = ctx.sae?.state === "ready" && ctx.sae.info ? { repo: ctx.sae.info.repo, path: ctx.sae.info.path, revision: ctx.sae.info.revision } : null;
-  const sae = usesFeatures ? (loaded ?? form.saeRef) : null;
-  if (usesFeatures && !sae) return { error: "Load the SAE these features belong to (Explore → Features)." };
+  const sae = features ? (loaded ?? form.saeRef) : null;
+  if (features && !sae) return { error: "Load the SAE these features belong to (Explore → Features)." };
   if (scope.kind === "features" && experiment.kind !== "attribution_patching") {
     return { error: "Only attribution patching estimates every SAE feature. Choose it, or patch chosen features." };
   }

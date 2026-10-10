@@ -46,7 +46,9 @@ export function TokenStrip() {
     );
   }
 
-  const meta = record.meta as { template?: string; pattern?: string } | undefined;
+  const meta = record.meta as { template?: unknown; pattern?: unknown } | undefined;
+  // Where a generated prompt came from: its template, and for IOI its name order.
+  const origin = [meta?.pattern, meta?.template].filter((v): v is string => typeof v === "string" && v !== "").join(" · ");
 
   return (
     <div className={s.strip}>
@@ -58,12 +60,7 @@ export function TokenStrip() {
           </span>
           <Button size="small" variant="ghost" icon="chevronRight" aria-label="Next prompt (])" disabled={index >= context.n - 1} onClick={() => setIndex(index + 1)} />
         </div>
-        {meta?.pattern && (
-          <span className={s.meta}>
-            {meta.pattern}
-            {meta.template ? ` · ${meta.template}` : ""}
-          </span>
-        )}
+        {origin && <span className={s.meta}>{origin}</span>}
         <div className={s.spacer} />
         {tokenPosition !== null && <Button size="small" variant="ghost" onClick={() => useStore.getState().setTokenPosition(null)}>Token {tokenPosition} · clear selection</Button>}
         <span className={s.answer}>

@@ -153,7 +153,9 @@ export function RobustnessDialog() {
       title: "Patch every site for real",
       detail: "The same sweep with activation patching: one patched run per site and prompt, exact rather than estimated.",
     });
-    options.push(
+    // SAE features are estimated from one gradient only.
+    const features = spec?.scope.kind === "features" || (spec?.scope.kind === "sites" && spec.scope.sites.some((x) => x.kind === "sae_feature"));
+    if (!features) options.push(
       exp.method === "gradient"
         ? {
             value: "estimator",
