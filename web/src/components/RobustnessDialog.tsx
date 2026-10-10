@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 
 import type { BaselineSpec, ExperimentSpec } from "../api/types";
-import { useActiveRun } from "../lib/hooks";
 import { experimentText } from "../lib/spec";
 import { useStore } from "../store/app";
 import { Button, Choices, Dialog, Field, Input, Select } from "./ui";
@@ -76,9 +75,11 @@ export function RobustnessDialog() {
   const open = useStore((st) => st.robustnessDialogOpen);
   const start = useStore((st) => st.startRobustness);
   const job = useStore((st) => st.job);
-  const run = useActiveRun();
-  const exp = run.detail?.spec.experiment;
-  const dtype = run.detail?.spec.model.dtype;
+  // Only the active run's spec: the dialog doesn't follow a run's progress.
+  const runId = useStore((st) => st.activeRunId);
+  const spec = useStore((st) => (st.activeRunId ? st.runDetails[st.activeRunId]?.spec : undefined));
+  const exp = spec?.experiment;
+  const dtype = spec?.model.dtype;
   const [option, setOption] = useState<Option>("resample");
   const [donors, setDonors] = useState(10);
   const [seed, setSeed] = useState(1);
@@ -99,7 +100,7 @@ export function RobustnessDialog() {
     if (exp.kind === "ablation" && exp.baseline.kind === "mean") setReference(exp.baseline.reference === "clean" ? "corrupt" : "clean");
   }, [open, exp]);
 
-  if (!exp || !run.id) return null;
+  if (!exp || !runId) return null;
   const isResample = exp.kind === "ablation" && exp.baseline.kind === "resample";
   const options: { value: Option; title: string; detail: string }[] = [];
   if (exp.kind === "direct_logit_attribution") {
@@ -194,7 +195,7 @@ export function RobustnessDialog() {
             disabled={same || job?.status === "running"}
             onClick={() => {
               useStore.setState({ robustnessDialogOpen: false });
-              void start(run.id as string, option === "float32" ? { dtype: "float32" } : { experiment: next });
+              void start(runId, option === "float32" ? { dtype: "float32" } : { experiment: next });
             }}
           >
             Run the check

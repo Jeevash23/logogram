@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import type { Device, Dtype, EstimateResponse, ModelPreset } from "../api/types";
 import { bytes, params, pct, shortRevision } from "../lib/format";
-import { modelName, useActiveRun } from "../lib/hooks";
+import { modelName } from "../lib/hooks";
 import { useStore } from "../store/app";
 import { Button, Callout, Checkbox, Dialog, Field, Input, Progress, Segmented, Spinner, useRadioGroup } from "./ui";
 import s from "./ModelDialog.module.css";
@@ -23,9 +23,10 @@ export function ModelDialog() {
   const [device, setDevice] = useState<Device>("auto");
   const [processWeights, setProcessWeights] = useState(true);
   const [revision, setRevision] = useState("");
-  const run = useActiveRun();
+  // Only the active run's spec: the dialog doesn't follow a run's progress.
+  const runModel = useStore((st) => (st.activeRunId ? st.runDetails[st.activeRunId]?.spec.model : undefined));
   const formRef = useStore((st) => st.form.modelRef);
-  const savedRef = run.detail?.spec.model ?? formRef;
+  const savedRef = runModel ?? formRef;
   const [presets, setPresets] = useState<ModelPreset[]>([]);
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [estimate, setEstimate] = useState<EstimateResponse | null>(null);
