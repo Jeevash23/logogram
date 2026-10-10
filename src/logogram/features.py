@@ -100,6 +100,16 @@ def _check_sites(sites: list[ResolvedSite], sae: SAE) -> None:
             raise ScopeError(f"The SAE has {sae.d_sae} features, so {rs.label} doesn't exist.")
 
 
+def _check_continuations(scorer: Any, positions: list[Any]) -> None:
+    """Features are read from the prompt: a feature at every position would also need its value
+    on tokens appended to read an answer of several tokens, which the source prompt lacks."""
+    if not scorer.single_position() and any(isinstance(p, AllPositions) for p in positions):
+        raise ScopeError(
+            "With answers of several tokens, SAE features are patched or estimated at one "
+            "position of the prompt (the last token, or a named position), not at every position."
+        )
+
+
 def _fit(sae: SAE, acts: list[torch.Tensor], skip_first: bool) -> dict[str, Any]:
     """The SAE's fit on the receiver prompts' activations (without the first token when it is
     the beginning-of-sequence token, whose activations SAEs usually aren't trained on)."""
@@ -136,6 +146,7 @@ def _patching(
     receiver = receiver_override or receiver
     source = source_override or source
     warnings = check_gap(spec, baselines, prompts, receiver, reference)
+    _check_continuations(scorer, [rs.site.position for rs in sites])
     key = (sae.site, sae.layer)
     features = sorted({rs.site.feature for rs in sites if rs.site.feature is not None})
     column = {f: j for j, f in enumerate(features)}
@@ -266,6 +277,10 @@ def _attribution(
     receiver = receiver_override or receiver
     source = source_override or source
     warnings = check_gap(spec, baselines, prompts, receiver, reference)
+    _check_continuations(
+        scorer,
+        [position] if every else [rs.site.position for rs in chosen],  # type: ignore[list-item]
+    )
     if exp.method != "gradient":
         raise ScopeError(
             "SAE features are estimated from a single gradient. Choose that method, or estimate "

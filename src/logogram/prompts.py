@@ -131,9 +131,9 @@ def _target(
                 index,
                 f"{what}_tokens",
                 f"the {what} {value!r} is several tokens ({_show_tokens(backend, value)}). The "
-                "logit difference and the KL divergence read one position: use a single-token "
-                f"{what} (often with a leading space), or a log-probability or probability metric, "
-                "which read continuations of several tokens.",
+                f"logit difference reads one token: use a single-token {what} (often with a "
+                "leading space), or a log-probability or probability metric, which read "
+                "continuations of several tokens.",
             )
         )
         return None

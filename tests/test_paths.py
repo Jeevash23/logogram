@@ -167,3 +167,28 @@ def test_a_run_is_stored_like_patching(tiny_backend, project, spec_factory):
     assert (
         len(summary["layout"]["rows"]) == tiny_backend.info.n_layers
     )  # the logits come after every layer
+
+
+def test_heads_and_logits_together_keep_both_paths(tiny_backend, project, spec_factory):
+    """With heads and the logits as receivers, each sender's effect goes through both: the
+    logits path no longer overwrites what the head receivers changed. Senders after the last head
+    receiver reach only the logits, exactly as with the logits alone."""
+    heads = [{"kind": "head", "layer": 1, "head": h, "input": x} for h in range(4) for x in "qkv"]
+    scope = {"kind": "heads", "position": {"kind": "all"}}
+    prompts = _prompts(tiny_backend, project)
+
+    def change(receivers):
+        result = run_experiment(
+            spec_factory(experiment=path(receivers), scope=scope), tiny_backend, prompts
+        )
+        return (result.patched - result.receiver_metric).mean(1)
+
+    through_heads = change(heads)
+    through_logits = change(LOGITS)
+    both = change(heads + LOGITS)
+    n_heads = tiny_backend.info.n_heads
+    np.testing.assert_allclose(both[n_heads:], through_logits[n_heads:], atol=1e-6)
+    first = slice(0, n_heads)
+    assert np.abs(both[first] - through_logits[first]).max() > 1e-2
+    # Close to the sum of the two paths (not exactly: the logits read them through a nonlinearity).
+    np.testing.assert_allclose(both[first], (through_heads + through_logits[first]), atol=0.05)

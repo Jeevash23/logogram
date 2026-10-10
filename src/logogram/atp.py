@@ -79,25 +79,72 @@ def metric_gradients(
     return acts, total
 
 
-def integrated_gradients(
+def pass_products(
     backend: ModelBackend,
     scorer: Scorer,
     receiver_tokens: torch.Tensor,
     source_tokens: torch.Tensor,
     rows: list[int],
     sites: list[tuple[str, int]],
+    steps: int | None,
+) -> tuple[dict[tuple[str, int], torch.Tensor], dict[tuple[str, int], torch.Tensor] | None]:
+    """(source - receiver activation) · gradient at every position of ``sites``: at the prompt's
+    positions ``[B, L]`` (``[B, L, heads]`` for heads), and summed over the positions of tokens
+    appended to read continuations (None when nothing was appended).
+
+    Each forward pass the metric needs (one per continuation) contributes its own products: the
+    source prompt runs with the same continuation appended, so the appended positions are compared
+    like for like. With ``steps``, the gradient is averaged over runs whose input embeddings lie
+    between the receiver's and the source's (integrated gradients)."""
+    length = receiver_tokens.shape[1]
+    prompt: dict[tuple[str, int], torch.Tensor] = {}
+    tail: dict[tuple[str, int], torch.Tensor] | None = None
+    for part, conts, keep in scorer.passes(rows):
+
+        def score(logits: torch.Tensor, part: str = part) -> torch.Tensor:
+            return scorer.differentiable(logits, rows, part)
+
+        receiver_ext = extend_tokens(receiver_tokens, conts, keep)
+        source_ext = extend_tokens(source_tokens, conts, keep)
+        source_acts = backend.capture(source_ext, sites)
+        if steps is None:
+            receiver_acts, grads = backend.gradients(receiver_ext, sites, score, keep)
+        else:
+            receiver_acts = backend.capture(receiver_ext, sites)
+            grads = _integrated(backend, receiver_ext, source_ext, sites, score, keep, steps)
+        for key in sites:
+            product = (
+                (float64(source_acts[key]) - float64(receiver_acts[key])) * float64(grads[key])
+            ).sum(-1)  # [B, pos] or [B, pos, heads]
+            here = product[:, :length]
+            prompt[key] = here if key not in prompt else prompt[key] + here
+            if product.shape[1] > length:
+                rest = product[:, length:].sum(1)
+                tail = {} if tail is None else tail
+                tail[key] = rest if key not in tail else tail[key] + rest
+    return prompt, tail
+
+
+def _integrated(
+    backend: ModelBackend,
+    receiver_tokens: torch.Tensor,
+    source_tokens: torch.Tensor,
+    sites: list[tuple[str, int]],
+    score: Callable[[torch.Tensor], torch.Tensor],
+    keep: int,
     steps: int,
-) -> Grads:
-    """The metric's gradients at ``sites``, averaged over ``steps`` runs whose input embeddings
-    lie between the receiver's and the source's (at the midpoints of equal intervals)."""
+) -> dict[tuple[str, int], torch.Tensor]:
+    """The gradients at ``sites``, averaged over ``steps`` runs whose input embeddings lie between
+    the receiver's and the source's, at the midpoints of equal intervals."""
     key = ("resid_pre", 0)
     start = backend.capture(receiver_tokens, [key])[key]
     end = backend.capture(source_tokens, [key])[key]
-    total: Grads | None = None
+    total: dict[tuple[str, int], torch.Tensor] | None = None
     for k in range(steps):
         alpha = (k + 0.5) / steps
-        embeddings = start + alpha * (end - start)
-        _, grads = metric_gradients(backend, scorer, receiver_tokens, rows, sites, embeddings)
+        _, grads = backend.gradients(
+            receiver_tokens, sites, score, keep, start + alpha * (end - start)
+        )
         grads = {s: float64(g) for s, g in grads.items()}
         total = grads if total is None else {s: total[s] + grads[s] for s in total}
     assert total is not None
@@ -146,31 +193,28 @@ def run_attribution_patching(
             if cancel is not None and cancel.is_set():
                 raise Cancelled()
             idx = group.members[sl]
-            source_acts = backend.capture(source_tokens[sl], needed)
-            if exp.method == "integrated_gradients":
-                assert exp.steps is not None
-                receiver_acts = backend.capture(receiver_tokens[sl], needed)
-                grads = integrated_gradients(
-                    backend, scorer, receiver_tokens[sl], source_tokens[sl], idx, needed, exp.steps
-                )
-            else:
-                receiver_acts, grads = metric_gradients(
-                    backend, scorer, receiver_tokens[sl], idx, needed
-                )
             # Each layer's products once, then every site reads its own part of them.
-            products = {
-                key: (
-                    (float64(source_acts[key]) - float64(receiver_acts[key])) * float64(grads[key])
-                ).sum(-1)  # [B, pos] or [B, pos, heads]
-                for key in needed
-            }
+            products, tail = pass_products(
+                backend,
+                scorer,
+                receiver_tokens[sl],
+                source_tokens[sl],
+                idx,
+                needed,
+                exp.steps if exp.method == "integrated_gradients" else None,
+            )
             rows = torch.arange(len(idx))
             for rs in sites:
-                per_position = products[(rs.kind, rs.layer)]
+                key = (rs.kind, rs.layer)
+                per_position = products[key]
                 if rs.kind == "head":
                     per_position = per_position[:, :, rs.head]
                 if isinstance(rs.site.position, AllPositions):
                     values = per_position.sum(1)
+                    if tail is not None:  # every position includes the appended ones
+                        values = values + (
+                            tail[key][:, rs.head] if rs.kind == "head" else tail[key]
+                        )
                 else:
                     positions = torch.tensor(
                         [resolve_position(rs.site.position, prompts[p]) for p in idx]

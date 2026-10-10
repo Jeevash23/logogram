@@ -151,6 +151,48 @@ def patched_forward(
     return forward
 
 
+def continued_forward(
+    backend: ModelBackend, patch: Patch, source: torch.Tensor | None
+) -> Callable[[torch.Tensor, int], torch.Tensor]:
+    """A forward pass with ``patch``, where a patch of every position also covers tokens appended
+    to read a continuation: their positions take the source prompt's own values with the same
+    continuation appended (zeros for zero ablation), so patching every position of a layer still
+    reproduces the source run. ``source``: each row's source prompt ``[B, L]``, or None for zeros.
+    """
+
+    def forward(tokens: torch.Tensor, keep: int) -> torch.Tensor:
+        length = patch.values.shape[1]
+        if patch.positions is not None or tokens.shape[1] == length:
+            return backend.logits(tokens, patch, keep)
+        tail = tokens[:, length:]
+        if source is None:
+            shape = (patch.values.shape[0], tail.shape[1], *patch.values.shape[2:])
+            extra = torch.zeros(shape, dtype=patch.values.dtype, device=patch.values.device)
+        else:
+            key = (patch.kind, patch.layer)
+            full = backend.capture(torch.cat([source, tail.to(source.device)], dim=1), [key])[key]
+            if patch.kind == "head":
+                assert patch.heads is not None
+                rows = torch.arange(full.shape[0], device=full.device)
+                full = full[rows, :, patch.heads.to(full.device)]
+            extra = full[:, length:].to(dtype=patch.values.dtype, device=patch.values.device)
+        values = torch.cat([patch.values, extra], dim=1)
+        whole = Patch(kind=patch.kind, layer=patch.layer, values=values, heads=patch.heads)
+        return backend.logits(tokens, whole, keep)
+
+    return forward
+
+
+def check_mean_continuations(scorer: Scorer, every_position: bool) -> None:
+    if every_position and not scorer.single_position():
+        raise EngineError(
+            "Mean ablation at every position replaces each position with its mean over prompts "
+            "of the same length, and the tokens appended to read answers of several tokens have "
+            "no such mean. Ablate at one position, use zero or resample ablation, or use "
+            "single-token answers."
+        )
+
+
 def compute_baselines(
     backend: ModelBackend,
     prompts: list[PreparedPrompt],
@@ -486,6 +528,10 @@ def run_engine(
         k = exp.baseline.donors
         same_length = any(isinstance(s.site.position, AllPositions) for s in sites)
         donors = draw_donors(prompts, groups, k, exp.baseline.seed, same_length)
+    if baseline_kind == "mean":
+        check_mean_continuations(
+            scorer, any(isinstance(s.site.position, AllPositions) for s in sites)
+        )
     if baseline_kind == "mean" and any(isinstance(s.site.position, AllPositions) for s in sites):
         alone = sum(1 for g in groups if len(g.members) == 1)
         if alone:
@@ -526,6 +572,7 @@ def run_engine(
         )
         for gi, group in enumerate(groups):
             receiver_tokens = group.clean if receiver == "clean" else group.corrupt
+            source_tokens = group.clean if source == "clean" else group.corrupt
             # Rows are grouped by (kind, all-positions?) so one hook serves the whole batch.
             buckets: dict[tuple[str, bool], list[_Row]] = {}
             for site in layer_sites:
@@ -560,10 +607,16 @@ def run_engine(
                         backend.device,
                     )
                     local_idx = torch.tensor([r.local for r in chunk], dtype=torch.long)
+                    if baseline_kind in ("patch", "resample") and all_pos:
+                        donor = [r.prompt if r.donor is None else r.donor for r in chunk]
+                        own = source_tokens[torch.tensor([local_of[p] for p in donor])]
+                        forward = continued_forward(backend, patch, own)
+                    elif baseline_kind == "zero" and all_pos:
+                        forward = continued_forward(backend, patch, None)
+                    else:
+                        forward = patched_forward(backend, patch)
                     scores = scorer.score(
-                        patched_forward(backend, patch),
-                        receiver_tokens[local_idx],
-                        [r.prompt for r in chunk],
+                        forward, receiver_tokens[local_idx], [r.prompt for r in chunk]
                     )
                     for r, value, prob, pref in zip(
                         chunk, scores.metric, scores.prob, scores.pref, strict=True

@@ -40,7 +40,6 @@ from logogram.engine import (
     draw_donors,
     empty_values,
     make_scorer,
-    patched_forward,
 )
 from logogram.prompts import LengthGroup, PreparedPrompt, group_by_length
 from logogram.sites import ResolvedSite, ScopeError, resolve_position
@@ -158,6 +157,34 @@ def replaced(
     return {k: m for k, m in masks.items() if bool(m.any())}
 
 
+def tail_masks(s: SiteSet, universe: list[str] | None, info: ModelInfo) -> dict[Key, torch.Tensor]:
+    """What the set replaces at the positions of tokens appended to read a continuation, per
+    (kind, layer): a component (or head) at every position covers them too; a site at one prompt
+    position doesn't. ``[H]`` for heads, a single value otherwise."""
+    H = info.n_heads
+    masks: dict[Key, torch.Tensor] = {}
+
+    def blank(kind: str, value: bool) -> torch.Tensor:
+        return torch.full((H,) if kind == "head" else (), value, dtype=torch.bool)
+
+    if s.complement:
+        for kind in universe or []:
+            for layer in range(info.n_layers):
+                masks[(kind, layer)] = blank(kind, True)
+    for site in s.sites:
+        if site.position.kind != "all":
+            continue
+        key = (site.kind, site.layer)
+        if key not in masks:
+            masks[key] = blank(site.kind, False)
+        value = not s.complement
+        if site.kind == "head":
+            masks[key][site.head] = value
+        else:
+            masks[key] = torch.tensor(value)
+    return masks
+
+
 class _Means:
     """Mean activations per position over the reference prompts of each length group."""
 
@@ -259,6 +286,12 @@ def run_site_sets(
         k = exp.baseline.donors
         donors = draw_donors(prompts, groups, k, exp.baseline.seed, same_length=True)
     means = _Means(backend, groups, source, batch_size, cancel) if kind == "mean" else None
+    if kind == "mean" and not scorer.single_position():
+        raise EngineError(
+            "Mean ablation of a set replaces positions with their mean over prompts of the same "
+            "length, and the tokens appended to read answers of several tokens have no such "
+            "mean. Use zero or resample ablation, or single-token answers."
+        )
     if kind == "mean":
         alone = sum(1 for g in groups if len(g.members) == 1)
         if alone:
@@ -294,6 +327,7 @@ def run_site_sets(
             receiver_tokens = group.clean if receiver == "clean" else group.corrupt
             source_tokens = group.clean if source == "clean" else group.corrupt
             masks = {p: replaced(s, scope.universe, prompts[p], info) for p in group.members}
+            tails = tail_masks(s, scope.universe, info)
             keys = sorted({key for m in masks.values() for key in m})
             if not keys:
                 raise ScopeError(f"The set {s.label!r} replaces nothing in these prompts.")
@@ -330,9 +364,17 @@ def run_site_sets(
                     for key in keys
                 ]
                 local = torch.tensor([local_of[p] for p, _ in chunk], dtype=torch.long)
-                scores = scorer.score(
-                    patched_forward(backend, patches), receiver_tokens[local], [p for p, _ in chunk]
+                donor = torch.tensor(
+                    [local_of[p if d is None else d] for p, d in chunk], dtype=torch.long
                 )
+                forward = _continued(
+                    backend,
+                    patches,
+                    tails,
+                    None if kind == "zero" else source_tokens[donor],
+                    group.length,
+                )
+                scores = scorer.score(forward, receiver_tokens[local], [p for p, _ in chunk])
                 for (p, _), value, prob, pref in zip(
                     chunk, scores.metric, scores.prob, scores.pref, strict=True
                 ):
@@ -346,6 +388,54 @@ def run_site_sets(
             on_layer(rs.index, [rs.index], result)
     warnings.extend(check_values(patched, "patched values", info.dtype))
     return result
+
+
+def _continued(
+    backend: ModelBackend,
+    patches: list[Patch],
+    tails: dict[Key, torch.Tensor],
+    source: torch.Tensor | None,
+    length: int,
+) -> Callable[[torch.Tensor, int], torch.Tensor]:
+    """A forward pass with the set's patches, extended over tokens appended to read a
+    continuation: there the set replaces what it replaces at every position, with the source's
+    own values with the same continuation appended (zeros for zero ablation)."""
+
+    def forward(tokens: torch.Tensor, keep: int) -> torch.Tensor:
+        if tokens.shape[1] == length:
+            return backend.logits(tokens, patches, keep)
+        tail = tokens[:, length:]
+        extra: dict[Key, torch.Tensor] = {}
+        if source is not None:
+            full = backend.capture(
+                torch.cat([source, tail.to(source.device)], dim=1),
+                [(p.kind, p.layer) for p in patches],
+            )
+            extra = {k: v[:, length:] for k, v in full.items()}
+        whole = []
+        for p in patches:
+            key = (p.kind, p.layer)
+            B, T = p.values.shape[0], tail.shape[1]
+            values = extra.get(key)
+            if values is None:
+                values = torch.zeros(
+                    (B, T, *p.values.shape[2:]), dtype=p.values.dtype, device=p.values.device
+                )
+            rule = tails.get(key)
+            if rule is None:
+                rule = torch.zeros(p.mask.shape[2:], dtype=torch.bool)  # type: ignore[union-attr]
+            mask = rule.expand(B, T, *rule.shape).to(p.mask.device)  # type: ignore[union-attr]
+            whole.append(
+                Patch(
+                    kind=p.kind,
+                    layer=p.layer,
+                    values=torch.cat([p.values, values.to(p.values.device, p.values.dtype)], dim=1),
+                    mask=torch.cat([p.mask, mask], dim=1),  # type: ignore[list-item]
+                )
+            )
+        return backend.logits(tokens, whole, keep)
+
+    return forward
 
 
 def _blank(key: Key, length: int, info: ModelInfo) -> torch.Tensor:

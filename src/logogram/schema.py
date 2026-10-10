@@ -90,6 +90,8 @@ class Layout(_Model):
     col_title: str
     rows: list[LayoutAxis]
     cols: list[LayoutAxis]
+    # Sets of sites: the components a complement set replaces.
+    universe: list[str] | None = None
 
 
 # -- summary.json ------------------------------------------------------------------------------

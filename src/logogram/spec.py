@@ -614,8 +614,9 @@ METRIC_LABELS: dict[str, str] = {
     "kl": "KL divergence",
 }
 
-# Metrics read at the last position only: they can't score answers of several tokens.
-SINGLE_POSITION_METRICS = ("logit_diff", "kl")
+# Metrics that read answers at the last position only: they can't score continuations of several
+# tokens. (The KL divergence reads no answer; the preference it reports beside it reads them.)
+SINGLE_POSITION_METRICS = ("logit_diff",)
 
 
 def describe_metric(metric: Any) -> str:
