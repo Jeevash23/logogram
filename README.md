@@ -279,7 +279,8 @@ records each prompt's template in `meta`:
 | `factual_recall` | a country's capital | another country | logit difference (log-probability difference for capitals of several tokens) |
 
 With a model loaded, the app keeps only words that are single tokens for it. Each task says how
-many distinct prompts its templates allow; a request for more is refused.
+many distinct prompts its templates allow; a request for more is refused. GPT-2 small does all of
+them but the docstring task, where it prefers the right argument in about half the prompts.
 
 ## Experiments
 
@@ -317,7 +318,11 @@ patching closely.
 the gradient is averaged over `steps` runs whose input embeddings lie evenly between the receiver
 prompt's and the source prompt's, so the estimate follows the metric along the way from one prompt
 to the other instead of only at its start. It costs `steps` forward and backward passes instead of
-one; 8 to 16 steps are usual. Its estimates are verified by patching the same way.
+one; 8 to 16 steps are usual. Its estimates are verified by patching the same way. On the IOI
+prompts with GPT-2 small, 16 steps estimate the residual stream at S2 in layer 0 at 1.00, where
+patching measures 1.00 and one gradient −0.13; over every residual stream site at the named
+positions, the estimates correlate 0.99 with patching (one gradient: 0.56). For head outputs the
+two agree about equally well with patching (0.98 and 0.99).
 
 **Direct logit attribution** splits the logit difference of the clean or the corrupt prompts
 (your choice; there is no default) into what each head, attention output and MLP output writes
@@ -413,6 +418,11 @@ read against it, from the same resamples:
   site at a time);
 * for a set of two sites that are also run alone, the effect of both beyond the sum of the two
   (their interaction).
+
+With GPT-2 small, keeping the 26 heads of Wang et al.'s IOI circuit (at every position) and
+mean-ablating every other head over ABC prompts keeps all of the behavior (faithfulness 1.02);
+taking 9.9 out of it costs 0.10 [0.06, 0.14], and ablating 9.9 and 9.6 together breaks less than
+the two do alone, −0.14 [−0.18, −0.11], as the backup name movers the paper describes would.
 
 **The metric** reads the answer at the end of each prompt, in one of six ways: the logit
 difference (answer minus distractor, at the last token), the log-probability difference, the
@@ -611,7 +621,12 @@ Rather than trusting a list, Logogram checks every model when it loads, on a sho
 GPT-2 small is the model the bundled example was made for. Every method has been run end to end
 with real weights on GPT-2 small (with a SAELens and an OpenAI SAE), Pythia-70m (with an
 EleutherAI SAE) and Qwen 2.5 0.5B, and the test suite runs the sanity checks on tiny random models
-of the Llama, Pythia, Qwen 2, Gemma 2 and OLMo 2 families without downloading anything. The
+of the Llama, Pythia, Qwen 2, Gemma 2 and OLMo 2 families without downloading anything. What 0.2
+added was checked on GPT-2 small: patching the whole input gives an effect of exactly 1 under
+every metric, including for answers of several tokens; the logit and log-probability differences
+agree to 5 × 10⁻⁷; integrated gradients, sets of sites, the tasks and clustered bootstraps give
+the results described above; and reruns are bit-identical. Gemma Scope 2's SAEs and transcoders
+were read from their published files; running them needs Gemma 3, which wasn't checked. The
 example's names are single tokens for GPT-2 and Qwen but not all for Pythia; for another model,
 generate IOI prompts in the app, which keeps only names that are single tokens for it. A small
 model may not do the task at all (Pythia-70m prefers the repeated name), and its runs then say so.
