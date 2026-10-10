@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { api } from "../api/client";
 import type { FeatureReport, SAEInfo, TokenFeatures } from "../api/types";
-import { Button, Callout, Empty, Field, Input, Progress, Segmented, Select, Spinner } from "../components/ui";
+import { Button, Callout, Empty, Field, Input, Progress, Segmented, Select, Spinner, useRadioGroup } from "../components/ui";
 import { inkScale, textOn } from "../lib/color";
 import { bytes, count, num, pct, signed, visibleToken } from "../lib/format";
 import { modelName, useAnalysisContext } from "../lib/hooks";
@@ -73,6 +73,10 @@ function Loader() {
   const [finding, setFinding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const id = model.info?.id ?? "";
+  const suggestionRadio = useRadioGroup(suggestions.map((x) => ({ value: x.repo })), repo, (next) => {
+    setRepo(next);
+    setFolders(null);
+  });
 
   useEffect(() => {
     if (!id) return;
@@ -107,8 +111,8 @@ function Loader() {
     <section className={f.loader} aria-label="Load an SAE">
       {suggestions.length > 0 && (
         <div className={f.suggestions} role="radiogroup" aria-label="SAEs for this model">
-          {suggestions.map((x) => (
-            <button key={x.repo} type="button" role="radio" aria-checked={repo === x.repo} className={f.suggestion} onClick={() => { setRepo(x.repo); setFolders(null); }}>
+          {suggestions.map((x, i) => (
+            <button key={x.repo} type="button" role="radio" aria-checked={repo === x.repo} className={f.suggestion} onClick={() => { setRepo(x.repo); setFolders(null); }} {...suggestionRadio(i)}>
               <span className={f.dot} />
               <span className={f.repo}>{x.repo}</span>
               <span className={f.detail}>{x.detail}</span>

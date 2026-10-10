@@ -1,5 +1,5 @@
 import * as ContextMenu from "@radix-ui/react-context-menu";
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 
 import type { SiteBase, SiteResult } from "../../api/types";
 import { cornerFlag, font, inkRing, prepareCanvas, useChromeColors, useElementSize } from "../../lib/canvas";
@@ -110,6 +110,7 @@ export function ModelMap({ prominent = false, structureOnly = false }: { promine
   // the selection never redraws the whole map.
   const overlayRef = useRef<HTMLCanvasElement>(null);
   const reduceMotion = usePrefersReducedMotion();
+  const helpId = useId();
   const { width } = useElementSize(scrollRef);
   const [hover, setHover] = useState<{ sel: Selection; x: number; y: number } | null>(null);
   const [menuSel, setMenuSel] = useState<Selection | null>(null);
@@ -352,8 +353,14 @@ export function ModelMap({ prominent = false, structureOnly = false }: { promine
 
   const onContextMenu = (e: MouseEvent) => {
     const sel = hit(e.clientX, e.clientY);
-    setMenuSel(sel ? withContext(sel) : null);
-    if (sel) select(withContext(sel));
+    if (sel) {
+      setMenuSel(withContext(sel));
+      select(withContext(sel));
+      return;
+    }
+    // Opened from the keyboard (Shift+F10 or the menu key), the pointer is elsewhere: the menu
+    // acts on the selected component.
+    setMenuSel(document.activeElement === canvasRef.current ? selection : null);
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
@@ -424,8 +431,10 @@ export function ModelMap({ prominent = false, structureOnly = false }: { promine
                   ref={canvasRef}
                   className={s.canvas}
                   tabIndex={0}
-                  role="grid"
-                  aria-label="Model map: layers as rows; residual stream, attention heads, attention and MLP outputs as cells. Use the arrow keys to move."
+                  role="group"
+                  aria-roledescription="interactive model map"
+                  aria-label="Model map"
+                  aria-describedby={helpId}
                   onMouseMove={onMove}
                   onMouseLeave={() => setHover(null)}
                   onClick={onClick}
@@ -469,6 +478,12 @@ export function ModelMap({ prominent = false, structureOnly = false }: { promine
           )}
         </div>
       )}
+      <p id={helpId} className="visually-hidden">
+        Layers are rows; the residual stream, each attention head, and the attention and MLP outputs are cells. Arrow keys
+        move between components and layers, Home and End go to the start and end of a layer, and Escape clears the
+        selection. P patches the selected component, B ablates it, A opens a head's attention, and Shift+F10 lists these
+        actions.
+      </p>
       <div className="visually-hidden" aria-live="polite">
         {announcement}
       </div>
