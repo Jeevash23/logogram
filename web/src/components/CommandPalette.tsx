@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { architectureOf } from "../lib/keys";
 import { parseHeadQuery } from "../lib/sites";
 import { useStore, VIEWS } from "../store/app";
+import { MOD, SHIFT } from "./Header";
 import { Icon, Kbd } from "./ui";
 import s from "./CommandPalette.module.css";
 
@@ -45,6 +46,32 @@ function useCommands(query: string): Command[] {
           group: "Actions",
           disabled: st.job?.status !== "running" || st.job?.kind !== "run" || !!st.job?.cancelling,
           run: () => useStore.setState({ cancelConfirmOpen: true }),
+        },
+      );
+      cmds.push(
+        {
+          id: "undo-form",
+          label: "Undo the last change to the experiment form",
+          group: "Experiment form",
+          keywords: "revert back restore",
+          shortcut: `${MOD} Z`,
+          disabled: st.formHistory.past.length === 0,
+          run: () => {
+            st.setView("experiment");
+            st.undoForm();
+          },
+        },
+        {
+          id: "redo-form",
+          label: "Redo the change to the experiment form",
+          group: "Experiment form",
+          keywords: "again restore",
+          shortcut: `${MOD} ${SHIFT} Z`,
+          disabled: st.formHistory.future.length === 0,
+          run: () => {
+            st.setView("experiment");
+            st.redoForm();
+          },
         },
       );
       if (st.selection) {

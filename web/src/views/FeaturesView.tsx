@@ -315,7 +315,9 @@ function FeaturePanel({ info, feature }: { info: SAEInfo; feature: number }) {
   const ref = { repo: info.repo, path: info.path, revision: info.revision };
   const patch = () => {
     const st = useStore.getState();
-    st.setForm({
+    st.setView("experiment");
+    st.replaceForm({
+      ...st.form,
       kind: "activation_patching",
       saeRef: ref,
       scope: {
@@ -325,12 +327,11 @@ function FeaturePanel({ info, feature }: { info: SAEInfo; feature: number }) {
       nameEdited: false,
       draftId: null,
     });
-    st.setView("experiment");
   };
   const estimate = () => {
     const st = useStore.getState();
-    st.setForm({ kind: "attribution_patching", saeRef: ref, scope: { kind: "features", position: { kind: "last" }, top: 50 }, nameEdited: false, draftId: null });
     st.setView("experiment");
+    st.replaceForm({ ...st.form, kind: "attribution_patching", saeRef: ref, scope: { kind: "features", position: { kind: "last" }, top: 50 }, nameEdited: false, draftId: null });
   };
 
   return (

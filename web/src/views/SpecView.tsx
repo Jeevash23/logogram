@@ -102,7 +102,7 @@ export function SpecView() {
                       const out = await guard(() => api.saveDraft(spec, st.form.draftId));
                       if (out && useStore.getState().project?.session_id === st.project?.session_id) {
                         // Running the form now fills this draft's folder.
-                        st.setForm({ draftId: out.run_id });
+                        st.setForm({ draftId: out.run_id }, { record: false });
                         st.notify(`Saved ${out.path}`);
                         await st.refreshRuns();
                       }

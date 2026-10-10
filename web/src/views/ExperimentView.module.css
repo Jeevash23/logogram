@@ -5,6 +5,15 @@
   max-width: 860px;
 }
 
+/* Undo and redo: quiet, set apart from the actions that run or preview the spec. */
+.history {
+  display: flex;
+  gap: 2px;
+  margin-right: 6px;
+  padding-right: 8px;
+  border-right: 1px solid var(--line);
+}
+
 .section {
   display: flex;
   flex-direction: column;

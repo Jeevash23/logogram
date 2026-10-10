@@ -11,7 +11,7 @@ import { ago, capitalize, ci, count, duration, num, pct, shortRevision, signed }
 import { modelName, siteValue, useActiveRun, useRunProfile } from "../lib/hooks";
 import { findSite, layoutTitle, selectionOfSite, siteAt } from "../lib/sites";
 import { baselineText, measureOf, measureWords, positionText } from "../lib/spec";
-import { formFromSpec, useStore } from "../store/app";
+import { useStore } from "../store/app";
 import { Distribution } from "../components/Distribution";
 import { api } from "../api/client";
 import { copyText } from "../components/CopyCommand";
@@ -135,7 +135,7 @@ export function ResultsView() {
               onClick={() =>
                 status === "draft" && run.id
                   ? void useStore.getState().openDraft(run.id)
-                  : useStore.setState({ form: formFromSpec(spec), view: "experiment", analysisSource: "form" })
+                  : useStore.getState().editRun(spec)
               }
             >
               {status === "draft" ? "Open in the form" : "Edit and rerun"}

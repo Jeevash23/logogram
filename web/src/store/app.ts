@@ -33,6 +33,18 @@ import type {
 } from "../api/types";
 import type { ResolvedTheme } from "../lib/color";
 import { siteFromSelection } from "../lib/spec";
+import {
+  continuesEdit,
+  editFields,
+  EMPTY_HISTORY,
+  forgetDraft,
+  pushHistory,
+  redoHistory,
+  sameData,
+  undoHistory,
+  type FormHistory,
+  type LastEdit,
+} from "../lib/formHistory";
 import { fitSelection, isResidKind, sitesOnComponent, type Selection } from "../lib/sites";
 
 export type Screen = "loading" | "system" | "projects" | "workbench" | "error";
@@ -181,6 +193,16 @@ export const DEFAULT_FORM: FormState = {
   draftId: null,
 };
 
+/** How an action from elsewhere replaces the experiment form. */
+export interface ReplaceFormOptions {
+  /** The notice that offers to undo it: "Experiment form replaced" unless given; null for none. */
+  notice?: string | null;
+  /** Put back whatever else the action used up, such as the staged sites it moved into the form. */
+  onUndo?: () => void;
+}
+
+export const FORM_REPLACED = "Experiment form replaced";
+
 export function formFromSpec(spec: Spec): FormState {
   const e = spec.experiment;
   return {
@@ -258,6 +280,8 @@ interface Store {
   compareMode: "side" | "diff";
   flags: Record<string, { against: string; sites: number[] }>;
   form: FormState;
+  /** Undo and redo for the form: what each change replaced, and what was undone. */
+  formHistory: FormHistory;
   baselines: Record<string, BaselineReport>;
   specSource: "run" | "draft";
   inspectorFocus: { section: "evidence" | "runs"; at: number } | null;
@@ -297,7 +321,9 @@ interface Store {
   fitSelection: () => void;
 
   openRun: (id: string | null, view?: View) => Promise<void>;
-  openDraft: (id: string) => Promise<void>;
+  /** Load a saved, unrun experiment into the form. Quiet when opening a project, where the form
+   * was empty: no undo step and no notice. */
+  openDraft: (id: string, options?: { quiet?: boolean }) => Promise<void>;
   loadRun: (id: string, force?: boolean) => Promise<RunDetail | undefined>;
   select: (sel: Selection | null) => void;
   setTokenPosition: (position: number | null) => void;
@@ -311,7 +337,16 @@ interface Store {
   startVerification: (runId: string, top: number) => Promise<void>;
   cancelJob: () => Promise<void>;
   setCompare: (a: string | null, b: string | null) => void;
-  setForm: (patch: Partial<FormState>) => void;
+  /** A change made in the form. Rapid edits to the same fields are one undo step; with record
+   * false (the suggested name following the rest) it is no step at all. */
+  setForm: (patch: Partial<FormState>, options?: { record?: boolean }) => void;
+  /** Replace the form from elsewhere (a map cell, a run, a diagnostic): one undo step, and a
+   * notice offering to undo it. Returns whether anything changed. */
+  replaceForm: (form: FormState, options?: ReplaceFormOptions) => boolean;
+  undoForm: () => void;
+  redoForm: () => void;
+  /** A finished, failed or cancelled run's spec, in the form, to change and run again. */
+  editRun: (spec: Spec) => void;
   prefillExperiment: (kind: FormState["kind"], sel: Selection) => void;
   focusInspector: (section: "evidence" | "runs") => void;
 
@@ -319,6 +354,9 @@ interface Store {
 }
 
 let noticeId = 0;
+// The last edit made in the form, so that typing makes one undo step rather than one per key.
+let lastEdit: LastEdit | null = null;
+const FORM_NOTICE = "form-replaced";
 // Opening runs awaits the server; only the latest request may change what is shown.
 let openSeq = 0;
 let projectSeq = 0;
@@ -378,6 +416,7 @@ export const useStore = create<Store>((set, get) => ({
   compareMode: "side",
   flags: {},
   form: DEFAULT_FORM,
+  formHistory: EMPTY_HISTORY,
   baselines: {},
   specSource: "run",
   inspectorFocus: null,
@@ -492,6 +531,7 @@ export const useStore = create<Store>((set, get) => ({
   enterProject: async (project) => {
     if (get().project?.session_id === project.session_id) return;
     const seq = ++projectSeq;
+    lastEdit = null;
     setProjectSession(project.session_id);
     openSeq += 1; // whatever was being opened belongs to the previous project
     inflight.clear();
@@ -518,6 +558,7 @@ export const useStore = create<Store>((set, get) => ({
       compareIds: [null, null],
       flags: {},
       form: DEFAULT_FORM,
+      formHistory: EMPTY_HISTORY,
       baselines: {},
       specSource: "run",
     });
@@ -535,12 +576,13 @@ export const useStore = create<Store>((set, get) => ({
       set((s) => ({ live: { ...s.live, [running.id]: s.live[running.id] ?? emptyLive(running.id) } }));
       await get().openRun(running.id, "results");
     } else if (finished) await get().openRun(finished.id, "explore");
-    else if (draft) await get().openDraft(draft.id);
+    else if (draft) await get().openDraft(draft.id, { quiet: true });
     else set({ view: project.datasets.length ? "baseline" : "prompts" });
   },
 
   leaveProject: () => {
     projectSeq += 1;
+    lastEdit = null;
     openSeq += 1;
     datasetSeq += 1;
     inflight.clear();
@@ -549,7 +591,7 @@ export const useStore = create<Store>((set, get) => ({
       tokenPosition: null, stagedSites: [], headPins: [], noteEditor: null, researchVersion: 0,
       job: get().job?.project_session ? null : get().job,
       runs: [], runDetails: {}, activeRunId: null, pendingRunId: null, live: {}, selection: null,
-      compareIds: [null, null], flags: {}, form: DEFAULT_FORM, baselines: {}, specSource: "run",
+      compareIds: [null, null], flags: {}, form: DEFAULT_FORM, formHistory: EMPTY_HISTORY, baselines: {}, specSource: "run",
       analysisSource: "form", view: "prompts", inspectorFocus: null, robustnessDialogOpen: false,
       cancelConfirmOpen: false, notices: [],
     });
@@ -628,13 +670,18 @@ export const useStore = create<Store>((set, get) => ({
     }
   },
 
-  openDraft: async (id) => {
+  openDraft: async (id, options = {}) => {
     // A saved spec that hasn't run: load it into the experiment form, ready to run.
     const seq = ++openSeq;
     const detail = await get().loadRun(id, true);
     if (!detail || seq !== openSeq) return;
-    set({ form: { ...formFromSpec(detail.spec), draftId: id }, view: "experiment", activeRunId: id, analysisSource: "form" });
+    const bos = analysisContext(get()).options.prepend_bos;
+    const form = { ...formFromSpec(detail.spec), draftId: id };
+    set({ view: "experiment", activeRunId: id, analysisSource: "form" });
+    if (options.quiet) set({ form });
+    else swapForm(form);
     if (detail.spec.dataset.path !== get().datasetPath) await get().selectDataset(detail.spec.dataset.path);
+    else analysisChanged(bos);
   },
 
   loadRun: async (id, force = false) => {
@@ -674,9 +721,18 @@ export const useStore = create<Store>((set, get) => ({
   configureStaged: () => {
     const st = get();
     if (!st.stagedSites.length) return;
+    const bos = analysisContext(st).options.prepend_bos;
+    const staged = st.stagedSites;
     const saved = analysisSourceFor(st) === "run" && st.activeRunId ? st.runDetails[st.activeRunId]?.spec : undefined;
     const form = saved ? formFromSpec(saved) : st.form;
-    set({ view: "experiment", analysisSource: "form", stagedSites: [], form: { ...form, scope: { kind: "sites", sites: st.stagedSites }, draftId: null, nameEdited: false, name: "" } });
+    set({ view: "experiment", analysisSource: "form", stagedSites: [] });
+    swapForm({ ...form, scope: { kind: "sites", sites: staged }, draftId: null, nameEdited: false, name: "" }, {
+      // Undo returns the sites to the tray, beside any staged since.
+      onUndo: () => useStore.setState((now) => ({
+        stagedSites: [...staged, ...now.stagedSites.filter((x) => !staged.some((y) => sameData(x, y)))],
+      })),
+    });
+    analysisChanged(bos);
   },
   pinHead: (selection) => {
     if (selection.part !== "head") return;
@@ -716,7 +772,9 @@ export const useStore = create<Store>((set, get) => ({
     openSeq += 1;
     get().applyJob(out.job);
     set((s) => ({
+      // The draft's folder now holds this run: no form, current or in the history, fills it again.
       form: { ...s.form, draftId: null },
+      formHistory: draftId ? forgetDraft(s.formHistory, draftId) : s.formHistory,
       pendingRunId: out.run_id,
       activeRunId: out.run_id,
       analysisSource: "run",
@@ -764,13 +822,44 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   setCompare: (a, b) => set({ compareIds: [a, b] }),
-  setForm: (patch) => {
-    set((st) => ({ form: { ...st.form, ...patch }, analysisSource: "form" }));
-    if ("prependBos" in patch) { set({ tokenPosition: null, stagedSites: [] }); void get().reloadDataset(); }
-    get().setPromptIndex(get().promptIndex);
+  setForm: (patch, options = {}) => {
+    const st = get();
+    const before = st.form;
+    const form = { ...before, ...patch };
+    if (sameData(form, before)) return;
+    const bos = analysisContext(st).options.prepend_bos;
+    let history = st.formHistory;
+    if (options.record !== false) {
+      const at = Date.now();
+      const fields = editFields(patch);
+      history = continuesEdit(lastEdit, fields, at) && history.past.length ? { past: history.past, future: [] } : pushHistory(history, before);
+      lastEdit = { fields, at };
+    }
+    set({ form, formHistory: history, analysisSource: "form" });
+    // Staged positions count tokens as they were tokenized; BOS moves every token.
+    if (form.prependBos !== before.prependBos) set({ stagedSites: [] });
+    analysisChanged(bos);
+  },
+
+  replaceForm: (form, options) => {
+    const bos = analysisContext(get()).options.prepend_bos;
+    const changed = swapForm(form, options);
+    if (changed) analysisChanged(bos);
+    return changed;
+  },
+
+  undoForm: () => stepForm(undoHistory),
+  redoForm: () => stepForm(redoHistory),
+
+  editRun: (spec) => {
+    const bos = analysisContext(get()).options.prepend_bos;
+    set({ view: "experiment", analysisSource: "form" });
+    swapForm(formFromSpec(spec));
+    analysisChanged(bos);
   },
 
   prefillExperiment: (kind, sel) => {
+    const bos = analysisContext(get()).options.prepend_bos;
     const form = get().form;
     // Use the residual site of the active run when the selection is a residual cell.
     // A residual cell names its site; otherwise use the residual site the active run measured.
@@ -779,22 +868,19 @@ export const useStore = create<Store>((set, get) => ({
     const measured = sitesOnComponent(sites, sel).find((x) => isResidKind(x.kind))?.kind;
     const residKind = sel.kind ?? (measured && isResidKind(measured) ? measured : "resid_pre");
     const site = siteFromSelection(sel, residKind);
-    set({
-      selection: sel,
-      view: "experiment",
-      analysisSource: "form",
-      form: {
-        ...form,
-        kind,
-        baseline: kind === "ablation" ? form.baseline : null,
-        scope: { kind: "sites", sites: [site] },
-        nameEdited: false,
-        draftId: null,
-        modelRef: null,
-        savedDataset: null,
-        notes: "",
-      },
+    set({ selection: sel, view: "experiment", analysisSource: "form" });
+    // A new experiment at this site; the notes stay, since they are the user's own words.
+    swapForm({
+      ...form,
+      kind,
+      baseline: kind === "ablation" ? form.baseline : null,
+      scope: { kind: "sites", sites: [site] },
+      nameEdited: false,
+      draftId: null,
+      modelRef: null,
+      savedDataset: null,
     });
+    analysisChanged(bos);
   },
 
   focusInspector: (section) => set({ inspectorFocus: { section, at: Date.now() } }),
@@ -932,6 +1018,48 @@ export const useStore = create<Store>((set, get) => ({
     }
   },
 }));
+
+/**
+ * Replace the form as one undo step, with a notice offering to undo it. The caller handles what
+ * the change means for the analysis context (see analysisChanged).
+ */
+function swapForm(next: FormState, options: ReplaceFormOptions = {}): boolean {
+  const st = useStore.getState();
+  const before = st.form;
+  if (sameData(next, before)) return false;
+  lastEdit = null;
+  useStore.setState({ form: next, formHistory: pushHistory(st.formHistory, before) });
+  const text = options.notice === undefined ? FORM_REPLACED : options.notice;
+  if (text !== null) {
+    st.notify(text, "info", {
+      key: FORM_NOTICE,
+      action: {
+        label: "Undo",
+        run: () => {
+          useStore.getState().replaceForm(before, { notice: null });
+          options.onUndo?.();
+        },
+      },
+    });
+  }
+  return true;
+}
+
+/** Undo or redo one step of the form's history. */
+function stepForm(step: typeof undoHistory): void {
+  const st = useStore.getState();
+  const next = step(st.formHistory, st.form);
+  lastEdit = null;
+  if (!next) {
+    // Only steps that change nothing were left: forget them, so Undo and Redo show as unavailable.
+    if (step === undoHistory && st.formHistory.past.length) useStore.setState({ formHistory: { ...st.formHistory, past: [] } });
+    if (step === redoHistory && st.formHistory.future.length) useStore.setState({ formHistory: { ...st.formHistory, future: [] } });
+    return;
+  }
+  const bos = analysisContext(st).options.prepend_bos;
+  useStore.setState({ form: next.form, formHistory: next.history });
+  analysisChanged(bos);
+}
 
 /**
  * After the view (or the map's overlay) changes: store where prompts are now read from, and when

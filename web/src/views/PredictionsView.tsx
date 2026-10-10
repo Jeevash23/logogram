@@ -48,8 +48,9 @@ export function PredictionsView() {
     setLoading(true); setError(null); setResponse(null);
     // Keep the exact context with the optional diagnostic when saving the next experiment spec.
     const st = useStore.getState();
-    const source = analysisSourceFor(st) === "run" && run.detail ? formFromSpec(run.detail.spec) : st.form;
-    useStore.setState({ form: { ...source, predictions: settings } });
+    const fromRun = analysisSourceFor(st) === "run" && !!run.detail;
+    const source = fromRun && run.detail ? formFromSpec(run.detail.spec) : st.form;
+    st.replaceForm({ ...source, predictions: settings }, fromRun ? {} : { notice: "Prediction diagnostic added to the experiment form" });
     try {
       const report = await api.predictions({ dataset, index, settings, ...context.options });
       if (seq === request.current) setResponse({ key: requestKey, report });
