@@ -231,9 +231,9 @@ def _patching(
                     targets[p] = f[row][:, features]  # [pos, n_features]
         for sl in _chunks(len(group.members), batch_size):
             captured = backend.capture(tokens[sl], list(dict.fromkeys([key, out_key])))
-            receiver_acts.append(captured[key].float())
+            receiver_acts.append(captured[key].float().cpu())  # for the fit, later
             if sae.transcoder:
-                receiver_outs.append(captured[out_key].float())
+                receiver_outs.append(captured[out_key].float().cpu())
         rows = [(rs, p) for rs in sites for p in group.members]
         for sl in _chunks(len(rows), batch_size):
             if cancel is not None and cancel.is_set():
@@ -380,9 +380,9 @@ def _attribution(
             grad = (
                 sae.flat(grads[out_key].float()) if sae.site == "head" else grads[out_key].float()
             )
-            receiver_acts.append(acts[key].float())
+            receiver_acts.append(acts[key].float().cpu())  # for the fit, later
             if sae.transcoder:
-                receiver_outs.append(acts[out_key].float())
+                receiver_outs.append(acts[out_key].float().cpu())
             out_src = sae.flat(src[out_key].float()) if sae.site == "head" else src[out_key].float()
             out_rec = (
                 sae.flat(acts[out_key].float()) if sae.site == "head" else acts[out_key].float()

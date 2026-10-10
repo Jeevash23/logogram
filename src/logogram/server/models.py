@@ -369,6 +369,9 @@ class MemoryEstimateOut(_Out):
     available: int
     verdict: Literal["fits", "tight", "wont_fit"]
     explanation: str
+    # What gradient methods and path patching hold: every layer's activations at once.
+    all_layers: int = 0
+    all_layers_verdict: Literal["fits", "tight", "wont_fit"] = "fits"
 
 
 class EstimateOut(_Out):

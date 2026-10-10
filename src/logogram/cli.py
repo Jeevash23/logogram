@@ -401,6 +401,20 @@ def _fmt(x: float | None, signed: bool = True) -> str:
     return f"{x:+.3f}" if signed else f"{x:.3f}"
 
 
+DELTA_LABELS = {
+    "logit_diff": "Δ logit diff",
+    "logprob_diff": "Δ log-prob diff",
+    "logprob": "Δ log-prob",
+    "prob": "Δ prob",
+    "prob_diff": "Δ prob diff",
+    "kl": "Δ KL",
+}
+
+
+def _interval(stat: dict[str, Any]) -> str:
+    return f"{_fmt(stat['mean'])} [{_fmt(stat['lo'])}, {_fmt(stat['hi'])}]"
+
+
 def _print_summary(summary: dict, top: int) -> None:  # type: ignore[type-arg]
     base = summary["baseline"]
     clean = base["clean"]["logit_diff"]["mean"]
@@ -426,11 +440,12 @@ def _print_summary(summary: dict, top: int) -> None:  # type: ignore[type-arg]
     # What the values are depends on the method: patched runs, estimates of them, or terms of a
     # split; only patched runs can flip a prompt.
     measure = summary.get("measure", "intervention")
+    delta = DELTA_LABELS.get(metric.get("kind", "logit_diff"), "Δ metric")
     value, change = {
-        "intervention": ("effect", "Δ logit diff"),
+        "intervention": ("effect", delta),
         "estimate": ("estimated", "estimated Δ"),
         "attribution": ("share", "direct"),
-    }.get(measure, ("effect", "Δ logit diff"))
+    }.get(measure, ("effect", delta))
     flips = measure == "intervention"
     sites = sorted(summary["sites"], key=lambda s: -abs(s["effect"]["mean"] or 0.0))[:top]
     typer.echo("")
@@ -463,6 +478,11 @@ def _print_summary(summary: dict, top: int) -> None:  # type: ignore[type-arg]
             f"\nSAE {f['sae']['repo']} {f['sae']['path']}: explains "
             f"{fit.get('variance_explained', float('nan')):.1%} of the variance on these prompts."
         )
+        if f.get("chosen_on"):
+            typer.echo(
+                f"The strongest features were chosen on {len(f['chosen_on'])} prompts and are "
+                f"reported on the other {len(f['reported_on'] or [])}."
+            )
         if f.get("features_estimate") is not None:
             typer.echo(
                 f"Estimated effect of the whole site {_fmt(f['site_estimate'])}, of which the "
@@ -474,11 +494,23 @@ def _print_summary(summary: dict, top: int) -> None:  # type: ignore[type-arg]
             typer.echo("\nAgainst replacing everything:")
             for r in rows:
                 share = r["share"]
-                line = f"  {r['label']:<24} share {_fmt(share['mean'])} [{_fmt(share['lo'])}, {_fmt(share['hi'])}]"
+                line = f"  {r['label']:<24} share {_interval(share)}"
                 if r.get("faithfulness"):
-                    f = r["faithfulness"]
-                    line += f"  faithfulness {_fmt(f['mean'])} [{_fmt(f['lo'])}, {_fmt(f['hi'])}]"
+                    line += f"  faithfulness {_interval(r['faithfulness'])}"
                 typer.echo(line)
+                if r.get("without"):
+                    w = r["without"]
+                    typer.echo(
+                        f"  {'':<24} {w['site']} adds {_interval(w['drop'])} faithfulness to "
+                        f"{w['of']}"
+                    )
+        for r in summary["circuit"]["rows"]:
+            if r.get("interaction"):
+                i = r["interaction"]
+                typer.echo(
+                    f"\n{r['label']}: beyond {i['a']} and {i['b']} alone, an effect of "
+                    f"{_interval(i['effect'])}"
+                )
     if stats.get("band_level") is not None:
         sites_all = summary["sites"]
         alpha = 1 - stats["ci"]

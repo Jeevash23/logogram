@@ -16,10 +16,14 @@ from typing import Any
 
 import torch
 
+from logogram.backends.base import float64
 from logogram.backends.saes import SAEParams
 from logogram.spec import SAERef
 
 LN_EPS = 1e-5
+# Tokens encoded at once while measuring a fit, so the features of every token (an SAE has tens
+# of thousands per token) are never held at once.
+FIT_CHUNK = 4096
 
 
 @dataclass
@@ -150,16 +154,25 @@ def fit_on(
     """How well the SAE reconstructs ``activations`` ``[N, d_in]`` (a transcoder: predicts
     ``targets`` ``[N, d_out]``, its MLP's outputs, from its inputs): the fraction of variance it
     explains (1 is perfect, 0 is no better than the mean), and how many features fire per token."""
-    x = activations.float()
-    y = x if targets is None else targets.float()
-    f, stats = sae.encode(x)
-    y_hat = sae.decode(f, stats)
-    residual = ((y - y_hat) ** 2).sum()
-    total = ((y - y.mean(dim=0, keepdim=True)) ** 2).sum().clamp_min(1e-12)
+    n = int(activations.shape[0])
+    wanted = activations if targets is None else targets
+    residual, active = 0.0, 0
+    for start in range(0, n, FIT_CHUNK):
+        x = activations[start : start + FIT_CHUNK].to(sae.device).float()
+        y = x if targets is None else targets[start : start + FIT_CHUNK].to(sae.device).float()
+        f, stats = sae.encode(x)
+        residual += float(float64((y - sae.decode(f, stats)) ** 2).sum())
+        active += int((f > 0).sum())
+    # The variance of what the SAE should give, around its mean, in two passes over the chunks.
+    mean = sum(float64(wanted[s : s + FIT_CHUNK]).sum(0) for s in range(0, n, FIT_CHUNK)) / n
+    total = sum(
+        float(((float64(wanted[s : s + FIT_CHUNK]) - mean) ** 2).sum())
+        for s in range(0, n, FIT_CHUNK)
+    )
     return {
-        "variance_explained": float(1.0 - residual / total),
-        "l0": float((f > 0).float().sum(-1).mean()),
-        "tokens": int(x.shape[0]),
+        "variance_explained": 1.0 - residual / max(total, 1e-12),
+        "l0": active / n if n else 0.0,
+        "tokens": n,
     }
 
 

@@ -374,8 +374,9 @@ def sae_fit_report(
             idx = group.members[begin : begin + batch_size]
             tokens = group.clean[begin : begin + batch_size]
             captured = backend.capture(tokens, list(dict.fromkeys([key, out_key])))
-            acts.append(sae.reads(captured[key][:, start:].float()))
-            outs.append(written(captured[out_key][:, start:].float()))
+            # Kept in CPU memory until the fit, which encodes them a chunk at a time.
+            acts.append(sae.reads(captured[key][:, start:].float()).cpu())
+            outs.append(written(captured[out_key][:, start:].float()).cpu())
             clean.append(scorer.score(patched_forward(backend, None), tokens, idx).pref)
             spliced.append(scorer.score(edited, tokens, idx).pref)
     flat = torch.cat([a.reshape(-1, a.shape[-1]) for a in acts])

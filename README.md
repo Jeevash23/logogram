@@ -169,17 +169,28 @@ leaves the intervention settings intact.
 ## Command line
 
 ```text
-logogram                 start the app and open the browser
-logogram open PATH       start with a project open
-logogram run SPEC.json   run an experiment headlessly and print a summary
-logogram doctor          environment and hardware report, with fixes
-logogram check-updates   ask PyPI whether a newer Logogram is out
-logogram serve --dev     API only, for working on the web app
+logogram                      start the app and open the browser
+logogram open PATH            start with a project open
+logogram run SPEC.json        run an experiment headlessly and print a summary
+logogram validate SPEC.json   check a spec without running it, and say what it left out
+logogram list                 the project's runs and drafts, newest first
+logogram show RUN             a finished run's method, baseline and strongest sites
+logogram compare RUN RUN      how two runs agree, with paired differences where they can be paired
+logogram diff A B             every choice that differs between two runs or spec files
+logogram verify RUN           patch the strongest sites of an attribution patching run, and compare
+logogram robustness RUN       rerun with one choice changed (--experiment JSON, or --dtype)
+logogram export RUN           a run's per-prompt values as CSV (-o FILE)
+logogram tasks                the tasks Logogram writes prompts for, with their options
+logogram generate TASK        a seeded dataset for a task (-n N --seed S, --option NAME=VALUE)
+logogram doctor               environment and hardware report, with fixes
+logogram check-updates        ask PyPI whether a newer Logogram is out
+logogram serve --dev          API only, for working on the web app
 logogram --version
 ```
 
 The app listens on port 8765, or the next free one; `--port N` picks another (`--port 0` takes
-any free port) and `--no-browser` skips opening the browser.
+any free port) and `--no-browser` skips opening the browser. Commands that read runs use the
+project in the current folder or above it, or `--project PATH`; a run is its id or its folder.
 
 `logogram run` writes a new experiment folder next to the original. When the spec came from a
 finished run, it also checks the new results against the old ones:
@@ -187,6 +198,45 @@ finished run, it also checks the new results against the old ones:
 ```text
 Identical to 20261007-203446-which-heads-restore-the-answer: all 4,608 per-prompt values match exactly.
 ```
+
+`logogram generate` makes prompts for a model's tokenizer when you name one already in the Hugging
+Face cache (`--tokenizer openai-community/gpt2`); it never downloads one. Without it, words are
+assumed to be single tokens, so generate the dataset again in the app once the model is loaded,
+which keeps only words that are single tokens for it.
+
+## Python
+
+The same runs from a notebook or a script. They go through the same code as the app and
+`logogram run`, and land in the project like any other run. Importing `logogram` loads no
+PyTorch; functions load what they need.
+
+```python
+import logogram as lg
+
+project = lg.open_project("~/Documents/Logogram/ioi-example")
+model = lg.load_model("openai-community/gpt2")   # load once, pass it to every run
+spec = lg.load_spec(project.root / "experiments/ioi-head-patching/spec.json")
+run = lg.run(spec, project, model=model)
+
+run                  # in a notebook: the method, a heatmap and the strongest sites
+run.sites()          # one row per site: mean effect, interval, simultaneous band, q-value, …
+run.per_prompt()     # one row per site and prompt: everything the statistics came from
+run.strongest(5)
+
+estimate = lg.run(lg.load_spec({**spec.model_dump(), "experiment": {
+    "kind": "attribution_patching", "direction": "clean_to_corrupt",
+    "method": "integrated_gradients", "steps": 8}}), project, model=model)
+checked = lg.verify_run(estimate, top=10)     # patch the strongest estimates for real
+lg.compare_runs(estimate, checked)            # rank correlation, paired differences
+lg.check_robustness(run, experiment={"kind": "ablation", "baseline": {"kind": "zero"}})
+
+records = lg.generate("greater_than", 200, seed=0, model=model)
+lg.write_dataset(project, "greater-than", records)
+```
+
+Tables come back as pandas DataFrames when pandas is installed, and as pyarrow Tables otherwise.
+`lg.list_runs(project)` and `lg.load_run(project, run_id)` read runs made anywhere. A run that
+fails raises `lg.api.LogogramError` with the reason.
 
 ## Prompts
 
@@ -200,15 +250,37 @@ A dataset is a JSONL file in the project's `datasets/` folder, one prompt pair p
 ```
 
 * `clean` and `corrupt` must tokenize to the same length, so positions line up.
-* `answer` and `distractor` must each be a single token (usually with a leading space).
+* `answer` and `distractor` are usually single tokens (with a leading space). Either can also be a
+  list of single tokens, read as one answer whose probability is their sum (in greater-than, every
+  year after the start year), or text of several tokens, a continuation whose probability is the
+  product of each token's, each predicted from the prompt and the tokens before it. Continuations
+  need a metric other than the logit difference (see Experiments).
 * `positions` is optional: named character spans in the clean prompt. A label refers to the last
   token that overlaps its span. Named positions let you patch at, say, `S2` across templates of
   different lengths.
+* `meta` is optional: anything about the prompt, such as `{"template": "went"}`. The bootstrap can
+  resample prompts by one of its fields (see Statistics).
 
 The app shows both prompts token by token, highlights where they differ, and refuses to run on
-prompts that can't be used, saying which and why. The built-in IOI generator writes ABBA and BABA
-prompts from several templates with generic names, with a chosen size and seed, and two
-corruptions: `flip` (the repeated name becomes the other name) and `abc` (three unrelated names).
+prompts that can't be used, saying which and why.
+
+**Tasks.** Logogram writes seeded datasets for six classic tasks, from the app's Prompts view, the
+command line (`logogram tasks`, `logogram generate`) or Python (`lg.generate`). Each fills
+templates whose clean and corrupt prompts have the same token length, names its positions, and
+records each prompt's template in `meta`:
+
+| Task | What the model should say | Corrupt prompt | Metric |
+|---|---|---|---|
+| `ioi` | the indirect object in "When Mary and John went to the store, John gave a drink to" (Wang et al. 2022) | `flip` (the repeated name becomes the other) or `abc` (three unrelated names) | logit difference |
+| `greater_than` | a year after the start year in "The war lasted from the year 1732 to the year 17" (Hanna et al. 2023) | the start year becomes …01 | probability difference |
+| `docstring` | the next argument of a function in its docstring (Heimersheim and Janiak 2023) | the definition's arguments renamed | log-probability difference |
+| `gendered_pronoun` | " he" or " she" after a first name (Mathwin et al. 2023) | a name of the other gender | logit difference |
+| `subject_verb_agreement` | " is" or " are" after a noun of the other number (Linzen et al. 2016) | the subject in the other number | logit difference |
+| `factual_recall` | a country's capital | another country | logit difference (log-probability difference for capitals of several tokens) |
+
+With a model loaded, the app keeps only words that are single tokens for it. Each task says how
+many distinct prompts its templates allow; a request for more is refused. GPT-2 small does all of
+them but the docstring task, where it prefers the right argument in about half the prompts.
 
 ## Experiments
 
@@ -241,6 +313,16 @@ replaces a whole token's representation. In the IOI example on GPT-2 small, patc
 stream at the changed name in the first layer restores the whole answer while its estimate is
 slightly negative, so verifying the top estimates would never reach it. Head outputs track
 patching closely.
+
+*Integrated gradients* (as in EAP-IG, Hanna et al. 2024) correct much of what one gradient misses:
+the gradient is averaged over `steps` runs whose input embeddings lie evenly between the receiver
+prompt's and the source prompt's, so the estimate follows the metric along the way from one prompt
+to the other instead of only at its start. It costs `steps` forward and backward passes instead of
+one; 8 to 16 steps are usual. Its estimates are verified by patching the same way. On the IOI
+prompts with GPT-2 small, 16 steps estimate the residual stream at S2 in layer 0 at 1.00, where
+patching measures 1.00 and one gradient −0.13; over every residual stream site at the named
+positions, the estimates correlate 0.99 with patching (one gradient: 0.56). For head outputs the
+two agree about equally well with patching (0.98 and 0.99).
 
 **Direct logit attribution** splits the logit difference of the clean or the corrupt prompts
 (your choice; there is no default) into what each head, attention output and MLP output writes
@@ -299,9 +381,19 @@ encodes the receiver's activation and changes only that feature, to its value in
 (or to zero, for zero ablation): the activation moves along the feature's decoder direction, and the
 SAE's error is kept. **Attribution patching** can sweep **every SAE feature** at once and keep the
 strongest, then verify them by patching; the results also show how much of the whole site's
-estimated effect the features account for (the rest is the SAE's error). Logogram reads the
-SAELens and EleutherAI formats from safetensors files only; Gemma Scope's NumPy archives are
-refused, as are SAEs whose input scaling or architecture it can't reproduce exactly.
+estimated effect the features account for (the rest is the SAE's error). Choosing the strongest of
+thousands of features and reporting them on the same prompts biases their effects away from zero
+(the winner's curse), so the sweep can choose them on a seeded share of the prompts and report
+them only on the rest (`choose_on` and `seed` in the scope).
+
+Logogram reads the SAELens and EleutherAI formats, and Gemma Scope 2 (`config.json` and
+`params.safetensors`, JumpReLU), from safetensors files only; the first Gemma Scope's NumPy
+archives are refused, as are SAEs whose input scaling or architecture it can't reproduce exactly.
+**Transcoders** (from Gemma Scope 2 or EleutherAI) read an MLP's input and write its output: a
+feature's value comes from the MLP's input, and patching it changes the MLP's output along the
+feature's decoder direction. SAEs trained on attention heads' outputs (SAELens `hook_z`, Gemma
+Scope 2's attention SAEs) read every head of the layer at once. Cross-layer transcoders and
+crosscoders are refused for now.
 
 **Sites** are abstract: `resid_pre`, `resid_mid`, `resid_post`, `attn_out`, `mlp_out` and `head`
 (an attention head's output `z`), each at a layer, head and position. Positions are `all`,
@@ -309,24 +401,65 @@ refused, as are SAEs whose input scaling or architecture it can't reproduce exac
 (layer × head), one stream site at every layer and position (layer × position), or attention
 and MLP outputs per layer.
 
-**The metric** is the logit difference at the last token, answer minus distractor. The
-**normalized effect** of each prompt is (patched − receiver) ÷ gap, where the gap is
-(source − receiver) for patching and (corrupt − clean) for ablation. By default the gap is the
-dataset's mean, so the mean effect is the usual normalized metric; you can choose each prompt's
-own gap instead. 0 is no change; 1 is a change as large as switching to the other prompt.
+**Sets of sites** test a circuit. A `site_sets` scope lists sets of sites, each intervened on at
+once, in one forward pass: one result per set. A set marked `complement` intervenes on every
+component of the scope's `universe` (every head, or every attention and MLP output, at every
+position) except its sites, so "keep this circuit, replace the rest" is one set; a site at one
+position keeps only that position. Replacements come from the other prompt (patching), donors
+(resample ablation), the mean over prompts of the same length (mean ablation) or zeros. When the
+scope has a set that replaces everything (a `complement` set with no sites), every set is also
+read against it, from the same resamples:
+
+* **faithfulness**, for a set that keeps sites: the part of the behavior those sites carry alone,
+  1 when keeping only them loses nothing and 0 when it does no better than replacing everything;
+* **share**, for a set that removes sites: a share near 1 says removing them does what removing
+  everything does (the circuit is complete);
+* for a keeping set one site short of another, the faithfulness that site adds (minimality, one
+  site at a time);
+* for a set of two sites that are also run alone, the effect of both beyond the sum of the two
+  (their interaction).
+
+With GPT-2 small, keeping the 26 heads of Wang et al.'s IOI circuit (at every position) and
+mean-ablating every other head over ABC prompts keeps all of the behavior (faithfulness 1.02);
+taking 9.9 out of it costs 0.10 [0.06, 0.14], and ablating 9.9 and 9.6 together breaks less than
+the two do alone, −0.14 [−0.18, −0.11], as the backup name movers the paper describes would.
+
+**The metric** reads the answer at the end of each prompt, in one of six ways: the logit
+difference (answer minus distractor, at the last token), the log-probability difference, the
+answer's log-probability, its probability, the probability difference (as in greater-than), or the
+KL divergence of the next-token distribution from the clean or the corrupt prompt's own, which
+reads the whole distribution rather than the answer. The logit difference needs answers of one
+token (or sets of them); the others also read continuations. Every run also keeps each prompt's
+answer probability and its preference, log P(answer) − log P(distractor) (the logit difference
+for single tokens), from which sign flips are counted. Direct logit attribution splits the logit
+difference only. The **normalized effect** of each prompt is (patched − receiver) ÷ gap in the
+metric, where the gap is (source − receiver) for patching and (corrupt − clean) for ablation. By
+default the gap is the dataset's mean, so the mean effect is the usual normalized metric; you can
+choose each prompt's own gap instead. 0 is no change; 1 is a change as large as switching to the
+other prompt.
 
 **Statistics** for every site: n, mean, standard deviation, a percentile bootstrap confidence
 interval over prompts (seeded; the same resamples for every site), the number of prompts whose
-logit difference changed sign, and the number whose effect has the opposite sign to the mean.
-Per-prompt values are always kept.
+preference for the answer changed sign, and the number whose effect has the opposite sign to the
+mean (rounding noise aside). A sweep tests many sites, and some intervals miss zero by chance, so
+every sweep also reports **simultaneous bands**, which hold for all its sites together at the
+chosen confidence (max-rank percentile method), and **q-values** (Benjamini–Hochberg, from
+bootstrap p-values). Prompts made from one template aren't independent: `statistics.cluster` names
+a field of the prompts' `meta`, such as `template`, and the bootstrap then resamples whole
+clusters, which widens intervals honestly; with fewer than 10 clusters the run warns that its
+intervals are rough. Two runs on the same prompts are compared prompt by prompt, with an interval
+for each site's difference from the same resamples, and steering compares each strength with its
+control the same way. Per-prompt values are always kept.
 
 ## The spec
 
-Every experiment is a `spec.json`. Nothing that can change a number is left implicit.
+Every experiment is a `spec.json`. Nothing that can change a number is left implicit: a version 2
+spec must state every such choice, and a spec that leaves one out is refused with the field's
+name.
 
 ```json
 {
-  "logogram_spec": 1,
+  "logogram_spec": 2,
   "name": "Which heads restore the answer?",
   "notes": "",
   "model": {
@@ -341,20 +474,26 @@ Every experiment is a `spec.json`. Nothing that can change a number is left impl
   "experiment": {"kind": "activation_patching", "direction": "clean_to_corrupt"},
   "scope": {"kind": "heads", "position": {"kind": "all"}},
   "metric": {"kind": "logit_diff", "normalization": "dataset_gap"},
-  "statistics": {"bootstrap": 1000, "ci": 0.95, "seed": 0},
+  "statistics": {"bootstrap": 1000, "ci": 0.95, "seed": 0, "cluster": null},
   "execution": {"batch_size": 64}
 }
 ```
+
+Version 1 specs (from Logogram 0.1) still run. Where one leaves a choice out, it takes the value
+version 1 gave it, the run's first warning lists each such value, and the spec saved with the run
+states them all. `logogram validate SPEC.json` shows the list without running anything.
 
 | Field | Values |
 |---|---|
 | `model.revision` | A commit. `null` resolves the current main branch at run time; the saved spec pins what ran. |
 | `model.process_weights` | Fold LayerNorm and center weights, as TransformerLens does by default. Logit differences don't change. Value biases are folded into the attention output's bias, so zero ablation of head outputs and heads' direct effects do change (by up to several logits in Qwen 2.5, whose value biases are large); a layer's attention output doesn't. |
 | `dataset.sha256` | If set, the run refuses a dataset file that has changed. |
-| `experiment` | `{"kind": "activation_patching", "direction": "clean_to_corrupt" \| "corrupt_to_clean"}`, `{"kind": "ablation", "baseline": …}` with `{"kind": "zero"}`, `{"kind": "mean", "reference": "clean" \| "corrupt"}` or `{"kind": "resample", "pool": "clean" \| "corrupt", "donors": 10, "seed": 0}`, `{"kind": "attribution_patching", "direction": …}` (same directions as patching), `{"kind": "direct_logit_attribution", "prompts": "clean" \| "corrupt"}`, `{"kind": "path_patching", "direction": …, "receivers": [{"kind": "head", "layer": 9, "head": 9, "input": "q" \| "k" \| "v"}, {"kind": "logits"}], "freeze_mlps": false}`, or `{"kind": "steering", "apply_to": "clean" \| "corrupt", "coefficients": [-1, 1, 2], "train_fraction": 0.5, "seed": 0, "control": true}` with a scope of one residual component per layer (`layer_components`) or residual `sites`, at one token |
-| `scope` | `{"kind": "heads", "position": …}`, `{"kind": "layer_position", "site": "resid_pre", "positions": "each" \| "labels"}`, `{"kind": "layer_components", "components": ["attn_out", "mlp_out"], "position": …}` `{"kind": "sites", "sites": [{"kind": "head", "layer": 9, "head": 9, "position": {"kind": "label", "label": "end"}}]}` (feature sites are `{"kind": "sae_feature", "layer": 8, "feature": 1234, "position": …}`), or, for attribution patching, `{"kind": "features", "position": …, "top": 50}` |
+| `experiment` | `{"kind": "activation_patching", "direction": "clean_to_corrupt" \| "corrupt_to_clean"}`, `{"kind": "ablation", "baseline": …}` with `{"kind": "zero"}`, `{"kind": "mean", "reference": "clean" \| "corrupt"}` or `{"kind": "resample", "pool": "clean" \| "corrupt", "donors": 10, "seed": 0}`, `{"kind": "attribution_patching", "direction": …, "method": "gradient", "steps": null}` (same directions as patching; or `"method": "integrated_gradients", "steps": 8`), `{"kind": "direct_logit_attribution", "prompts": "clean" \| "corrupt"}`, `{"kind": "path_patching", "direction": …, "receivers": [{"kind": "head", "layer": 9, "head": 9, "input": "q" \| "k" \| "v"}, {"kind": "logits"}], "freeze_mlps": false}`, or `{"kind": "steering", "apply_to": "clean" \| "corrupt", "coefficients": [-1, 1, 2], "train_fraction": 0.5, "seed": 0, "control": true}` with a scope of one residual component per layer (`layer_components`) or residual `sites`, at one token |
+| `scope` | `{"kind": "heads", "position": …}`, `{"kind": "layer_position", "site": "resid_pre", "positions": "each" \| "labels"}`, `{"kind": "layer_components", "components": ["attn_out", "mlp_out"], "position": …}` `{"kind": "sites", "sites": [{"kind": "head", "layer": 9, "head": 9, "position": {"kind": "label", "label": "end"}}]}` (feature sites are `{"kind": "sae_feature", "layer": 8, "feature": 1234, "position": …}`), for attribution patching, `{"kind": "features", "position": …, "top": 50, "choose_on": 0.5, "seed": 0}` (`choose_on` and `seed` both `null` to choose and report on every prompt), or `{"kind": "site_sets", "universe": ["head"], "sets": [{"label": "circuit", "sites": […], "complement": true}]}` |
 | `sae` | The SAE that feature sites belong to: `{"repo": "…", "path": "blocks.8.hook_resid_pre", "revision": "…"}`. The revision is pinned when a run starts. |
+| `metric` | `{"kind": "logit_diff" \| "logprob_diff" \| "logprob" \| "prob" \| "prob_diff", "normalization": …}` or `{"kind": "kl", "target": "clean" \| "corrupt", "normalization": …}` |
 | `metric.normalization` | `dataset_gap` or `prompt_gap` |
+| `statistics.cluster` | `null` to resample prompts, or a field of the prompts' `meta` (such as `"template"`) to resample clusters of prompts |
 | `execution.batch_size` | Recorded because batch shape can change floating-point results in the last digits. |
 
 ## Projects
@@ -374,8 +513,9 @@ my-project/
 ```
 
 `results.parquet` has everything needed to recompute the statistics: site, layer, head,
-position, prompt, the patched logit difference and answer probability, and the receiver and
-reference logit differences. Paths inside a project are relative, so folders can be moved,
+position, prompt, the patched, receiver and reference values of the metric, the answer
+probability, and the preference log P(answer) − log P(distractor) (the logit difference for
+single tokens). Paths inside a project are relative, so folders can be moved,
 committed and shared.
 
 Each new run snapshots its input dataset before loading the model and pins that snapshot in the
@@ -413,7 +553,8 @@ treating them as equivalent.
   headers, and refuses cross-site requests.
 * Projects are often shared, so Logogram treats their contents with care: it writes only into
   folders that are really inside the project (never through a symlink that leads out of it), and
-  a damaged or unexpected file shows up as an error on that file rather than breaking the project.
+  a damaged, oversized or unexpected file shows up as an error on that file rather than breaking
+  the project. A failed run's error is saved without this machine's paths.
 * Weights are loaded only from safetensors files, which cannot run code. Logogram never unpickles
   files.
 * Settings and the list of recent projects are kept in your user configuration folder, not in
@@ -480,7 +621,12 @@ Rather than trusting a list, Logogram checks every model when it loads, on a sho
 GPT-2 small is the model the bundled example was made for. Every method has been run end to end
 with real weights on GPT-2 small (with a SAELens and an OpenAI SAE), Pythia-70m (with an
 EleutherAI SAE) and Qwen 2.5 0.5B, and the test suite runs the sanity checks on tiny random models
-of the Llama, Pythia, Qwen 2, Gemma 2 and OLMo 2 families without downloading anything. The
+of the Llama, Pythia, Qwen 2, Gemma 2 and OLMo 2 families without downloading anything. What 0.2
+added was checked on GPT-2 small: patching the whole input gives an effect of exactly 1 under
+every metric, including for answers of several tokens; the logit and log-probability differences
+agree to 5 × 10⁻⁷; integrated gradients, sets of sites, the tasks and clustered bootstraps give
+the results described above; and reruns are bit-identical. Gemma Scope 2's SAEs and transcoders
+were read from their published files; running them needs Gemma 3, which wasn't checked. The
 example's names are single tokens for GPT-2 and Qwen but not all for Pythia; for another model,
 generate IOI prompts in the app, which keeps only names that are single tokens for it. A small
 model may not do the task at all (Pythia-70m prefers the repeated name), and its runs then say so.
@@ -488,7 +634,7 @@ Pythia publishes checkpoints from throughout training as revisions (`step1000` t
 so an experiment can be rerun at several points of training.
 
 Some tokenizers, such as Qwen's, have no beginning-of-sequence token. Logogram then runs prompts
-without one, and the spec records it. Answers and distractors must still be single tokens.
+without one, and the spec records it.
 
 ## Development
 
@@ -549,9 +695,9 @@ checked when they load and in the tiny-model tests.
 
 Model access goes through `logogram.backends.base.ModelBackend`. TransformerLens is the only
 backend today; remote execution and other libraries can be added behind the same interface.
-Not built yet, with room left for them: attribution graphs with transcoders, Gemma Scope's NumPy
-SAE files, steering with SAE features, remote compute, a native desktop wrapper, plugins and
-assistants.
+Not built yet, with room left for them: attribution graphs over transcoders, cross-layer
+transcoders and crosscoders, the first Gemma Scope's NumPy SAE files, steering with SAE features,
+remote compute, a native desktop wrapper, plugins and assistants.
 
 ## License
 

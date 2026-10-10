@@ -206,6 +206,13 @@ def build_summary(
         method = (
             f"percentile bootstrap over clusters of prompts with the same {spec.statistics.cluster}"
         )
+        clusters = _n_clusters(spec, result) or 0
+        if clusters < FEW_CLUSTERS:
+            warnings.append(
+                f"The bootstrap resamples only {clusters} clusters (prompts with the same "
+                f"{spec.statistics.cluster}), too few for reliable intervals. Use prompts from "
+                f"more {spec.statistics.cluster} values, or read the intervals as rough."
+            )
     summary = {
         "logogram_summary": SUMMARY_VERSION,
         "run_id": run_id,
@@ -262,6 +269,10 @@ def build_summary(
         **({"attribution": result.extra["attribution"]} if "attribution" in result.extra else {}),
     }
     return Summary.model_validate(summary).model_dump(mode="json")
+
+
+# Below this many clusters, a cluster bootstrap's intervals are unreliable.
+FEW_CLUSTERS = 10
 
 
 def _n_clusters(spec: Spec, result: EngineResult) -> int | None:

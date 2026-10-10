@@ -316,6 +316,9 @@ class MemoryEstimate:
     available: int
     verdict: str  # fits | tight | wont_fit
     explanation: str
+    # Gradient methods and path patching hold every layer's activations at once.
+    all_layers: int = 0
+    all_layers_verdict: str = "fits"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -368,16 +371,24 @@ def estimate_memory(
     # model loads, that takes about three more float32 copies of the weights, or four for a 16-bit
     # model (measured on GPT-2 and Pythia).
     processing = n_params * 4 * (3 if dtype == "float32" else 4) if process_weights else 0
+    # Attribution patching and direct logit attribution keep every layer's activations for the
+    # backward pass, and path patching holds every head's (and MLP's) output: about one layer's
+    # tensors for each layer, plus the gradients they produce.
+    all_layers = per_layer * n_layers + batch_size * d_vocab * 4 + 3 * tokens * d_model * b
     need = weights + max(activations, processing)
-    margin = int(0.15 * need) + (512 * 1024**2 if device == "cuda" else 256 * 1024**2)
+    overhead = 512 * 1024**2 if device == "cuda" else 256 * 1024**2
+    margin = int(0.15 * need) + overhead
     total = need + margin
     available = available_memory(device) + loaded_bytes
-    if total <= 0.8 * available:
-        verdict = "fits"
-    elif total <= available:
-        verdict = "tight"
-    else:
-        verdict = "wont_fit"
+
+    def verdict_for(total: int) -> str:
+        if total <= 0.8 * available:
+            return "fits"
+        return "tight" if total <= available else "wont_fit"
+
+    verdict = verdict_for(total)
+    deep = weights + all_layers
+    all_layers_verdict = verdict_for(deep + int(0.15 * deep) + overhead)
     where = {"cuda": "GPU memory", "mps": "unified memory", "cpu": "RAM"}.get(device, "memory")
     explanation = (
         f"{n_params / 1e6:,.0f}M stored values × {b} bytes ({dtype}) for weights; activations for a "
@@ -389,6 +400,12 @@ def estimate_memory(
             "(loading with weight processing off avoids this)"
         )
     explanation += f"; a margin of 15% plus runtime overhead. Compared with free {where}."
+    if all_layers_verdict != "fits" and verdict == "fits":
+        explanation += (
+            f" Attribution patching, direct logit attribution and path patching hold every "
+            f"layer's activations at once (about {format_bytes(all_layers)} for that batch): "
+            "use a smaller execution.batch_size for them."
+        )
     return MemoryEstimate(
         device=device,
         dtype=dtype,
@@ -401,6 +418,8 @@ def estimate_memory(
         available=available,
         verdict=verdict,
         explanation=explanation,
+        all_layers=all_layers,
+        all_layers_verdict=all_layers_verdict,
     )
 
 

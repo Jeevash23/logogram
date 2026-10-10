@@ -257,3 +257,30 @@ def test_a_circuit_run_is_saved_and_listed(tiny_backend, project, spec_factory):
     listing = project.run_listing(outcome.run_id)
     assert listing.status == "finished" and listing.layout_kind == "site_sets"
     assert "2 sets of sites" in listing.description
+
+
+def test_the_command_line_shows_what_a_circuit_carries(tiny_backend, project, spec_factory):
+    from typer.testing import CliRunner
+
+    from logogram.cli import app
+
+    a, b = _head(0, 1), _head(1, 2)
+    spec = spec_factory(
+        experiment={"kind": "activation_patching", "direction": "clean_to_corrupt"},
+        scope=_sets(
+            _set("everything", [], complement=True),
+            _set("both", [a, b], complement=True),
+            _set("only a", [a], complement=True),
+            _set("a", [a]),
+            _set("b", [b]),
+            _set("a and b", [a, b]),
+            universe=["head"],
+        ),
+    )
+    outcome = run_spec(spec, project, backend=tiny_backend)
+    assert outcome.status == "finished", outcome.manifest.get("error")
+    shown = CliRunner().invoke(app, ["show", outcome.run_id, "--project", str(project.root)])
+    assert shown.exit_code == 0, shown.output
+    assert "faithfulness" in shown.output
+    assert "L1 H2 adds" in shown.output and "faithfulness to both" in shown.output
+    assert "a and b: beyond a and b alone, an effect of" in shown.output

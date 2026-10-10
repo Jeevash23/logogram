@@ -380,7 +380,13 @@ class _Row:
 
 
 class _LayerSources:
-    """Activations captured for one layer: per length group, and at resolved positions."""
+    """Activations captured for one layer: per length group, and at resolved positions.
+
+    A layer's activations for every prompt can be far larger than a batch. On a CUDA device they
+    are kept in CPU memory when they would take more than a quarter of its free memory, and each
+    batch's rows are moved back as they are used. Copies are exact, so where they are kept never
+    changes a number.
+    """
 
     def __init__(
         self,
@@ -395,7 +401,10 @@ class _LayerSources:
     ) -> None:
         self.prompts = prompts
         self.groups = groups
+        self.device = backend.device
+        self.offloaded: bool | None = None  # decided from the first batch's size
         self.by_group: dict[str, list[torch.Tensor]] = {k: [] for k in kinds}
+        tokens_total = sum(len(g.members) * g.length for g in groups)
         for group in groups:
             tokens = group.clean if which == "clean" else group.corrupt
             # Capture in batches, so a forward pass never holds more than batch_size prompts.
@@ -404,14 +413,36 @@ class _LayerSources:
                 if cancel is not None and cancel.is_set():
                     raise Cancelled()
                 acts = backend.capture(tokens[sl], [(k, layer) for k in kinds])
+                if self.offloaded is None:
+                    per_token = sum(
+                        acts[(k, layer)][0, 0].numel() * acts[(k, layer)].element_size()
+                        for k in kinds
+                    )
+                    self.offloaded = _keep_on_cpu(self.device, per_token * tokens_total)
                 for k in kinds:
-                    parts[k].append(acts[(k, layer)])
+                    part = acts[(k, layer)]
+                    parts[k].append(part.to("cpu") if self.offloaded else part)
             for k in kinds:
                 self.by_group[k].append(torch.cat(parts[k], dim=0))
         self._tables: dict[tuple[str, str], torch.Tensor] = {}
+        self._means: dict[tuple[str, int], torch.Tensor] = {}
 
-    def group_tensor(self, kind: str, group_index: int) -> torch.Tensor:
-        return self.by_group[kind][group_index]
+    def group_rows(
+        self, kind: str, group_index: int, local: list[int], heads: torch.Tensor | None
+    ) -> torch.Tensor:
+        """``[B, L, ...]``: these prompts' activations at every position (of these heads)."""
+        acts = self.by_group[kind][group_index]
+        idx = torch.tensor(local, dtype=torch.long, device=acts.device)
+        rows = acts[idx, :, heads.to(acts.device)] if heads is not None else acts[idx]
+        return rows.to(self.device)
+
+    def group_mean(self, kind: str, group_index: int) -> torch.Tensor:
+        """``[L, ...]``: the mean over a length group's prompts, at each position, in float32."""
+        key = (kind, group_index)
+        if key not in self._means:
+            acts = self.by_group[kind][group_index].to(self.device)
+            self._means[key] = acts.float().mean(dim=0)
+        return self._means[key]
 
     def table(self, kind: str, site: ResolvedSite) -> torch.Tensor:
         """``[n, ...]``: each prompt's activation at its own resolved position for this site."""
@@ -424,8 +455,18 @@ class _LayerSources:
                     pos = resolve_position(site.site.position, self.prompts[p])
                     rows.append((p, acts[local, pos]))
             rows.sort(key=lambda r: r[0])
-            self._tables[key] = torch.stack([r[1] for r in rows])
+            self._tables[key] = torch.stack([r[1] for r in rows]).to(self.device)
         return self._tables[key]
+
+
+def _keep_on_cpu(device: torch.device, size: int) -> bool:
+    """Whether captured activations of ``size`` bytes are kept in CPU memory: on a CUDA device,
+    when they would take more than a quarter of its free memory. (On Apple's unified memory,
+    moving them would free nothing.)"""
+    if device.type != "cuda":
+        return False
+    free, _total = torch.cuda.mem_get_info(device)
+    return size > free // 4
 
 
 def run_experiment(
@@ -682,9 +723,9 @@ def _build_patch(
         if all_pos:
             # Patch pairs share a length; resample donors are drawn from the same length group.
             assert all(group_of[p] == group_index for p in src_prompts)
-            acts = sources.group_tensor(kind, group_index)
-            idx = torch.tensor([local_of[p] for p in src_prompts], dtype=torch.long, device=device)
-            values = acts[idx, :, dev_heads] if is_head else acts[idx]
+            values = sources.group_rows(
+                kind, group_index, [local_of[p] for p in src_prompts], dev_heads
+            )
         else:
             table = sources.table(kind, rows[0].site)
             if any(r.site.site.position != rows[0].site.site.position for r in rows):
@@ -702,7 +743,7 @@ def _build_patch(
 
     # Mean ablation.
     if all_pos:
-        mean = sources.group_tensor(kind, group_index).float().mean(dim=0)  # [L, ...]
+        mean = sources.group_mean(kind, group_index)  # [L, ...]
         if is_head:
             values = mean[:, dev_heads].permute(1, 0, 2)  # [B, L, d_head]
         else:
