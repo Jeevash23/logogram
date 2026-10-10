@@ -23,7 +23,7 @@ const METHODS: { value: ExperimentKind; title: string; detail: string }[] = [
   {
     value: "attribution_patching",
     title: "Attribution patching",
-    detail: "Estimate patching at every site from one gradient, then verify the strongest.",
+    detail: "Estimate patching at every site from gradients, then verify the strongest.",
   },
   {
     value: "direct_logit_attribution",
@@ -214,14 +214,7 @@ export function ExperimentView() {
                   },
                 ]}
               />
-              {form.kind === "attribution_patching" && (
-                <p className={s.small}>
-                  Estimates what patching each site would do, to first order: (source activation − receiver activation) · the
-                  gradient of the metric at the receiver run. One gradient covers every site, so large sweeps take seconds. It
-                  misses saturation and can miss or even invert an effect: verify the strongest sites by patching from the
-                  results.
-                </p>
-              )}
+              {form.kind === "attribution_patching" && <AttributionSettings form={form} onChange={setForm} />}
             </div>
           ) : (
             <BaselineChooser baseline={form.baseline} onChange={(baseline) => setForm({ baseline })} />
@@ -426,6 +419,51 @@ function PathSettings({ form, onChange }: { form: FormState; onChange: (patch: P
         into an unchanged run. Senders in or after the last receiver's layer have no path and are left out.
       </p>
     </div>
+  );
+}
+
+/** How attribution patching estimates: one gradient, or integrated gradients over some steps. */
+function AttributionSettings({ form, onChange }: { form: FormState; onChange: (patch: Partial<FormState>) => void }) {
+  const steps = form.atpSteps;
+  const valid = Number.isInteger(steps) && steps >= 2 && steps <= 64;
+  return (
+    <>
+      <Choices
+        label="Estimate with"
+        value={form.atpMethod}
+        onChange={(atpMethod) => onChange({ atpMethod })}
+        columns={2}
+        options={[
+          {
+            value: "gradient",
+            title: "One gradient",
+            detail: "The gradient at the receiver run: one forward and backward pass per batch. Misses saturation, where the metric stops changing in step with the activation.",
+          },
+          {
+            value: "integrated_gradients",
+            title: "Integrated gradients",
+            detail: "The gradient averaged over runs between the two prompts, which corrects much of that saturation. Each step costs another forward and backward pass.",
+          },
+        ]}
+      />
+      {form.atpMethod === "integrated_gradients" && (
+        <div className={s.grid3}>
+          <Field
+            label="Steps"
+            help={valid ? `${steps} forward and backward passes per batch: ${steps} times the cost of one gradient.` : "A whole number from 2 to 64."}
+          >
+            <Input type="number" min={2} max={64} step={1} value={steps} onChange={(ev) => onChange({ atpSteps: Number(ev.target.value) })} aria-invalid={!valid} />
+          </Field>
+        </div>
+      )}
+      <p className={s.small}>
+        Estimates what patching each site would do, to first order: (source activation − receiver activation) · the gradient
+        of the metric{form.atpMethod === "integrated_gradients" ? ", averaged over runs whose inputs lie evenly between the receiver's and the source's" : " at the receiver run"}.
+        One estimate covers every site, so large sweeps take seconds. Saturation (in attention, normalization and the softmax)
+        can make one gradient miss or even invert an effect; integrated gradients correct much of it. Either way, verify the
+        strongest sites by patching from the results.
+      </p>
+    </>
   );
 }
 

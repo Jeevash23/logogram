@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 
 import type { BaselineSpec, ExperimentSpec } from "../api/types";
+import { DEFAULT_IG_STEPS } from "../lib/formState";
 import { experimentText } from "../lib/spec";
 import { useStore } from "../store/app";
 import { Button, Choices, Dialog, Field, Input, Select } from "./ui";
 
-type Option = "direction" | "zero" | "mean" | "resample" | "donors" | "seed" | "total" | "prompts" | "exact" | "split" | "other" | "mlps" | "pathdirection" | "whole" | "float32";
+type Option = "direction" | "zero" | "mean" | "resample" | "donors" | "seed" | "total" | "prompts" | "exact" | "estimator" | "split" | "other" | "mlps" | "pathdirection" | "whole" | "float32";
 
 function suggest(e: ExperimentSpec): Option {
   if (e.kind === "activation_patching") return e.direction === "clean_to_corrupt" ? "direction" : "resample";
@@ -18,7 +19,7 @@ function suggest(e: ExperimentSpec): Option {
   return "resample";
 }
 
-function variant(e: ExperimentSpec, option: Option, params: { donors: number; seed: number; reference: "clean" | "corrupt"; pool: "clean" | "corrupt" }): ExperimentSpec {
+function variant(e: ExperimentSpec, option: Option, params: { donors: number; seed: number; reference: "clean" | "corrupt"; pool: "clean" | "corrupt"; steps: number }): ExperimentSpec {
   const base = e.kind === "ablation" ? e.baseline : null;
   switch (option) {
     case "total":
@@ -40,6 +41,12 @@ function variant(e: ExperimentSpec, option: Option, params: { donors: number; se
     case "exact":
       // Every site of the sweep, patched for real.
       return { kind: "activation_patching", direction: e.kind === "attribution_patching" ? e.direction : "clean_to_corrupt" };
+    case "estimator":
+      // The same estimate made the other way: integrated gradients for one gradient, and back.
+      if (e.kind !== "attribution_patching") return e;
+      return e.method === "gradient"
+        ? { ...e, method: "integrated_gradients", steps: params.steps }
+        : { ...e, method: "gradient", steps: null };
     case "prompts":
       return { kind: "direct_logit_attribution", prompts: e.kind === "direct_logit_attribution" && e.prompts === "clean" ? "corrupt" : "clean" };
     case "direction":
@@ -146,6 +153,15 @@ export function RobustnessDialog() {
       title: "Patch every site for real",
       detail: "The same sweep with activation patching: one patched run per site and prompt, exact rather than estimated.",
     });
+    options.push(
+      exp.method === "gradient"
+        ? {
+            value: "estimator",
+            title: "Estimate with integrated gradients",
+            detail: `Average the gradient over ${DEFAULT_IG_STEPS} steps between the prompts, which corrects much of the saturation one gradient misses, at ${DEFAULT_IG_STEPS} times the cost.`,
+          }
+        : { value: "estimator", title: "Estimate with one gradient", detail: "The gradient at the receiver run only: what the steps of integrated gradients changed." },
+    );
   } else if (exp.kind === "activation_patching") {
     options.push({
       value: "direction",
@@ -175,7 +191,7 @@ export function RobustnessDialog() {
     });
   }
 
-  const next = variant(exp, option, { donors, seed, reference, pool });
+  const next = variant(exp, option, { donors, seed, reference, pool, steps: DEFAULT_IG_STEPS });
   const same = option !== "float32" && JSON.stringify(next) === JSON.stringify(exp);
 
   return (
