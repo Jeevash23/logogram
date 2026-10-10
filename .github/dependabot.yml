@@ -1,0 +1,38 @@
+version: 2
+
+# Weekly version updates, minor and patch releases grouped into one pull request per ecosystem.
+# Majors come one by one. A cooldown lets a new release settle before it is proposed; security
+# updates skip it.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        update-types: [minor, patch]
+
+  # Changes here change the committed build in src/logogram/web_dist: run `npm run build` in
+  # web/ on the pull request's branch, or CI's committed-build check fails.
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      web:
+        update-types: [minor, patch]
+
+  # pyproject.toml and uv.lock.
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      python:
+        update-types: [minor, patch]
