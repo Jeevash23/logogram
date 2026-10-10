@@ -267,6 +267,14 @@
   user-select: none;
 }
 
+.checkTop {
+  align-items: flex-start;
+}
+
+.check.checkTop input {
+  margin-top: 3px;
+}
+
 .check input {
   appearance: none;
   width: 14px;

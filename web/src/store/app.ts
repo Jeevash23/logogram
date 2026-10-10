@@ -15,6 +15,7 @@ import type {
   ProjectInfo,
   RobustnessChange,
   RunDetail,
+  MetricKind,
   RunListing,
   ScopeSpec,
   ServerState,
@@ -27,6 +28,7 @@ import type {
   UpdateStatus,
 } from "../api/types";
 import type { ResolvedTheme } from "../lib/color";
+import { METRICS } from "../lib/metrics";
 import { siteFromSelection } from "../lib/spec";
 import { DEFAULT_FORM, formFromSpec, type FormState } from "../lib/formState";
 import { clearStoredForm, readStoredForm, writeStoredForm, type StoredForm } from "../lib/formDraft";
@@ -261,6 +263,9 @@ interface Store {
   editRun: (spec: Spec) => void;
   prefillExperiment: (kind: FormState["kind"], sel: Selection) => void;
   focusInspector: (section: "evidence" | "runs") => void;
+  /** Say that a new dataset was saved; when another metric reads its answers than the form's,
+   * offer to switch to it, as a step of the form's history. */
+  datasetSaved: (path: string, metric?: MetricKind) => void;
 
   handleEvent: (event: Record<string, unknown> & { type: string }) => void;
 }
@@ -838,6 +843,25 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   focusInspector: (section) => set({ inspectorFocus: { section, at: Date.now() } }),
+
+  datasetSaved: (path, metric) => {
+    const form = get().form;
+    if (!metric || metric === form.metric || !METRICS[metric]) {
+      get().notify(`Saved ${path}. Check the baseline next.`);
+      return;
+    }
+    const words = METRICS[metric].label;
+    get().notify(`Saved ${path}. Its answers are read with the ${words}; the experiment form uses the ${METRICS[form.metric].label}.`, "info", {
+      key: "dataset-metric",
+      action: {
+        label: `Use the ${words}`,
+        run: () => {
+          const now = get();
+          now.replaceForm({ ...now.form, metric }, { notice: `The experiment form now uses the ${words}.` });
+        },
+      },
+    });
+  },
 
   handleEvent: (event) => {
     const { type } = event;

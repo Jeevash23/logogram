@@ -254,14 +254,17 @@ export function Checkbox({
   onChange,
   children,
   disabled,
+  top,
 }: {
   checked: boolean;
   onChange: (v: boolean) => void;
   children: ReactNode;
   disabled?: boolean;
+  /** Beside the first line of a label of several lines, rather than its middle. */
+  top?: boolean;
 }) {
   return (
-    <label className={s.check} style={disabled ? { opacity: 0.45 } : undefined}>
+    <label className={cx(s.check, top && s.checkTop)} style={disabled ? { opacity: 0.45 } : undefined}>
       <input
         type="checkbox"
         checked={checked}

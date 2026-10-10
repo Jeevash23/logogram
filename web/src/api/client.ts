@@ -8,7 +8,6 @@ import type {
   DatasetDetail,
   EstimateResponse,
   FolderListing,
-  IOITemplate,
   Job,
   MetricSpec,
   TaskDatasetCreated,
@@ -167,16 +166,6 @@ export const api = {
   project: () => get<ProjectInfo>("/api/project"),
 
   dataset: (path: string, prependBos = true) => get<DatasetDetail>(`/api/dataset?path=${encodeURIComponent(path)}&prepend_bos=${prependBos}`),
-  ioiTemplates: () => get<IOITemplate[]>("/api/ioi/templates"),
-  generateIOI: (body: {
-    name: string;
-    n: number;
-    seed: number;
-    templates: string[];
-    patterns: ("ABBA" | "BABA")[];
-    corruption: "flip" | "abc";
-    overwrite?: boolean;
-  }) => post<DatasetCreated>("/api/datasets/ioi", body),
   tasks: () => get<TaskInfo[]>("/api/tasks"),
   /** Generate a task's prompts into a new dataset; the reply names the metric that reads them. */
   generateTask: (body: { task: string; name: string; n: number; seed: number; options: Record<string, unknown>; overwrite?: boolean }) =>

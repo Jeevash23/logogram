@@ -1,7 +1,7 @@
 // What a run measures, in words (mirroring METRIC_LABELS and describe_metric in
 // src/logogram/spec.py), and what each metric can read.
 
-import type { MetricKind, MetricSpec, Side } from "../api/types";
+import type { MetricKind, MetricSpec, Side, TaskInfo } from "../api/types";
 
 export interface MetricWords {
   /** In a sentence: "logit difference". */
@@ -87,4 +87,14 @@ export function metricWords(metric: { kind?: string | null; target?: Side | null
 export function describeMetric(metric: MetricSpec): string {
   if (metric.kind === "kl") return `KL divergence from the ${metric.target} prompt's next-token distribution`;
   return metric.kind === "logit_diff" ? `${METRICS.logit_diff.formula} at the last position` : METRICS[metric.kind].formula;
+}
+
+/** The metric that reads a task's answers with these options (TaskInfo.recommended_metric in
+ * src/logogram/tasks.py): an option left out takes its default. */
+export function taskMetric(task: Pick<TaskInfo, "metric" | "metric_when" | "options">, options: Record<string, unknown>): MetricKind {
+  for (const rule of task.metric_when) {
+    const value = options[rule.option] ?? task.options.find((o) => o.name === rule.option)?.default;
+    if (value === rule.value) return rule.metric;
+  }
+  return task.metric;
 }

@@ -1,15 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "../api/client";
-import type { Answer, IOITemplate, PromptRecord, TokenStripData } from "../api/types";
+import type { Answer, PromptRecord, TaskDatasetCreated, TokenStripData } from "../api/types";
 import { TokenGrid } from "../components/TokenStrip";
-import { Button, Callout, Checkbox, Choices, Field, Input, Segmented, TextArea } from "../components/ui";
+import { Button, Callout, Field, Input, Segmented, TextArea } from "../components/ui";
 import { answerText, plural, visibleToken } from "../lib/format";
 import { modelName, useAnalysisContext } from "../lib/hooks";
 import { useStore } from "../store/app";
+import { TaskGenerator } from "./TaskGenerator";
 import s from "./views.module.css";
 
-type Mode = "none" | "pair" | "ioi" | "import";
+type Mode = "none" | "pair" | "task" | "import";
 
 /** Run a form action; return its result, or record its error to show next to the form. */
 async function attempt<T>(fn: () => Promise<T>, setError: (e: string | null) => void): Promise<T | undefined> {
@@ -27,13 +28,14 @@ export function PromptsView() {
   const datasetPath = useStore((st) => st.datasetPath);
   const selectDataset = useStore((st) => st.selectDataset);
   const datasets = project?.datasets ?? [];
-  const [mode, setMode] = useState<Mode>(datasets.length ? "none" : "ioi");
+  const [mode, setMode] = useState<Mode>(datasets.length ? "none" : "task");
 
-  const created = async (path: string) => {
+  const created = async (path: string, task?: TaskDatasetCreated) => {
     await useStore.getState().refreshProject();
     await selectDataset(path);
     setMode("none");
-    useStore.getState().notify(`Saved ${path}. Check the baseline next.`);
+    // A task's answers may need another metric than the form's: the notice offers it.
+    useStore.getState().datasetSaved(path, task?.metric);
   };
 
   return (
@@ -72,14 +74,14 @@ export function PromptsView() {
           onChange={(m) => setMode(m === mode ? "none" : m)}
           options={[
             { value: "pair", label: "Single pair" },
-            { value: "ioi", label: "IOI generator" },
+            { value: "task", label: "Generate a task" },
             { value: "import", label: "Import JSONL" },
           ]}
         />
       </div>
 
       {mode === "pair" && <PairForm onCreated={created} />}
-      {mode === "ioi" && <IOIForm onCreated={created} />}
+      {mode === "task" && <TaskGenerator onCreated={(path, task) => void created(path, task)} />}
       {mode === "import" && <ImportForm onCreated={created} />}
 
       <DatasetTable />
@@ -157,127 +159,6 @@ function PairForm({ onCreated }: { onCreated: (path: string) => void }) {
       </div>
       {error && <Callout tone="error">{error}</Callout>}
     </div>
-  );
-}
-
-function IOIForm({ onCreated }: { onCreated: (path: string) => void }) {
-  const [templates, setTemplates] = useState<IOITemplate[]>([]);
-  const [chosen, setChosen] = useState<string[]>([]);
-  const [n, setN] = useState(32);
-  const [seed, setSeed] = useState(0);
-  const [patterns, setPatterns] = useState<("ABBA" | "BABA")[]>(["ABBA", "BABA"]);
-  const [corruption, setCorruption] = useState<"flip" | "abc">("flip");
-  const [name, setName] = useState("ioi");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const modelReady = useStore((st) => st.model.state === "ready");
-
-  useEffect(() => {
-    api.ioiTemplates().then((t) => {
-      setTemplates(t);
-      setChosen(t.filter((x) => x.default).map((x) => x.id));
-    }, () => undefined);
-  }, []);
-
-  const togglePattern = (p: "ABBA" | "BABA", on: boolean) =>
-    setPatterns((cur) => (on ? [...new Set([...cur, p])] : cur.filter((x) => x !== p)));
-
-  return (
-    <div className={s.panel}>
-      <div className={s.panelTitle}>Indirect object identification</div>
-      <p className={s.small}>
-        Two people are named and one is mentioned again; the model should complete with the other. The answer is
-        the indirect object (IO) and the distractor is the repeated subject (S). Named positions IO, S1, S2 and end
-        are recorded for each prompt.
-      </p>
-      <div className={s.grid3}>
-        <Field label="Prompts">
-          <Input type="number" min={1} max={100000} value={n} onChange={(e) => setN(Number(e.target.value))} />
-        </Field>
-        <Field label="Seed">
-          <Input type="number" value={seed} onChange={(e) => setSeed(Number(e.target.value))} />
-        </Field>
-        <Field label="File name">
-          <Input value={name} onChange={(e) => setName(e.target.value)} />
-        </Field>
-      </div>
-      <Field label="Name order">
-        <div className={s.row}>
-          <Checkbox checked={patterns.includes("ABBA")} onChange={(v) => togglePattern("ABBA", v)}>
-            ABBA <span className="faint">(When Mary and John …, John gave … to)</span>
-          </Checkbox>
-          <Checkbox checked={patterns.includes("BABA")} onChange={(v) => togglePattern("BABA", v)}>
-            BABA <span className="faint">(When John and Mary …, John gave … to)</span>
-          </Checkbox>
-        </div>
-      </Field>
-      <Field label="Templates" help="The first three share one token structure, so named positions line up exactly.">
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {templates.map((t) => (
-            <Checkbox
-              key={t.id}
-              checked={chosen.includes(t.id)}
-              onChange={(v) => setChosen((cur) => (v ? [...cur, t.id] : cur.filter((x) => x !== t.id)))}
-            >
-              <TemplateText text={t.text} />
-            </Checkbox>
-          ))}
-        </div>
-      </Field>
-      <Field label="Corruption">
-        <Choices
-          label="Corruption"
-          value={corruption}
-          onChange={setCorruption}
-          columns={2}
-          options={[
-            {
-              value: "flip",
-              title: "Flip the subject",
-              detail: "S2 becomes the IO name, so the corrupt prompt favors the other name (negative logit difference).",
-            },
-            {
-              value: "abc",
-              title: "Three new names",
-              detail: "All names are replaced by unrelated ones, so neither answer is supported.",
-            },
-          ]}
-        />
-      </Field>
-      {!modelReady && (
-        <p className={s.faint}>
-          With a model loaded, names that aren't single tokens for it are left out automatically.
-        </p>
-      )}
-      <div>
-        <Button
-          variant="primary"
-          disabled={busy || !chosen.length || !patterns.length || n < 1 || !name.trim()}
-          onClick={async () => {
-            setBusy(true);
-            const out = await attempt(
-              () => api.generateIOI({ name, n, seed, templates: chosen, patterns, corruption }),
-              setError,
-            );
-            setBusy(false);
-            if (out) onCreated(out.path);
-          }}
-        >
-          Generate {plural(n, "prompt")}
-        </Button>
-      </div>
-      {error && <Callout tone="error">{error}</Callout>}
-    </div>
-  );
-}
-
-function TemplateText({ text }: { text: string }) {
-  const parts = text.split(/(\{[A-Z]+\})/g);
-  const names: Record<string, string> = { "{A}": "A", "{B}": "B", "{C}": "S", "{PLACE}": "place", "{OBJECT}": "object" };
-  return (
-    <span className={s.template}>
-      {parts.map((p, i) => (p.startsWith("{") ? <span key={i} className={s.slot}>{names[p] ?? p}</span> : <span key={i}>{p}</span>))}
-    </span>
   );
 }
 
@@ -453,12 +334,12 @@ async function regenerate(size: number, modelId: string | undefined, setBusy: (b
   const st = useStore.getState();
   setBusy(true);
   const out = await st.guard(async () => {
-    const templates = (await api.ioiTemplates()).filter((t) => t.default).map((t) => t.id);
     const taken = new Set((st.project?.datasets ?? []).map((d) => d.name));
     const base = `ioi-${modelName(modelId).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`;
     let name = base;
-    for (let k = 2; taken.has(name); k++) name = `${base}-${k}`;
-    return api.generateIOI({ name, n: Math.max(32, size), seed: 0, templates, patterns: ["ABBA", "BABA"], corruption: "flip" });
+    for (let k = 2; taken.has(name) || taken.has(`${name}.jsonl`); k++) name = `${base}-${k}`;
+    // The task's own defaults: its default templates, both name orders, the subject flipped.
+    return api.generateTask({ task: "ioi", name, n: Math.max(32, size), seed: 0, options: {} });
   });
   setBusy(false);
   if (!out) return;
