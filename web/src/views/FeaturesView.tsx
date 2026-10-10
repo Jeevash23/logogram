@@ -273,7 +273,7 @@ function TokenPanel({ info, selected, onFeature }: { info: SAEInfo; selected: nu
               <span className={f.chips}>
                 {p < data.first_real_token ? (
                   <span className={s.faint}>not read: SAEs aren't trained on this token</span>
-                ) : data.features[p].length === 0 ? (
+                ) : !data.features[p]?.length ? (
                   <span className={s.faint}>no feature fires</span>
                 ) : (
                   data.features[p].slice(0, 5).map((x) => (
