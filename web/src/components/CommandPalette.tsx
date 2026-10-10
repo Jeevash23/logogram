@@ -77,8 +77,8 @@ function useCommands(query: string): Command[] {
       if (st.selection) {
         const sel = st.selection;
         cmds.push(
-          { id: "patch-here", label: "Patch here", group: "Selected component", shortcut: "P", run: () => st.prefillExperiment("activation_patching", sel) },
-          { id: "ablate-here", label: "Ablate here", group: "Selected component", shortcut: "B", run: () => st.prefillExperiment("ablation", sel) },
+          { id: "patch-here", label: "Patch here", group: "Selected component", shortcut: "P", disabled: sel.part === "set", run: () => st.prefillExperiment("activation_patching", sel) },
+          { id: "ablate-here", label: "Ablate here", group: "Selected component", shortcut: "B", disabled: sel.part === "set", run: () => st.prefillExperiment("ablation", sel) },
           { id: "attention", label: "Open attention", group: "Selected component", shortcut: "A", disabled: sel.part !== "head", run: () => st.setView("attention") },
           { id: "across", label: "Compare across runs", group: "Selected component", shortcut: "C", run: () => st.focusInspector("runs") },
         );

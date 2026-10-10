@@ -14,7 +14,9 @@ import {
   type ResidKind,
   type Selection,
 } from "../lib/sites";
+import { setWhat, universeText } from "../lib/circuits";
 import { metricWords } from "../lib/metrics";
+import { siteText } from "../lib/spec";
 import { baselineText, experimentText, measureOf, measureWords, positionText } from "../lib/spec";
 import { useStore } from "../store/app";
 import { Distribution } from "./Distribution";
@@ -42,7 +44,11 @@ export function Inspector() {
         ) : (
           <>
             <ComponentHeader selection={selection} />
-            {run.detail?.spec && pendingBase && <p className={s.note}>{experimentText(run.detail.spec.experiment)} · {positionText(pendingBase.position)}</p>}
+            {run.detail?.spec && pendingBase && (
+              <p className={s.note}>
+                {experimentText(run.detail.spec.experiment)} · {pendingBase.kind === "site_set" ? "every site of the set at once" : positionText(pendingBase.position)}
+              </p>
+            )}
             {site && run.detail ? (
               <Evidence site={site} runId={run.id as string} summary={run.detail.summary} finished={!!run.detail.summary} />
             ) : pendingBase && run.running ? (
@@ -58,9 +64,11 @@ export function Inspector() {
             ) : (
               <p className={s.note}>Run an experiment to measure this component.</p>
             )}
+            {site && selection.part === "set" && run.detail?.summary?.circuit && <SetReading site={site} summary={run.detail.summary} />}
             {run.detail?.spec && (site || pendingBase) && <Method spec={run.detail.spec} summary={run.detail.summary} selection={selection} />}
-            <Actions selection={selection} />
-            <AcrossRuns selection={selection} />
+            {selection.part !== "set" && <Actions selection={selection} />}
+            {/* A set's label names different sites in different runs: no comparison across runs. */}
+            {selection.part !== "set" && <AcrossRuns selection={selection} />}
           </>
         )}
       </div>
@@ -76,7 +84,13 @@ function ComponentHeader({ selection }: { selection: Selection }) {
   else if (selection.part === "attn") kind = `The attention output of layer ${selection.layer}: all heads, after the output projection.`;
   else if (selection.part === "mlp") kind = `The MLP output of layer ${selection.layer}.`;
   else if (selection.part === "feature") kind = `Feature ${selection.feature} of the SAE on layer ${selection.layer}: a direction in the model the SAE finds active on some tokens.`;
-  else if (selection.part === "set") kind = "A set of sites, intervened on together in one forward pass.";
+  else if (selection.part === "set") {
+    const set = findSite(run.sites, selection);
+    const members = set?.members ?? [];
+    const universe = run.detail?.summary?.circuit?.universe ?? run.layout?.universe;
+    const what = set ? setWhat(!!set.variant?.complement, set.variant?.size ?? members.length, universe) : "intervenes on a set of sites";
+    kind = `A set of sites, intervened on together in one forward pass: it ${what}${members.length ? `. Its sites: ${members.map(siteText).join(", ")}.` : "."}`;
+  }
   else {
     const found = sitesOnComponent(run.sites, selection)[0]?.kind;
     const resid = selection.kind ?? (found && isResidKind(found) ? found : undefined);
@@ -93,6 +107,64 @@ function ComponentHeader({ selection }: { selection: Selection }) {
       <p className={s.componentText}>{kind}</p>
       {arch && selection.part !== "set" && selection.layer >= arch.nLayers && <p className={s.note}>This model has only {arch.nLayers} layers.</p>}
     </div>
+  );
+}
+
+/** A set against replacing everything: its share, its faithfulness, what a site adds to it, and
+ * how its two sites interact. */
+function SetReading({ site, summary }: { site: SiteResult; summary: Summary }) {
+  const row = summary.circuit?.rows.find((r) => r.index === site.index);
+  if (!row) return null;
+  const everything = summary.circuit?.everything === site.index;
+  return (
+    <section className={s.section}>
+      <h4 className={s.sectionTitle}>Against replacing everything</h4>
+      <dl className={s.stats}>
+        {everything ? (
+          <>
+            <dt>Share</dt>
+            <dd>
+              1 <span className={s.muted}>this set replaces everything; the others are read against it</span>
+            </dd>
+          </>
+        ) : (
+          <>
+            <dt>Share</dt>
+            <dd>
+              {num(row.share?.mean, 3)} <span className={s.muted}>({ci(row.share?.lo, row.share?.hi)})</span>
+            </dd>
+          </>
+        )}
+        {row.faithfulness && (
+          <>
+            <dt>Faithfulness</dt>
+            <dd>
+              {num(row.faithfulness.mean, 3)} <span className={s.muted}>({ci(row.faithfulness.lo, row.faithfulness.hi)})</span>
+            </dd>
+          </>
+        )}
+        {row.without && (
+          <>
+            <dt>Without {row.without.site}</dt>
+            <dd>
+              −{num(row.without.drop.mean, 3)} <span className={s.muted}>faithfulness of {row.without.of} ({ci(row.without.drop.lo, row.without.drop.hi)})</span>
+            </dd>
+          </>
+        )}
+        {row.interaction && (
+          <>
+            <dt>Beyond the sum</dt>
+            <dd>
+              {signed(row.interaction.effect.mean, 3)} <span className={s.muted}>{row.interaction.a} and {row.interaction.b} together ({ci(row.interaction.effect.lo, row.interaction.effect.hi)})</span>
+            </dd>
+          </>
+        )}
+      </dl>
+      <p className={s.fine}>
+        Share: this set's change in the metric as a share of replacing everything. Faithfulness: 1 − share, for a set that keeps
+        its sites; 1 means they carry the behavior alone.
+      </p>
+    </section>
   );
 }
 
@@ -116,7 +188,16 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
             ? `the ${KIND_NAMES[resid]}`
             : "the residual stream";
   let how: string;
-  if (exp.kind === "direct_logit_attribution") {
+  if (selection.part === "set" && (exp.kind === "activation_patching" || exp.kind === "ablation")) {
+    const set = base ?? null;
+    const keeps = !!set?.variant?.complement;
+    const universe = universeText(summary?.circuit?.universe ?? summary?.layout.universe);
+    const [receiver, source] = exp.kind === "activation_patching" && exp.direction === "clean_to_corrupt" ? ["corrupt", "clean"] : ["clean", "corrupt"];
+    const value = exp.kind === "ablation" ? baselineText(exp.baseline) : `its value from the paired ${source} prompt`;
+    how = keeps
+      ? `Runs each ${receiver} prompt and replaces ${universe} except the set's sites, all at once, with ${value}. A site at one position keeps only that position. What changes is what the rest of the model carried.`
+      : `Runs each ${receiver} prompt and replaces every site of the set, all at once, with ${value}.`;
+  } else if (exp.kind === "direct_logit_attribution") {
     const written = selection.part === "head" ? "this head's output, through its share of the output projection," : `${what}`;
     return (
       <section className={s.section}>
@@ -264,6 +345,7 @@ function Evidence({
   // A steered site and strength against its random control, paired over the same resamples.
   const control = summary?.steering?.control?.find((c) => c.index === site.index || c.control_index === site.index);
   const nSites = summary?.sites.length ?? 0;
+  const unit = summary?.layout.kind === "site_sets" ? "sets" : "sites";
 
   return (
     <section className={s.section}>
@@ -305,7 +387,7 @@ function Evidence({
         </dd>
         {site.band && (
           <>
-            <dt>Band, all {count(nSites)} sites</dt>
+            <dt>Band, all {count(nSites)} {unit}</dt>
             <dd>
               {ci(site.band.lo, site.band.hi, 3)}{" "}
               <span className={s.muted}>{site.band.lo > 0 || site.band.hi < 0 ? "excludes zero" : "includes zero"}</span>
@@ -316,7 +398,7 @@ function Evidence({
           <>
             <dt>q-value</dt>
             <dd>
-              {qText(site.q)} <span className={s.muted}>false findings expected among sites this strong</span>
+              {qText(site.q)} <span className={s.muted}>the share of false findings expected among {unit} this strong</span>
             </dd>
           </>
         )}
@@ -337,7 +419,7 @@ function Evidence({
             `${count(stats.bootstrap)} resamples`,
             `seed ${stats.seed}`,
           ].filter(Boolean).join(", ")}.
-          {site.band && ` The band holds for all ${count(nSites)} sites at once, with ${ciLevel}% confidence; the q-value is the Benjamini–Hochberg share of false findings.`}
+          {site.band && ` The band holds for all ${count(nSites)} ${unit} at once, with ${ciLevel}% confidence; the q-value is Benjamini–Hochberg's.`}
           {control && ` Against the control: |effect| along the direction − |effect| along a random direction of the same length, at the same strength.`}
         </p>
       )}
@@ -351,7 +433,7 @@ function Evidence({
               <Icon name="alert" size={13} /> The dataset file changed after this run. Prompt texts may not match.
             </p>
           )}
-          {site.variant && <DoseResponse site={site} ciLevel={ciLevel} />}
+          {site.variant?.coefficient !== undefined && <DoseResponse site={site} ciLevel={ciLevel} />}
           <Distribution
             label={`Per-prompt ${words.effect.toLowerCase()}`}
             values={values}

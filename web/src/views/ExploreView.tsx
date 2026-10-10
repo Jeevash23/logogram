@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 
 import type { SiteBase, SiteResult } from "../api/types";
+import { CircuitDialog } from "../components/CircuitDialog";
 import { ModelMap } from "../components/ModelMap/ModelMap";
 import { Legend } from "../components/ModelMap/Legend";
 import { Logogram } from "../components/Logogram";
@@ -10,6 +11,7 @@ import { fitText, font, prepareCanvas, ring, useChromeColors, useElementSize } f
 import { divergingScale, niceBound, SCALE_FLOOR, textOn } from "../lib/color";
 import { count, signed } from "../lib/format";
 import { modelName, siteValue, useActiveRun, useArchitecture, useRunProfile, type Architecture } from "../lib/hooks";
+import { interactionSets, siteSetsError, universeFor } from "../lib/circuits";
 import { componentLabel, findSite, sameSelection, selectionOfSite, type Selection } from "../lib/sites";
 import { siteFromSelection, siteText } from "../lib/spec";
 import { useStore } from "../store/app";
@@ -31,7 +33,8 @@ export function ExploreView() {
   const layer = Math.min(selection?.layer ?? 0, Math.max(0, (arch?.nLayers ?? 1) - 1));
   const pins = useStore(st => st.headPins);
   const tokenPosition = useStore(st => st.tokenPosition);
-  const current = selection && arch && selection.layer < arch.nLayers ? selection : null;
+  // A set of sites (from a run over sets) has no single place on the map.
+  const current = selection && arch && selection.part !== "set" && selection.layer >= 0 && selection.layer < arch.nLayers ? selection : null;
   const profile = useRunProfile(run);
   const strongest = useMemo(
     () => Object.values(run.results).filter((x) => x.effect.mean !== null).sort((a, b) => Math.abs(b.effect.mean ?? 0) - Math.abs(a.effect.mean ?? 0)).slice(0, 3),
@@ -59,7 +62,7 @@ export function ExploreView() {
         <span>{run.running ? "Results arrive layer by layer" : strongest.length ? <>Strongest: {strongest.map((x, i) => <span key={x.index}>{i > 0 && " · "}<button type="button" className={s.reading} onClick={() => select(selectionOfSite(x))}>{x.label} <strong>{signed(x.effect.mean, 2)}</strong></button></span>)}</> : run.id ? `${count(Object.keys(run.results).length)} measured sites` : "Run an experiment to color the model"}</span>
       </div>
       {mode === "atlas" ? <div className={s.atlasRow}>
-        <div className={s.atlas}><ModelMap prominent structureOnly={overlay === "structure"} /><p className={s.hint}>Double-click a component to open its layer. Arrow keys move through the map. Empty outlines have no measurement in this run.</p></div>
+        <div className={s.atlas}><ModelMap prominent structureOnly={overlay === "structure"} /><p className={s.hint}>{run.layout?.kind === "site_sets" ? "This run measured sets of sites, which have no single place on the map: its results list each set. " : ""}Double-click a component to open its layer. Arrow keys move through the map. Empty outlines have no measurement in this run.</p></div>
         {run.id && profile && overlay === "data" && <aside className={s.dialPanel} aria-label="Run logogram"><LogogramDial seed={run.id} profile={profile} sites={run.sites} results={run.results} size={150} /></aside>}
       </div> : <div className={s.layerWorkspace}>
         <nav className={s.layerNav} aria-label="Model layers"><span className={s.eyebrow}>Layers</span>
@@ -213,10 +216,22 @@ function LayerDiagram({ arch, layer }: { arch: Architecture; layer: number }) {
 
 export function SelectionTray() {
   const sites = useStore(st => st.stagedSites);
+  const model = useStore(st => st.model.info);
+  const [circuitOpen, setCircuitOpen] = useState(false);
   if (!sites.length) return null;
+  // Two sites alone and together: how they interact.
+  const pair = sites.length === 2 ? interactionSets(sites[0], sites[1]) : null;
+  const pairError = pair ? siteSetsError(null, pair, model ?? null) : "Stage exactly two sites to check how they interact.";
+  const circuitError = "error" in universeFor(sites) ? (universeFor(sites) as { error: string }).error : null;
   return <section className={s.tray} aria-label="Experiment selection">
-    <div className={s.trayHeading}><div><span className={s.eyebrow}>Experiment selection</span><strong>{sites.length} site{sites.length === 1 ? "" : "s"} · measured individually</strong></div><div className={s.controls}><Button size="small" onClick={() => useStore.getState().prepareNote(sites)}>Save selection</Button><Button variant="primary" onClick={() => useStore.getState().configureStaged()}>Configure experiment</Button></div></div>
+    <div className={s.trayHeading}><div><span className={s.eyebrow}>Experiment selection</span><strong>{sites.length} site{sites.length === 1 ? "" : "s"}</strong></div><div className={s.controls}>
+      <Button size="small" onClick={() => useStore.getState().prepareNote(sites)}>Save selection</Button>
+      <Button size="small" disabled={!!pairError} title={pairError ?? "Each site alone, and both together, in one run"} onClick={() => pair && useStore.getState().configureSets({ kind: "site_sets", universe: null, sets: pair }, { staged: true })}>Check how they interact</Button>
+      <Button disabled={!!circuitError} title={circuitError ?? "Keep these sites alone, remove them, and replace everything"} onClick={() => setCircuitOpen(true)}>Test as a circuit</Button>
+      <Button variant="primary" onClick={() => useStore.getState().configureStaged()}>Configure experiment</Button>
+    </div></div>
     <div className={s.chips}>{sites.map((site, i) => <span key={`${siteText(site)}-${i}`} className={s.chip}>{siteText(site)}<span className={s.hint}>{site.position.kind === "all" ? " · all positions" : ""}</span><button type="button" aria-label={`Remove ${siteText(site)} from experiment`} onClick={() => useStore.setState({ stagedSites: sites.filter((_, j) => i !== j) })}>×</button></span>)}</div>
-    <p className={s.hint}>Each site is a separate intervention in the sweep. Review direction, baseline, and execution settings before running.</p>
+    <p className={s.hint}>Configure experiment measures each site on its own. Test as a circuit intervenes on them together: kept alone with the rest of the model replaced, and removed. Review direction, baseline, and execution settings before running.</p>
+    <CircuitDialog open={circuitOpen} onOpenChange={setCircuitOpen} sites={sites} />
   </section>;
 }

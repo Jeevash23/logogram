@@ -5,6 +5,7 @@ import { Button, Callout, Checkbox, Choices, Field, Input, Kbd, Segmented, Selec
 import { MOD } from "../components/Header";
 import { plural, shortRevision } from "../lib/format";
 import { modelName } from "../lib/hooks";
+import { EVERYTHING, SET_SITE_KINDS } from "../lib/circuits";
 import { KIND_SHORT, parseHeadQuery } from "../lib/sites";
 import { buildSpec, datasetFacts, parseStrengths, savedDifferences } from "../lib/buildSpec";
 import { experimentText, receiverLabel, scopeFor, scopeShort, scopeText, siteText, suggestName, workload, workloadText } from "../lib/spec";
@@ -12,6 +13,7 @@ import { useStore, type FormState } from "../store/app";
 import { metricWords } from "../lib/metrics";
 import { MetricSettings } from "./MetricSettings";
 import { ClusterChooser } from "./StatisticsSettings";
+import { SiteSetsEditor } from "./SiteSetsEditor";
 import s from "./views.module.css";
 import e from "./ExperimentView.module.css";
 
@@ -620,6 +622,16 @@ const LAST_TOKEN_NOTE = "Read at the last token, where the logit difference is m
 
 type FeaturesScope = Extract<ScopeSpec, { kind: "features" }>;
 
+/** Sets of sites to start from: the chosen sites as one set, or one set that replaces every head
+ * (what a circuit is read against) to add sets beside. */
+function firstSets(scope: ScopeSpec): ScopeSpec {
+  if (scope.kind === "sites") {
+    const sites = scope.sites.filter((x) => SET_SITE_KINDS.includes(x.kind));
+    if (sites.length) return { kind: "site_sets", universe: null, sets: [{ label: sites.length === 1 ? siteText(sites[0]) : "Chosen sites", sites, complement: false }] };
+  }
+  return { kind: "site_sets", universe: ["head"], sets: [{ label: EVERYTHING, sites: [], complement: true }] };
+}
+
 /** Which prompts choose the strongest features, and which report them: the same prompts, or a
  * seeded split, so the reported effects aren't the ones that happened to look strongest. */
 function HeldOutChoice({ scope, onChange }: { scope: FeaturesScope; onChange: (s: ScopeSpec) => void }) {
@@ -687,6 +699,8 @@ function ScopeEditor({
   // Paths start at heads, attention outputs or MLP outputs.
   const paths = method === "path_patching";
   const verb = method === "ablation" ? "Ablate" : "Patch";
+  // Sets of sites are intervened on together, which patching and ablation do.
+  const setsAllowed = method === "activation_patching" || method === "ablation";
   const position = (p: PositionSpec) => (direct ? { kind: "last" } as PositionSpec : p);
   return (
     <div className={e.stack}>
@@ -700,6 +714,7 @@ function ScopeEditor({
           else if (k === "layer_position")
             onChange({ kind: "layer_position", site: "resid_pre", positions: uniformLength === false && labels.length ? "labels" : "each" });
           else if (k === "layer_components") onChange({ kind: "layer_components", components: ["attn_out", "mlp_out"], position: position({ kind: "all" }) });
+          else if (k === "site_sets") onChange(firstSets(scope));
         }}
         options={[
           { value: "heads", label: "Layer × head", disabled: steering, title: steering ? "Steering adds to the residual stream" : undefined },
@@ -720,8 +735,24 @@ function ScopeEditor({
             ? [{ value: "features" as const, label: "Every SAE feature" }]
             : []),
           ...(kind === "sites" ? [{ value: "sites" as const, label: scope.sites.length === 1 ? "Single site" : "Chosen sites" }] : []),
+          {
+            value: "site_sets" as const,
+            label: "Sets of sites",
+            disabled: !setsAllowed,
+            title: setsAllowed ? "Sites intervened on together, one result per set" : "Sets are intervened on by activation patching or ablation",
+          },
         ]}
       />
+      {scope.kind === "site_sets" && (
+        <>
+          <p className={s.small}>
+            Each set's sites are {method === "ablation" ? "ablated" : "patched"} together in one forward pass, and each set is one
+            result. A set can replace its sites, or keep them and replace the rest of the model: keeping a circuit alone shows how
+            much of the behavior it carries.
+          </p>
+          <SiteSetsEditor scope={scope} onChange={onChange} labels={labels} />
+        </>
+      )}
       {scope.kind === "features" && (
         <div className={e.stack}>
           <div className={s.grid2}>

@@ -1,5 +1,5 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 import type { ExperimentSpec, Layout, Side, SiteBase, SiteResult, Spec, Summary } from "../api/types";
 import { Heatmap, type Axis } from "../components/Heatmap/Heatmap";
@@ -17,6 +17,9 @@ import { Distribution } from "../components/Distribution";
 import { api } from "../api/client";
 import { copyText } from "../components/CopyCommand";
 import { downloadBlob, exportFigure, methodsText } from "../lib/export";
+import { CircuitDialog } from "../components/CircuitDialog";
+import { rankedSites, universeText } from "../lib/circuits";
+import { CircuitResults } from "./CircuitResults";
 import { Forest } from "./Forest";
 import s from "./views.module.css";
 import r from "./ResultsView.module.css";
@@ -46,6 +49,10 @@ export function ResultsView() {
   const flagged = useMemo(() => new Set(flags?.sites ?? []), [flags]);
   // Stays the same array while a run streams progress, so the lists below aren't sorted again.
   const resultList = useMemo(() => Object.values(run.results), [run.results]);
+  // A finished run's single heads, attention or MLP outputs, strongest first: the top of them can
+  // be tested as a circuit.
+  const ranked = useMemo(() => rankedSites(run.detail?.summary?.sites ?? []), [run.detail?.summary]);
+  const [circuitOpen, setCircuitOpen] = useState(false);
 
   if (!run.id) {
     return (
@@ -109,6 +116,11 @@ export function ResultsView() {
                   title="Patch the sites with the largest estimated effects, for real, and compare"
                 >
                   Verify top {VERIFY_TOP} by patching
+                </Button>
+              )}
+              {ranked.length > 0 && (
+                <Button onClick={() => setCircuitOpen(true)} title="Keep the strongest sites alone, 1, 2, 4, 8 … of them, and replace the rest of the model">
+                  Test the top sites as a circuit
                 </Button>
               )}
               <Button onClick={() => useStore.setState({ robustnessDialogOpen: true })} icon="refresh">
@@ -265,7 +277,8 @@ export function ResultsView() {
       )}
       {summary && <Corrections summary={summary} />}
 
-      {layout && <div className={r.controls}>
+      {run.id && ranked.length > 0 && <CircuitDialog open={circuitOpen} onOpenChange={setCircuitOpen} ranked={ranked} runId={run.id} />}
+      {layout && layout.kind !== "site_sets" && <div className={r.controls}>
         <Segmented label="Result values" value={metric} onChange={mapMetric => useStore.setState({ mapMetric })} options={[{ value: "effect", label: words.effect }, { value: "delta", label: words.delta }]} />
         <Segmented label="Result scale" value={scaleMode} onChange={scaleMode => useStore.setState({ scaleMode })} options={[{ value: "auto", label: "Fit" }, { value: "unit", label: "±1", disabled: metric !== "effect" }]} />
         <Checkbox checked={cellValues} onChange={(v) => useStore.setState({ cellValues: v })}>Show values</Checkbox>
@@ -273,7 +286,19 @@ export function ResultsView() {
         <Button size="small" variant="ghost" icon="explore" onClick={() => { useStore.setState({ exploreMode: "atlas" }); useStore.getState().setView("explore"); }}>Open model atlas</Button>
         {run.detail?.predictions && <Button size="small" variant="ghost" onClick={() => useStore.getState().setView("predictions")}>Open saved predictions</Button>}
       </div>}
-      {layout && layout.kind !== "sites" && (
+      {layout?.kind === "site_sets" && (
+        <CircuitResults
+          sites={run.sites}
+          results={run.results}
+          circuit={summary?.circuit}
+          universe={summary?.circuit?.universe ?? layout.universe}
+          effectLabel={words.effect}
+          ciLevel={run.ciLevel}
+          selectedIndex={selectedSite?.index ?? null}
+          onSelect={(site) => select(selectionOfSite(site))}
+        />
+      )}
+      {layout && layout.kind !== "sites" && layout.kind !== "site_sets" && (
         <div className={r.grid}>
           <div className={r.heat}>
             <div className={r.heatHead}>
@@ -329,12 +354,13 @@ function Corrections({ summary }: { summary: Summary }) {
   const banded = sites.filter((x) => x.band && (x.band.lo > 0 || x.band.hi < 0)).length;
   const discoveries = sites.filter((x) => x.q !== null && x.q !== undefined && x.q < alpha).length;
   const single = sites.filter((x) => x.effect.lo !== null && x.effect.hi !== null && (x.effect.lo > 0 || x.effect.hi < 0)).length;
+  const unit = summary.layout.kind === "site_sets" ? "set" : "site";
   return (
-    <section className={r.corrections} aria-label="Corrected for the number of sites">
+    <section className={r.corrections} aria-label={`Corrected for the number of ${unit}s`}>
       <p className={r.correctionsText}>
-        Corrected for {count(summary.sites.length)} sites: <strong>{count(banded)}</strong> exclude zero with simultaneous
+        Corrected for {count(summary.sites.length)} {unit}s: <strong>{count(banded)}</strong> exclude zero with simultaneous
         bands and <strong>{count(discoveries)}</strong> have q below {alpha}, where {count(single)} intervals exclude zero one
-        site at a time.
+        {" "}{unit} at a time.
       </p>
       <p className={s.small}>
         With many sites, some intervals exclude zero by chance alone. A simultaneous band holds for every site at once, so a
@@ -463,7 +489,7 @@ function MethodsLine({ spec, n }: { spec: Spec; n: number | undefined }) {
           : scope.kind === "features"
             ? `every feature of the SAE (keeping the top ${scope.top}${scope.choose_on !== null ? `, chosen on ${Math.round(scope.choose_on * 100)}% of the prompts with seed ${scope.seed} and reported on the rest` : ""})`
             : scope.kind === "site_sets"
-              ? `${scope.sets.length} set${scope.sets.length === 1 ? "" : "s"} of sites`
+              ? `${scope.sets.length} set${scope.sets.length === 1 ? "" : "s"} of sites${scope.universe ? ` (the rest of the model: ${universeText(scope.universe)})` : ""}`
               : `${scope.sites.length} chosen site${scope.sites.length === 1 ? "" : "s"}`;
   const position =
     scope.kind === "heads" || scope.kind === "layer_components" || scope.kind === "features"
@@ -472,8 +498,9 @@ function MethodsLine({ spec, n }: { spec: Spec; n: number | undefined }) {
         ? scope.positions === "each"
           ? "every position"
           : "named positions"
-        : (scope.kind === "site_sets" ? scope.sets.flatMap((set) => set.sites) : scope.sites)
-            .map((x) => positionText(x.position)).filter((v, i, a) => a.indexOf(v) === i).join(", ") || "every position";
+        : scope.kind === "site_sets"
+          ? "once per set"
+          : scope.sites.map((x) => positionText(x.position)).filter((v, i, a) => a.indexOf(v) === i).join(", ");
   return (
     <p className={r.methods}>
       <strong>
@@ -489,7 +516,7 @@ function MethodsLine({ spec, n }: { spec: Spec; n: number | undefined }) {
                 ? `Steer ${e.apply_to} → ${e.apply_to === "clean" ? "corrupt" : "clean"} (${e.coefficients.map((c) => `×${c}`.replace("-", "−")).join(", ")}${e.control ? ", random control" : ""})`
                 : `Ablate (${baselineText(e.baseline)})`}
       </strong>
-      {" "}{site} at {position}
+      {" "}{site}{scope.kind === "site_sets" ? ", each intervened on at once" : ` at ${position}`}
       <span className={r.sep}>·</span>
       {e.kind === "direct_logit_attribution"
         ? `logit difference, as a share of ${spec.metric.normalization === "dataset_gap" ? "the mean" : "each prompt's"}`

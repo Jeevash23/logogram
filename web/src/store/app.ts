@@ -16,6 +16,7 @@ import type {
   RobustnessChange,
   RunDetail,
   RunListing,
+  ScopeSpec,
   ServerState,
   SiteBase,
   SiteResult,
@@ -75,6 +76,9 @@ export const VIEWS: { id: View; label: string }[] = [
 ];
 
 export type Workspace = "explore" | "experiment" | "evidence";
+
+/** A sweep over sets of sites, each intervened on at once. */
+export type SiteSetsScope = Extract<ScopeSpec, { kind: "site_sets" }>;
 export function workspaceFor(view: View): Workspace {
   if (["explore", "attention", "heads", "predictions", "features"].includes(view)) return "explore";
   if (["prompts", "baseline", "experiment", "spec"].includes(view)) return "experiment";
@@ -231,6 +235,9 @@ interface Store {
   setTokenPosition: (position: number | null) => void;
   stageSelection: (selection: Selection) => void;
   configureStaged: () => void;
+  /** Put sets of sites into the form, intervened on by patching or ablation: built from the
+   * staged sites (back in the tray on Undo) or from a finished run, whose spec the form takes. */
+  configureSets: (scope: SiteSetsScope, options?: { staged?: boolean; runId?: string }) => void;
   pinHead: (selection: Selection) => void;
   prepareNote: (sites: SiteSpec[]) => void;
   startRun: (spec: Spec) => Promise<void>;
@@ -628,11 +635,33 @@ export const useStore = create<Store>((set, get) => ({
 
   setTokenPosition: (tokenPosition) => set({ tokenPosition }),
   stageSelection: (selection) => {
+    // A set of sites has no single place in the model to stage.
+    if (selection.part === "set") return;
     const site = siteFromSelection(selection, selection.kind ?? "resid_pre");
     if (get().tokenPosition !== null) site.position = { kind: "index", index: get().tokenPosition as number };
     const staged = get().stagedSites;
     if (staged.some((s) => JSON.stringify(s) === JSON.stringify(site))) return;
     set({ stagedSites: [...staged, site] });
+  },
+  configureSets: (scope, options = {}) => {
+    const st = get();
+    const bos = analysisContext(st).options.prepend_bos;
+    const run = options.runId ? st.runDetails[options.runId]?.spec : undefined;
+    const saved = run ?? (analysisSourceFor(st) === "run" && st.activeRunId ? st.runDetails[st.activeRunId]?.spec : undefined);
+    const base = saved ? formFromSpec(saved) : st.form;
+    // Sets are intervened on by patching or ablation; another method becomes patching, in the
+    // direction the form has (an estimate's direction, from an attribution patching run).
+    const kind = base.kind === "ablation" ? "ablation" : "activation_patching";
+    const staged = options.staged ? st.stagedSites : [];
+    set({ view: "experiment", analysisSource: "form", ...(options.staged ? { stagedSites: [] } : {}) });
+    swapForm({ ...base, kind, scope, draftId: null, nameEdited: false, name: "" }, {
+      onUndo: options.staged
+        ? () => useStore.setState((now) => ({
+            stagedSites: [...staged, ...now.stagedSites.filter((x) => !staged.some((y) => sameData(x, y)))],
+          }))
+        : undefined,
+    });
+    analysisChanged(bos);
   },
   configureStaged: () => {
     const st = get();
@@ -783,6 +812,7 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   prefillExperiment: (kind, sel) => {
+    if (sel.part === "set") return; // a set is patched or ablated as a whole in its own run
     const bos = analysisContext(get()).options.prepend_bos;
     const form = get().form;
     // Use the residual site of the active run when the selection is a residual cell.

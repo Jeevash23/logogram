@@ -2,7 +2,7 @@
 // the server does (SiteSet, SiteSetsScope and check_sets in src/logogram), so the form can say what
 // is wrong before a run is started.
 
-import type { PositionSpec, SiteKind, SiteSetSpec, SiteSpec, UniverseKind } from "../api/types";
+import type { PositionSpec, SiteKind, SiteResult, SiteSetSpec, SiteSpec, UniverseKind } from "../api/types";
 import { plural } from "./format";
 import { siteText } from "./spec";
 
@@ -33,6 +33,13 @@ export function universeText(universe: readonly UniverseKind[] | null | undefine
 
 export function isUniverseKind(kind: string): kind is UniverseKind {
   return (UNIVERSE_KINDS as readonly string[]).includes(kind);
+}
+
+/** In words, what a set does to the model: "keeps 3 sites, replaces every other head". */
+export function setWhat(complement: boolean, size: number, universe: readonly UniverseKind[] | null | undefined): string {
+  if (!complement) return `replaces ${plural(size, "site")}`;
+  if (!size) return `replaces ${universeText(universe)}`;
+  return `keeps ${plural(size, "site")} and replaces ${universeText(universe).replace(/^every /, "every other ")}`;
 }
 
 /** The components a circuit of these sites is made of, as the rest of the model it is kept apart
@@ -124,6 +131,15 @@ export function topKSets(ranked: SiteSpec[], k: number): SiteSetSpec[] {
   sets.push({ label: EVERYTHING, sites: [], complement: true });
   sets.push({ label: `Top ${top.length} removed`, sites: top, complement: false });
   return sets;
+}
+
+/** A run's single heads, attention outputs and MLP outputs that have an effect, strongest first
+ * (ties by index), as sites of a spec: what a circuit can be built from. */
+export function rankedSites(sites: SiteResult[]): SiteSpec[] {
+  return sites
+    .filter((x) => isUniverseKind(x.kind) && !x.variant && x.effect.mean !== null)
+    .sort((a, b) => Math.abs(b.effect.mean ?? 0) - Math.abs(a.effect.mean ?? 0) || a.index - b.index)
+    .map((x) => ({ kind: x.kind as SiteKind, layer: x.layer, head: x.kind === "head" ? x.head : null, position: x.position }));
 }
 
 /** Two sites alone and together: the run reports what intervening on both does beyond the sum. */
