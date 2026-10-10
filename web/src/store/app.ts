@@ -3,7 +3,7 @@
 import { create } from "zustand";
 
 import { api, ApiError, setProjectSession } from "../api/client";
-import { analysisContext } from "../lib/analysis";
+import { analysisContext, analysisSourceFor } from "../lib/analysis";
 import type {
   BaselineReport,
   BaselineSpec,
@@ -276,7 +276,10 @@ interface Store {
   setTheme: (t: ThemeSetting) => void;
   resolveTheme: () => void;
   goto: (screen: Screen) => void;
+  /** Show a view. Views that show the active run read its prompts as it did; see
+   * analysisSourceFor. */
   setView: (v: View) => void;
+  setMapOverlay: (overlay: "data" | "structure") => void;
   notify: (text: string, tone?: Notice["tone"], options?: NoticeOptions) => number;
   dismiss: (id: number) => void;
   guard: <T>(fn: () => Promise<T>) => Promise<T | undefined>;
@@ -451,7 +454,16 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   goto: (screen) => set({ screen }),
-  setView: (view) => set({ view, ...(view === "experiment" ? { analysisSource: "form" as const } : {}) }),
+  setView: (view) => {
+    const bos = analysisContext(get()).options.prepend_bos;
+    set({ view });
+    followAnalysisSource(bos);
+  },
+  setMapOverlay: (mapOverlay) => {
+    const bos = analysisContext(get()).options.prepend_bos;
+    set({ mapOverlay });
+    followAnalysisSource(bos);
+  },
 
   notify: (text, tone = "info", options = {}) => {
     const id = ++noticeId;
@@ -636,7 +648,7 @@ export const useStore = create<Store>((set, get) => ({
       .then(async (detail) => {
         if (!detail || projectSeq !== project) return undefined; // the project changed
         set((s) => ({ runDetails: { ...s.runDetails, [id]: detail } }));
-        if (get().activeRunId === id && get().analysisSource === "run" && detail.spec.dataset.path !== get().datasetPath) {
+        if (get().activeRunId === id && analysisSourceFor(get()) === "run" && detail.spec.dataset.path !== get().datasetPath) {
           await get().selectDataset(detail.spec.dataset.path, "run");
           if (projectSeq !== project) return undefined;
         }
@@ -662,7 +674,7 @@ export const useStore = create<Store>((set, get) => ({
   configureStaged: () => {
     const st = get();
     if (!st.stagedSites.length) return;
-    const saved = st.analysisSource === "run" && st.activeRunId ? st.runDetails[st.activeRunId]?.spec : undefined;
+    const saved = analysisSourceFor(st) === "run" && st.activeRunId ? st.runDetails[st.activeRunId]?.spec : undefined;
     const form = saved ? formFromSpec(saved) : st.form;
     set({ view: "experiment", analysisSource: "form", stagedSites: [], form: { ...form, scope: { kind: "sites", sites: st.stagedSites }, draftId: null, nameEdited: false, name: "" } });
   },
@@ -920,6 +932,34 @@ export const useStore = create<Store>((set, get) => ({
     }
   },
 }));
+
+/**
+ * After the view (or the map's overlay) changes: store where prompts are now read from, and when
+ * that is the active run, read its prompts, from its dataset, as it did. Changing BOS moves every
+ * token, so a chosen token no longer means the same one.
+ */
+function followAnalysisSource(bosBefore: boolean): void {
+  const st = useStore.getState();
+  const source = analysisSourceFor(st);
+  if (source !== st.analysisSource) useStore.setState({ analysisSource: source });
+  const spec = source === "run" && st.activeRunId ? st.runDetails[st.activeRunId]?.spec : undefined;
+  if (spec && spec.dataset.path !== st.datasetPath) {
+    void st.selectDataset(spec.dataset.path, "run");
+    return;
+  }
+  analysisChanged(bosBefore);
+}
+
+/** After anything that can change the analysis context: tokens move when BOS changes, so the
+ * prompts are read again; the prompt index stays within the prompts used. */
+function analysisChanged(bosBefore: boolean): void {
+  const st = useStore.getState();
+  if (analysisContext(st).options.prepend_bos !== bosBefore) {
+    useStore.setState({ tokenPosition: null });
+    void st.reloadDataset();
+  }
+  st.setPromptIndex(st.promptIndex);
+}
 
 /** The sites and results to draw for a run: the summary when finished, live cells while running. */
 export function runView(

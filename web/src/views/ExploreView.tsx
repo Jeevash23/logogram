@@ -47,7 +47,7 @@ export function ExploreView() {
       </div>
       <div className={s.controls}>
         <Segmented label="Explorer view" value={mode} onChange={v => useStore.setState({ exploreMode: v })} options={[{ value: "atlas", label: "Model atlas" }, { value: "layer", label: "Layer explorer" }]} />
-        <Select aria-label="Model overlay" value={overlay} onChange={e => useStore.setState({ mapOverlay: e.target.value as "data" | "structure" })}><option value="data">Intervention results</option><option value="structure">Architecture</option></Select>
+        <Select aria-label="Model overlay" value={overlay} onChange={e => useStore.getState().setMapOverlay(e.target.value as "data" | "structure")}><option value="data">Intervention results</option><option value="structure">Architecture</option></Select>
       </div>
     </div>
     {!arch ? <Empty title={modelState === "loading" ? "Loading the model…" : "Start with a model"} action={<Button variant="primary" onClick={() => useStore.setState({ modelDialogOpen: true })}>Load a model</Button>}>The map uses the loaded model’s actual layers, attention heads, and supported intervention sites.</Empty> : <>

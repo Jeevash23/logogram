@@ -124,7 +124,7 @@ export function ResultsView() {
                 Check robustness
               </Button>
               {run.detail && <ExportMenu runId={run.id} detail={run.detail} />}
-              <Button variant="ghost" onClick={() => useStore.setState({ view: "spec", specSource: "run" })}>
+              <Button variant="ghost" onClick={() => { useStore.setState({ specSource: "run" }); useStore.getState().setView("spec"); }}>
                 Spec
               </Button>
             </>
@@ -257,7 +257,7 @@ export function ResultsView() {
         <Segmented label="Result scale" value={scaleMode} onChange={scaleMode => useStore.setState({ scaleMode })} options={[{ value: "auto", label: "Fit" }, { value: "unit", label: "±1", disabled: metric !== "effect" }]} />
         <Checkbox checked={cellValues} onChange={(v) => useStore.setState({ cellValues: v })}>Show values</Checkbox>
         <span className={r.controlsSpacer} />
-        <Button size="small" variant="ghost" icon="explore" onClick={() => useStore.setState({ view: "explore", exploreMode: "atlas" })}>Open model atlas</Button>
+        <Button size="small" variant="ghost" icon="explore" onClick={() => { useStore.setState({ exploreMode: "atlas" }); useStore.getState().setView("explore"); }}>Open model atlas</Button>
         {run.detail?.predictions && <Button size="small" variant="ghost" onClick={() => useStore.getState().setView("predictions")}>Open saved predictions</Button>}
       </div>}
       {layout && layout.kind !== "sites" && (

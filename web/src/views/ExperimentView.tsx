@@ -255,7 +255,10 @@ export function ExperimentView() {
         <div className={s.headActions}>
           <Button
             variant="ghost"
-            onClick={() => useStore.setState({ view: "spec", specSource: "draft" })}
+            onClick={() => {
+              useStore.setState({ specSource: "draft" });
+              useStore.getState().setView("spec");
+            }}
             disabled={!spec}
           >
             Preview spec

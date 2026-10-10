@@ -38,7 +38,7 @@ function useCommands(query: string): Command[] {
           run: () => useStore.setState({ robustnessDialogOpen: true }),
         },
         { id: "compare", label: "Compare two runs", group: "Actions", run: () => st.setView("compare") },
-        { id: "spec", label: "Show the spec", group: "Actions", keywords: "json cli", run: () => useStore.setState({ view: "spec", specSource: "run" }) },
+        { id: "spec", label: "Show the spec", group: "Actions", keywords: "json cli", run: () => { useStore.setState({ specSource: "run" }); st.setView("spec"); } },
         {
           id: "cancel",
           label: "Cancel the running job…",

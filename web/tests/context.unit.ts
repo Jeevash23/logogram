@@ -23,6 +23,59 @@ test("saved analyses retain BOS, prompt limit, batch and pinned model settings",
   expect(analysisContext({ ...state, project: project("two") }).key).not.toBe(context.key);
 });
 
+test("a view that shows a run reads prompts as that run did, after the form was configured", async () => {
+  const original = globalThis.fetch;
+  const requested: string[] = [];
+  globalThis.fetch = (async (input: string) => {
+    requested.push(input);
+    const data = input.startsWith("/api/dataset?") ? { name: "fixed.jsonl", path: spec.dataset.path, n: 8, sha256: "fixed", records: [] } : [];
+    return new Response(JSON.stringify(data));
+  }) as typeof fetch;
+  try {
+    const store = useStore.getState();
+    store.leaveProject();
+    const detail = { id: "run", spec, summary: null, manifest: null, listing: null, folder: "experiments/run" };
+    useStore.setState({ project: project("context"), screen: "workbench", activeRunId: "run", analysisSource: "run", runDetails: { run: detail },
+      datasetPath: spec.dataset.path, dataset: { name: "fixed.jsonl", path: spec.dataset.path, n: 8, sha256: "fixed", records: [] } as never });
+    const state = () => useStore.getState();
+    store.setView("results");
+    expect(analysisContext(state()).options.prepend_bos).toBe(false);
+    expect(analysisContext(state()).n).toBe(3);
+
+    // Configure works on the form (BOS on, every prompt)...
+    store.setView("experiment");
+    expect(analysisContext(state()).options.prepend_bos).toBe(true);
+    expect(analysisContext(state()).n).toBe(8);
+    store.setPromptIndex(6);
+    // ...and going back to the run's results reads its prompts again, as the page shows it.
+    store.setView("results");
+    expect(state().analysisSource).toBe("run");
+    expect(analysisContext(state()).options.prepend_bos).toBe(false);
+    expect(analysisContext(state()).label).toBe("Selected run · BOS off · first 3 prompts · batch 2");
+    expect(state().promptIndex).toBe(2);
+
+    // Attention opened from the results follows the run; the baseline after configuring uses the form.
+    store.setView("attention");
+    expect(analysisContext(state()).options.prepend_bos).toBe(false);
+    store.setView("experiment");
+    store.setView("baseline");
+    expect(analysisContext(state()).options.prepend_bos).toBe(true);
+    // The model map follows the run only while it paints the run's results.
+    store.setMapOverlay("structure");
+    store.setView("explore");
+    expect(analysisContext(state()).options.prepend_bos).toBe(true);
+    store.setMapOverlay("data");
+    expect(analysisContext(state()).options.prepend_bos).toBe(false);
+
+    // A run on other prompts brings its own dataset back with it.
+    store.setView("experiment");
+    useStore.setState({ datasetPath: "datasets/other.jsonl" });
+    store.setView("results");
+    expect(state().datasetPath).toBe(spec.dataset.path);
+    expect(requested.some((url) => url.startsWith("/api/dataset?") && url.includes("prepend_bos=false"))).toBe(true);
+  } finally { globalThis.fetch = original; useStore.getState().leaveProject(); }
+});
+
 test("heatmap keyboard movement skips masked cells and respects boundaries", () => {
   const exists = (r: number, c: number) => c <= r && c !== 1;
   expect(moveCell({ r: 3, c: 0 }, "ArrowRight", 4, 4, exists)).toEqual({ r: 3, c: 2 });

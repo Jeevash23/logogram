@@ -409,7 +409,10 @@ export function ModelMap({ prominent = false, structureOnly = false }: { promine
                 onMouseMove={onMove}
                 onMouseLeave={() => setHover(null)}
                 onClick={onClick}
-                onDoubleClick={() => useStore.setState({ exploreMode: "layer", view: "explore" })}
+                onDoubleClick={() => {
+                  useStore.setState({ exploreMode: "layer" });
+                  useStore.getState().setView("explore");
+                }}
                 onContextMenu={onContextMenu}
                 onKeyDown={onKeyDown}
               />
