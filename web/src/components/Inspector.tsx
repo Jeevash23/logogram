@@ -251,6 +251,7 @@ function Evidence({
   const intervention = measureOf(exp) === "intervention";
   const noInterval = site.effect.lo === null || site.effect.hi === null;
   const byIndex = useMemo(() => new Map(detail?.prompts.map((p) => [p.index, p]) ?? []), [detail]);
+  const values = useMemo(() => detail?.prompts.map((p) => ({ index: p.index, value: p.effect })) ?? [], [detail]);
 
   return (
     <section className={s.section}>
@@ -309,7 +310,7 @@ function Evidence({
           {site.variant && <DoseResponse site={site} ciLevel={ciLevel} />}
           <Distribution
             label={`Per-prompt ${words.effect.toLowerCase()}`}
-            values={detail.prompts.map((p) => ({ index: p.index, value: p.effect }))}
+            values={values}
             mean={site.effect.mean}
             lo={site.effect.lo}
             hi={site.effect.hi}

@@ -104,6 +104,24 @@ export function siteAt<T extends SiteBase>(sites: T[], row: number, col: number)
   return sites.find((s) => s.row === row && s.col === col) ?? null;
 }
 
+/** The key of a heatmap cell in a site grid. */
+export function gridKey(row: number, col: number): string {
+  return `${row}:${col}`;
+}
+
+/**
+ * A run's sites by heatmap cell, for drawing: one lookup per cell instead of a search through
+ * every site. Where two sites share a cell, the first wins, as with siteAt.
+ */
+export function siteGrid<T extends SiteBase>(sites: T[]): Map<string, T> {
+  const grid = new Map<string, T>();
+  for (const site of sites) {
+    const key = gridKey(site.row, site.col);
+    if (!grid.has(key)) grid.set(key, site);
+  }
+  return grid;
+}
+
 export function componentLabel(sel: Selection): string {
   const pos = `${sel.positionKey !== undefined ? ` @ ${sel.positionKey}` : ""}${sel.variantKey ? ` ${sel.variantKey}` : ""}`;
   switch (sel.part) {
