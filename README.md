@@ -682,7 +682,11 @@ cd web
 npm test                      # context, cache and keyboard navigation checks
 npx playwright install chromium
 npm run test:browser           # temporary local project and tiny model; no Hub access
+LOGOGRAM_COLOR_SCHEME=dark npm run test:browser   # the same, in the dark theme
 ```
+
+The browser checks include an axe scan of each workspace's main views, which fails on serious or
+critical accessibility violations.
 
 The browser fixture never opens the user's projects or cached models. CI runs these workflows
 on Linux, and the Python suite plus an installed-wheel smoke check on Linux, macOS and Windows.

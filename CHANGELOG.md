@@ -108,6 +108,9 @@ gradients, all checked by patching.
   rules too, checks the lockfile, keeps coverage at 85% or more, tests at the lowest declared
   dependency versions, audits Python and web dependencies, and pins its actions to commits;
   Dependabot and CodeQL watch them. Typer 0.13 or later is required.
+- The browser checks also run in the dark theme, and an axe scan of the main views fails on
+  serious or critical accessibility violations. The inspector's resize handle now says its width
+  to assistive technology, and commands wider than their box can be scrolled from the keyboard.
 - The privacy check also reads binary files and catches more home paths and short usernames.
 - What 0.2 added was checked on GPT-2 small's real weights (see Models in the README).
 

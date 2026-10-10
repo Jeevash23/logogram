@@ -25,7 +25,8 @@ export function CopyCommand({ command, label = "Copy" }: { command: string; labe
   const [copied, setCopied] = useState(false);
   return (
     <div className={s.command}>
-      <code>{command}</code>
+      {/* Focusable, so a command wider than its box can be scrolled from the keyboard. */}
+      <code tabIndex={0}>{command}</code>
       <button
         type="button"
         className={s.copy}

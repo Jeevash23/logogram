@@ -200,3 +200,8 @@ jobs:
         working-directory: web
       - run: npm run test:browser
         working-directory: web
+      - name: The same checks in the dark theme
+        run: npm run test:browser
+        working-directory: web
+        env:
+          LOGOGRAM_COLOR_SCHEME: dark

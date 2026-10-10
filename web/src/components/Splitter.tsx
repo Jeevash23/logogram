@@ -2,17 +2,24 @@ import { useRef, type KeyboardEvent, type PointerEvent } from "react";
 
 import s from "./Splitter.module.css";
 
-/** A draggable divider. ``onResize`` receives the pointer delta in pixels since the drag began. */
+/** A draggable divider. ``onResize`` receives the pointer delta in pixels since the drag began.
+ * ``value``, ``min`` and ``max`` are the size it sets, in pixels, which assistive technology reads. */
 export function Splitter({
   orientation,
   onResize,
   onReset,
   label,
+  value,
+  min,
+  max,
 }: {
   orientation: "vertical" | "horizontal";
   onResize: (delta: number, phase: "start" | "move" | "end") => void;
   onReset?: () => void;
   label: string;
+  value: number;
+  min: number;
+  max: number;
 }) {
   const start = useRef<number | null>(null);
 
@@ -54,6 +61,9 @@ export function Splitter({
       role="separator"
       aria-orientation={orientation}
       aria-label={label}
+      aria-valuenow={Math.round(value)}
+      aria-valuemin={min}
+      aria-valuemax={max}
       tabIndex={0}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
