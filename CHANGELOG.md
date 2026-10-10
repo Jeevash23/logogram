@@ -2,6 +2,96 @@
 
 What changed in each version of Logogram.
 
+## 0.2.0 (unreleased)
+
+Specs that state every choice, more metrics, circuits, five more tasks, statistics that hold across
+many sites, a Python API and more commands, Gemma Scope 2 and transcoders, and integrated
+gradients, all checked by patching.
+
+### Changed
+
+- **Specs are version 2.** Every choice that can change a number must be stated: the model's
+  revision, dtype, device and weight processing, the dataset's hash and limit, tokenization, the
+  metric, the statistics (bootstrap, interval, seed, clustering) and the batch size, and every
+  field of an ablation's baseline and a sweep's positions. A version 1 spec still runs: where it
+  leaves a choice out, it takes version 1's value, the run's first warning lists each one, and
+  `logogram validate` shows the list without running.
+- Spec paths must lie inside the project, and an SAE's revision must be a commit, tag or branch.
+- Seeds must be whole numbers from 0 to 2³² − 1; a negative or huge seed used to crash a run.
+- Sign flips count prompts whose preference for the answer, log P(answer) − log P(distractor),
+  changes sign (for single tokens that is the logit difference, as before).
+- Attribution patching no longer reports patched logit differences, probabilities and sign flips
+  computed from first-order estimates; like direct logit attribution, it leaves them empty.
+- The count of prompts with an effect of the opposite sign ignores rounding noise, so a site with
+  no effect no longer reads as half opposite.
+- Steering compares each strength with its random control prompt by prompt, from the same
+  resamples, and doing significantly *less* than the control no longer counts as beating it.
+
+### Added
+
+- **Metrics:** the log-probability difference, the answer's log-probability, its probability,
+  the probability difference and the KL divergence from the clean or corrupt prompt's next-token
+  distribution, beside the logit difference. Every run also keeps each prompt's answer
+  probability and preference.
+- **Answer sets and continuations:** an answer or distractor can be a list of single tokens, read
+  as one answer (every later year in greater-than), or text of several tokens, read token by
+  token. Patching at every position covers the continuation too.
+- **Sets of sites:** intervene on several sites at once, or on everything except a set ("keep
+  the circuit, replace the rest"), and read each set's faithfulness (how much of the behavior the
+  kept sites carry alone), the share of removing a set (how complete a circuit is), the
+  faithfulness each site adds (minimality) and the interaction of two sites, all with intervals.
+- **Tasks:** seeded datasets for greater-than, docstring, gendered pronouns, subject–verb
+  agreement and capital cities, beside IOI, each with templates of one token length, named
+  positions and the metric that reads them, from the app, `logogram generate` or Python.
+- **Integrated gradients** for attribution patching (as in EAP-IG): the gradient is averaged over
+  steps between the two prompts' embeddings, which corrects much of what one gradient misses.
+  Its estimates are verified by patching like any others.
+- **Statistics across many sites:** simultaneous bands that hold for every site of a sweep at
+  once, Benjamini–Hochberg q-values, a bootstrap that resamples clusters of prompts (such as
+  templates, with a warning when there are too few), and paired differences between two runs on
+  the same prompts.
+- **The every-feature sweep can choose its strongest features on a seeded share of the prompts
+  and report them on the rest**, so their effects aren't biased by the choice.
+- **Gemma Scope 2** SAEs and transcoders (`config.json` and `params.safetensors`), EleutherAI
+  transcoders, and SAEs on attention heads' outputs. Transcoder features are read from an MLP's
+  input and patched in its output.
+- **A Python API for notebooks:** `logogram.run`, `load_run`, `list_runs`, `compare_runs`,
+  `verify_run`, `check_robustness`, `generate` and `write_dataset`, with tables as pandas or
+  Arrow and runs that show their heatmap in a notebook. Importing `logogram` loads no PyTorch.
+- **Commands:** `list`, `show`, `compare`, `diff`, `verify`, `robustness`, `export`, `validate`,
+  `tasks` and `generate`.
+- **The web app** contains errors to the part of the page that failed, with a way to reload it
+  and copy the details; undoes and redoes changes to the experiment form (Ctrl/⌘ Z), says when an
+  action replaces the form and offers to undo it, and keeps an unsaved form for each project; asks
+  before cancelling a run; and lists every shortcut on **?**. Radio groups take one tab stop and
+  arrow keys, form fields have visible edges in both themes, and the status line announces a
+  run's milestones rather than every tick.
+
+### Fixed
+
+- **Path patching with head receivers and the logits receiver measured only the logits path.**
+  The logits receiver now adds its change to what the head receivers changed, so the two together
+  measure both paths (checked against each alone).
+- A metric or gap that isn't a finite number, as a 16-bit overflow gives, stops the run with the
+  reason instead of finishing with empty effects; patched values that aren't finite are reported.
+- A failed run's saved error no longer contains this machine's paths (the home folder, the
+  Hugging Face cache or the project folder).
+- Running out of memory during a run says to lower `execution.batch_size`, and frees the memory.
+- Memory: gradient methods no longer keep what weight gradients would need; attribution patching
+  computes each layer's terms once per batch instead of once per site; on a GPU, a layer's
+  captured activations move to CPU memory when they would take more than a quarter of what is
+  free; an SAE's fit is measured a chunk of tokens at a time; and the memory estimate counts what
+  gradient methods and path patching hold.
+- A deeply nested or very large file in a shared project no longer stops the project or its
+  history from opening; it shows up as an error on that run or dataset.
+- The server checks which project a tab shows on the SAE routes too, a tab whose session has
+  expired stops reconnecting, unloading a model waits for work in progress, and cancelling a run
+  no longer waits behind queued analyses.
+- The token strip shows a run's own prompts again when you return to its results, instead of
+  the experiment form's.
+- Heatmaps and the model map draw hover and selection on a layer of their own, and find cells
+  through a map, so large sweeps no longer redraw everything on every mouse move.
+
 ## 0.1.2 (2026-10-08)
 
 Fixes and checks that came out of validating every method on real weights.
