@@ -925,7 +925,7 @@ requires-dist = [
     { name = "torch", specifier = ">=2.4" },
     { name = "transformer-lens", specifier = ">=4.0,<5" },
     { name = "transformers", specifier = ">=4.45" },
-    { name = "typer", specifier = ">=0.12" },
+    { name = "typer", specifier = ">=0.13" },
     { name = "uvicorn", specifier = ">=0.30" },
     { name = "websockets", specifier = ">=12" },
 ]
