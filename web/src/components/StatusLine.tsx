@@ -51,7 +51,11 @@ export function StatusLine() {
 
   // While a run is going, its progress events carry the current reading.
   const memory = (running ? live?.progress?.memory : null) ?? model.memory ?? null;
-  if (connection !== "connected") {
+  if (connection === "ended") {
+    text = "Session ended";
+    detail = connectionError ?? "Open the link printed in the terminal where Logogram is running.";
+    progress = null;
+  } else if (connection !== "connected") {
     text = connection === "connecting" ? "Connecting to the server…" : "Disconnected · reconnecting…";
     detail = connectionError ?? "Keep the Logogram terminal running. Displayed progress may be out of date.";
     progress = null;

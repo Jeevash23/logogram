@@ -13,8 +13,11 @@ export interface Milestone {
 export function milestone(
   job: Job | null,
   progress: { done: number; total: number } | null | undefined,
-  connection: "connecting" | "connected" | "reconnecting",
+  connection: "connecting" | "connected" | "reconnecting" | "ended",
 ): Milestone {
+  if (connection === "ended") {
+    return { key: "ended", text: "This page's session has ended. Open the link printed in the terminal where Logogram is running." };
+  }
   if (connection === "reconnecting") {
     return { key: "reconnecting", text: "Disconnected from the server. Reconnecting; the progress shown may be out of date." };
   }

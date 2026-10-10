@@ -2,8 +2,11 @@
 // On connecting, the server first sends the current run so far, so a reloaded or reconnected tab
 // repaints it; a tab that falls far behind is disconnected and catches up the same way.
 
-import { api } from "./client";
+import { api, SESSION_ENDED_TEXT } from "./client";
 import { useStore } from "../store/app";
+
+/** The close code of a stream whose session token the server no longer accepts. */
+export const SESSION_ENDED = 4401;
 
 export function connectEvents(): () => void {
   let stopped = false;
@@ -53,8 +56,14 @@ export function connectEvents(): () => void {
     };
     ws.onclose = (event) => {
       if (stopped || socket !== ws) return;
+      if (event.code === SESSION_ENDED) {
+        // The server no longer knows this tab's session (it restarted): trying again can't help.
+        stopped = true;
+        useStore.setState({ connection: "ended", connectionError: SESSION_ENDED_TEXT });
+        useStore.getState().notify(SESSION_ENDED_TEXT, "error", { key: "session-ended" });
+        return;
+      }
       useStore.setState({ connection: "reconnecting" });
-      if (event.code === 4401) useStore.setState({ connectionError: "This session ended. Open the fresh link printed in the Logogram terminal." });
       retry += 1;
       const delay = Math.min(5000, 250 * 2 ** Math.min(retry, 5));
       timer = window.setTimeout(open, delay);

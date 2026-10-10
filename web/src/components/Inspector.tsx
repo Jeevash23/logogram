@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "../api/client";
-import type { RunDetail, SiteDetail, SiteKind, SiteResult, Spec, Summary } from "../api/types";
+import type { ResultKind, RunDetail, SiteDetail, SiteResult, Spec, Summary } from "../api/types";
 import { capitalize, ci, count, num, plural, prob, signed } from "../lib/format";
 import { siteValue, useActiveRun, useArchitecture } from "../lib/hooks";
 import {
@@ -75,8 +75,10 @@ function ComponentHeader({ selection }: { selection: Selection }) {
   else if (selection.part === "attn") kind = `The attention output of layer ${selection.layer}: all heads, after the output projection.`;
   else if (selection.part === "mlp") kind = `The MLP output of layer ${selection.layer}.`;
   else if (selection.part === "feature") kind = `Feature ${selection.feature} of the SAE on layer ${selection.layer}: a direction in the model the SAE finds active on some tokens.`;
+  else if (selection.part === "set") kind = "A set of sites, intervened on together in one forward pass.";
   else {
-    const resid = selection.kind ?? sitesOnComponent(run.sites, selection)[0]?.kind;
+    const found = sitesOnComponent(run.sites, selection)[0]?.kind;
+    const resid = selection.kind ?? (found && isResidKind(found) ? found : undefined);
     kind = resid ? `The ${KIND_NAMES[resid]} (layer ${selection.layer}).` : `The residual stream at layer ${selection.layer}.`;
   }
   const label = componentLabel(
@@ -88,7 +90,7 @@ function ComponentHeader({ selection }: { selection: Selection }) {
     <div className={s.component}>
       <h2 className={s.componentTitle}>{label}</h2>
       <p className={s.componentText}>{kind}</p>
-      {arch && selection.layer >= arch.nLayers && <p className={s.note}>This model has only {arch.nLayers} layers.</p>}
+      {arch && selection.part !== "set" && selection.layer >= arch.nLayers && <p className={s.note}>This model has only {arch.nLayers} layers.</p>}
     </div>
   );
 }
@@ -97,7 +99,8 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
   const exp = spec.experiment;
   const base = summary ? findSite(summary.sites, selection) : null;
   const position = base ? positionText(base.position) : selection.positionKey ? `position ${selection.positionKey}` : "the positions in the spec";
-  const resid = base?.kind ?? selection.kind;
+  const kind = base?.kind ?? selection.kind;
+  const resid = kind && isResidKind(kind) ? kind : undefined;
   const what =
     selection.part === "head"
       ? "this head's output"
@@ -441,7 +444,7 @@ function NotMeasured({ selection }: { selection: Selection }) {
 }
 
 /** The residual kind of these sites, if they all share one. */
-function residKindOnly(sites: { kind: SiteKind }[]): ResidKind | undefined {
+function residKindOnly(sites: { kind: ResultKind }[]): ResidKind | undefined {
   const kinds = new Set(sites.map((x) => x.kind));
   const [only] = kinds;
   return kinds.size === 1 && isResidKind(only) ? only : undefined;

@@ -405,7 +405,9 @@ function MethodsLine({ spec, n }: { spec: Spec; n: number | undefined }) {
           ? scope.components.map((c) => c.replace("_", " ")).join(", ")
           : scope.kind === "features"
             ? `every feature of the SAE (keeping the top ${scope.top})`
-            : `${scope.sites.length} chosen site${scope.sites.length === 1 ? "" : "s"}`;
+            : scope.kind === "site_sets"
+              ? `${scope.sets.length} set${scope.sets.length === 1 ? "" : "s"} of sites`
+              : `${scope.sites.length} chosen site${scope.sites.length === 1 ? "" : "s"}`;
   const position =
     scope.kind === "heads" || scope.kind === "layer_components" || scope.kind === "features"
       ? positionText(scope.position)
@@ -413,7 +415,8 @@ function MethodsLine({ spec, n }: { spec: Spec; n: number | undefined }) {
         ? scope.positions === "each"
           ? "every position"
           : "named positions"
-        : scope.sites.map((x) => positionText(x.position)).filter((v, i, a) => a.indexOf(v) === i).join(", ");
+        : (scope.kind === "site_sets" ? scope.sets.flatMap((set) => set.sites) : scope.sites)
+            .map((x) => positionText(x.position)).filter((v, i, a) => a.indexOf(v) === i).join(", ") || "every position";
   return (
     <p className={r.methods}>
       <strong>

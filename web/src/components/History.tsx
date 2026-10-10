@@ -138,6 +138,8 @@ export function History({ onOpen }: { onOpen?: () => void } = {}) {
 function RunGlyph({ run }: { run: RunListing }) {
   const live = useStore((st) => st.live[run.id]);
   const profile = useMemo(() => {
+    // Sets of sites belong to no one layer: their glyph marks the run's identity only.
+    if (run.layout_kind === "site_sets" || run.scope.kind === "site_sets") return null;
     if (run.profile) return run.profile;
     if (!live || live.sites.length === 0) return null;
     const layers = live.model?.n_layers ?? Math.max(...live.sites.map((x) => x.layer)) + 1;

@@ -17,20 +17,22 @@ export function BaselineView() {
   const datasetPath = useStore((st) => st.datasetPath);
   const model = useStore((st) => st.model);
   const context = useAnalysisContext();
-  const report = useStore((st) => st.baselines[context.key]);
+  const report = useStore((st) => st.baselines[context.baselineKey]);
   const index = useStore((st) => st.promptIndex);
   const [busy, setBusy] = useState(false);
   const guard = useStore((st) => st.guard);
 
   const check = async () => {
-    if (!datasetPath) return;
+    const metric = context.metric;
+    if (!datasetPath || !metric) return;
     setBusy(true);
-    const out = await guard(() => api.baseline(datasetPath, context.options));
+    const out = await guard(() => api.baseline(datasetPath, context.options, metric));
     setBusy(false);
-    if (out && analysisContext(useStore.getState()).key === context.key) useStore.setState((st) => ({ baselines: { ...st.baselines, [context.key]: out } }));
+    const key = context.baselineKey;
+    if (out && analysisContext(useStore.getState()).baselineKey === key) useStore.setState((st) => ({ baselines: { ...st.baselines, [key]: out } }));
   };
 
-  const ready = model.state === "ready" && !!datasetPath && !context.error;
+  const ready = model.state === "ready" && !!datasetPath && !context.error && !!context.metric;
   const verdict = report?.summary ? (behaviorPresent(report) ? "The behavior is present" : "The behavior is weak or missing") : null;
 
   return (
@@ -53,8 +55,9 @@ export function BaselineView() {
 
       <p className={s.small}>{context.label}</p>
       {context.error && <Callout tone="error" title="The loaded model differs">{context.error}</Callout>}
+      {!context.error && context.metricError && <Callout tone="error" title="The metric isn't complete">{context.metricError}</Callout>}
 
-      {!ready && !context.error && (
+      {!ready && !context.error && !context.metricError && (
         <Empty title={model.state !== "ready" ? "Load a model first" : "Choose prompts first"}>
           {model.state !== "ready"
             ? "The baseline runs the loaded model on the current dataset."

@@ -109,7 +109,7 @@ function NextStep() {
   const dataset = useStore((st) => st.dataset);
   const completed = useStore((st) => st.runs.some((r) => r.status === "finished"));
   const context = useAnalysisContext();
-  const baseline = useStore((st) => st.baselines[context.key]);
+  const baseline = useStore((st) => st.baselines[context.baselineKey]);
   if (completed) return null;
   const step = model.state !== "ready" ? 0 : !dataset ? 1 : !baseline ? 2 : 3;
   const go = () =>

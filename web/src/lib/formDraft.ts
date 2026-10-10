@@ -1,8 +1,9 @@
 // An unsaved experiment form, kept in this browser's storage per project so a reload or reopening
 // the project doesn't lose it. Storage can be missing, full or blocked: every access is guarded,
-// and a stored form is used only when it has exactly the current form's shape.
+// and a stored form is used only when it has exactly the current form's shape. A form stored
+// before a field existed takes the value the form starts with (and shows) for that field.
 
-import type { FormState } from "../store/app";
+import { DEFAULT_FORM, type FormState } from "./formState";
 
 const VERSION = 1;
 
@@ -45,15 +46,32 @@ export function parseStoredForm(text: string | null | undefined): StoredForm | n
   return form ? { form, savedAt: data.savedAt } : null;
 }
 
-/** A form, if the value has every field of one with the right kind of value; otherwise null. */
+/** A form, if the value has every field of one with the right kind of value; otherwise null.
+ * Fields added since forms were first stored may be missing: they take the form's starting
+ * value. */
 export function parseForm(value: unknown): FormState | null {
   if (!isObject(value)) return null;
   const form: Record<string, unknown> = {};
   for (const [key, valid] of Object.entries(FIELDS)) {
+    if (!(key in value) && ADDED.has(key as keyof FormState)) {
+      form[key] = DEFAULT_FORM[key as keyof FormState];
+      continue;
+    }
     if (!(key in value) || !valid(value[key])) return null;
     form[key] = value[key];
   }
+  form.scope = upgradeScope(form.scope as Record<string, unknown>);
   return form as unknown as FormState;
+}
+
+/** Fields of the form that a form stored by an earlier version doesn't have. */
+const ADDED = new Set<keyof FormState>(["atpMethod", "atpSteps", "metric", "klTarget", "cluster"]);
+
+/** A sweep stored before it had every field: an every-feature sweep chose and reported its
+ * features on every prompt. */
+function upgradeScope(scope: Record<string, unknown>): Record<string, unknown> {
+  if (scope.kind === "features" && !("choose_on" in scope)) return { ...scope, choose_on: null, seed: null };
+  return scope;
 }
 
 export function readStoredForm(projectPath: string): StoredForm | null {
@@ -117,6 +135,8 @@ const isSite: Check = (v) =>
   optional(isNumber)(v.feature) &&
   isPosition(v.position);
 
+const isSiteSet: Check = (v) => isObject(v) && isString(v.label) && listOf(isSite)(v.sites) && isBoolean(v.complement);
+
 const isScope: Check = (v) => {
   if (!isObject(v)) return false;
   switch (v.kind) {
@@ -129,7 +149,11 @@ const isScope: Check = (v) => {
     case "sites":
       return listOf(isSite)(v.sites);
     case "features":
-      return isPosition(v.position) && isNumber(v.top);
+      // Stored before the held-out choice existed, it has neither field (see upgradeScope).
+      return isPosition(v.position) && isNumber(v.top) &&
+        (("choose_on" in v) ? orNull(isNumber)(v.choose_on) && orNull(isNumber)(v.seed) : !("seed" in v));
+    case "site_sets":
+      return orNull(listOf(oneOf("head", "attn_out", "mlp_out")))(v.universe) && listOf(isSiteSet)(v.sets);
     default:
       return false;
   }
@@ -179,12 +203,17 @@ const FIELDS: { [K in keyof FormState]-?: Check } = {
   steerControl: isBoolean,
   pathReceivers: listOf(isReceiver),
   pathFreezeMlps: isBoolean,
+  atpMethod: oneOf("gradient", "integrated_gradients"),
+  atpSteps: isNumber,
   saeRef: orNull(isSaeRef),
   scope: isScope,
+  metric: oneOf("logit_diff", "logprob_diff", "logprob", "prob", "prob_diff", "kl"),
+  klTarget: orNull(SIDES),
   normalization: oneOf("dataset_gap", "prompt_gap"),
   bootstrap: isNumber,
   ci: isNumber,
   statSeed: isNumber,
+  cluster: orNull(isString),
   batchSize: isNumber,
   limit: orNull(isNumber),
   prependBos: isBoolean,

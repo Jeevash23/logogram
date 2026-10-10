@@ -2,7 +2,7 @@ import { Fragment, useEffect, useState } from "react";
 
 import { api } from "../api/client";
 import type { TokenStripData } from "../api/types";
-import { capitalize, visibleToken } from "../lib/format";
+import { answerText, capitalize, visibleToken } from "../lib/format";
 import { useAnalysisContext } from "../lib/hooks";
 import { useStore } from "../store/app";
 import { Button, Icon } from "./ui";
@@ -27,14 +27,14 @@ export function TokenStrip() {
     setError(null);
     if (!datasetPath || !modelReady || !record || context.error) return;
     let cancelled = false;
-    api.tokenize({ dataset: datasetPath, index, ...context.options }).then(
+    api.tokenize({ dataset: datasetPath, index, metric: context.tokenMetric, ...context.options }).then(
       (d) => !cancelled && setData(d),
       (e: Error) => !cancelled && setError(e.message),
     );
     return () => {
       cancelled = true;
     };
-  }, [datasetPath, index, modelReady, context.key, record]);
+  }, [datasetPath, index, modelReady, context.key, context.tokenMetric.kind, record]);
 
   if (!dataset || !record) {
     return (
@@ -67,9 +67,9 @@ export function TokenStrip() {
         <div className={s.spacer} />
         {tokenPosition !== null && <Button size="small" variant="ghost" onClick={() => useStore.getState().setTokenPosition(null)}>Token {tokenPosition} · clear selection</Button>}
         <span className={s.answer}>
-          answer <code className={s.tok}>{visibleToken(record.answer)}</code>
+          answer <code className={s.tok}>{answerText(record.answer)}</code>
           <span className={s.vs}>vs</span>
-          distractor <code className={s.tok}>{visibleToken(record.distractor)}</code>
+          distractor <code className={s.tok}>{answerText(record.distractor)}</code>
         </span>
         <Button size="small" variant="ghost" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? "Hide tokens" : "Show tokens"}</Button>
       </div>

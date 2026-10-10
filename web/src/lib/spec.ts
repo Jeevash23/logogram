@@ -9,10 +9,12 @@ import type {
   ModelInfo,
   PositionSpec,
   ScopeSpec,
+  Side,
   SiteSpec,
   Spec,
 } from "../api/types";
 import { count } from "./format";
+import { metricWords } from "./metrics";
 import type { Selection } from "./sites";
 
 export function positionText(p: PositionSpec): string {
@@ -55,7 +57,10 @@ export function experimentText(e: ExperimentSpec): string {
   }
   if (e.kind === "direct_logit_attribution") return `Direct logit attribution (${e.prompts} prompts)`;
   if (e.kind === "attribution_patching") {
-    return e.direction === "clean_to_corrupt" ? "Estimate patching clean → corrupt" : "Estimate patching corrupt → clean";
+    const arrow = e.direction === "clean_to_corrupt" ? "clean → corrupt" : "corrupt → clean";
+    return e.method === "integrated_gradients"
+      ? `Estimate patching ${arrow} with integrated gradients (${e.steps} steps)`
+      : `Estimate patching ${arrow}`;
   }
   if (e.kind === "steering") {
     const toward = e.apply_to === "clean" ? "corrupt" : "clean";
@@ -81,7 +86,10 @@ export function experimentShort(e: ExperimentSpec): string {
     return e.direction === "clean_to_corrupt" ? "Patch clean→corrupt" : "Patch corrupt→clean";
   }
   if (e.kind === "direct_logit_attribution") return `Direct attribution, ${e.prompts}`;
-  if (e.kind === "attribution_patching") return e.direction === "clean_to_corrupt" ? "Estimated clean→corrupt" : "Estimated corrupt→clean";
+  if (e.kind === "attribution_patching") {
+    const arrow = e.direction === "clean_to_corrupt" ? "clean→corrupt" : "corrupt→clean";
+    return e.method === "integrated_gradients" ? `Estimated ${arrow}, integrated gradients` : `Estimated ${arrow}`;
+  }
   if (e.kind === "steering") return `Steer ${e.apply_to}→${e.apply_to === "clean" ? "corrupt" : "clean"}`;
   if (e.kind === "path_patching") return `Paths ${e.direction === "clean_to_corrupt" ? "clean→corrupt" : "corrupt→clean"}`;
   return { zero: "Zero ablation", mean: "Mean ablation", resample: "Resample ablation" }[e.baseline.kind];
@@ -94,8 +102,9 @@ export function measureOf(e: ExperimentSpec | null | undefined): Measure {
   return "intervention";
 }
 
-/** The names of a run's two values, and what they mean, for its method. */
-export function measureWords(e: ExperimentSpec | null | undefined) {
+/** The names of a run's two values, and what they mean, for its method and metric. Direct logit
+ * attribution always splits the logit difference. */
+export function measureWords(e: ExperimentSpec | null | undefined, metric?: { kind?: string | null; target?: Side | null } | null) {
   if (measureOf(e) === "attribution") {
     return {
       effect: "Share of logit diff",
@@ -106,40 +115,42 @@ export function measureWords(e: ExperimentSpec | null | undefined) {
       deltaLegend: "What the component writes directly into the logit difference (answer − distractor), in logits.",
     };
   }
+  const m = metricWords(metric);
+  const delta = `Δ ${m.short}`;
   if (e?.kind === "steering") {
     return {
       effect: "Normalized effect",
-      delta: "Δ logit diff",
+      delta,
       mean: "mean normalized effect",
       effectLegend: `Normalized effect: 1 means steering moved the ${e.apply_to} prompts as far as switching to the ${e.apply_to === "clean" ? "corrupt" : "clean"} prompt; 0 means no change.`,
-      deltaLegend: "Change in logit difference (answer − distractor) caused by adding the direction.",
+      deltaLegend: `Change in the ${m.label} (${m.formula}) caused by adding the direction.`,
     };
   }
   if (e?.kind === "path_patching") {
     return {
       effect: "Normalized effect",
-      delta: "Δ logit diff",
+      delta,
       mean: "mean normalized effect",
       effectLegend: `Normalized effect through the receivers only: 1 means the path alone ${e.direction === "clean_to_corrupt" ? "restores the clean behavior" : "shifts the output as far as the corrupt prompt does"}; 0 means nothing travels along it.`,
-      deltaLegend: "Change in logit difference (answer − distractor) when only the receivers' inputs are patched.",
+      deltaLegend: `Change in the ${m.label} (${m.formula}) when only the receivers' inputs are patched.`,
     };
   }
   const restores = (e?.kind === "activation_patching" || e?.kind === "attribution_patching") && e.direction === "clean_to_corrupt";
   if (measureOf(e) === "estimate") {
     return {
       effect: "Estimated effect",
-      delta: "Estimated Δ",
+      delta: `Estimated Δ ${m.short}`,
       mean: "mean estimated effect",
       effectLegend: `Estimated normalized effect, to first order: 1 would mean the site alone ${restores ? "restores the clean behavior" : "shifts the output as far as the corrupt prompt does"}. Verify the strongest by patching.`,
-      deltaLegend: "First-order estimate of the change in logit difference (answer − distractor) patching would cause.",
+      deltaLegend: `First-order estimate of the change in the ${m.label} (${m.formula}) patching would cause.`,
     };
   }
   return {
     effect: "Normalized effect",
-    delta: "Δ logit diff",
+    delta,
     mean: "mean normalized effect",
     effectLegend: `Normalized effect: 1 means the site alone ${restores ? "restores the clean behavior" : "shifts the output as far as the corrupt prompt does"}; 0 means no change.`,
-    deltaLegend: "Change in logit difference (answer − distractor) caused by the intervention.",
+    deltaLegend: `Change in the ${m.label} (${m.formula}) caused by the intervention.`,
   };
 }
 
@@ -154,7 +165,11 @@ export function scopeText(s: ScopeSpec): string {
     case "sites":
       return `${s.sites.length} chosen site${s.sites.length === 1 ? "" : "s"}`;
     case "features":
-      return `every SAE feature, ${positionText(s.position)}, keeping the top ${s.top}`;
+      return `every SAE feature, ${positionText(s.position)}, keeping the top ${s.top}${
+        s.choose_on !== null ? ` chosen on ${Math.round(s.choose_on * 100)}% of the prompts (seed ${s.seed}) and reported on the rest` : ""
+      }`;
+    case "site_sets":
+      return `${s.sets.length} set${s.sets.length === 1 ? "" : "s"} of sites, each at once`;
   }
 }
 
@@ -171,6 +186,8 @@ export function scopeShort(s: ScopeSpec): string {
       return s.sites.length === 1 ? "Single site" : "Chosen sites";
     case "features":
       return "SAE features";
+    case "site_sets":
+      return "Sets of sites";
   }
 }
 
@@ -237,7 +254,7 @@ export function defaultSpec(opts: {
 }): Spec {
   const m = opts.model;
   return {
-    logogram_spec: 1,
+    logogram_spec: 2,
     name: opts.name ?? "Which heads restore the answer?",
     notes: "",
     model: {
@@ -252,7 +269,7 @@ export function defaultSpec(opts: {
     experiment: { kind: "activation_patching", direction: "clean_to_corrupt" },
     scope: { kind: "heads", position: { kind: "all" } },
     metric: { kind: "logit_diff", normalization: "dataset_gap" },
-    statistics: { bootstrap: 1000, ci: 0.95, seed: 0 },
+    statistics: { bootstrap: 1000, ci: 0.95, seed: 0, cluster: null },
     execution: { batch_size: 64 },
   };
 }
@@ -288,9 +305,13 @@ export function positionKey(p: PositionSpec): string {
   }
 }
 
-/** Rows the sweep will run: sites × prompts × donors. A decomposition runs each prompt once. */
+/** Rows the sweep will run: sites × prompts × donors. A decomposition runs each prompt once, an
+ * estimate once per prompt (once per step of integrated gradients). */
 export function workload(spec: Spec, n: number, nLayers: number, nHeads: number, nPositions: number | null, nLabels: number): number | null {
-  if (spec.experiment.kind === "direct_logit_attribution" || spec.experiment.kind === "attribution_patching") return n;
+  if (spec.experiment.kind === "direct_logit_attribution") return n;
+  if (spec.experiment.kind === "attribution_patching") {
+    return spec.experiment.method === "integrated_gradients" ? n * (spec.experiment.steps ?? 1) : n;
+  }
   const s = spec.scope;
   if (spec.experiment.kind === "steering") {
     const e = spec.experiment;
@@ -302,6 +323,7 @@ export function workload(spec: Spec, n: number, nLayers: number, nHeads: number,
   if (s.kind === "heads") sites = nLayers * nHeads;
   else if (s.kind === "layer_components") sites = nLayers * s.components.length;
   else if (s.kind === "sites") sites = s.sites.length;
+  else if (s.kind === "site_sets") sites = s.sets.length;
   else if (s.kind === "features") return n; // only attribution patching sweeps every feature
   else if (s.positions === "each") {
     if (nPositions === null) return null;
@@ -313,10 +335,18 @@ export function workload(spec: Spec, n: number, nLayers: number, nHeads: number,
 
 /** What running the spec costs, in words. */
 export function workloadText(spec: Spec, rows: number): string {
-  if (spec.experiment.kind === "direct_logit_attribution") return `That is one forward and one backward pass for each of the ${count(rows)} prompts.`;
-  if (spec.experiment.kind === "attribution_patching") return `That is two forward passes and one backward pass for each of the ${count(rows)} prompts, for every site at once.`;
-  if (spec.experiment.kind === "steering") return `That is ${count(rows)} steered forward passes on the held-out prompts.`;
-  if (spec.experiment.kind === "path_patching") return `That is ${count(rows)} paths, three forward passes each (fewer when senders come after the receivers).`;
+  const e = spec.experiment;
+  if (e.kind === "direct_logit_attribution") return `That is one forward and one backward pass for each of the ${count(rows)} prompts.`;
+  if (e.kind === "attribution_patching") {
+    if (e.method === "integrated_gradients") {
+      const steps = e.steps ?? 1;
+      return `That is ${count(rows)} forward and backward passes, ${steps} for each of the ${count(Math.round(rows / steps))} prompts, for every site at once.`;
+    }
+    return `That is two forward passes and one backward pass for each of the ${count(rows)} prompts, for every site at once.`;
+  }
+  if (e.kind === "steering") return `That is ${count(rows)} steered forward passes on the held-out prompts.`;
+  if (e.kind === "path_patching") return `That is ${count(rows)} paths, three forward passes each (fewer when senders come after the receivers).`;
+  if (spec.scope.kind === "site_sets") return `That is ${count(rows)} patched forward passes, every site of a set at once.`;
   return `That is ${count(rows)} patched forward passes.`;
 }
 
@@ -326,6 +356,11 @@ export function scopeFor(kind: ExperimentKind, scope: ScopeSpec): ScopeSpec {
   const last: PositionSpec = { kind: "last" };
   // Only attribution patching sweeps every SAE feature; other methods patch chosen ones.
   if (scope.kind === "features" && kind !== "attribution_patching") return { kind: "heads", position: { kind: "all" } };
+  // Sets are intervened on by patching or ablation; other methods measure their sites one by one.
+  if (scope.kind === "site_sets" && kind !== "activation_patching" && kind !== "ablation") {
+    const sites = setMembers(scope.sets);
+    return scopeFor(kind, sites.length ? { kind: "sites", sites } : { kind: "heads", position: { kind: "all" } });
+  }
   if (kind === "steering") {
     // Steering adds to one residual stream site per layer, at one token.
     const single = (p: PositionSpec) => (p.kind === "all" ? last : p);
@@ -372,5 +407,22 @@ export function scopeFor(kind: ExperimentKind, scope: ScopeSpec): ScopeSpec {
     }
     case "features":
       return { kind: "heads", position: last };
+    case "site_sets":
+      return { kind: "heads", position: last };
   }
+}
+
+/** Every site of some sets, each once, in the order they first appear. */
+export function setMembers(sets: { sites: SiteSpec[] }[]): SiteSpec[] {
+  const seen = new Set<string>();
+  const out: SiteSpec[] = [];
+  for (const set of sets) {
+    for (const site of set.sites) {
+      const key = siteText(site);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(site);
+    }
+  }
+  return out;
 }

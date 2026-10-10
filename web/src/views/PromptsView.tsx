@@ -5,7 +5,7 @@ import type { IOITemplate, PromptRecord, TokenStripData } from "../api/types";
 import { TokenGrid } from "../components/TokenStrip";
 import { Button, Callout, Checkbox, Choices, Field, Input, Segmented, TextArea } from "../components/ui";
 import { plural } from "../lib/format";
-import { modelName } from "../lib/hooks";
+import { modelName, useAnalysisContext } from "../lib/hooks";
 import { useStore } from "../store/app";
 import s from "./views.module.css";
 
@@ -97,14 +97,19 @@ function PairForm({ onCreated }: { onCreated: (path: string) => void }) {
   const [preview, setPreview] = useState<TokenStripData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const modelReady = useStore((st) => st.model.state === "ready");
+  // Tokenized as the experiment form reads prompts: its BOS choice, and its metric's kind, which
+  // says whether answers of several tokens can be read.
+  const context = useAnalysisContext();
+  const { options, tokenMetric } = context;
 
   useEffect(() => {
     if (!modelReady) return;
     const t = window.setTimeout(() => {
-      api.tokenize({ record }).then(setPreview, () => setPreview(null));
+      api.tokenize({ record, metric: tokenMetric, ...options }).then(setPreview, () => setPreview(null));
     }, 250);
     return () => window.clearTimeout(t);
-  }, [record, modelReady]);
+    // The context's key stands for its options.
+  }, [record, modelReady, context.key, tokenMetric.kind]);
 
   const set = (k: keyof PromptRecord) => (v: string) => setRecord((r) => ({ ...r, [k]: v }));
 

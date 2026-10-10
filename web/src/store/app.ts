@@ -6,12 +6,8 @@ import { api, ApiError, setProjectSession } from "../api/client";
 import { analysisContext, analysisSourceFor } from "../lib/analysis";
 import type {
   BaselineReport,
-  BaselineSpec,
   DatasetDetail,
-  ExperimentKind,
   Job,
-  PathReceiverSpec,
-  SAERef,
   SAEStatus,
   Layout,
   ModelShape,
@@ -20,19 +16,18 @@ import type {
   RobustnessChange,
   RunDetail,
   RunListing,
-  ScopeSpec,
   ServerState,
   SiteBase,
   SiteResult,
   Spec,
   ThemeSetting,
   SiteSpec,
-  PredictionSettings,
   NoteInput,
   UpdateStatus,
 } from "../api/types";
 import type { ResolvedTheme } from "../lib/color";
 import { siteFromSelection } from "../lib/spec";
+import { DEFAULT_FORM, formFromSpec, type FormState } from "../lib/formState";
 import { clearStoredForm, readStoredForm, writeStoredForm, type StoredForm } from "../lib/formDraft";
 import {
   continuesEdit,
@@ -126,75 +121,6 @@ export interface NoticeOptions {
 /** How long a plain confirmation stays on screen. */
 export const NOTICE_MS = 5000;
 
-/** The experiment form. Choices that change a number, such as an ablation's baseline or which
- * prompts a direct attribution splits, have no default: they stay empty until chosen. */
-export interface FormState {
-  predictions: PredictionSettings | null;
-  name: string;
-  nameEdited: boolean;
-  kind: ExperimentKind;
-  direction: "clean_to_corrupt" | "corrupt_to_clean";
-  baseline: BaselineSpec | null;
-  dlaPrompts: "clean" | "corrupt" | null;
-  /** Steering: which prompts receive the direction (no default), the strengths as typed, the
-   * share of pairs that train the direction, its seed, and whether a random control runs. */
-  steerApplyTo: "clean" | "corrupt" | null;
-  steerStrengths: string;
-  steerTrain: number;
-  steerSeed: number;
-  steerControl: boolean;
-  /** Path patching: where the paths end (at least one), and whether MLPs are held too. */
-  pathReceivers: PathReceiverSpec[];
-  pathFreezeMlps: boolean;
-  /** The SAE a saved spec's features belong to; used when no SAE is loaded. */
-  saeRef: SAERef | null;
-  scope: ScopeSpec;
-  normalization: "dataset_gap" | "prompt_gap";
-  bootstrap: number;
-  ci: number;
-  statSeed: number;
-  batchSize: number;
-  limit: number | null;
-  prependBos: boolean;
-  notes: string;
-  /** The model a saved spec asks for; used when no model is loaded. */
-  modelRef: Spec["model"] | null;
-  /** The prompts a saved spec was written for, to point out when they have changed. */
-  savedDataset: { path: string; sha256: string | null } | null;
-  /** A saved experiment that hasn't run: running the form fills its folder. */
-  draftId: string | null;
-}
-
-export const DEFAULT_FORM: FormState = {
-  predictions: null,
-  name: "",
-  nameEdited: false,
-  kind: "activation_patching",
-  direction: "clean_to_corrupt",
-  baseline: null,
-  dlaPrompts: null,
-  steerApplyTo: null,
-  steerStrengths: "-2, -1, 1, 2, 4",
-  steerTrain: 0.5,
-  steerSeed: 0,
-  steerControl: true,
-  pathReceivers: [],
-  pathFreezeMlps: false,
-  saeRef: null,
-  scope: { kind: "heads", position: { kind: "all" } },
-  normalization: "dataset_gap",
-  bootstrap: 1000,
-  ci: 0.95,
-  statSeed: 0,
-  batchSize: 64,
-  limit: null,
-  prependBos: true,
-  notes: "",
-  modelRef: null,
-  savedDataset: null,
-  draftId: null,
-};
-
 /** How an action from elsewhere replaces the experiment form. */
 export interface ReplaceFormOptions {
   /** The notice that offers to undo it: "Experiment form replaced" unless given; null for none. */
@@ -206,38 +132,8 @@ export interface ReplaceFormOptions {
 export const FORM_REPLACED = "Experiment form replaced";
 export const FORM_RESTORED = "Restored your unsaved experiment form";
 
-export function formFromSpec(spec: Spec): FormState {
-  const e = spec.experiment;
-  return {
-    predictions: spec.predictions ?? null,
-    name: spec.name,
-    nameEdited: true,
-    kind: e.kind,
-    direction: e.kind === "activation_patching" || e.kind === "attribution_patching" || e.kind === "path_patching" ? e.direction : "clean_to_corrupt",
-    baseline: e.kind === "ablation" ? e.baseline : null,
-    dlaPrompts: e.kind === "direct_logit_attribution" ? e.prompts : null,
-    steerApplyTo: e.kind === "steering" ? e.apply_to : null,
-    steerStrengths: e.kind === "steering" ? e.coefficients.join(", ") : DEFAULT_FORM.steerStrengths,
-    steerTrain: e.kind === "steering" ? e.train_fraction : DEFAULT_FORM.steerTrain,
-    steerSeed: e.kind === "steering" ? e.seed : DEFAULT_FORM.steerSeed,
-    steerControl: e.kind === "steering" ? e.control : DEFAULT_FORM.steerControl,
-    pathReceivers: e.kind === "path_patching" ? e.receivers : [],
-    pathFreezeMlps: e.kind === "path_patching" ? e.freeze_mlps : false,
-    saeRef: spec.sae ?? null,
-    scope: spec.scope,
-    normalization: spec.metric.normalization,
-    bootstrap: spec.statistics.bootstrap,
-    ci: spec.statistics.ci,
-    statSeed: spec.statistics.seed,
-    batchSize: spec.execution.batch_size,
-    limit: spec.dataset.limit,
-    prependBos: spec.tokenization.prepend_bos,
-    notes: spec.notes,
-    modelRef: spec.model,
-    savedDataset: { path: spec.dataset.path, sha256: spec.dataset.sha256 },
-    draftId: null,
-  };
-}
+export { DEFAULT_FORM, formFromSpec };
+export type { FormState };
 
 interface Store {
   exploreMode: "atlas" | "layer";
@@ -247,7 +143,8 @@ interface Store {
   headPins: Selection[];
   researchVersion: number;
   noteEditor: { value: NoteInput; edit?: { id: string; revision: number } } | null;
-  connection: "connecting" | "connected" | "reconnecting";
+  /** The event stream. "ended": the server no longer accepts this tab's session, so it stopped. */
+  connection: "connecting" | "connected" | "reconnecting" | "ended";
   connectionError: string | null;
   analysisSource: "run" | "form";
   screen: Screen;

@@ -1,6 +1,6 @@
 // Selections and how they map onto sites of a run.
 
-import type { Layout, SiteBase, SiteKind } from "../api/types";
+import type { Layout, ResultKind, SiteBase, SiteKind } from "../api/types";
 
 /** A component on the model map, optionally at a position (for layer × position runs). */
 export interface Selection {
@@ -17,10 +17,13 @@ export interface Selection {
   feature?: number;
 }
 
-export type MapPart = "resid" | "head" | "attn" | "mlp" | "feature";
+/** Where a selection sits: a component of the model map, or a set of sites (part "set", named by
+ * its label in variantKey), which has no single place on the map. */
+export type MapPart = "resid" | "head" | "attn" | "mlp" | "feature" | "set";
 export type ResidKind = "resid_pre" | "resid_mid" | "resid_post";
 
-export function partOfKind(kind: SiteKind): MapPart {
+export function partOfKind(kind: ResultKind): MapPart {
+  if (kind === "site_set") return "set";
   if (kind === "head") return "head";
   if (kind === "sae_feature") return "feature";
   if (kind === "attn_out") return "attn";
@@ -28,7 +31,7 @@ export function partOfKind(kind: SiteKind): MapPart {
   return "resid";
 }
 
-export function isResidKind(kind: SiteKind): kind is ResidKind {
+export function isResidKind(kind: ResultKind): kind is ResidKind {
   return kind === "resid_pre" || kind === "resid_mid" || kind === "resid_post";
 }
 
@@ -96,7 +99,7 @@ export function fitSelection<T extends SiteBase>(sites: T[], sel: Selection): Se
 }
 
 /** What a site measures, independent of its index in a run: comparable across runs. */
-export function siteKey(site: { kind: SiteKind; layer: number; head?: number | null; feature?: number | null; position_key: string; variant_key?: string | null }): string {
+export function siteKey(site: { kind: ResultKind; layer: number; head?: number | null; feature?: number | null; position_key: string; variant_key?: string | null }): string {
   return `${site.kind}|${site.layer}|${site.head ?? ""}|${site.feature ?? ""}|${site.position_key}|${site.variant_key ?? ""}`;
 }
 
@@ -133,6 +136,8 @@ export function componentLabel(sel: Selection): string {
       return `L${sel.layer} mlp${pos}`;
     case "feature":
       return `L${sel.layer} F${sel.feature}${pos}`;
+    case "set":
+      return sel.variantKey ?? "Set of sites";
     default:
       return `L${sel.layer} ${sel.kind ? KIND_SHORT[sel.kind] : "resid"}${pos}`;
   }
@@ -168,6 +173,8 @@ export function layoutTitle(layout: Layout): string {
       return "Layer × component";
     case "steering":
       return "Layer × strength";
+    case "site_sets":
+      return "Sets of sites";
     default:
       return "Chosen sites";
   }

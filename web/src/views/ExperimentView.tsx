@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 
-import type { BaselineSpec, ExperimentKind, PathReceiverSpec, PositionSpec, SAEInfo, ScopeSpec, Spec, StreamKind } from "../api/types";
+import type { BaselineSpec, ExperimentKind, PathReceiverSpec, PositionSpec, SAEInfo, ScopeSpec, StreamKind } from "../api/types";
 import { Button, Callout, Checkbox, Choices, Field, Input, Kbd, Segmented, Select, TextArea } from "../components/ui";
 import { MOD } from "../components/Header";
 import { plural, shortRevision } from "../lib/format";
 import { modelName } from "../lib/hooks";
 import { KIND_SHORT, parseHeadQuery } from "../lib/sites";
+import { buildSpec, datasetFacts, parseStrengths, savedDifferences } from "../lib/buildSpec";
 import { experimentText, receiverLabel, scopeFor, scopeShort, scopeText, siteText, suggestName, workload, workloadText } from "../lib/spec";
 import { useStore, type FormState } from "../store/app";
 import s from "./views.module.css";
@@ -38,142 +39,6 @@ const METHODS: { value: ExperimentKind; title: string; detail: string }[] = [
   },
 ];
 
-/** Strengths as typed: numbers separated by commas or spaces (a typographic minus is fine). */
-export function parseStrengths(text: string): { values: number[] } | { error: string } {
-  const parts = text.replace(/−/g, "-").split(/[\s,;]+/).filter(Boolean);
-  if (parts.length === 0) return { error: "Give at least one steering strength, such as 1." };
-  const values = parts.map(Number);
-  const bad = parts.find((_, i) => !Number.isFinite(values[i]));
-  if (bad !== undefined) return { error: `“${bad}” isn't a number. Separate strengths with commas, like -1, 1, 2.` };
-  if (new Set(values).size !== values.length) return { error: "Each steering strength appears once." };
-  if (values.length > 16) return { error: "Use at most 16 steering strengths." };
-  return { values };
-}
-
-/** Build a spec from the form, or explain what's missing. */
-export function buildSpec(
-  form: FormState,
-  ctx: {
-    model: ReturnType<typeof useStore.getState>["model"];
-    datasetPath: string | null;
-    datasetSha: string | null;
-    sae?: ReturnType<typeof useStore.getState>["sae"];
-  },
-): { spec: Spec } | { error: string } {
-  if (!ctx.datasetPath) return { error: "Choose prompts first (Prompts view)." };
-  let experiment: Spec["experiment"];
-  if (form.kind === "activation_patching") {
-    experiment = { kind: "activation_patching", direction: form.direction };
-  } else if (form.kind === "attribution_patching") {
-    experiment = { kind: "attribution_patching", direction: form.direction };
-  } else if (form.kind === "path_patching") {
-    if (form.pathReceivers.length === 0) return { error: "Add at least one receiver: a later head's query, key or value, or the logits." };
-    experiment = { kind: "path_patching", direction: form.direction, receivers: form.pathReceivers, freeze_mlps: form.pathFreezeMlps };
-  } else if (form.kind === "steering") {
-    if (!form.steerApplyTo) return { error: "Choose which prompts to steer." };
-    const strengths = parseStrengths(form.steerStrengths);
-    if ("error" in strengths) return strengths;
-    experiment = {
-      kind: "steering",
-      apply_to: form.steerApplyTo,
-      coefficients: strengths.values,
-      train_fraction: form.steerTrain,
-      seed: form.steerSeed,
-      control: form.steerControl,
-    };
-  } else if (form.kind === "direct_logit_attribution") {
-    if (!form.dlaPrompts) return { error: "Choose which prompts' logit difference to split." };
-    experiment = { kind: "direct_logit_attribution", prompts: form.dlaPrompts };
-  } else {
-    if (!form.baseline) return { error: "Choose a baseline for the ablation. Logogram never assumes one." };
-    experiment = { kind: "ablation", baseline: form.baseline };
-  }
-  const scope = form.scope;
-  const positionError = (p: PositionSpec) =>
-    p.kind === "label" && !p.label ? "Choose which named position to use." : null;
-  if (scope.kind === "heads" || scope.kind === "layer_components") {
-    const err = positionError(scope.position);
-    if (err) return { error: err };
-  }
-  if (scope.kind === "layer_components" && scope.components.length === 0) {
-    return { error: "Choose at least one component." };
-  }
-  if (scope.kind === "sites" && scope.sites.some((x) => positionError(x.position))) {
-    return { error: "Choose which named position to use." };
-  }
-  const info = ctx.model.info;
-  const ref = ctx.model.ref;
-  const model: Spec["model"] = info
-    ? {
-        id: info.id,
-        revision: info.revision,
-        dtype: info.dtype,
-        device: ref?.device ?? info.device,
-        process_weights: info.process_weights,
-      }
-    : (form.modelRef ?? {
-        id: "openai-community/gpt2",
-        revision: null,
-        dtype: "float32",
-        device: "auto",
-        process_weights: true,
-      });
-  // SAE features belong to an SAE: the loaded one, or the one a saved spec names.
-  const usesFeatures = scope.kind === "features" || (scope.kind === "sites" && scope.sites.some((x) => x.kind === "sae_feature"));
-  const loaded = ctx.sae?.state === "ready" && ctx.sae.info ? { repo: ctx.sae.info.repo, path: ctx.sae.info.path, revision: ctx.sae.info.revision } : null;
-  const sae = usesFeatures ? (loaded ?? form.saeRef) : null;
-  if (usesFeatures && !sae) return { error: "Load the SAE these features belong to (Explore → Features)." };
-  if (scope.kind === "features" && experiment.kind !== "attribution_patching") {
-    return { error: "Only attribution patching estimates every SAE feature. Choose it, or patch chosen features." };
-  }
-  const spec: Spec = {
-    logogram_spec: 1,
-    name: form.name.trim() || suggestName({ experiment, scope }),
-    notes: form.notes,
-    model,
-    dataset: { path: ctx.datasetPath, sha256: ctx.datasetSha, limit: form.limit },
-    tokenization: { prepend_bos: form.prependBos },
-    experiment,
-    scope,
-    metric: { kind: "logit_diff", normalization: form.normalization },
-    statistics: { bootstrap: form.bootstrap, ci: form.ci, seed: form.statSeed },
-    execution: { batch_size: form.batchSize },
-    predictions: form.predictions,
-    ...(sae ? { sae } : {}),
-  };
-  return { spec };
-}
-
-/** How what will run differs from the saved spec the form was opened from. */
-export function savedDifferences(
-  form: FormState,
-  model: ReturnType<typeof useStore.getState>["model"],
-  datasetPath: string | null,
-  datasetSha: string | null,
-): string[] {
-  const out: string[] = [];
-  const ref = form.modelRef;
-  const info = model.info;
-  if (ref && info) {
-    if (ref.id !== info.id) {
-      out.push(`It was written for ${modelName(ref.id)}; the loaded model is ${modelName(info.id)}.`);
-    } else {
-      if (ref.revision && ref.revision !== info.revision) {
-        out.push(`It was written for revision ${shortRevision(ref.revision)}; the loaded model is ${shortRevision(info.revision)}.`);
-      }
-      if (ref.dtype !== info.dtype) out.push(`It was written for ${ref.dtype}; the model is loaded in ${info.dtype}.`);
-      if (ref.process_weights !== info.process_weights) out.push("Weight processing differs from the saved spec.");
-      if (ref.device !== "auto" && ref.device !== info.device) out.push(`It was written for ${ref.device}; the model is loaded on ${info.device}.`);
-    }
-  }
-  const saved = form.savedDataset;
-  if (saved && datasetPath) {
-    if (saved.path !== datasetPath) out.push(`It used ${saved.path}; the prompts chosen now are ${datasetPath}.`);
-    else if (saved.sha256 && datasetSha && saved.sha256 !== datasetSha) out.push(`${saved.path} has changed since it was saved.`);
-  }
-  return out;
-}
-
 export function ExperimentView() {
   const form = useStore((st) => st.form);
   const setForm = useStore((st) => st.setForm);
@@ -193,8 +58,9 @@ export function ExperimentView() {
   const uniformLength = lengths ? lengths.length === 1 : null;
 
   const sae = useStore((st) => st.sae);
-  const built = buildSpec(form, { model, datasetPath, datasetSha: dataset?.sha256 ?? null, sae });
-  const differences = savedDifferences(form, model, datasetPath, dataset?.sha256 ?? null);
+  const facts = useMemo(() => datasetFacts(dataset, form.limit), [dataset, form.limit]);
+  const built = buildSpec(form, { model, datasetPath, datasetSha: dataset?.sha256 ?? null, sae, facts });
+  const differences = savedDifferences(form, model, datasetPath, dataset?.sha256 ?? null, modelName);
   const spec = "spec" in built ? built.spec : null;
   const busy = job?.status === "running";
 
@@ -783,7 +649,7 @@ function ScopeEditor({
         label="Sweep"
         value={kind}
         onChange={(k) => {
-          if (k === "features") onChange({ kind: "features", position: { kind: "last" }, top: 50 });
+          if (k === "features") onChange({ kind: "features", position: { kind: "last" }, top: 50, choose_on: null, seed: null });
           else if (k === "layer_components" && steering) onChange({ kind: "layer_components", components: ["resid_pre"], position: { kind: "last" } });
           else if (k === "heads") onChange({ kind: "heads", position: position({ kind: "all" }) });
           else if (k === "layer_position")

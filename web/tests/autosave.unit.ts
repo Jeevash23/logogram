@@ -25,6 +25,11 @@ const DETAILED: FormState = {
   scope: { kind: "sites", sites: [{ kind: "head", layer: 9, head: 6, position: { kind: "index", index: -1 } }, { kind: "resid_post", layer: 3, head: null, position: { kind: "label", label: "S2" } }] },
   pathReceivers: [{ kind: "head", layer: 10, head: 7, input: "q" }, { kind: "logits" }],
   predictions: { method: "final_norm_logit_lens", prompt_index: 2, which: "clean", position: { kind: "index", index: 4 }, top_k: 5 },
+  atpMethod: "integrated_gradients",
+  atpSteps: 24,
+  metric: "kl",
+  klTarget: "corrupt",
+  cluster: "template",
   saeRef: { repo: "owner/sae", path: "layer_9", revision: null },
   limit: 12,
   prependBos: false,
@@ -94,6 +99,50 @@ test("anything that isn't exactly a form is ignored", () => {
   }
   expect(parseForm({ ...DETAILED, extra: "ignored" })).toEqual(DETAILED);
 });
+
+/** A form as Logogram stored it before metrics, clusters, integrated gradients and held-out
+ * feature choice existed. */
+function olderForm(): Record<string, unknown> {
+  const data = JSON.parse(serializeForm(DETAILED, 7));
+  for (const key of ["metric", "klTarget", "cluster", "atpMethod", "atpSteps"]) delete data.form[key];
+  data.form.kind = "attribution_patching";
+  data.form.scope = { kind: "features", position: { kind: "last" }, top: 50 };
+  return data;
+}
+
+test("a form stored before the metric, clusters and integrated gradients existed takes the form's starting values for them", () => {
+  const stored = parseStoredForm(JSON.stringify(olderForm()));
+  expect(stored?.form).toEqual({
+    ...DETAILED,
+    kind: "attribution_patching",
+    scope: { kind: "features", position: { kind: "last" }, top: 50, choose_on: null, seed: null },
+    metric: "logit_diff",
+    klTarget: null,
+    cluster: null,
+    atpMethod: "gradient",
+    atpSteps: DEFAULT_FORM.atpSteps,
+  });
+  // Fields that existed then must still be there and well formed.
+  const broken = olderForm();
+  delete (broken.form as Record<string, unknown>).notes;
+  expect(parseStoredForm(JSON.stringify(broken))).toBeNull();
+  const half = olderForm();
+  (half.form as Record<string, unknown>).scope = { kind: "features", position: { kind: "last" }, top: 50, seed: 3 };
+  expect(parseStoredForm(JSON.stringify(half))).toBeNull();
+});
+
+test("an older stored form comes back when its project opens", withStorage(async (storage) => {
+  const restore = stubApi();
+  try {
+    const store = useStore.getState();
+    store.leaveProject();
+    storage.setItem(formStorageKey("projects/older"), JSON.stringify(olderForm()));
+    await store.enterProject(project("older"));
+    const state = useStore.getState();
+    expect(state.form).toMatchObject({ notes: DETAILED.notes, metric: "logit_diff", atpMethod: "gradient", cluster: null, draftId: null });
+    expect(state.notices.some((n) => n.text === FORM_RESTORED)).toBe(true);
+  } finally { restore(); }
+}));
 
 test("the unsaved form is kept per project and comes back, with Undo, when the project opens", withStorage(async (storage) => {
   const restore = stubApi();

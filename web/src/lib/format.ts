@@ -90,6 +90,15 @@ export function visibleToken(token: string | null | undefined): string {
   return token.replace(/\n/g, "⏎").replace(/\t/g, "⇥").replace(/^ /, "·").replace(/ /g, "·");
 }
 
+/** An answer or distractor for display: a token or a continuation as written, or the members of a
+ * set (any of which counts), the first few of them. */
+export function answerText(answer: string | string[] | null | undefined, max = 4): string {
+  if (answer === null || answer === undefined) return "";
+  if (typeof answer === "string") return visibleToken(answer);
+  const shown = answer.slice(0, max).map(visibleToken).join(" ");
+  return answer.length > max ? `${shown} …` : shown;
+}
+
 /** Text with its first letter capitalized, for messages that start a sentence. Empty stays empty. */
 export function capitalize(text: string | null | undefined): string {
   if (!text) return "";

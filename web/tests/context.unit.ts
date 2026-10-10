@@ -6,10 +6,10 @@ import type { ProjectInfo, Spec } from "../src/api/types";
 
 const project = (id: string): ProjectInfo => ({ session_id: id, name: id, path: id, datasets: [], description: "" });
 const spec: Spec = {
-  logogram_spec: 1, name: "Recorded run", notes: "", model: { id: "tiny", revision: "fixed", device: "cpu", dtype: "float32", process_weights: false },
+  logogram_spec: 2, name: "Recorded run", notes: "", model: { id: "tiny", revision: "fixed", device: "cpu", dtype: "float32", process_weights: false },
   dataset: { path: "datasets/snapshots/fixed.jsonl", sha256: "fixed", limit: 3 }, tokenization: { prepend_bos: false },
   experiment: { kind: "activation_patching", direction: "clean_to_corrupt" }, scope: { kind: "heads", position: { kind: "all" } },
-  metric: { kind: "logit_diff", normalization: "dataset_gap" }, statistics: { bootstrap: 200, seed: 7, ci: 0.95 }, execution: { batch_size: 2 },
+  metric: { kind: "logit_diff", normalization: "dataset_gap" }, statistics: { bootstrap: 200, seed: 7, ci: 0.95, cluster: null }, execution: { batch_size: 2 },
 };
 
 test("saved analyses retain BOS, prompt limit, batch and pinned model settings", () => {

@@ -1,4 +1,6 @@
 import { test, expect } from "@playwright/test";
+import { SESSION_ENDED_TEXT } from "../src/api/client";
+import { connectEvents, SESSION_ENDED } from "../src/api/events";
 import type { Job } from "../src/api/types";
 import { milestone } from "../src/lib/milestones";
 import { NOTICE_MS, useStore } from "../src/store/app";
@@ -16,7 +18,47 @@ test("the status line speaks at milestones, not at every progress tick", () => {
   expect(milestone({ ...job, status: "cancelled" }, null, "connected").text).toBe("“Heads sweep” was cancelled.");
   expect(milestone({ ...job, cancelling: true }, { done: 600, total: 1000 }, "connected").text).toBe("Cancelling “Heads sweep”.");
   expect(milestone(job, { done: 600, total: 1000 }, "reconnecting").key).toBe("reconnecting");
+  expect(milestone(job, { done: 600, total: 1000 }, "ended").text).toBe(SESSION_ENDED_TEXT);
   expect(milestone(null, null, "connected").text).toBe("");
+});
+
+test("a stream closed because the session ended says so and stops reconnecting", () => {
+  const sockets: FakeSocket[] = [];
+  class FakeSocket {
+    onopen: (() => void) | null = null;
+    onmessage: ((m: { data: string }) => void) | null = null;
+    onclose: ((e: { code: number }) => void) | null = null;
+    constructor(public url: string) { sockets.push(this); }
+    close() {}
+  }
+  const timers: number[] = [];
+  const saved = { WebSocket: globalThis.WebSocket, location: (globalThis as { location?: unknown }).location, window: (globalThis as { window?: unknown }).window };
+  Object.assign(globalThis, {
+    WebSocket: FakeSocket,
+    location: { protocol: "http:", host: "127.0.0.1:8765" },
+    window: { setTimeout: (_: () => void, ms: number) => { timers.push(ms); return 1; }, clearTimeout: () => {} },
+  });
+  const store = useStore.getState();
+  store.leaveProject();
+  try {
+    const stop = connectEvents();
+    expect(sockets).toHaveLength(1);
+    // An ordinary drop is retried...
+    sockets[0].onclose?.({ code: 1006 });
+    expect(useStore.getState().connection).toBe("reconnecting");
+    expect(timers).toHaveLength(1);
+    // ...an ended session isn't: the page says what happened and how to go on.
+    sockets[0].onclose?.({ code: SESSION_ENDED });
+    expect(timers).toHaveLength(1);
+    expect(useStore.getState().connection).toBe("ended");
+    expect(useStore.getState().connectionError).toBe(SESSION_ENDED_TEXT);
+    expect(useStore.getState().notices.some((n) => n.tone === "error" && n.text === SESSION_ENDED_TEXT)).toBe(true);
+    stop();
+  } finally {
+    Object.assign(globalThis, saved);
+    useStore.setState({ connection: "connecting", connectionError: null });
+    store.leaveProject();
+  }
 });
 
 test("notices that carry an action or important news stay until dismissed", () => {

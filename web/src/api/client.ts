@@ -4,11 +4,15 @@ import type {
   AttentionData,
   BaselineReport,
   Comparison,
+  DatasetCreated,
   DatasetDetail,
   EstimateResponse,
   FolderListing,
   IOITemplate,
   Job,
+  MetricSpec,
+  TaskDatasetCreated,
+  TaskInfo,
   ModelPreset,
   ModelStatus,
   SAEFit,
@@ -44,6 +48,9 @@ export class ApiError extends Error {
   }
 }
 
+/** What a tab whose session the server no longer accepts says (it restarted, or the link is old). */
+export const SESSION_ENDED_TEXT = "This page's session has ended. Open the link printed in the terminal where Logogram is running.";
+
 let projectSession: string | null = null;
 export function setProjectSession(session: string | null) {
   projectSession = session;
@@ -65,9 +72,39 @@ function errorMessage(data: unknown): string | null {
   return null;
 }
 
+/**
+ * Routes that read or change the open project, as the server lists them (PROJECT_SCOPED in
+ * src/logogram/server/app.py). A prefix ending in "/" covers everything under it; the others
+ * cover the route itself and what is under it. A tab sends the project it shows with each of them.
+ */
+export const PROJECT_SCOPED = [
+  "/api/project",
+  "/api/research",
+  "/api/dataset",
+  "/api/datasets/",
+  "/api/tokenize",
+  "/api/baseline",
+  "/api/attention",
+  "/api/predictions",
+  "/api/sae/fit",
+  "/api/sae/tokens",
+  "/api/sae/feature",
+  "/api/runs",
+  "/api/drafts",
+  "/api/compare",
+  // Not on the server's list, but closing must name the project the tab means to close.
+  "/api/projects/close",
+];
+
+/** Whether a request to this path (with or without a query) says which project it is for. */
+export function isProjectScoped(path: string): boolean {
+  const route = path.split(/[?#]/)[0];
+  return PROJECT_SCOPED.some((prefix) => (prefix.endsWith("/") ? route.startsWith(prefix) : route === prefix || route.startsWith(`${prefix}/`)));
+}
+
 async function request<T>(method: string, path: string, body?: unknown, format: "json" | "blob" = "json"): Promise<T> {
   let response: Response;
-  const scoped = /^\/api\/(project$|dataset(?:s)?(?:\/|\?)|tokenize$|baseline$|attention$|predictions$|research(?:\/|$)|runs(?:\/|$)|drafts$|compare\?|projects\/close$)/.test(path);
+  const scoped = isProjectScoped(path);
   const session = projectSession;
   try {
     response = await fetch(path, {
@@ -86,12 +123,7 @@ async function request<T>(method: string, path: string, body?: unknown, format: 
     );
   }
   if (scoped && projectSession !== session) throw new ApiError("The project changed while this request was running.", 409);
-  if (response.status === 401) {
-    throw new ApiError(
-      "This page's session has ended. Open the link printed in the terminal where Logogram is running.",
-      401,
-    );
-  }
+  if (response.status === 401) throw new ApiError(SESSION_ENDED_TEXT, 401);
   if (response.ok && format === "blob") {
     const blob = await response.blob();
     if (scoped && projectSession !== session) throw new ApiError("The project changed while this request was running.", 409);
@@ -144,12 +176,17 @@ export const api = {
     patterns: ("ABBA" | "BABA")[];
     corruption: "flip" | "abc";
     overwrite?: boolean;
-  }) => post<{ name: string; path: string; n: number }>("/api/datasets/ioi", body),
+  }) => post<DatasetCreated>("/api/datasets/ioi", body),
+  tasks: () => get<TaskInfo[]>("/api/tasks"),
+  /** Generate a task's prompts into a new dataset; the reply names the metric that reads them. */
+  generateTask: (body: { task: string; name: string; n: number; seed: number; options: Record<string, unknown>; overwrite?: boolean }) =>
+    post<TaskDatasetCreated>("/api/datasets/generate", body),
   importDataset: (name: string, text: string, overwrite = false) =>
-    post<{ name: string; path: string; n: number }>("/api/datasets/import", { name, text, overwrite }),
+    post<DatasetCreated>("/api/datasets/import", { name, text, overwrite }),
   savePair: (body: PromptRecord & { name: string; overwrite?: boolean }) =>
-    post<{ name: string; path: string; n: number }>("/api/datasets/pair", body),
-  tokenize: (body: { dataset?: string; index?: number; record?: PromptRecord } & Partial<AnalysisOptions>) =>
+    post<DatasetCreated>("/api/datasets/pair", body),
+  /** The metric decides whether answers of several tokens can be read. */
+  tokenize: (body: { dataset?: string; index?: number; record?: PromptRecord; metric: MetricSpec } & AnalysisOptions) =>
     post<TokenStripData>("/api/tokenize", body),
 
   presets: () =>
@@ -168,7 +205,8 @@ export const api = {
   }) => post<Job>("/api/models/load", body),
   unloadModel: () => post<ModelStatus>("/api/models/unload"),
 
-  baseline: (dataset: string, options: AnalysisOptions) => post<BaselineReport>("/api/baseline", { dataset, ...options }),
+  baseline: (dataset: string, options: AnalysisOptions, metric: MetricSpec) =>
+    post<BaselineReport>("/api/baseline", { dataset, metric, ...options }),
   attention: (body: {
     dataset: string;
     index: number;
