@@ -1,5 +1,8 @@
+import { useEffect, useRef, useState } from "react";
+
 import { bytes, count, duration, pct } from "../lib/format";
 import { modelName } from "../lib/hooks";
+import { milestone } from "../lib/milestones";
 import { useStore } from "../store/app";
 import { Button, Progress, Spinner } from "./ui";
 import s from "./StatusLine.module.css";
@@ -11,6 +14,7 @@ export function StatusLine() {
   const connection = useStore((st) => st.connection);
   const connectionError = useStore((st) => st.connectionError);
   const live = useStore((st) => (st.job?.run_id ? st.live[st.job.run_id] : undefined));
+  const said = useMilestones();
 
   const running = job?.status === "running";
   let text = "Ready";
@@ -53,7 +57,12 @@ export function StatusLine() {
     progress = null;
   }
   return (
-    <footer className={s.status} role="status" aria-live="polite">
+    // Not a live region itself: it changes several times a second during a run. Screen readers
+    // hear the milestones instead.
+    <footer className={s.status}>
+      <div className="visually-hidden" role="status" aria-live="polite" aria-atomic="true">
+        {said}
+      </div>
       <div className={s.left}>
         {running && <Spinner />}
         <span className={s.text}>{text}</span>
@@ -81,4 +90,25 @@ export function StatusLine() {
       </div>
     </footer>
   );
+}
+
+/** The latest milestone of the work in progress (see milestone), said once when it is reached.
+ * What was already true when the page opened isn't news. */
+function useMilestones(): string {
+  const job = useStore((st) => st.job);
+  const progress = useStore((st) => (st.job?.run_id ? st.live[st.job.run_id]?.progress ?? null : null));
+  const connection = useStore((st) => st.connection);
+  const now = milestone(job, progress, connection);
+  const [said, setSaid] = useState("");
+  const last = useRef<string | null>(null);
+  useEffect(() => {
+    if (last.current === null || last.current === now.key) {
+      last.current = now.key;
+      return;
+    }
+    const reconnected = last.current === "reconnecting";
+    last.current = now.key;
+    setSaid(reconnected ? `Connected to the server again. ${now.text}`.trim() : now.text);
+  }, [now.key, now.text]);
+  return said;
 }

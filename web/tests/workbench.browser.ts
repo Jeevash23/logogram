@@ -95,7 +95,7 @@ test("two heads share a query and prediction reports survive a completed run", a
   await page.getByRole("button", { name: "Run", exact: true }).click();
   await expect(page.getByRole("button", { name: "Open saved predictions" })).toBeVisible();
   // Predictions are saved before the sweep ends; reload once the whole run has finished.
-  await expect(page.locator("footer[role=status]")).toContainText("Ready");
+  await expect(page.locator("footer")).toContainText("Ready");
   await page.reload();
   await page.getByRole("button", { name: "Layer predictions", exact: true }).click();
   await expect(page.getByText(/Saved diagnostic from Prediction regression/)).toBeVisible();

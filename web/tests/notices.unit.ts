@@ -1,5 +1,23 @@
 import { test, expect } from "@playwright/test";
+import type { Job } from "../src/api/types";
+import { milestone } from "../src/lib/milestones";
 import { NOTICE_MS, useStore } from "../src/store/app";
+
+test("the status line speaks at milestones, not at every progress tick", () => {
+  const job: Job = { id: "j1", kind: "run", title: "Heads sweep", status: "running", run_id: "r1", progress: {}, error: null, started: 0, version: 1 };
+  const said = new Set<string>();
+  const keys: string[] = [];
+  for (let done = 0; done <= 1000; done += 7) {
+    const m = milestone(job, { done, total: 1000 }, "connected");
+    if (!keys.includes(m.key)) { keys.push(m.key); said.add(m.text); }
+  }
+  expect([...said]).toEqual(["Started “Heads sweep”.", "“Heads sweep” is 25% done.", "“Heads sweep” is 50% done.", "“Heads sweep” is 75% done."]);
+  expect(milestone({ ...job, status: "finished" }, null, "connected").text).toBe("“Heads sweep” finished.");
+  expect(milestone({ ...job, status: "cancelled" }, null, "connected").text).toBe("“Heads sweep” was cancelled.");
+  expect(milestone({ ...job, cancelling: true }, { done: 600, total: 1000 }, "connected").text).toBe("Cancelling “Heads sweep”.");
+  expect(milestone(job, { done: 600, total: 1000 }, "reconnecting").key).toBe("reconnecting");
+  expect(milestone(null, null, "connected").text).toBe("");
+});
 
 test("notices that carry an action or important news stay until dismissed", () => {
   const store = useStore.getState();
