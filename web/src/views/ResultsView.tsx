@@ -171,6 +171,18 @@ export function ResultsView() {
                   <dd className="figure">{num(summary.features.fit.l0, 1)}</dd>
                 </div>
               )}
+              {summary.features.chosen_on && summary.features.reported_on && (
+                <>
+                  <div>
+                    <dt>Prompts that chose the features</dt>
+                    <dd className="figure">{count(summary.features.chosen_on.length)}</dd>
+                  </div>
+                  <div>
+                    <dt>Prompts they are reported on</dt>
+                    <dd className="figure">{count(summary.features.reported_on.length)}</dd>
+                  </div>
+                </>
+              )}
             </>
           ) : summary.steering ? (
             <>
@@ -449,7 +461,7 @@ function MethodsLine({ spec, n }: { spec: Spec; n: number | undefined }) {
         : scope.kind === "layer_components"
           ? scope.components.map((c) => c.replace("_", " ")).join(", ")
           : scope.kind === "features"
-            ? `every feature of the SAE (keeping the top ${scope.top})`
+            ? `every feature of the SAE (keeping the top ${scope.top}${scope.choose_on !== null ? `, chosen on ${Math.round(scope.choose_on * 100)}% of the prompts with seed ${scope.seed} and reported on the rest` : ""})`
             : scope.kind === "site_sets"
               ? `${scope.sets.length} set${scope.sets.length === 1 ? "" : "s"} of sites`
               : `${scope.sites.length} chosen site${scope.sites.length === 1 ? "" : "s"}`;

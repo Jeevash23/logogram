@@ -618,6 +618,49 @@ function PositionPicker({
 
 const LAST_TOKEN_NOTE = "Read at the last token, where the logit difference is measured.";
 
+type FeaturesScope = Extract<ScopeSpec, { kind: "features" }>;
+
+/** Which prompts choose the strongest features, and which report them: the same prompts, or a
+ * seeded split, so the reported effects aren't the ones that happened to look strongest. */
+function HeldOutChoice({ scope, onChange }: { scope: FeaturesScope; onChange: (s: ScopeSpec) => void }) {
+  const shares = [0.25, 0.5, 0.75];
+  const share = scope.choose_on;
+  return (
+    <div className={e.stack}>
+      <Choices
+        label="Prompts that choose the features"
+        value={share === null ? "every" : "split"}
+        onChange={(v) => onChange(v === "every" ? { ...scope, choose_on: null, seed: null } : { ...scope, choose_on: 0.5, seed: scope.seed ?? 0 })}
+        columns={2}
+        options={[
+          { value: "every", title: "Every prompt chooses and reports", detail: "The strongest features are reported on the same prompts that chose them." },
+          { value: "split", title: "Some choose, the rest report", detail: "A seeded share of the prompts chooses the features; only the others report their effects." },
+        ]}
+      />
+      {share !== null && (
+        <div className={s.grid3}>
+          <Field label="Share that chooses">
+            <Select value={String(share)} onChange={(ev) => onChange({ ...scope, choose_on: Number(ev.target.value) })}>
+              {(shares.includes(share) ? shares : [...shares, share].sort((a, b) => a - b)).map((v) => (
+                <option key={v} value={String(v)}>
+                  {Math.round(v * 100)}% of the prompts
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Split seed">
+            <Input type="number" min={0} step={1} value={scope.seed ?? 0} onChange={(ev) => onChange({ ...scope, seed: Number(ev.target.value) })} />
+          </Field>
+        </div>
+      )}
+      <p className={s.small}>
+        Features that look strongest on some prompts are partly lucky there, so reporting them on the same prompts overstates
+        their effects (the winner's curse). Reporting them on prompts that didn't choose them doesn't.
+      </p>
+    </div>
+  );
+}
+
 function ScopeEditor({
   method,
   saeLoaded,
@@ -680,16 +723,19 @@ function ScopeEditor({
         ]}
       />
       {scope.kind === "features" && (
-        <div className={s.grid2}>
-          <Field label="Estimate each feature at">
-            <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} />
-          </Field>
-          <Field
-            label="Keep the strongest"
-            help={saeLoaded ? `Of the ${saeLoaded.d_sae.toLocaleString("en-US")} features of the SAE on layer ${saeLoaded.layer}, by the size of their estimated effect.` : "By the size of their estimated effect."}
-          >
-            <Input type="number" min={1} max={500} value={scope.top} onChange={(ev) => onChange({ ...scope, top: Math.max(1, Math.min(500, Number(ev.target.value) || 1)) })} aria-label="Number of features to keep" />
-          </Field>
+        <div className={e.stack}>
+          <div className={s.grid2}>
+            <Field label="Estimate each feature at">
+              <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} />
+            </Field>
+            <Field
+              label="Keep the strongest"
+              help={saeLoaded ? `Of the ${saeLoaded.d_sae.toLocaleString("en-US")} features of the SAE on layer ${saeLoaded.layer}, by the size of their estimated effect.` : "By the size of their estimated effect."}
+            >
+              <Input type="number" min={1} max={500} value={scope.top} onChange={(ev) => onChange({ ...scope, top: Math.max(1, Math.min(500, Number(ev.target.value) || 1)) })} aria-label="Number of features to keep" />
+            </Field>
+          </div>
+          <HeldOutChoice scope={scope} onChange={onChange} />
         </div>
       )}
       {scope.kind === "heads" &&
