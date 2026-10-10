@@ -294,6 +294,54 @@ def test_with_an_exact_sae_the_feature_estimates_add_up_to_the_site(
     np.testing.assert_allclose(again.delta, result.delta, rtol=1e-5, atol=1e-8)
 
 
+def test_features_can_be_chosen_on_some_prompts_and_reported_on_the_others(
+    tiny_backend, project, spec_factory, exact
+):
+    """Choosing the strongest features on the prompts that report them biases their effects
+    away from zero; a held-out split chooses on some prompts and reports on the rest."""
+    prompts = _prompts(tiny_backend, project)
+    experiment = {"kind": "attribution_patching", "direction": "clean_to_corrupt"}
+    every = {"kind": "features", "position": {"kind": "all"}, "top": 4}
+    full = run_experiment(
+        spec_factory(sae=SAE_REF, experiment=experiment, scope={**every, "top": 500}),
+        tiny_backend,
+        prompts,
+        sae=exact,
+    )
+    held = {**every, "choose_on": 0.5, "seed": 3}
+    result = run_experiment(
+        spec_factory(sae=SAE_REF, experiment=experiment, scope=held),
+        tiny_backend,
+        prompts,
+        sae=exact,
+    )
+    info = result.extra["features"]
+    chosen, reported = info["chosen_on"], info["reported_on"]
+    assert len(chosen) == 6 and len(reported) == 6
+    assert sorted(chosen + reported) == list(range(12))
+    assert [p.index for p in result.prompts] == reported
+    assert result.delta.shape == (4, 6) and result.baselines.clean.shape == (6,)
+    # The features are the strongest on the choosing prompts, and their values on the reported
+    # prompts are exactly those of the run that estimated every prompt.
+    by_feature = {rs.site.feature: full.delta[rs.index] for rs in full.sites}
+    features = sorted(by_feature)
+    assert len(features) == exact.d_sae
+    choosing = np.array([by_feature[f][chosen].mean() for f in features])
+    strongest = [features[i] for i in np.argsort(-np.abs(choosing), kind="stable")[:4]]
+    assert [rs.site.feature for rs in result.sites] == strongest
+    for rs in result.sites:
+        np.testing.assert_allclose(result.delta[rs.index], by_feature[rs.site.feature][reported])
+    with pytest.raises(ValueError, match="both choose_on"):
+        spec_factory(sae=SAE_REF, experiment=experiment, scope={**every, "choose_on": 0.5})
+    with pytest.raises(ScopeError, match="at least one and two"):
+        run_experiment(
+            spec_factory(sae=SAE_REF, experiment=experiment, scope={**held, "choose_on": 0.95}),
+            tiny_backend,
+            prompts,
+            sae=exact,
+        )
+
+
 def test_feature_runs_are_checked_against_the_sae(
     tiny_backend, project, spec_factory, exact, tmp_path
 ):

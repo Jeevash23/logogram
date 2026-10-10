@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 
+import numpy as np
 import torch
 
 from logogram.backends.base import ModelBackend, Tokenized
@@ -280,3 +281,15 @@ def common_labels(prompts: list[PreparedPrompt]) -> list[str]:
     for p in prompts[1:]:
         shared &= set(p.labels)
     return sorted(shared, key=lambda lab: (sum(p.labels[lab] for p in prompts) / len(prompts), lab))
+
+
+def seeded_split(n: int, fraction: float, seed: int) -> tuple[list[int], list[int]]:
+    """Positions of a seeded share of ``n`` prompts, and of the rest, each in order: a shuffle
+    from the raw PCG64 stream, so the split is the same on every machine and NumPy version."""
+    first = int(round(n * fraction))
+    order = list(range(n))
+    raw = np.random.PCG64(seed).random_raw(n)
+    for t in range(n - 1, 0, -1):
+        j = int(raw[t] % np.uint64(t + 1))
+        order[t], order[j] = order[j], order[t]
+    return sorted(order[:first]), sorted(order[first:])

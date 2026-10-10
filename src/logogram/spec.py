@@ -24,6 +24,8 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 from pydantic.functional_validators import ModelWrapValidatorHandler
 
+from logogram.fileio import JSON_LIMIT, read_limited
+
 NAME_MAX = 200
 
 SPEC_VERSION = 2
@@ -173,11 +175,27 @@ class FeaturesScope(_Strict):
     Only attribution patching can sweep every feature: it estimates them all from one gradient
     and keeps the ``top`` with the largest estimated effects (by magnitude) as the run's sites,
     ready to verify by patching.
+
+    Choosing the strongest features and reporting them on the same prompts biases their effects
+    away from zero (the winner's curse). With ``choose_on``, a seeded split of the prompts
+    chooses the features and only the other prompts report them. ``None`` chooses and reports on
+    every prompt.
     """
 
     kind: Literal["features"] = "features"
     position: Position
     top: int = Field(ge=1, le=500)
+    choose_on: float | None = Field(gt=0.0, lt=1.0)
+    seed: Seed | None
+
+    @model_validator(mode="after")
+    def _split(self) -> FeaturesScope:
+        if (self.choose_on is None) != (self.seed is None):
+            raise ValueError(
+                "choosing features on some prompts needs both choose_on (the share of prompts "
+                "that choose them) and seed (for the split); give neither to use every prompt"
+            )
+        return self
 
 
 # What "the rest of the model" is made of, for sets that intervene on everything but their sites.
@@ -720,7 +738,8 @@ class Spec(_Strict):
 
     @classmethod
     def from_path(cls, path: str | Path) -> Spec:
-        return cls.model_validate_json(Path(path).read_text(encoding="utf-8"))
+        raw = read_limited(Path(path), JSON_LIMIT, "A spec is a few kilobytes: check the file.")
+        return cls.model_validate_json(raw)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -794,6 +813,9 @@ def upgrade_v1(data: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
         kind = scope.get("kind")
         if kind in ("heads", "layer_components", "features"):
             fill(scope, "position", all_positions, "scope.position")
+        if kind == "features":
+            fill(scope, "choose_on", None, "scope.choose_on", report=False)
+            fill(scope, "seed", None, "scope.seed", report=False)
         if kind == "layer_position":
             fill(scope, "site", "resid_pre", "scope.site")
             fill(scope, "positions", "each", "scope.positions")
@@ -872,6 +894,11 @@ def describe_experiment(spec: Spec) -> str:
         where = (
             f"every SAE feature, {describe_position(scope.position)}, keeping the top {scope.top}"
         )
+        if scope.choose_on is not None:
+            where += (
+                f" chosen on {scope.choose_on:.0%} of the prompts (seed {scope.seed}) and "
+                "reported on the rest"
+            )
     elif isinstance(scope, SiteSetsScope):
         n = len(scope.sets)
         where = f"{n} set{'s' if n != 1 else ''} of sites, each at once"

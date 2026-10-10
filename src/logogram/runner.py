@@ -20,7 +20,7 @@ import torch
 
 from logogram import __version__
 from logogram.backends.base import ModelBackend
-from logogram.datasets import parse_jsonl
+from logogram.datasets import decode_dataset, parse_jsonl, read_dataset_bytes
 from logogram.engine import Cancelled, run_experiment
 from logogram.fileio import atomic_output, write_text_atomic
 from logogram.project import Project, now_iso
@@ -212,14 +212,14 @@ def run_spec(
     try:
         dataset_path = project.resolve_dataset(spec.dataset.path)
         # Hash, parse and snapshot the same bytes, even if the source is subsequently edited.
-        content = dataset_path.read_bytes()
+        content = read_dataset_bytes(dataset_path)
         sha = hashlib.sha256(content).hexdigest()
         if spec.dataset.sha256 and sha != spec.dataset.sha256:
             raise RunError(
                 f"{spec.dataset.path} has changed since this spec was written (its hash no longer "
                 "matches). Restore the original file, or remove dataset.sha256 to accept the new one."
             )
-        records = parse_jsonl(content.decode("utf-8"), source=spec.dataset.path)
+        records = parse_jsonl(decode_dataset(content, spec.dataset.path), source=spec.dataset.path)
         if spec.dataset.limit is not None:
             records = records[: spec.dataset.limit]
         source_path = spec.dataset.path
@@ -227,7 +227,7 @@ def run_spec(
         snapshots.mkdir(exist_ok=True)
         snapshot = project.writable(snapshots / f"{sha}.jsonl")
         if os.path.lexists(snapshot):
-            if project.readable(snapshot).read_bytes() != content:
+            if read_dataset_bytes(project.readable(snapshot)) != content:
                 raise RunError(
                     "The pinned dataset snapshot has changed. Restore it from a backup before rerunning."
                 )

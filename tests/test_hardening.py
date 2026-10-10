@@ -189,6 +189,36 @@ def test_odd_dataset_files_dont_break_a_project(client, ready, project):
     assert client.post("/api/datasets/import", json=body, headers=HEADERS).status_code == 400
 
 
+def test_files_too_large_or_too_deep_dont_break_a_project(
+    client, ready, project, spec_factory, monkeypatch
+):
+    spec = spec_factory().model_dump(mode="json")
+    runs = []
+    for _ in range(2):
+        run_id = client.post("/api/runs", json={"spec": spec}, headers=HEADERS).json()["run_id"]
+        assert _wait(client, run_id) == "finished"
+        runs.append(run_id)
+    # A summary nested past Python's recursion limit, and one far larger than Logogram writes.
+    (project.run_dir(runs[0]) / "summary.json").write_text("[" * 100_000, encoding="utf-8")
+    listed = {r["id"]: r for r in client.get("/api/runs", headers=HEADERS).json()}
+    assert listed[runs[0]]["status"] == "failed" and listed[runs[1]]["status"] == "finished"
+    monkeypatch.setattr("logogram.project.JSON_LIMIT", 1024)
+    listed = {r["id"]: r for r in client.get("/api/runs", headers=HEADERS).json()}
+    assert listed[runs[1]]["status"] == "failed" and "unreadable" in listed[runs[1]]["error"]
+    detail = client.get(f"/api/runs/{runs[1]}", headers=HEADERS).json()
+    assert detail["summary"] is None and detail["listing"]["status"] == "failed"
+
+    monkeypatch.undo()
+    monkeypatch.setattr("logogram.datasets.DATASET_LIMIT", 64)
+    datasets = client.get("/api/state", headers=HEADERS).json()["project"]["datasets"]
+    error = next(d for d in datasets if d["name"] == "ioi.jsonl")["error"]
+    assert "larger than" in error and "smaller files" in error
+    run_id = client.post("/api/runs", json={"spec": spec}, headers=HEADERS).json()["run_id"]
+    assert _wait(client, run_id) == "failed"
+    listed = {r["id"]: r for r in client.get("/api/runs", headers=HEADERS).json()}
+    assert "ioi.jsonl is larger than the 64 bytes Logogram reads" in listed[run_id]["error"]
+
+
 @posix_only
 def test_a_dangling_link_doesnt_break_recent_projects(client, ready, project):
     (project.experiments_dir / "gone").symlink_to(project.root / "nowhere")

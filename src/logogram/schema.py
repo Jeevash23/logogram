@@ -195,6 +195,26 @@ class FeatureRun(_Model):
     site_estimate: float | None = None
     features_estimate: float | None = None
     evaluated: int | None = None
+    # Every feature, chosen on some prompts and reported on the others: their dataset indices.
+    chosen_on: list[int] | None = None
+    reported_on: list[int] | None = None
+
+
+class CircuitWithout(_Model):
+    """A set that keeps one site fewer than another: how much faithfulness that site adds."""
+
+    of: str  # the set this one is, less one site
+    site: str  # the site it leaves out
+    drop: Stat  # faithfulness(of) - faithfulness(this set)
+
+
+class CircuitInteraction(_Model):
+    """A set of two sites, each also intervened on alone: what intervening on both does beyond
+    the sum of the two, normalized like the effects."""
+
+    a: str  # the sets holding each site alone
+    b: str
+    effect: Stat  # effect(both) - effect(a) - effect(b)
 
 
 class CircuitRow(_Model):
@@ -208,6 +228,8 @@ class CircuitRow(_Model):
     size: int
     share: Stat | None = None
     faithfulness: Stat | None = None
+    without: CircuitWithout | None = None
+    interaction: CircuitInteraction | None = None
 
 
 class CircuitInfo(_Model):

@@ -23,9 +23,11 @@ from logogram.datasets import (
     DatasetError,
     PromptRecord,
     check_dataset_name,
+    decode_dataset,
     file_sha256,
     load_dataset,
     parse_jsonl,
+    read_dataset_bytes,
     write_dataset,
 )
 from logogram.project import (
@@ -569,12 +571,12 @@ def create_app(
     ) -> list[PromptRecord]:
         project = state.require_project()
         path = project.resolve_dataset(dataset)
-        content = path.read_bytes()
+        content = read_dataset_bytes(path)
         if sha256 is not None and hashlib.sha256(content).hexdigest() != sha256:
             raise Conflict(
                 "The dataset changed since these settings were saved. Restore the original dataset or choose the updated dataset for a new experiment."
             )
-        records = parse_jsonl(content.decode("utf-8"), source=dataset)
+        records = parse_jsonl(decode_dataset(content, dataset), source=dataset)
         return records[:limit] if limit else records
 
     @app.get("/api/datasets/{name}", response_model=M.DatasetDetail)

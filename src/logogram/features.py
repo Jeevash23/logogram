@@ -34,7 +34,7 @@ from logogram.engine import (
     empty_values,
     make_scorer,
 )
-from logogram.prompts import PreparedPrompt, group_by_length
+from logogram.prompts import PreparedPrompt, group_by_length, seeded_split
 from logogram.sae import SAE, fit_on
 from logogram.sites import ResolvedSite, ScopeError, expand_scope, resolve_position, site_label
 from logogram.spec import (
@@ -112,6 +112,21 @@ def _check_sites(sites: list[ResolvedSite], sae: SAE) -> None:
             )
         if (rs.site.feature or 0) >= sae.d_sae:
             raise ScopeError(f"The SAE has {sae.d_sae} features, so {rs.label} doesn't exist.")
+
+
+def _feature_split(scope: FeaturesScope, n: int) -> tuple[list[int], list[int]]:
+    """Positions of the prompts that choose the strongest features, and of those that report
+    them: every prompt for both, unless the scope holds a share out."""
+    if scope.choose_on is None:
+        return list(range(n)), list(range(n))
+    choose, report = seeded_split(n, scope.choose_on, scope.seed or 0)
+    if len(choose) < 1 or len(report) < 2:
+        raise ScopeError(
+            f"Choosing features on {scope.choose_on:.0%} of {n} prompts leaves {len(choose)} to "
+            f"choose them and {len(report)} to report them, but it needs at least one and two. "
+            "Use more prompts, or another share."
+        )
+    return choose, report
 
 
 def _check_continuations(scorer: Any, positions: list[Any]) -> None:
@@ -317,13 +332,19 @@ def _attribution(
         for prompt in prompts:
             resolve_position(position, prompt)
     groups = group_by_length(prompts)
+    # Every feature is chosen on some prompts and reported on others (all of them, unless the
+    # scope holds some out): the run measures the reported ones.
+    choose_at, report_at = _feature_split(scope, len(prompts)) if every else ([], [])
+    reported = [prompts[i] for i in report_at] if every else prompts
     scorer = make_scorer(spec, prompts)
     baselines = compute_baselines(backend, prompts, groups, batch_size, cancel, scorer)
     check_finite(baselines, backend.info.dtype)
     receiver, source, reference = _directions(exp)
     receiver = receiver_override or receiver
     source = source_override or source
-    warnings = check_gap(spec, baselines, prompts, receiver, reference)
+    if every:
+        baselines = baselines.subset(report_at)
+    warnings = check_gap(spec, baselines, reported, receiver, reference)
     _check_continuations(
         scorer,
         [position] if every else [rs.site.position for rs in chosen],  # type: ignore[list-item]
@@ -423,9 +444,9 @@ def _attribution(
                 on_progress(done, n, sae.layer)
 
     if every:
-        assert position is not None
-        means = estimates.mean(0)
-        order = sorted(range(d_sae), key=lambda i: (-abs(means[i]), i))[: scope.top]  # type: ignore[union-attr]
+        assert position is not None and isinstance(scope, FeaturesScope)
+        means = estimates[choose_at].mean(0)
+        order = sorted(range(d_sae), key=lambda i: (-abs(means[i]), i))[: scope.top]
         sites = []
         for j, feature in enumerate(order):
             site = Site(kind="sae_feature", layer=sae.layer, feature=feature, position=position)
@@ -439,17 +460,19 @@ def _attribution(
         }
         if on_start is not None:
             on_start(sites, layout)
-        delta = estimates[:, order].T.copy()
-        features_sum = estimates.sum(1)
+        delta = estimates[report_at][:, order].T.copy()
+        features_sum = estimates[report_at].sum(1)
+        site_total = site_total[report_at]
     else:
         sites = chosen
         delta = estimates
         features_sum = None
     warnings.extend(check_values(delta, "estimates", backend.info.dtype))
+    held_out = every and len(report_at) < len(prompts)
     result = EngineResult(
         sites=sites,
         layout=layout,
-        prompts=prompts,
+        prompts=reported,
         baselines=baselines,
         receiver=receiver,
         reference=reference,
@@ -471,6 +494,10 @@ def _attribution(
                 "site_estimate": float(site_total.mean()),
                 "features_estimate": None if features_sum is None else float(features_sum.mean()),
                 "evaluated": d_sae if every else len(chosen),
+                # With a held-out split: the prompts that chose the features, and those that
+                # report them (the run's prompts).
+                "chosen_on": [prompts[i].index for i in choose_at] if held_out else None,
+                "reported_on": [p.index for p in reported] if held_out else None,
             }
         },
     )

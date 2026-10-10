@@ -129,6 +129,44 @@ def test_complements_and_shares(tiny_backend, project, spec_factory):
     assert len(site["members"]) == 2
 
 
+def test_minimality_and_interactions(tiny_backend, project, spec_factory):
+    """A keeping set one site short of another reports the faithfulness that site adds; a set of
+    two sites each also run alone reports the effect of both beyond their sum."""
+    a, b, c = _head(0, 1), _head(1, 2), _head(1, 0)
+    spec = spec_factory(
+        experiment={"kind": "activation_patching", "direction": "clean_to_corrupt"},
+        scope=_sets(
+            _set("everything", [], complement=True),
+            _set("circuit", [a, b, c], complement=True),
+            _set("without L1 H0", [a, b], complement=True),
+            _set("a", [a]),
+            _set("b", [b]),
+            _set("a and b", [b, a]),
+            universe=["head"],
+        ),
+    )
+    result = run_experiment(spec, tiny_backend, _prompts(tiny_backend, project))
+    stats = compute_stats(spec, result)
+    rows = {
+        r["label"]: r for r in build_summary(spec, result, stats, "run", None)["circuit"]["rows"]
+    }
+    without = rows["without L1 H0"]["without"]
+    assert without["of"] == "circuit" and without["site"] == "L1 H0"
+    expected = (
+        rows["circuit"]["faithfulness"]["mean"] - rows["without L1 H0"]["faithfulness"]["mean"]
+    )
+    assert without["drop"]["mean"] == pytest.approx(expected, abs=1e-9)
+    assert without["drop"]["lo"] <= without["drop"]["mean"] <= without["drop"]["hi"]
+    assert rows["circuit"]["without"] is None and rows["a"]["interaction"] is None
+    both = rows["a and b"]["interaction"]
+    assert {both["a"], both["b"]} == {"a", "b"}
+    e = stats.effect_mean
+    assert both["effect"]["mean"] == pytest.approx(e[5] - e[3] - e[4], abs=1e-9)
+    # Per prompt, the interaction is what patching both does beyond patching each alone.
+    effect = (result.patched - result.receiver_metric[None, :]) / stats.denominator
+    np.testing.assert_allclose(both["effect"]["mean"], (effect[5] - effect[3] - effect[4]).mean())
+
+
 def test_a_kept_position_is_only_that_position(tiny_backend, project, spec_factory):
     """Keeping a head at the last token replaces its other positions with the rest. (A kept
     second-layer head carries the other positions to the last token's prediction.)"""

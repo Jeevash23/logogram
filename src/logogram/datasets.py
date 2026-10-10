@@ -26,7 +26,7 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from logogram.fileio import write_text_atomic
+from logogram.fileio import DATASET_LIMIT, read_limited, write_text_atomic
 
 DATASET_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 
@@ -127,19 +127,31 @@ def _check_spans(record: PromptRecord, line_no: int, source: str) -> None:
             )
 
 
-def load_dataset(path: Path) -> list[PromptRecord]:
+def read_dataset_bytes(path: Path) -> bytes:
+    """A dataset file's bytes, refusing a file that isn't regular or is too large to read."""
     if not path.exists():
         raise DatasetError(f"Dataset not found: {path.name}. Check the path in the spec.")
     if not path.is_file():  # a folder, device or pipe could fail, block or never end
         raise DatasetError(f"{path.name} isn't a regular file.")
     try:
-        text = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError as exc:
-        raise DatasetError(
-            f"{path.name} isn't UTF-8 text (byte {exc.start} can't be decoded). Save it as UTF-8."
-        ) from exc
+        return read_limited(path, DATASET_LIMIT, "Split the prompts into smaller files.")
     except OSError as exc:
         raise DatasetError(f"{path.name} can't be read: {exc.strerror or exc}.") from exc
+    except ValueError as exc:  # too large, or no longer a regular file
+        raise DatasetError(str(exc)) from exc
+
+
+def decode_dataset(content: bytes, name: str) -> str:
+    try:
+        return content.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise DatasetError(
+            f"{name} isn't UTF-8 text (byte {exc.start} can't be decoded). Save it as UTF-8."
+        ) from exc
+
+
+def load_dataset(path: Path) -> list[PromptRecord]:
+    text = decode_dataset(read_dataset_bytes(path), path.name)
     return parse_jsonl(text, source=path.name)
 
 

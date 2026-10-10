@@ -34,7 +34,7 @@ from logogram.engine import (
     make_scorer,
     patched_forward,
 )
-from logogram.prompts import PreparedPrompt, group_by_length
+from logogram.prompts import PreparedPrompt, group_by_length, seeded_split
 from logogram.sites import (
     ResolvedSite,
     ScopeError,
@@ -58,19 +58,14 @@ RESIDUAL = ("resid_pre", "resid_mid", "resid_post")
 def split_pairs(n: int, train_fraction: float, seed: int) -> tuple[list[int], list[int]]:
     """Positions of the pairs that train the direction and of the held-out pairs it is measured
     on: a seeded shuffle from the raw PCG64 stream, so the split is the same on every machine."""
-    n_train = int(round(n * train_fraction))
-    if n_train < 1 or n - n_train < 2:
+    train, test = seeded_split(n, train_fraction, seed)
+    if len(train) < 1 or len(test) < 2:
         raise EngineError(
             f"Steering needs at least one prompt pair to compute the direction and two to measure "
             f"it on, but {n} pairs with a training share of {train_fraction:.0%} leaves "
-            f"{n_train} and {n - n_train}. Use more prompts or another training share."
+            f"{len(train)} and {len(test)}. Use more prompts or another training share."
         )
-    order = list(range(n))
-    raw = np.random.PCG64(seed).random_raw(n)
-    for t in range(n - 1, 0, -1):
-        j = int(raw[t] % np.uint64(t + 1))
-        order[t], order[j] = order[j], order[t]
-    return sorted(order[:n_train]), sorted(order[n_train:])
+    return train, test
 
 
 def steered_sites(spec: Spec, info: ModelInfo, prompts: list[PreparedPrompt]) -> list[Site]:

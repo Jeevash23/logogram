@@ -1,14 +1,48 @@
-"""Small file helpers shared by everything that writes into project folders."""
+"""Small file helpers shared by everything that reads or writes project folders."""
 
 from __future__ import annotations
 
 import contextlib
 import os
 import secrets
+import stat
 import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import BinaryIO
+
+# The largest files Logogram reads from a project. Project folders come from other people, and a
+# file far larger than anything Logogram writes would only exhaust memory.
+JSON_LIMIT = 256 * 1024**2  # summaries, manifests, research notes, specs
+DATASET_LIMIT = 256 * 1024**2  # a JSONL file of prompts (about a million pairs)
+
+
+class FileTooLarge(ValueError):
+    """A file is larger than Logogram reads."""
+
+
+def read_limited(path: Path, limit: int, fix: str) -> bytes:
+    """The bytes of the regular file at ``path``, refusing one larger than ``limit`` bytes.
+
+    The file is opened without blocking and checked to be a regular file, so a pipe or device
+    planted in a project can't hang the reader. ``fix`` says what to do about a file that is too
+    large.
+    """
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
+    with os.fdopen(fd, "rb") as fh:
+        info = os.fstat(fh.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError(f"{path.name} isn't a regular file.")
+        data = fh.read(limit + 1) if info.st_size <= limit else b""
+    if info.st_size > limit or len(data) > limit:
+        raise FileTooLarge(f"{path.name} is larger than the {_size(limit)} Logogram reads. {fix}")
+    return data
+
+
+def _size(n: int) -> str:
+    if n >= 1024**2:
+        return f"{n // 1024**2} MB"
+    return f"{n // 1024} KB" if n >= 1024 else f"{n} bytes"
 
 
 def replace_file(tmp: Path, path: Path) -> None:

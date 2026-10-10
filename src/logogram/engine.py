@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any
 
 import numpy as np
@@ -68,6 +68,10 @@ class Baselines:
 
     def pref(self, which: str) -> np.ndarray:
         return self.clean_pref if which == "clean" else self.corrupt_pref
+
+    def subset(self, at: list[int]) -> Baselines:
+        """The baselines of the prompts at these positions, in that order."""
+        return Baselines(*(getattr(self, f.name)[at] for f in fields(self)))
 
 
 @dataclass

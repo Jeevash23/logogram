@@ -30,7 +30,7 @@ import platformdirs
 from pydantic import BaseModel, ConfigDict, Field
 
 from logogram.datasets import DatasetError, file_sha256, load_dataset
-from logogram.fileio import write_text_atomic
+from logogram.fileio import JSON_LIMIT, read_limited, write_text_atomic
 from logogram.schema import Manifest, RunListing, Summary
 from logogram.spec import Spec, describe_experiment
 
@@ -101,7 +101,15 @@ class Project:
     def read_json(self, path: Path, *, optional: bool = False) -> dict[str, Any] | None:
         if optional and not os.path.lexists(path):
             return None
-        data = json.loads(self.readable(path).read_text(encoding="utf-8"))
+        raw = read_limited(
+            self.readable(path),
+            JSON_LIMIT,
+            "Logogram never writes one that large: restore it from a backup, or rerun the spec.",
+        )
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except RecursionError as exc:
+            raise ProjectError(f"{path.name} is nested too deeply to be a Logogram file.") from exc
         if not isinstance(data, dict):
             raise ProjectError(f"{path.name} must contain a JSON object.")
         return data
@@ -162,8 +170,10 @@ class Project:
                 "Create a project there instead."
             )
         try:
-            cls(root, ProjectMeta(name="Project")).readable(meta_path)
-            meta = ProjectMeta.model_validate_json(meta_path.read_text(encoding="utf-8"))
+            resolved = cls(root, ProjectMeta(name="Project")).readable(meta_path)
+            meta = ProjectMeta.model_validate_json(
+                read_limited(resolved, JSON_LIMIT, "Restore project.json from a backup.")
+            )
         except Exception as exc:  # noqa: BLE001
             raise ProjectError(f"project.json can't be read: {exc}") from exc
         project = cls(root, meta)
@@ -248,7 +258,10 @@ class Project:
             return runs
         for folder in self.experiments_dir.iterdir():
             if self.inside(folder) and folder.is_dir():
-                listing = self.run_listing(folder.name)
+                try:
+                    listing = self.run_listing(folder.name)
+                except Exception:  # noqa: BLE001 - one unreadable run never hides the others
+                    listing = None
                 if listing is not None:
                     runs.append(listing)
         runs.sort(key=lambda r: (r.created or "", r.id), reverse=True)
@@ -274,7 +287,7 @@ class Project:
                 raise ValueError("Invalid summary metadata")
             if layout.get("kind") is not None and not isinstance(layout["kind"], str):
                 raise ValueError("Invalid layout kind")
-        except (ValueError, OSError):
+        except (ValueError, OSError, RecursionError):
             manifest, summary_meta = {}, {}
             error = "Run metadata is unreadable or invalid. Restore its manifest and summary from a backup, or rerun the spec."
         status = manifest.get("status") or "draft"

@@ -42,7 +42,7 @@ from logogram.engine import (
     make_scorer,
 )
 from logogram.prompts import LengthGroup, PreparedPrompt, group_by_length
-from logogram.sites import ResolvedSite, ScopeError, resolve_position
+from logogram.sites import ResolvedSite, ScopeError, resolve_position, site_label
 from logogram.spec import (
     ALL_POSITIONS,
     Ablation,
@@ -482,45 +482,104 @@ def _values(
 
 
 def circuit_summary(result: EngineResult, stats: Any, ci: float) -> dict[str, Any]:
-    """Each set's effect as a share of the set that replaces the whole universe (ratio of mean
-    changes in the metric, from the same resamples), and 1 - share for sets that keep sites."""
+    """How much of the behavior each set carries, from the same resamples as the effects.
+
+    * ``share``: the set's mean change in the metric as a share of the set that replaces the
+      whole universe; for a set that keeps sites, ``faithfulness`` = 1 - share. For a set that
+      removes sites, a share near 1 says removing them does what removing everything does (the
+      circuit is complete).
+    * ``without``: for a set that keeps one site fewer than another keeping set, the faithfulness
+      that site adds (the circuit's minimality, one site at a time).
+    * ``interaction``: for a set of two sites that are also intervened on alone, the effect of
+      both beyond the sum of the two.
+    """
     sites = result.sites
+    sets = {rs.index: rs.site_set for rs in sites}
+    assert all(s is not None for s in sets.values())
+    keys = {i: frozenset(site.model_dump_json() for site in s.sites) for i, s in sets.items()}  # type: ignore[union-attr]
+    named = {site.model_dump_json(): site for s in sets.values() for site in s.sites}  # type: ignore[union-attr]
     everything = next(
-        (
-            rs.index
-            for rs in sites
-            if rs.site_set is not None and rs.site_set.complement and not rs.site_set.sites
-        ),
+        (i for i, s in sets.items() if s.complement and not s.sites),  # type: ignore[union-attr]
         None,
     )
-    rows = []
+    alone = {
+        next(iter(keys[i])): i
+        for i, s in sets.items()
+        if not s.complement and len(s.sites) == 1  # type: ignore[union-attr]
+    }
     boot = getattr(stats, "delta_boot", None)
+    effect_boot = getattr(stats, "effect_boot", None)
     alpha = (1.0 - ci) / 2.0
-    for rs in sites:
-        s = rs.site_set
+
+    def interval(values: np.ndarray, mean: float) -> dict[str, float] | None:
+        if not (np.isfinite(values).all() and np.isfinite(mean) and stats.n >= 2):
+            return None
+        lo, hi = (float(x) for x in np.quantile(values, [alpha, 1.0 - alpha]))
+        return {"mean": float(mean), "sd": float(values.std(ddof=1)), "lo": lo, "hi": hi}
+
+    rows = []
+    for i, s in sets.items():
         assert s is not None
         row: dict[str, Any] = {
-            "index": rs.index,
+            "index": i,
             "label": s.label,
             "complement": s.complement,
             "size": len(s.sites),
             "share": None,
             "faithfulness": None,
+            "without": None,
+            "interaction": None,
         }
-        if everything is not None and boot is not None and rs.index != everything:
+        whole = everything is not None and boot is not None
+        if whole and i != everything:
             with np.errstate(divide="ignore", invalid="ignore"):
-                share_boot = boot[rs.index] / boot[everything]
-                mean = float(stats.delta_mean[rs.index] / stats.delta_mean[everything])
-            if np.isfinite(share_boot).all() and np.isfinite(mean) and stats.n >= 2:
-                lo, hi = (float(x) for x in np.quantile(share_boot, [alpha, 1.0 - alpha]))
-                sd = float(share_boot.std(ddof=1))
-                row["share"] = {"mean": mean, "sd": sd, "lo": lo, "hi": hi}
-                if s.complement:
-                    row["faithfulness"] = {
-                        "mean": 1.0 - mean,
-                        "sd": sd,
-                        "lo": 1.0 - hi,
-                        "hi": 1.0 - lo,
+                share = interval(
+                    boot[i] / boot[everything],
+                    stats.delta_mean[i] / stats.delta_mean[everything],
+                )
+            row["share"] = share
+            if s.complement and share is not None:
+                row["faithfulness"] = {
+                    "mean": 1.0 - share["mean"],
+                    "sd": share["sd"],
+                    "lo": 1.0 - share["hi"],
+                    "hi": 1.0 - share["lo"],
+                }
+        if whole and s.complement:
+            larger = next(
+                (
+                    j
+                    for j, o in sets.items()
+                    if o.complement and keys[i] < keys[j] and len(keys[j] - keys[i]) == 1  # type: ignore[union-attr]
+                ),
+                None,
+            )
+            if larger is not None:
+                (missing,) = keys[larger] - keys[i]
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    drop = interval(
+                        (boot[i] - boot[larger]) / boot[everything],
+                        (stats.delta_mean[i] - stats.delta_mean[larger])
+                        / stats.delta_mean[everything],
+                    )
+                if drop is not None:
+                    row["without"] = {
+                        "of": sets[larger].label,  # type: ignore[union-attr]
+                        "site": site_label(named[missing]),
+                        "drop": drop,
+                    }
+        if not s.complement and len(s.sites) == 2 and effect_boot is not None:
+            a, b = (alone.get(k) for k in sorted(keys[i]))
+            if a is not None and b is not None:
+                effect = interval(
+                    effect_boot[i] - effect_boot[a] - effect_boot[b],
+                    stats.effect_mean[i] - stats.effect_mean[a] - stats.effect_mean[b],
+                )
+                if effect is not None:
+                    row["interaction"] = {
+                        "a": sets[a].label,  # type: ignore[union-attr]
+                        "b": sets[b].label,  # type: ignore[union-attr]
+                        "effect": effect,
                     }
         rows.append(row)
     return {"everything": everything, "rows": rows}
