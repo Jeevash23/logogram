@@ -1058,6 +1058,8 @@ useStore.subscribe((state, prev) => {
 /** Put back the form left unsaved when the project was last open, offering to undo that. */
 function restoreForm(stored: StoredForm): void {
   const st = useStore.getState();
+  // Edits made while the project was opening are newer than the stored form: they win.
+  if (!sameForm(st.form, savedForm)) return;
   let form = stored.form;
   // A draft that has run since, or was removed, has no folder for this form to fill.
   if (form.draftId && !st.runs.some((r) => r.id === form.draftId && r.status === "draft")) form = { ...form, draftId: null };

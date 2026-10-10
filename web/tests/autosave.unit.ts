@@ -142,6 +142,27 @@ test("saving the form as a draft or running it clears the stored copy", withStor
   } finally { restore(); }
 }));
 
+test("edits made while the project opens win over the stored form", withStorage(async (storage) => {
+  const original = globalThis.fetch;
+  let release: () => void = () => {};
+  const runsListed = new Promise<void>((resolve) => { release = resolve; });
+  globalThis.fetch = (async (input: string) => {
+    if (input === "/api/runs") await runsListed;
+    return new Response("[]");
+  }) as typeof fetch;
+  try {
+    const store = useStore.getState();
+    store.leaveProject();
+    storage.setItem(formStorageKey("projects/busy"), serializeForm({ ...DEFAULT_FORM, notes: "older" }, 1));
+    const opening = store.enterProject(project("busy"));
+    store.setForm({ notes: "typed while it opened" });
+    release();
+    await opening;
+    expect(useStore.getState().form.notes).toBe("typed while it opened");
+    expect(useStore.getState().notices.some((n) => n.text === FORM_RESTORED)).toBe(false);
+  } finally { globalThis.fetch = original; }
+}));
+
 test("a stored form that doesn't parse is ignored, and a draft that has run is not refilled", withStorage(async (storage) => {
   // The draft ran (and failed) since: its folder holds a run now.
   const restore = stubApi([{ id: "2026-10-10-draft", status: "failed", name: "Ran", created: "", kind: "ablation" } as Partial<RunListing>]);
