@@ -78,6 +78,14 @@
   border-left: 1px dashed var(--faint);
 }
 
+/* The simultaneous band: a hairline behind the site's own interval. */
+.band {
+  position: absolute;
+  top: 6.5px;
+  height: 1px;
+  background: var(--faint);
+}
+
 .ci {
   position: absolute;
   top: 6px;

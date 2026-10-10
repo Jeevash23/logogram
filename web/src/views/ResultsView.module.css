@@ -248,3 +248,27 @@
   font-size: var(--text-xs);
   color: var(--faint);
 }
+
+/* "of 40" beside a figure. */
+.figureOf {
+  font-size: var(--text-md);
+  color: var(--faint);
+  font-stretch: 100%;
+}
+
+/* Corrections for testing many sites at once, under the run's figures. */
+.corrections {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 760px;
+}
+
+.correctionsText {
+  font-size: var(--text-md);
+  line-height: 1.5;
+}
+
+.correctionsText strong {
+  font-weight: 620;
+}

@@ -11,6 +11,7 @@ import { experimentText, receiverLabel, scopeFor, scopeShort, scopeText, siteTex
 import { useStore, type FormState } from "../store/app";
 import { metricWords } from "../lib/metrics";
 import { MetricSettings } from "./MetricSettings";
+import { ClusterChooser } from "./StatisticsSettings";
 import s from "./views.module.css";
 import e from "./ExperimentView.module.css";
 
@@ -265,6 +266,7 @@ export function ExperimentView() {
               <Input type="number" min={1} max={4096} value={form.batchSize} onChange={(ev) => setForm({ batchSize: Number(ev.target.value) })} />
             </Field>
           </div>
+          <ClusterChooser cluster={form.cluster} facts={facts} onChange={(cluster) => setForm({ cluster })} />
         </section>
 
         <section className={e.section}>

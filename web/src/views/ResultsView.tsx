@@ -1,13 +1,13 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useCallback, useMemo } from "react";
 
-import type { ExperimentSpec, Layout, Side, SiteBase, SiteResult, Spec } from "../api/types";
+import type { ExperimentSpec, Layout, Side, SiteBase, SiteResult, Spec, Summary } from "../api/types";
 import { Heatmap, type Axis } from "../components/Heatmap/Heatmap";
 import { ScaleBar } from "../components/Heatmap/ScaleBar";
 import { Logogram } from "../components/Logogram";
 import { Button, Callout, Checkbox, Empty, Icon, menuClasses, Progress, Segmented } from "../components/ui";
 import { divergingScale, niceBound, SCALE_FLOOR, type ColorScale, type ResolvedTheme } from "../lib/color";
-import { ago, capitalize, ci, count, duration, num, pct, shortRevision, signed } from "../lib/format";
+import { ago, capitalize, ci, count, duration, num, pct, qText, shortRevision, signed } from "../lib/format";
 import { modelName, siteValue, useActiveRun, useRunProfile } from "../lib/hooks";
 import { findSite, gridKey, layoutTitle, selectionOfSite, siteGrid, type Selection } from "../lib/sites";
 import { metricWords } from "../lib/metrics";
@@ -193,6 +193,15 @@ export function ResultsView() {
                   </div>
                 ) : null;
               })()}
+              {summary.steering.control && summary.steering.control.length > 0 && (
+                <div>
+                  <dt>Beat their random control</dt>
+                  <dd className="figure">
+                    {count(summary.steering.control.filter((c) => c.beats_control).length)}
+                    <span className={r.figureOf}> of {count(summary.steering.control.length)}</span>
+                  </dd>
+                </div>
+              )}
             </>
           ) : summary.direct ? (
             <>
@@ -242,6 +251,7 @@ export function ResultsView() {
           )}
         </dl>
       )}
+      {summary && <Corrections summary={summary} />}
 
       {layout && <div className={r.controls}>
         <Segmented label="Result values" value={metric} onChange={mapMetric => useStore.setState({ mapMetric })} options={[{ value: "effect", label: words.effect }, { value: "delta", label: words.delta }]} />
@@ -294,6 +304,34 @@ export function ResultsView() {
 }
 
 const formatCell = (v: number) => num(v, Math.abs(v) >= 10 ? 0 : 2);
+
+/**
+ * Corrections for testing many sites at once: how many sites exclude zero with a band that holds
+ * for all of them together, and how many are discoveries at the Benjamini–Hochberg q-value.
+ */
+function Corrections({ summary }: { summary: Summary }) {
+  const st = summary.statistics;
+  if (st.band_level === null || st.band_level === undefined) return null;
+  const alpha = Math.round((1 - st.ci) * 1000) / 1000;
+  const sites = summary.sites.filter((x) => !x.variant?.control);
+  const banded = sites.filter((x) => x.band && (x.band.lo > 0 || x.band.hi < 0)).length;
+  const discoveries = sites.filter((x) => x.q !== null && x.q !== undefined && x.q < alpha).length;
+  const single = sites.filter((x) => x.effect.lo !== null && x.effect.hi !== null && (x.effect.lo > 0 || x.effect.hi < 0)).length;
+  return (
+    <section className={r.corrections} aria-label="Corrected for the number of sites">
+      <p className={r.correctionsText}>
+        Corrected for {count(summary.sites.length)} sites: <strong>{count(banded)}</strong> exclude zero with simultaneous
+        bands and <strong>{count(discoveries)}</strong> have q below {alpha}, where {count(single)} intervals exclude zero one
+        site at a time.
+      </p>
+      <p className={s.small}>
+        With many sites, some intervals exclude zero by chance alone. A simultaneous band holds for every site at once, so a
+        site whose band excludes zero still stands out after the number of sites is counted; a q-value is the share of
+        false findings expected among the sites at least as strong.{st.multiple_comparisons ? ` ${st.multiple_comparisons}` : ""}
+      </p>
+    </section>
+  );
+}
 
 /**
  * The sweep as a heatmap. Each cell finds its site in a map built once per run, and the accessors
@@ -445,7 +483,7 @@ function MethodsLine({ spec, n }: { spec: Spec; n: number | undefined }) {
         ? `logit difference, as a share of ${spec.metric.normalization === "dataset_gap" ? "the mean" : "each prompt's"}`
         : `${metricWords(spec.metric).label}, normalized by ${spec.metric.normalization === "dataset_gap" ? "the dataset gap" : "each prompt's gap"}`}
       {n !== undefined && <><span className={r.sep}>·</span>n = {count(n)}</>}
-      <span className={r.sep}>·</span>{Math.round(spec.statistics.ci * 100)}% CI, {count(spec.statistics.bootstrap)} resamples, seed {spec.statistics.seed}
+      <span className={r.sep}>·</span>{Math.round(spec.statistics.ci * 100)}% CI{spec.statistics.cluster ? `, resampling clusters of prompts with the same ${spec.statistics.cluster}` : ""}, {count(spec.statistics.bootstrap)} resamples, seed {spec.statistics.seed}
       <span className={r.sep}>·</span>{modelName(spec.model.id)}{spec.model.revision ? ` @ ${shortRevision(spec.model.revision)}` : ""}, {spec.model.dtype}
     </p>
   );
@@ -537,6 +575,7 @@ function CellTooltip({
           <div style={{ opacity: 0.72 }}>
             CI {metric === "effect" ? ci(res.effect.lo, res.effect.hi) : ci(res.delta.lo, res.delta.hi)}
             {!attribution && <> · flipped {res.sign_flips} of {res.n}</>}
+            {res.q !== null && res.q !== undefined && <> · q {qText(res.q)}</>}
           </div>
         </>
       ) : (

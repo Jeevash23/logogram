@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "../api/client";
 import type { ResultKind, RunDetail, SiteDetail, SiteResult, Spec, Summary } from "../api/types";
-import { capitalize, ci, count, num, plural, prob, signed } from "../lib/format";
+import { capitalize, ci, count, num, plural, prob, qText, signed } from "../lib/format";
 import { siteValue, useActiveRun, useArchitecture } from "../lib/hooks";
 import {
   componentLabel,
@@ -261,6 +261,9 @@ function Evidence({
   const noInterval = site.effect.lo === null || site.effect.hi === null;
   const byIndex = useMemo(() => new Map(detail?.prompts.map((p) => [p.index, p]) ?? []), [detail]);
   const values = useMemo(() => detail?.prompts.map((p) => ({ index: p.index, value: p.effect })) ?? [], [detail]);
+  // A steered site and strength against its random control, paired over the same resamples.
+  const control = summary?.steering?.control?.find((c) => c.index === site.index || c.control_index === site.index);
+  const nSites = summary?.sites.length ?? 0;
 
   return (
     <section className={s.section}>
@@ -291,7 +294,7 @@ function Evidence({
             <dt>Sign flips</dt>
             <dd>
               {count(site.sign_flips)} of {count(site.n)}{" "}
-              <span className={s.muted}>prompts changed which name the model prefers</span>
+              <span className={s.muted}>prompts changed whether the model prefers the answer</span>
             </dd>
           </>
         )}
@@ -300,10 +303,42 @@ function Evidence({
           {count(site.opposite_sign)} of {count(site.n)}{" "}
           <span className={s.muted}>{intervention ? "prompts moved the other way" : "prompts point the other way"}</span>
         </dd>
+        {site.band && (
+          <>
+            <dt>Band, all {count(nSites)} sites</dt>
+            <dd>
+              {ci(site.band.lo, site.band.hi, 3)}{" "}
+              <span className={s.muted}>{site.band.lo > 0 || site.band.hi < 0 ? "excludes zero" : "includes zero"}</span>
+            </dd>
+          </>
+        )}
+        {site.q !== null && site.q !== undefined && (
+          <>
+            <dt>q-value</dt>
+            <dd>
+              {qText(site.q)} <span className={s.muted}>false findings expected among sites this strong</span>
+            </dd>
+          </>
+        )}
+        {control && (
+          <>
+            <dt>Against the random control</dt>
+            <dd>
+              {signed(control.difference, 3)} <span className={s.muted}>({ci(control.lo, control.hi)}) {control.beats_control ? "beats it" : "doesn't beat it"}</span>
+            </dd>
+          </>
+        )}
       </dl>
       {stats && (
         <p className={s.fine}>
-          {[capitalize(stats.method), `${count(stats.bootstrap)} resamples`, `seed ${stats.seed}`].filter(Boolean).join(", ")}.
+          {[
+            capitalize(stats.method),
+            stats.cluster && stats.clusters ? `${count(stats.clusters)} clusters` : null,
+            `${count(stats.bootstrap)} resamples`,
+            `seed ${stats.seed}`,
+          ].filter(Boolean).join(", ")}.
+          {site.band && ` The band holds for all ${count(nSites)} sites at once, with ${ciLevel}% confidence; the q-value is the Benjamini–Hochberg share of false findings.`}
+          {control && ` Against the control: |effect| along the direction − |effect| along a random direction of the same length, at the same strength.`}
         </p>
       )}
 

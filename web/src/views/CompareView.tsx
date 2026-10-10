@@ -8,7 +8,7 @@ import { Button, Callout, Empty, Field, Progress, Segmented, Select } from "../c
 import { divergingScale, niceBound, SCALE_FLOOR, type ColorScale, type ResolvedTheme } from "../lib/color";
 import { ci, count, num, pct, signed } from "../lib/format";
 import { siteValue } from "../lib/hooks";
-import { gridKey, selectionOfSite, siteGrid, siteKey } from "../lib/sites";
+import { gridKey, isResidKind, partOfKind, selectionOfSite, siteGrid, siteKey } from "../lib/sites";
 import { siteText } from "../lib/spec";
 import { runView, useStore } from "../store/app";
 import s from "./views.module.css";
@@ -352,7 +352,18 @@ function Verdict({ comparison, robust, verification }: { comparison: Comparison;
           <div className={c.metricValue}>{comparison.n_sign_changes}</div>
           <div className={c.metricLabel}>sign reversals, with both confidence intervals excluding zero</div>
         </div>
+        {comparison.paired && (
+          <div>
+            <div className={c.metricValue}>{comparison.n_differs ?? 0}</div>
+            <div className={c.metricLabel}>sites that differ prompt by prompt: the paired difference's interval excludes zero</div>
+          </div>
+        )}
       </div>
+      <p className={s.small}>
+        {comparison.paired
+          ? "Both runs measured the same prompts, so each site's effects are compared prompt by prompt, from resamples shared by every site. A paired interval is much narrower than the two runs' intervals side by side."
+          : "These runs measured different prompts (or the dataset isn't pinned), so their effects can't be paired prompt by prompt; only their separate intervals are compared."}
+      </p>
       <p className={s.sentence}>
         {verification ? (
           comparison.n_sign_changes === 0 ? (
@@ -389,7 +400,8 @@ function ChangesTable({ changes, topK }: { changes: ComparisonChange[]; topK: nu
   const select = useStore((st) => st.select);
   if (changes.length === 0) return null;
   const flagText = (f: ComparisonChange["flags"][number]) =>
-    f === "sign" ? "sign changed" : f === "left_top" ? `left the top ${topK}` : `entered the top ${topK}`;
+    f === "sign" ? "sign changed" : f === "left_top" ? `left the top ${topK}` : f === "entered_top" ? `entered the top ${topK}` : "differs prompt by prompt";
+  const paired = changes.some((ch) => ch.difference);
   return (
     <div className={c.changes}>
       <h3 className={s.panelTitle}>Top components in either run</h3>
@@ -399,6 +411,7 @@ function ChangesTable({ changes, topK }: { changes: ComparisonChange[]; topK: nu
             <th>Component</th>
             <th className={s.num}>A</th>
             <th className={s.num}>B</th>
+            {paired && <th className={s.num}>B − A, paired</th>}
             <th className={s.num}>Rank</th>
             <th>Change</th>
           </tr>
@@ -411,9 +424,11 @@ function ChangesTable({ changes, topK }: { changes: ComparisonChange[]; topK: nu
               onClick={() =>
                 select({
                   layer: ch.layer,
-                  part: ch.kind === "head" ? "head" : ch.kind === "attn_out" ? "attn" : ch.kind === "mlp_out" ? "mlp" : "resid",
+                  part: partOfKind(ch.kind),
                   head: ch.head ?? undefined,
+                  feature: ch.feature ?? undefined,
                   positionKey: ch.position_key === "all" ? undefined : ch.position_key,
+                  kind: isResidKind(ch.kind) ? ch.kind : undefined,
                   variantKey: ch.variant_key ?? undefined,
                 })
               }
@@ -425,6 +440,17 @@ function ChangesTable({ changes, topK }: { changes: ComparisonChange[]; topK: nu
               <td className={s.num}>
                 {signed(ch.effect_b.mean)} <span className="faint">[{ci(ch.effect_b.lo, ch.effect_b.hi)}]</span>
               </td>
+              {paired && (
+                <td className={s.num}>
+                  {ch.difference ? (
+                    <>
+                      {signed(ch.difference.mean)} <span className="faint">[{ci(ch.difference.lo, ch.difference.hi)}]</span>
+                    </>
+                  ) : (
+                    <span className="faint">—</span>
+                  )}
+                </td>
+              )}
               <td className={s.num}>
                 {ch.rank_a} → {ch.rank_b}
               </td>

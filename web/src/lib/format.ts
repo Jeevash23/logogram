@@ -25,6 +25,12 @@ export function pct(x: number | null | undefined, digits = 0): string {
   return `${(x * 100).toFixed(digits)}%`;
 }
 
+/** A q-value or p-value as read: small ones in scientific notation. */
+export function qText(q: number | null | undefined): string {
+  if (q === null || q === undefined || !Number.isFinite(q)) return "—";
+  return q > 0 && q < 0.001 ? q.toExponential(1).replace("-", "−") : num(q, 3);
+}
+
 export function prob(x: number | null | undefined): string {
   if (x === null || x === undefined || !Number.isFinite(x)) return "—";
   if (x < 0.001) return "<0.001";
