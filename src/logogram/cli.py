@@ -798,6 +798,121 @@ def validate(
         typer.echo("Every choice that can change a number is stated.")
 
 
+@app.command()
+def tasks() -> None:
+    """List the tasks Logogram generates prompts for, with their options and metric."""
+    from logogram.tasks import TASKS
+
+    for task in TASKS.values():
+        typer.echo(f"{task.id}: {task.name}")
+        typer.echo(f"  {task.description}")
+        typer.echo(f"  Reads its answers with metric.kind = {task.metric!r}.")
+        for option in task.options:
+            default = option.default
+            if isinstance(default, list | tuple):
+                default = ",".join(default)
+            allowed = f" ({', '.join(option.allowed)})" if option.allowed else ""
+            typer.echo(f"  --option {option.name}={default}{allowed}")
+            typer.echo(f"      {option.description}")
+
+
+def _task_options(task_id: str, given: list[str]) -> dict[str, Any]:
+    """Options typed as NAME=VALUE, read by the task's own option types."""
+    from logogram.tasks import TaskError, get_task
+
+    try:
+        task = get_task(task_id)
+    except TaskError as exc:
+        raise _fail(str(exc)) from exc
+    types = {o.name: o.type for o in task.options}
+    options: dict[str, Any] = {}
+    for item in given:
+        name, sep, value = item.partition("=")
+        if not sep or name not in types:
+            known = ", ".join(types) or "none"
+            raise _fail(f"give options as NAME=VALUE; {task_id}'s options are {known}.")
+        if types[name] == "bool":
+            if value.lower() not in ("true", "false"):
+                raise _fail(f"{name} is true or false.")
+            options[name] = value.lower() == "true"
+        elif types[name] == "choices":
+            options[name] = [v.strip() for v in value.split(",") if v.strip()]
+        else:
+            options[name] = value
+    return options
+
+
+@app.command()
+def generate(
+    task: Annotated[str, typer.Argument(help="A task, as `logogram tasks` lists them.")],
+    n: Annotated[int, typer.Option("-n", help="How many prompt pairs.")],
+    seed: Annotated[int, typer.Option(help="The generator's seed: the same seed, the same file.")],
+    name: Annotated[
+        str | None, typer.Option(help="The dataset's file name (default: the task's id).")
+    ] = None,
+    option: Annotated[
+        list[str] | None,
+        typer.Option("--option", "-O", help="A task option as NAME=VALUE (lists comma-separated)."),
+    ] = None,
+    tokenizer: Annotated[
+        str | None,
+        typer.Option(
+            help="A model already in the Hugging Face cache whose tokenizer the prompts are "
+            "made for (words it splits are left out). Nothing is downloaded."
+        ),
+    ] = None,
+    overwrite: Annotated[bool, typer.Option(help="Replace a dataset of the same name.")] = False,
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Write a seeded dataset of prompt pairs for a task into the project's datasets folder."""
+    from logogram.datasets import check_dataset_name, write_dataset
+    from logogram.tasks import TaskError, generate_task, get_task
+
+    project = _open_project(project_dir)
+    options = _task_options(task, option or [])
+    single = count = None
+    if tokenizer is not None:
+        single, count = _cached_tokenizer(tokenizer)
+    try:
+        records = generate_task(task, n, seed, options, single_token=single, token_count=count)
+        path = project.dataset_file(check_dataset_name(name or task))
+    except (TaskError, ValueError) as exc:
+        raise _fail(str(exc)) from exc
+    if path.exists() and not overwrite:
+        raise _fail(f"{path.name} already exists. Choose another --name, or pass --overwrite.")
+    write_dataset(path, records)
+    rel = path.relative_to(project.root).as_posix()
+    metric = get_task(task).recommended_metric(options)
+    typer.echo(f"Wrote {len(records)} prompt pairs to {rel}.")
+    typer.echo(f'Read them with "metric": {{"kind": "{metric}", ...}} in the spec.')
+    if tokenizer is None:
+        typer.echo(
+            "Words were assumed to be single tokens. Pass --tokenizer MODEL to check them "
+            "against the model's own tokenizer."
+        )
+
+
+def _cached_tokenizer(model_id: str) -> tuple[Any, Any]:
+    """single_token and token_count from a tokenizer in the Hugging Face cache (never fetched)."""
+    _quiet_environment()
+    try:
+        from transformers import AutoTokenizer
+
+        tok = AutoTokenizer.from_pretrained(
+            model_id, local_files_only=True, trust_remote_code=False
+        )
+    except Exception as exc:  # noqa: BLE001 - transformers raises many kinds for a missing model
+        raise _fail(
+            f"{model_id}'s tokenizer isn't in the Hugging Face cache. Load the model once (in the "
+            "app or with `logogram run`), or leave out --tokenizer."
+        ) from exc
+
+    def ids(text: str) -> list[int]:
+        return list(tok(text, add_special_tokens=False)["input_ids"])
+
+    return (lambda text: len(ids(text)) == 1), (lambda text: len(ids(text)))
+
+
 def main() -> None:
     _quiet_environment()
     app()

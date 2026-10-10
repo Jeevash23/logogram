@@ -191,6 +191,38 @@ class IOITemplateOut(_Out):
     default: bool
 
 
+class TaskOptionOut(_Out):
+    name: str
+    type: Literal["bool", "choice", "choices"]
+    default: Any
+    description: str
+    allowed: list[str]
+
+
+class TaskMetricWhen(_Out):
+    option: str
+    value: Any
+    metric: str
+
+
+class TaskOut(_Out):
+    """A task Logogram generates prompts for (logogram.tasks)."""
+
+    id: str
+    name: str
+    description: str
+    # The metric that reads its answers, and the options that change it.
+    metric: str
+    metric_when: list[TaskMetricWhen]
+    options: list[TaskOptionOut]
+    templates: list[IOITemplateOut]
+
+
+class TaskDatasetCreated(DatasetCreated):
+    # The metric that reads the dataset's answers.
+    metric: str
+
+
 class TokenRow(_Out):
     tokens: list[str]
     ids: list[int]

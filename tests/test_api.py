@@ -138,3 +138,27 @@ def test_validate_says_what_a_spec_left_out(tmp_path):
     path.write_text(json.dumps(spec), encoding="utf-8")
     bad = runner.invoke(app, ["validate", str(path)])
     assert bad.exit_code == 1 and "statistics: Field required" in bad.output
+
+
+def test_the_command_line_generates_task_datasets(project):
+    where = ["--project", str(project.root)]
+    listed = runner.invoke(app, ["tasks"])
+    assert listed.exit_code == 0 and "greater_than" in listed.output
+    assert "metric.kind = 'prob_diff'" in listed.output
+    exists = runner.invoke(
+        app, ["generate", "ioi", "-n", "5", "--seed", "1", "-O", "corruption=abc", *where]
+    )
+    assert exists.exit_code == 1 and "ioi.jsonl already exists" in exists.output
+    made = runner.invoke(
+        app,
+        ["generate", "ioi", "-n", "5", "--seed", "1", "--name", "abc", "-O", "corruption=abc",
+         *where],
+    )  # fmt: skip
+    assert made.exit_code == 0, made.output
+    assert "Wrote 5 prompt pairs to datasets/abc.jsonl" in made.output
+    records = (project.root / "datasets" / "abc.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(records) == 5
+    same = lg.generate("ioi", 5, 1, {"corruption": "abc"})
+    assert [json.loads(r)["clean"] for r in records] == [r.clean for r in same]
+    bad = runner.invoke(app, ["generate", "ioi", "-n", "5", "--seed", "1", "-O", "nope=1", *where])
+    assert bad.exit_code == 1 and "options are" in bad.output

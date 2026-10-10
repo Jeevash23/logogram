@@ -192,6 +192,19 @@ def test_every_endpoint_matches_its_schema(app, client, tiny_backend, tmp_path, 
     client.post("/api/datasets/ioi", json={"name": "ioi", "n": 6}, headers=headers)
     detail = client.get("/api/datasets/ioi.jsonl", headers=AUTH).json()
     assert detail["n"] == 6 and detail["issues"] == [] and len(detail["lengths"]) >= 1
+    tasks = {t["id"]: t for t in client.get("/api/tasks", headers=AUTH).json()}
+    assert {"ioi", "greater_than", "docstring", "factual_recall"} <= set(tasks)
+    assert tasks["greater_than"]["metric"] == "prob_diff"
+    body = {"task": "ioi", "name": "ioi-task", "n": 4, "seed": 2, "options": {}}
+    created = client.post("/api/datasets/generate", json=body, headers=headers).json()
+    assert created == {"name": "ioi-task.jsonl", "path": "datasets/ioi-task.jsonl", "n": 4,
+                       "metric": "logit_diff"}  # fmt: skip
+    again = client.post("/api/datasets/generate", json=body, headers=headers)
+    assert again.status_code == 400 and "already exists" in again.json()["error"]
+    bad = client.post(
+        "/api/datasets/generate", json={**body, "task": "no_such_task"}, headers=headers
+    )
+    assert bad.status_code == 400 and "ioi" in bad.json()["error"]
     spec = spec_factory(scope={"kind": "layer_components", "position": {"kind": "last"}})
     draft = client.post("/api/drafts", json={"spec": spec.model_dump(mode="json")}, headers=headers)
     draft_id = draft.json()["run_id"]

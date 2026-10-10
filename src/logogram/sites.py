@@ -198,8 +198,8 @@ def expand_scope(
             labels = common_labels(prompts)
             if not labels:
                 raise ScopeError(
-                    "The dataset has no named positions shared by every prompt. Generate an "
-                    "IOI dataset, or add positions to your JSONL."
+                    "The dataset has no named positions shared by every prompt. Generate a "
+                    "task's dataset (they name their positions), or add positions to your JSONL."
                 )
             for label in labels:
                 positions.append(LabelPosition(label=label))

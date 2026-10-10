@@ -225,10 +225,19 @@ class OpenProject(BaseModel):
 class IOIRequest(BaseModel):
     name: str = "ioi"
     n: int = Field(default=32, ge=1, le=100_000)
-    seed: int = 0
+    seed: int = Field(default=0, ge=0, lt=2**32)
     templates: list[str] | None = None
     patterns: list[Literal["ABBA", "BABA"]] = ["ABBA", "BABA"]
     corruption: Literal["flip", "abc"] = "flip"
+    overwrite: bool = False
+
+
+class TaskRequest(BaseModel):
+    task: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=120)
+    n: int = Field(ge=1, le=100_000)
+    seed: int = Field(ge=0, lt=2**32)
+    options: dict[str, Any] = {}
     overwrite: bool = False
 
 
@@ -628,6 +637,33 @@ def create_app(
             single_token=single,
         )
         return _write_new(_new_dataset_path(project, body.name), records, body.overwrite)
+
+    @app.get("/api/tasks", response_model=list[M.TaskOut])
+    def tasks() -> list[dict[str, Any]]:
+        from logogram.tasks import TASKS
+
+        return [t.to_dict() for t in TASKS.values()]
+
+    @app.post("/api/datasets/generate", response_model=M.TaskDatasetCreated)
+    def generate_dataset(body: TaskRequest) -> dict[str, Any]:
+        from logogram.tasks import generate_task, get_task
+
+        project = state.require_project()
+        backend = state.backend
+        single = count = None
+        if backend is not None:  # words this model splits are left out, and pairs keep one length
+
+            def single(text: str) -> bool:
+                return backend.single_token_id(text) is not None
+
+            def count(text: str) -> int:
+                return len(backend.tokenize(text, prepend_bos=False).ids)
+
+        records = generate_task(
+            body.task, body.n, body.seed, body.options, single_token=single, token_count=count
+        )
+        created = _write_new(_new_dataset_path(project, body.name), records, body.overwrite)
+        return {**created, "metric": get_task(body.task).recommended_metric(body.options)}
 
     @app.post("/api/datasets/import", response_model=M.DatasetCreated)
     def import_dataset(body: ImportRequest) -> dict[str, Any]:
