@@ -2,7 +2,7 @@ import { Fragment, useEffect, useState } from "react";
 
 import { api } from "../api/client";
 import type { TokenStripData } from "../api/types";
-import { visibleToken } from "../lib/format";
+import { capitalize, visibleToken } from "../lib/format";
 import { useAnalysisContext } from "../lib/hooks";
 import { useStore } from "../store/app";
 import { Button, Icon } from "./ui";
@@ -157,7 +157,7 @@ export function TokenGrid({ data }: { data: TokenStripData }) {
           {data.issues.map((issue) => (
             <div key={issue.kind + issue.message} className={s.issue} role="alert">
               <Icon name="alert" size={14} />
-              <span>{issue.message[0].toUpperCase() + issue.message.slice(1)}</span>
+              <span>{capitalize(issue.message) || "This prompt has a tokenization issue the server didn't describe."}</span>
             </div>
           ))}
         </div>

@@ -7,7 +7,7 @@ import { ScaleBar } from "../components/Heatmap/ScaleBar";
 import { Logogram } from "../components/Logogram";
 import { Button, Callout, Checkbox, Empty, Icon, menuClasses, Progress, Segmented } from "../components/ui";
 import { divergingScale, niceBound, SCALE_FLOOR } from "../lib/color";
-import { ago, ci, count, duration, num, pct, shortRevision, signed } from "../lib/format";
+import { ago, capitalize, ci, count, duration, num, pct, shortRevision, signed } from "../lib/format";
 import { modelName, siteValue, useActiveRun, useRunProfile } from "../lib/hooks";
 import { findSite, layoutTitle, selectionOfSite, siteAt } from "../lib/sites";
 import { baselineText, measureOf, measureWords, positionText } from "../lib/spec";
@@ -295,7 +295,7 @@ export function ResultsView() {
             />
           </div>
           <div className={r.side}>
-            {layout.kind === "heads" && <SweepSummary results={Object.values(run.results)} total={run.sites.length} label={`${words.mean[0].toUpperCase()}${words.mean.slice(1)} of each head`} />}
+            {layout.kind === "heads" && <SweepSummary results={Object.values(run.results)} total={run.sites.length} label={`${capitalize(words.mean)} of each head`} />}
             <Forest ciLevel={run.ciLevel} results={Object.values(run.results)} selectedIndex={selectedSite?.index ?? null} onSelect={(site) => select(selectionOfSite(site))} flagged={flagged} />
           </div>
         </div>

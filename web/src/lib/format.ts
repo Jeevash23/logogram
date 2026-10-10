@@ -38,7 +38,8 @@ export function bytes(n: number | null | undefined): string {
   return `${Math.max(1, Math.round(n / 1024 ** 2))} MB`;
 }
 
-export function count(n: number): string {
+export function count(n: number | null | undefined): string {
+  if (n === null || n === undefined || !Number.isFinite(n)) return "—";
   return n.toLocaleString("en-US");
 }
 
@@ -82,9 +83,17 @@ export function clock(iso: string | null | undefined): string {
   });
 }
 
-/** Show token whitespace explicitly: a leading space as a middle dot, newlines as ⏎. */
-export function visibleToken(token: string): string {
+/** Show token whitespace explicitly: a leading space as a middle dot, newlines as ⏎. A missing
+ * token shows as nothing. */
+export function visibleToken(token: string | null | undefined): string {
+  if (!token) return "";
   return token.replace(/\n/g, "⏎").replace(/\t/g, "⇥").replace(/^ /, "·").replace(/ /g, "·");
+}
+
+/** Text with its first letter capitalized, for messages that start a sentence. Empty stays empty. */
+export function capitalize(text: string | null | undefined): string {
+  if (!text) return "";
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 export function shortRevision(rev: string | null | undefined): string {

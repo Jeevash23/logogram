@@ -51,7 +51,7 @@ export function ResearchView() {
         await useStore.getState().openRun(null);
         useStore.setState({ analysisSource: "form" });
       }
-      useStore.setState({ view: "explore", exploreMode: "layer", selection: selectionFromNote(note.sites[0]), stagedSites: note.sites, tokenPosition: null });
+      useStore.setState({ view: "explore", exploreMode: "layer", selection: note.sites.length ? selectionFromNote(note.sites[0]) : null, stagedSites: note.sites, tokenPosition: null });
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   };

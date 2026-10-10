@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "../api/client";
 import type { RunDetail, SiteDetail, SiteKind, SiteResult, Spec, Summary } from "../api/types";
-import { ci, count, num, plural, prob, signed } from "../lib/format";
+import { capitalize, ci, count, num, plural, prob, signed } from "../lib/format";
 import { siteValue, useActiveRun, useArchitecture } from "../lib/hooks";
 import {
   componentLabel,
@@ -293,7 +293,7 @@ function Evidence({
       </dl>
       {stats && (
         <p className={s.fine}>
-          {stats.method[0].toUpperCase() + stats.method.slice(1)}, {count(stats.bootstrap)} resamples, seed {stats.seed}.
+          {[capitalize(stats.method), `${count(stats.bootstrap)} resamples`, `seed ${stats.seed}`].filter(Boolean).join(", ")}.
         </p>
       )}
 
