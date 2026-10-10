@@ -231,6 +231,34 @@ def test_batch_size_does_not_change_results(tiny_backend, project, spec_factory)
         np.testing.assert_allclose(other.patched, results[0].patched, rtol=0, atol=1e-5)
 
 
+@pytest.mark.parametrize(
+    "experiment",
+    [
+        {"kind": "activation_patching", "direction": "clean_to_corrupt"},
+        {"kind": "ablation", "baseline": {"kind": "mean", "reference": "corrupt"}},
+        {
+            "kind": "ablation",
+            "baseline": {"kind": "resample", "pool": "corrupt", "donors": 2, "seed": 1},
+        },
+    ],
+)
+def test_where_captured_activations_are_kept_changes_no_number(
+    tiny_backend, project, spec_factory, monkeypatch, experiment
+):
+    """Large captures are kept in CPU memory and moved back a batch at a time; the copies are
+    exact, so every value is the same."""
+    import logogram.engine as engine
+
+    prompts = _prompts(tiny_backend, project)
+    for scope in ({"kind": "heads"}, {"kind": "heads", "position": {"kind": "last"}}):
+        spec = spec_factory(experiment=experiment, scope=scope, execution={"batch_size": 5})
+        kept = run_engine(spec, tiny_backend, prompts)
+        monkeypatch.setattr(engine, "_keep_on_cpu", lambda device, size: True)
+        moved = run_engine(spec, tiny_backend, prompts)
+        monkeypatch.undo()
+        np.testing.assert_array_equal(moved.patched, kept.patched)
+
+
 def test_mean_ablation_at_a_named_position_spans_lengths(tiny_backend, project, spec_factory):
     """At one position, the mean is over every reference prompt at its own S2 token."""
     spec = spec_factory(
