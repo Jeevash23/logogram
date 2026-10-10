@@ -136,6 +136,8 @@ def test_a_run_can_resample_templates(tiny_backend, project, spec_factory):
     site = outcome.summary["sites"][0]
     assert site["band"] is not None and site["q"] is not None
     assert stats["multiple_comparisons"].startswith("Simultaneous bands hold for all")
+    # Three templates are too few clusters for reliable intervals, and the run says so.
+    assert any("only 3 clusters" in w for w in outcome.summary["warnings"])
 
     missing = spec_factory(statistics={"bootstrap": 200, "seed": 0, "cluster": "nothing"})
     failed = run_spec(missing, project, backend=tiny_backend)
