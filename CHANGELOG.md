@@ -60,6 +60,12 @@ gradients, all checked by patching.
   Arrow and runs that show their heatmap in a notebook. Importing `logogram` loads no PyTorch.
 - **Commands:** `list`, `show`, `compare`, `diff`, `verify`, `robustness`, `export`, `validate`,
   `tasks` and `generate`.
+- **In the app,** every new choice is in the experiment form, which says before a run what the
+  prompts and the method allow; staged sites can be tested as a circuit, two sites checked for
+  their interaction, and a run's strongest sites tested as nested circuits, with a chart of
+  faithfulness against circuit size; results show simultaneous bands, q-values, clusters and
+  paired comparisons; and **Prompts → Generate a task** writes any task's dataset and offers the
+  metric that reads it.
 - **The web app** contains errors to the part of the page that failed, with a way to reload it
   and copy the details; undoes and redoes changes to the experiment form (Ctrl/⌘ Z), says when an
   action replaces the form and offers to undo it, and keeps an unsaved form for each project; asks
@@ -91,6 +97,19 @@ gradients, all checked by patching.
   the experiment form's.
 - Heatmaps and the model map draw hover and selection on a layer of their own, and find cells
   through a map, so large sweeps no longer redraw everything on every mouse move.
+
+### Development
+
+- **A weekly check against published results:** the Golden workflow runs every method on GPT-2
+  small's real weights and checks the bundled example against its indirect-object circuit (Wang
+  et al. 2022): the name movers, S-inhibition and induction heads restore the answer, the negative
+  name movers work against it, and the name movers write the answer most directly.
+- CI type-checks the package with pyright, lints with ruff's security, async and blind-except
+  rules too, checks the lockfile, keeps coverage at 85% or more, tests at the lowest declared
+  dependency versions, audits Python and web dependencies, and pins its actions to commits;
+  Dependabot and CodeQL watch them. Typer 0.13 or later is required.
+- The privacy check also reads binary files and catches more home paths and short usernames.
+- What 0.2 added was checked on GPT-2 small's real weights (see Models in the README).
 
 ## 0.1.2 (2026-10-08)
 

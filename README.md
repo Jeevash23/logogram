@@ -116,10 +116,25 @@ The workbench has three workspaces:
 * **Experiment** contains prompts, baseline checks, the intervention form, and the complete
   spec. Select a token, choose components, and press **Add to experiment**. The staging tray
   keeps exact sites and positions. **Configure experiment** preserves the source run's
-  methodological settings for review. Each staged site is a separate intervention in a sweep;
-  the tray does not perform a simultaneous circuit intervention.
+  methodological settings for review, and measures each staged site on its own. **Test as a
+  circuit** intervenes on them together instead: kept alone with the rest of the model replaced,
+  removed, and, if you like, without each of them in turn; with two sites staged, **Check how they
+  interact** runs each alone and both together. On a finished run, **Test the top sites as a
+  circuit** keeps its strongest 1, 2, 4, 8 … sites alone, for a curve of faithfulness against
+  circuit size.
 * **Evidence** contains the full result heatmap, run comparisons, and research notes. Selecting
-  an effect opens its per-prompt evidence and recorded method in the inspector.
+  an effect opens its per-prompt evidence and recorded method in the inspector, with its
+  simultaneous band and q-value. A run of sets of sites shows each set's faithfulness, what each
+  site adds and how sites interact, beside a chart of faithfulness against the number of sites
+  kept.
+
+The experiment form shows every choice that changes a number: the method (attribution patching
+with one gradient or integrated gradients), the metric and, for the KL divergence, the prompt it
+is measured from (no default), the normalization, and the statistics, including whether the
+bootstrap resamples prompts or clusters of them, from the fields the prompts' `meta` holds. It
+says before a run what the prompts allow: answers of several tokens need a metric that reads
+them, and splits and donors need enough prompts. **Prompts → Generate a task** writes any of the
+six tasks' datasets and offers to switch the form to the metric that reads their answers.
 
 Pin up to two heads for **Head comparison**. Both attention maps use the same prompt variant,
 analysis context, and 0–1 ink scale. Selecting a query token in either map or the token ribbon
@@ -673,6 +688,14 @@ The browser fixture never opens the user's projects or cached models. CI runs th
 on Linux, and the Python suite plus an installed-wheel smoke check on Linux, macOS and Windows.
 The wheel check covers the CLI, bundled example and fonts, authenticated API and served web
 assets. Source distributions include the web sources and lockfiles so the bundle can be rebuilt.
+CI also type-checks `src/` with pyright, lints with ruff's security, async and blind-except
+rules as well, checks that `uv.lock` matches `pyproject.toml`, keeps test coverage at 85% or more, runs
+the tests with every dependency at the lowest version `pyproject.toml` allows, and audits the
+locked Python and web dependencies for known vulnerabilities; its actions are pinned to commits,
+and Dependabot and CodeQL watch them. Once a week, the Golden workflow runs every method on GPT-2
+small's real weights and checks the bundled example against GPT-2 small's published
+indirect-object circuit (`scripts/validate_real_weights.py --golden`; `--golden-only` runs just
+those checks in a few minutes).
 
 Releasing: raise `__version__` and set `__released__` to the release date in
 `src/logogram/__init__.py` (the date drives the "this version is getting old" hint), commit, and
