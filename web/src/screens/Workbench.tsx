@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
+import { CancelRunDialog } from "../components/CancelRunDialog";
+import { ErrorBoundary } from "../components/ErrorBoundary";
 import { DatasetChip, ModelChip } from "../components/Header";
 import { History } from "../components/History";
 import { Inspector } from "../components/Inspector";
@@ -81,20 +83,21 @@ export function Workbench() {
     </div>
     <div className={s.body}>
       <main className={s.center}>
-        <div className={s.view} ref={viewPane}><ActiveView view={view} /></div>
-        {!["notes", "compare", "spec"].includes(view) && <TokenStrip />}
+        <div className={s.view} ref={viewPane}><ErrorBoundary key={view} name="This view"><ActiveView view={view} /></ErrorBoundary></div>
+        {!["notes", "compare", "spec"].includes(view) && <ErrorBoundary name="The token strip" resetKey={view}><TokenStrip /></ErrorBoundary>}
       </main>
       {showInspector && <><Splitter orientation="vertical" label="Resize the inspector" onReset={() => setInspectorWidth(320)} onResize={(delta, phase) => {
         if (phase === "start") { startWidth.current = inspectorWidth; return; }
         const next = Math.max(280, Math.min(480, startWidth.current - delta)); setInspectorWidth(next);
         if (phase === "end") { try { localStorage.setItem("logogram.inspectorWidth", String(next)); } catch { /* use session size */ } }
-      }} /><aside className={s.inspector} style={{ width: inspectorWidth }} aria-label="Inspector"><Inspector /></aside></>}
+      }} /><aside className={s.inspector} style={{ width: inspectorWidth }} aria-label="Inspector"><SafeInspector /></aside></>}
     </div>
     <StatusLine />
+    <CancelRunDialog />
     <ModelDialog />
     <RobustnessDialog />
     <NoteEditorDialog />
-    <Dialog open={drawer !== null} onOpenChange={open => { if (!open) setDrawer(null); }} title={drawer === "history" ? "Experiment history" : "Inspector"} wide><div className={s.drawer}>{drawer === "history" ? <History onOpen={() => setDrawer(null)} /> : <Inspector />}</div></Dialog>
+    <Dialog open={drawer !== null} onOpenChange={open => { if (!open) setDrawer(null); }} title={drawer === "history" ? "Experiment history" : "Inspector"} wide><div className={s.drawer}>{drawer === "history" ? <ErrorBoundary name="The history"><History onOpen={() => setDrawer(null)} /></ErrorBoundary> : <SafeInspector />}</div></Dialog>
   </div>;
 }
 
@@ -116,6 +119,19 @@ function NextStep() {
     <span className={s.nextText}><span className={s.nextCount}>Step {step + 1} of 4</span>{STEPS[step]}</span>
     <Icon name="arrowRight" size={14} />
   </button>;
+}
+
+/** The inspector, contained: an error in it leaves the rest of the workbench working. Choosing
+ * another component or run tries again. */
+function SafeInspector() {
+  const view = useStore((st) => st.view);
+  const activeRunId = useStore((st) => st.activeRunId);
+  const selection = useStore((st) => st.selection);
+  return (
+    <ErrorBoundary name="The inspector" resetKey={`${view}|${activeRunId}|${JSON.stringify(selection)}`}>
+      <Inspector />
+    </ErrorBoundary>
+  );
 }
 
 function ActiveView({ view }: { view: View }) {

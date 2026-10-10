@@ -84,7 +84,12 @@ This starts a local server on 127.0.0.1, prints its address and opens your brows
 Keyboard: arrow keys move across the map, **Ctrl/⌘ K** opens the command palette (type `L9H9` to
 jump to a head), **1–7** switch views, **[** and **]** step through prompts, **P**, **B**, **A**
 and **C** patch, ablate, show attention or compare the selected component, and **Ctrl/⌘ Enter**
-runs the experiment form.
+runs the experiment form. **Ctrl/⌘ Z** and **Ctrl/⌘ Shift Z** undo and redo changes to the form,
+and **?** lists every shortcut.
+
+When an action elsewhere replaces the experiment form (**Patch here**, **Edit and rerun**, staged
+sites), a notice offers to undo it. An unsaved form is kept in this browser for each project and
+restored when the project opens again; saving or running it clears that copy.
 
 Use **History** to reopen experiments or compare two runs. On a narrow window, **Inspector**
 opens a panel that closes with Escape.

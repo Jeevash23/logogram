@@ -1,17 +1,17 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 
-import type { SiteResult, Spec } from "../api/types";
+import type { ExperimentSpec, Layout, SiteBase, SiteResult, Spec } from "../api/types";
 import { Heatmap, type Axis } from "../components/Heatmap/Heatmap";
 import { ScaleBar } from "../components/Heatmap/ScaleBar";
 import { Logogram } from "../components/Logogram";
 import { Button, Callout, Checkbox, Empty, Icon, menuClasses, Progress, Segmented } from "../components/ui";
-import { divergingScale, niceBound, SCALE_FLOOR } from "../lib/color";
-import { ago, ci, count, duration, num, pct, shortRevision, signed } from "../lib/format";
+import { divergingScale, niceBound, SCALE_FLOOR, type ColorScale, type ResolvedTheme } from "../lib/color";
+import { ago, capitalize, ci, count, duration, num, pct, shortRevision, signed } from "../lib/format";
 import { modelName, siteValue, useActiveRun, useRunProfile } from "../lib/hooks";
-import { findSite, layoutTitle, selectionOfSite, siteAt } from "../lib/sites";
+import { findSite, gridKey, layoutTitle, selectionOfSite, siteGrid, type Selection } from "../lib/sites";
 import { baselineText, measureOf, measureWords, positionText } from "../lib/spec";
-import { formFromSpec, useStore } from "../store/app";
+import { useStore } from "../store/app";
 import { Distribution } from "../components/Distribution";
 import { api } from "../api/client";
 import { copyText } from "../components/CopyCommand";
@@ -43,6 +43,8 @@ export function ResultsView() {
   }, [run.results, metric, scaleMode]);
   const color = useMemo(() => divergingScale(bound, theme), [bound, theme]);
   const flagged = useMemo(() => new Set(flags?.sites ?? []), [flags]);
+  // Stays the same array while a run streams progress, so the lists below aren't sorted again.
+  const resultList = useMemo(() => Object.values(run.results), [run.results]);
 
   if (!run.id) {
     return (
@@ -67,23 +69,9 @@ export function ResultsView() {
   const layout = run.layout;
   const selectedSite = findSite(run.sites, selection);
 
-  const rows: Axis[] = layout?.rows.map((x) => ({ key: x.key, label: x.label })) ?? [];
-  const cols: Axis[] =
-    layout?.cols.map((x) => ({
-      key: x.key,
-      label: x.label,
-      // Steering: strengths along the direction in ink, the random control muted.
-      emphasis: layout.kind === "steering" ? !x.control : x.differs,
-    })) ?? [];
-  const value = (ri: number, ci_: number) => {
-    const site = siteAt(run.sites, ri, ci_);
-    if (!site) return undefined;
-    return siteValue(run.results[site.index], metric);
-  };
-
   const words = measureWords(spec?.experiment);
   const attribution = measureOf(spec?.experiment) === "attribution";
-  const strongest = Object.values(run.results)
+  const strongest = resultList
     .filter((x) => x.effect.mean !== null && !x.variant?.control)
     .sort((a, b) => Math.abs(b.effect.mean ?? 0) - Math.abs(a.effect.mean ?? 0))[0];
   const provenance = [
@@ -124,7 +112,7 @@ export function ResultsView() {
                 Check robustness
               </Button>
               {run.detail && <ExportMenu runId={run.id} detail={run.detail} />}
-              <Button variant="ghost" onClick={() => useStore.setState({ view: "spec", specSource: "run" })}>
+              <Button variant="ghost" onClick={() => { useStore.setState({ specSource: "run" }); useStore.getState().setView("spec"); }}>
                 Spec
               </Button>
             </>
@@ -135,7 +123,7 @@ export function ResultsView() {
               onClick={() =>
                 status === "draft" && run.id
                   ? void useStore.getState().openDraft(run.id)
-                  : useStore.setState({ form: formFromSpec(spec), view: "experiment", analysisSource: "form" })
+                  : useStore.getState().editRun(spec)
               }
             >
               {status === "draft" ? "Open in the form" : "Edit and rerun"}
@@ -257,7 +245,7 @@ export function ResultsView() {
         <Segmented label="Result scale" value={scaleMode} onChange={scaleMode => useStore.setState({ scaleMode })} options={[{ value: "auto", label: "Fit" }, { value: "unit", label: "±1", disabled: metric !== "effect" }]} />
         <Checkbox checked={cellValues} onChange={(v) => useStore.setState({ cellValues: v })}>Show values</Checkbox>
         <span className={r.controlsSpacer} />
-        <Button size="small" variant="ghost" icon="explore" onClick={() => useStore.setState({ view: "explore", exploreMode: "atlas" })}>Open model atlas</Button>
+        <Button size="small" variant="ghost" icon="explore" onClick={() => { useStore.setState({ exploreMode: "atlas" }); useStore.getState().setView("explore"); }}>Open model atlas</Button>
         {run.detail?.predictions && <Button size="small" variant="ghost" onClick={() => useStore.getState().setView("predictions")}>Open saved predictions</Button>}
       </div>}
       {layout && layout.kind !== "sites" && (
@@ -267,41 +255,28 @@ export function ResultsView() {
               <span className={s.panelTitle}>{layoutTitle(layout)}</span>
               <ScaleBar bound={bound} theme={theme} label={metric === "effect" ? words.effect : words.delta} />
             </div>
-            <Heatmap
-              rows={rows}
-              cols={cols}
-              value={value}
+            <ResultsHeatmap
+              layout={layout}
+              sites={run.sites}
+              results={run.results}
+              metric={metric}
+              experiment={spec?.experiment}
               color={color}
               theme={theme}
-              rowTitle={layout.row_title}
-              colTitle={layout.kind === "layer_position" ? (layout.cols[0]?.clean !== undefined ? "Position (clean tokens of prompt 0)" : "Named position") : layout.col_title}
-              tokens={layout.kind === "layer_position" && layout.cols[0]?.clean !== undefined}
-              cellMax={layout.kind === "layer_components" ? 60 : layout.kind === "heads" ? 44 : 34}
-              aspect={layout.kind === "layer_components" ? 0.45 : 1}
+              flagged={flagged}
+              selection={selection}
               showValues={cellValues}
-              format={(v) => num(v, Math.abs(v) >= 10 ? 0 : 2)}
-              fade={status === "running"}
-              selected={selectedSite ? { r: selectedSite.row, c: selectedSite.col } : null}
-              flagged={(ri, ci_) => {
-                const site = siteAt(run.sites, ri, ci_);
-                return !!site && flagged.has(site.index);
-              }}
-              onSelect={(ri, ci_) => {
-                const site = siteAt(run.sites, ri, ci_);
-                if (site) select(selectionOfSite(site));
-              }}
-              tooltip={(ri, ci_) => <CellTooltip site={siteAt(run.sites, ri, ci_)} results={run.results} metric={metric} words={words} attribution={attribution} />}
-              ariaLabel={`${layoutTitle(layout)} results`}
+              running={status === "running"}
             />
           </div>
           <div className={r.side}>
-            {layout.kind === "heads" && <SweepSummary results={Object.values(run.results)} total={run.sites.length} label={`${words.mean[0].toUpperCase()}${words.mean.slice(1)} of each head`} />}
-            <Forest ciLevel={run.ciLevel} results={Object.values(run.results)} selectedIndex={selectedSite?.index ?? null} onSelect={(site) => select(selectionOfSite(site))} flagged={flagged} />
+            {layout.kind === "heads" && <SweepSummary results={resultList} total={run.sites.length} label={`${capitalize(words.mean)} of each head`} />}
+            <Forest ciLevel={run.ciLevel} results={resultList} selectedIndex={selectedSite?.index ?? null} onSelect={(site) => select(selectionOfSite(site))} flagged={flagged} />
           </div>
         </div>
       )}
       {layout?.kind === "sites" && (
-        <Forest ciLevel={run.ciLevel} results={Object.values(run.results)} selectedIndex={selectedSite?.index ?? null} onSelect={(site) => select(selectionOfSite(site))} flagged={flagged} limit={50} />
+        <Forest ciLevel={run.ciLevel} results={resultList} selectedIndex={selectedSite?.index ?? null} onSelect={(site) => select(selectionOfSite(site))} flagged={flagged} limit={50} />
       )}
 
       {summary?.warnings.map((w) => (
@@ -311,6 +286,109 @@ export function ResultsView() {
       ))}
       {summary && <p className={s.faint}>{summary.metric.normalized_effect}.</p>}
     </div>
+  );
+}
+
+const formatCell = (v: number) => num(v, Math.abs(v) >= 10 ? 0 : 2);
+
+/**
+ * The sweep as a heatmap. Each cell finds its site in a map built once per run, and the accessors
+ * keep their identity while the run streams progress, so cells are drawn again only when results
+ * arrive or the display changes.
+ */
+function ResultsHeatmap({
+  layout,
+  sites,
+  results,
+  metric,
+  experiment,
+  color,
+  theme,
+  flagged,
+  selection,
+  showValues,
+  running,
+}: {
+  layout: Layout;
+  sites: SiteBase[];
+  results: Record<number, SiteResult>;
+  metric: "effect" | "delta";
+  experiment: ExperimentSpec | undefined;
+  color: ColorScale;
+  theme: ResolvedTheme;
+  flagged: Set<number>;
+  selection: Selection | null;
+  showValues: boolean;
+  running: boolean;
+}) {
+  const select = useStore((st) => st.select);
+  const grid = useMemo(() => siteGrid(sites), [sites]);
+  const rows: Axis[] = useMemo(() => layout.rows.map((x) => ({ key: x.key, label: x.label })), [layout]);
+  const cols: Axis[] = useMemo(
+    () =>
+      layout.cols.map((x) => ({
+        key: x.key,
+        label: x.label,
+        // Steering: strengths along the direction in ink, the random control muted.
+        emphasis: layout.kind === "steering" ? !x.control : x.differs,
+      })),
+    [layout],
+  );
+  const words = useMemo(() => measureWords(experiment), [experiment]);
+  const attribution = measureOf(experiment) === "attribution";
+  const value = useCallback(
+    (ri: number, ci_: number) => {
+      const site = grid.get(gridKey(ri, ci_));
+      return site ? siteValue(results[site.index], metric) : undefined;
+    },
+    [grid, results, metric],
+  );
+  const isFlagged = useCallback(
+    (ri: number, ci_: number) => {
+      const site = grid.get(gridKey(ri, ci_));
+      return !!site && flagged.has(site.index);
+    },
+    [grid, flagged],
+  );
+  const onSelect = useCallback(
+    (ri: number, ci_: number) => {
+      const site = grid.get(gridKey(ri, ci_));
+      if (site) select(selectionOfSite(site));
+    },
+    [grid, select],
+  );
+  const tooltip = useCallback(
+    (ri: number, ci_: number) => (
+      <CellTooltip site={grid.get(gridKey(ri, ci_)) ?? null} results={results} metric={metric} words={words} attribution={attribution} />
+    ),
+    [grid, results, metric, words, attribution],
+  );
+  const selectedSite = findSite(sites, selection);
+  const selectedR = selectedSite?.row ?? null;
+  const selectedC = selectedSite?.col ?? null;
+  const selected = useMemo(() => (selectedR !== null && selectedC !== null ? { r: selectedR, c: selectedC } : null), [selectedR, selectedC]);
+  const tokenAxis = layout.kind === "layer_position" && layout.cols[0]?.clean !== undefined;
+  return (
+    <Heatmap
+      rows={rows}
+      cols={cols}
+      value={value}
+      color={color}
+      theme={theme}
+      rowTitle={layout.row_title}
+      colTitle={layout.kind === "layer_position" ? (tokenAxis ? "Position (clean tokens of prompt 0)" : "Named position") : layout.col_title}
+      tokens={tokenAxis}
+      cellMax={layout.kind === "layer_components" ? 60 : layout.kind === "heads" ? 44 : 34}
+      aspect={layout.kind === "layer_components" ? 0.45 : 1}
+      showValues={showValues}
+      format={formatCell}
+      fade={running}
+      selected={selected}
+      flagged={isFlagged}
+      onSelect={onSelect}
+      tooltip={tooltip}
+      ariaLabel={`${layoutTitle(layout)} results`}
+    />
   );
 }
 
@@ -461,10 +539,12 @@ function CellTooltip({
 
 function SweepSummary({ results, total, label }: { results: SiteResult[]; total: number; label: string }) {
   const select = useStore((st) => st.select);
-  const done = results.filter((x) => x.effect.mean !== null);
+  const done = useMemo(() => results.filter((x) => x.effect.mean !== null), [results]);
   const pos = done.filter((x) => (x.effect.lo ?? 0) > 0);
   const neg = done.filter((x) => (x.effect.hi ?? 0) < 0);
-  const byIndex = new Map(done.map((x) => [x.index, x]));
+  const byIndex = useMemo(() => new Map(done.map((x) => [x.index, x])), [done]);
+  // The same array while nothing new arrives: the beeswarm is laid out again only for new values.
+  const values = useMemo(() => done.map((x) => ({ index: x.index, value: x.effect.mean })), [done]);
   return (
     <div className={r.summary}>
       <div className={r.summaryHead}>Across all {count(total)} heads</div>
@@ -483,7 +563,7 @@ function SweepSummary({ results, total, label }: { results: SiteResult[]; total:
         )}
       </dl>
       <Distribution
-        values={done.map((x) => ({ index: x.index, value: x.effect.mean }))}
+        values={values}
         mean={null}
         lo={null}
         hi={null}

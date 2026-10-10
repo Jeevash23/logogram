@@ -1,14 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
-import type { Comparison, ComparisonChange, RunDetail, SiteSpec } from "../api/types";
+import type { Comparison, ComparisonChange, Layout, RunDetail, SiteSpec } from "../api/types";
 import { Heatmap, type Axis } from "../components/Heatmap/Heatmap";
 import { ScaleBar } from "../components/Heatmap/ScaleBar";
 import { Button, Callout, Empty, Field, Progress, Segmented, Select } from "../components/ui";
-import { divergingScale, niceBound, SCALE_FLOOR } from "../lib/color";
+import { divergingScale, niceBound, SCALE_FLOOR, type ColorScale, type ResolvedTheme } from "../lib/color";
 import { ci, count, num, pct, signed } from "../lib/format";
 import { siteValue } from "../lib/hooks";
-import { selectionOfSite, siteAt, siteKey } from "../lib/sites";
+import { gridKey, selectionOfSite, siteGrid, siteKey } from "../lib/sites";
 import { siteText } from "../lib/spec";
 import { runView, useStore } from "../store/app";
 import s from "./views.module.css";
@@ -32,17 +32,17 @@ export function CompareView() {
   const mode = useStore((st) => st.compareMode);
   const theme = useStore((st) => st.theme);
   const loadRun = useStore((st) => st.loadRun);
-  const details = useStore((st) => st.runDetails);
-  const live = useStore((st) => st.live);
+  const da: RunDetail | undefined = useStore((st) => (aId ? st.runDetails[aId] : undefined));
+  const db: RunDetail | undefined = useStore((st) => (bId ? st.runDetails[bId] : undefined));
+  // Only these two runs: another run's progress doesn't redraw the comparison.
+  const liveA = useStore((st) => (aId ? st.live[aId] : undefined));
+  const liveB = useStore((st) => (bId ? st.live[bId] : undefined));
   const select = useStore((st) => st.select);
-  const openRun = useStore((st) => st.openRun);
   const [comparison, setComparison] = useState<Comparison | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const da: RunDetail | undefined = aId ? details[aId] : undefined;
-  const db: RunDetail | undefined = bId ? details[bId] : undefined;
-  const va = useMemo(() => runView(da, aId ? live[aId] : undefined), [da, aId, live]);
-  const vb = useMemo(() => runView(db, bId ? live[bId] : undefined), [db, bId, live]);
+  const va = useMemo(() => runView(da, liveA), [da, liveA]);
+  const vb = useMemo(() => runView(db, liveB), [db, liveB]);
   const bothFinished = !!da?.summary && !!db?.summary;
 
   useEffect(() => {
@@ -68,7 +68,7 @@ export function CompareView() {
   const robust = db?.manifest?.derived_from?.kind === "robustness" && db.manifest.derived_from.run === aId;
   // B patches, for real, the strongest sites that A (attribution patching) estimated.
   const verification = db?.manifest?.derived_from?.kind === "verification" && db.manifest.derived_from.run === aId;
-  const bLive = bId ? live[bId] : undefined;
+  const bLive = liveB;
 
   const bound = useMemo(() => {
     const values = [...Object.values(va.results), ...Object.values(vb.results)].map((x) => siteValue(x, "effect"));
@@ -87,8 +87,26 @@ export function CompareView() {
   }, [comparison, va.sites]);
 
   const layout = va.layout;
-  const rows: Axis[] = layout?.rows.map((x) => ({ key: x.key, label: x.label })) ?? [];
-  const cols: Axis[] = layout?.cols.map((x) => ({ key: x.key, label: x.label, emphasis: x.differs })) ?? [];
+  const rows: Axis[] = useMemo(() => layout?.rows.map((x) => ({ key: x.key, label: x.label })) ?? [], [layout]);
+  const cols: Axis[] = useMemo(() => layout?.cols.map((x) => ({ key: x.key, label: x.label, emphasis: x.differs })) ?? [], [layout]);
+  // One lookup per cell rather than a search through every site or difference.
+  const gridA = useMemo(() => siteGrid(va.sites), [va.sites]);
+  const diffs = useMemo(() => new Map((comparison?.diff ?? []).map((d) => [gridKey(d.row, d.col), d])), [comparison]);
+  const diffValue = useCallback((r: number, col: number) => diffs.get(gridKey(r, col))?.value ?? undefined, [diffs]);
+  const diffFlagged = useCallback((r: number, col: number) => {
+    const site = gridA.get(gridKey(r, col));
+    return !!site && flaggedKeys.has(siteKey(site));
+  }, [gridA, flaggedKeys]);
+  const diffSelect = useCallback((r: number, col: number) => {
+    const site = gridA.get(gridKey(r, col));
+    if (site) select(selectionOfSite(site));
+  }, [gridA, select]);
+  const diffTooltip = useCallback((r: number, col: number) => (
+    <>
+      <div style={{ fontWeight: 650 }}>{gridA.get(gridKey(r, col))?.label}</div>
+      <div>B − A {signed(diffs.get(gridKey(r, col))?.value, 3)}</div>
+    </>
+  ), [gridA, diffs]);
 
   return (
     <div className={s.view}>
@@ -183,81 +201,35 @@ export function CompareView() {
             <Heatmap
               rows={rows}
               cols={cols}
-              value={(r, col) => comparison.diff.find((d) => d.row === r && d.col === col)?.value ?? undefined}
+              value={diffValue}
               color={diffColor}
               theme={theme}
               rowTitle={layout.row_title}
               colTitle={layout.col_title}
               tokens={layout.kind === "layer_position" && layout.cols[0]?.clean !== undefined}
-              flagged={(r, col) => {
-                const site = siteAt(va.sites, r, col);
-                return !!site && flaggedKeys.has(siteKey(site));
-              }}
-              onSelect={(r, col) => {
-                const site = siteAt(va.sites, r, col);
-                if (site) select(selectionOfSite(site));
-              }}
-              tooltip={(r, col) => {
-                const d = comparison.diff.find((x) => x.row === r && x.col === col);
-                const site = siteAt(va.sites, r, col);
-                return (
-                  <>
-                    <div style={{ fontWeight: 650 }}>{site?.label}</div>
-                    <div>B − A {signed(d?.value, 3)}</div>
-                  </>
-                );
-              }}
+              flagged={diffFlagged}
+              onSelect={diffSelect}
+              tooltip={diffTooltip}
               ariaLabel="Difference map"
             />
           </div>
         ) : (
           <div className={c.pair}>
             {([["A", va, aId], ["B", vb, bId]] as const).map(([label, v, id]) => (
-              <div key={label} className={c.panel}>
-                <div className={c.panelHead}>
-                  <span className={s.panelTitle}>
-                    {label} · {(label === "A" ? da : db)?.spec.name ?? id}
-                  </span>
-                  <Button size="small" variant="ghost" onClick={() => void openRun(id, "results")}>
-                    Open
-                  </Button>
-                </div>
-                <Heatmap
-                  rows={(v.layout ?? layout).rows.map((x) => ({ key: x.key, label: x.label }))}
-                  cols={(v.layout ?? layout).cols.map((x) => ({ key: x.key, label: x.label, emphasis: x.differs }))}
-                  value={(r, col) => {
-                    const site = siteAt(v.sites, r, col);
-                    if (!site) return v.layout ? undefined : null;
-                    return siteValue(v.results[site.index], "effect");
-                  }}
-                  color={color}
-                  theme={theme}
-                  cellMax={26}
-                  rowTitle={(v.layout ?? layout).row_title}
-                  tokens={layout.kind === "layer_position" && layout.cols[0]?.clean !== undefined}
-                  fade={label === "B" && bLive?.status === "running"}
-                  flagged={(r, col) => {
-                    const site = siteAt(v.sites, r, col);
-                    return !!site && flaggedKeys.has(siteKey(site));
-                  }}
-                  onSelect={(r, col) => {
-                    const site = siteAt(v.sites, r, col);
-                    if (site) select(selectionOfSite(site));
-                  }}
-                  tooltip={(r, col) => {
-                    const site = siteAt(v.sites, r, col);
-                    const res = site ? v.results[site.index] : undefined;
-                    return (
-                      <>
-                        <div style={{ fontWeight: 650 }}>{site?.label}</div>
-                        <div>effect {signed(res?.effect.mean, 3)}</div>
-                        <div style={{ opacity: 0.72 }}>CI {ci(res?.effect.lo, res?.effect.hi)}</div>
-                      </>
-                    );
-                  }}
-                  ariaLabel={`Run ${label}`}
-                />
-              </div>
+              <ComparePanel
+                key={label}
+                label={label}
+                id={id}
+                name={(label === "A" ? da : db)?.spec.name ?? id}
+                layout={v.layout ?? layout}
+                measured={!!v.layout}
+                sites={v.sites}
+                results={v.results}
+                color={color}
+                theme={theme}
+                running={label === "B" && bLive?.status === "running"}
+                flaggedKeys={flaggedKeys}
+              />
             ))}
             <div className={c.scale}>
               <ScaleBar bound={bound} theme={theme} label="Normalized effect (shared scale)" />
@@ -267,6 +239,92 @@ export function CompareView() {
       )}
 
       {comparison && <ChangesTable changes={comparison.changes} topK={comparison.top_k} />}
+    </div>
+  );
+}
+
+/** One run of a side-by-side comparison, on the shared scale. Its accessors keep their identity
+ * while the other run streams, so its cells aren't drawn again for nothing. */
+function ComparePanel({
+  label,
+  id,
+  name,
+  layout,
+  measured,
+  sites,
+  results,
+  color,
+  theme,
+  running,
+  flaggedKeys,
+}: {
+  label: "A" | "B";
+  id: string;
+  name: string;
+  layout: Layout;
+  /** False while the run hasn't reported its own layout: every cell is then pending. */
+  measured: boolean;
+  sites: ReturnType<typeof runView>["sites"];
+  results: ReturnType<typeof runView>["results"];
+  color: ColorScale;
+  theme: ResolvedTheme;
+  running: boolean;
+  flaggedKeys: Set<string>;
+}) {
+  const select = useStore((st) => st.select);
+  const openRun = useStore((st) => st.openRun);
+  const grid = useMemo(() => siteGrid(sites), [sites]);
+  const rows: Axis[] = useMemo(() => layout.rows.map((x) => ({ key: x.key, label: x.label })), [layout]);
+  const cols: Axis[] = useMemo(() => layout.cols.map((x) => ({ key: x.key, label: x.label, emphasis: x.differs })), [layout]);
+  const value = useCallback((r: number, col: number) => {
+    const site = grid.get(gridKey(r, col));
+    if (!site) return measured ? undefined : null;
+    return siteValue(results[site.index], "effect");
+  }, [grid, results, measured]);
+  const flagged = useCallback((r: number, col: number) => {
+    const site = grid.get(gridKey(r, col));
+    return !!site && flaggedKeys.has(siteKey(site));
+  }, [grid, flaggedKeys]);
+  const onSelect = useCallback((r: number, col: number) => {
+    const site = grid.get(gridKey(r, col));
+    if (site) select(selectionOfSite(site));
+  }, [grid, select]);
+  const tooltip = useCallback((r: number, col: number) => {
+    const site = grid.get(gridKey(r, col));
+    const res = site ? results[site.index] : undefined;
+    return (
+      <>
+        <div style={{ fontWeight: 650 }}>{site?.label}</div>
+        <div>effect {signed(res?.effect.mean, 3)}</div>
+        <div style={{ opacity: 0.72 }}>CI {ci(res?.effect.lo, res?.effect.hi)}</div>
+      </>
+    );
+  }, [grid, results]);
+  return (
+    <div className={c.panel}>
+      <div className={c.panelHead}>
+        <span className={s.panelTitle}>
+          {label} · {name}
+        </span>
+        <Button size="small" variant="ghost" onClick={() => void openRun(id, "results")}>
+          Open
+        </Button>
+      </div>
+      <Heatmap
+        rows={rows}
+        cols={cols}
+        value={value}
+        color={color}
+        theme={theme}
+        cellMax={26}
+        rowTitle={layout.row_title}
+        tokens={layout.kind === "layer_position" && layout.cols[0]?.clean !== undefined}
+        fade={running}
+        flagged={flagged}
+        onSelect={onSelect}
+        tooltip={tooltip}
+        ariaLabel={`Run ${label}`}
+      />
     </div>
   );
 }

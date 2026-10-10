@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { api } from "../api/client";
 import type { FeatureReport, SAEInfo, TokenFeatures } from "../api/types";
-import { Button, Callout, Empty, Field, Input, Progress, Segmented, Select, Spinner } from "../components/ui";
+import { Button, Callout, Empty, Field, Input, Progress, Segmented, Select, Spinner, useRadioGroup } from "../components/ui";
 import { inkScale, textOn } from "../lib/color";
 import { bytes, count, num, pct, signed, visibleToken } from "../lib/format";
 import { modelName, useAnalysisContext } from "../lib/hooks";
@@ -73,6 +73,10 @@ function Loader() {
   const [finding, setFinding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const id = model.info?.id ?? "";
+  const suggestionRadio = useRadioGroup(suggestions.map((x) => ({ value: x.repo })), repo, (next) => {
+    setRepo(next);
+    setFolders(null);
+  });
 
   useEffect(() => {
     if (!id) return;
@@ -107,8 +111,8 @@ function Loader() {
     <section className={f.loader} aria-label="Load an SAE">
       {suggestions.length > 0 && (
         <div className={f.suggestions} role="radiogroup" aria-label="SAEs for this model">
-          {suggestions.map((x) => (
-            <button key={x.repo} type="button" role="radio" aria-checked={repo === x.repo} className={f.suggestion} onClick={() => { setRepo(x.repo); setFolders(null); }}>
+          {suggestions.map((x, i) => (
+            <button key={x.repo} type="button" role="radio" aria-checked={repo === x.repo} className={f.suggestion} onClick={() => { setRepo(x.repo); setFolders(null); }} {...suggestionRadio(i)}>
               <span className={f.dot} />
               <span className={f.repo}>{x.repo}</span>
               <span className={f.detail}>{x.detail}</span>
@@ -269,7 +273,7 @@ function TokenPanel({ info, selected, onFeature }: { info: SAEInfo; selected: nu
               <span className={f.chips}>
                 {p < data.first_real_token ? (
                   <span className={s.faint}>not read: SAEs aren't trained on this token</span>
-                ) : data.features[p].length === 0 ? (
+                ) : !data.features[p]?.length ? (
                   <span className={s.faint}>no feature fires</span>
                 ) : (
                   data.features[p].slice(0, 5).map((x) => (
@@ -315,7 +319,9 @@ function FeaturePanel({ info, feature }: { info: SAEInfo; feature: number }) {
   const ref = { repo: info.repo, path: info.path, revision: info.revision };
   const patch = () => {
     const st = useStore.getState();
-    st.setForm({
+    st.setView("experiment");
+    st.replaceForm({
+      ...st.form,
       kind: "activation_patching",
       saeRef: ref,
       scope: {
@@ -325,12 +331,11 @@ function FeaturePanel({ info, feature }: { info: SAEInfo; feature: number }) {
       nameEdited: false,
       draftId: null,
     });
-    st.setView("experiment");
   };
   const estimate = () => {
     const st = useStore.getState();
-    st.setForm({ kind: "attribution_patching", saeRef: ref, scope: { kind: "features", position: { kind: "last" }, top: 50 }, nameEdited: false, draftId: null });
     st.setView("experiment");
+    st.replaceForm({ ...st.form, kind: "attribution_patching", saeRef: ref, scope: { kind: "features", position: { kind: "last" }, top: 50 }, nameEdited: false, draftId: null });
   };
 
   return (

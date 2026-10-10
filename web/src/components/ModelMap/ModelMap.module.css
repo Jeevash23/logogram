@@ -46,10 +46,23 @@
   scrollbar-gutter: stable;
 }
 
+/* The cells' canvas, with hover and selection drawn on a second canvas exactly above it. */
+.stage {
+  position: relative;
+  width: max-content;
+}
+
 .canvas {
   display: block;
   cursor: default;
   border-radius: var(--radius);
+}
+
+.overlay {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
 }
 
 .canvas:focus-visible {

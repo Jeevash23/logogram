@@ -1,11 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { api } from "../api/client";
 import type { Device, Dtype, EstimateResponse, ModelPreset } from "../api/types";
 import { bytes, params, pct, shortRevision } from "../lib/format";
-import { modelName, useActiveRun } from "../lib/hooks";
+import { modelName } from "../lib/hooks";
 import { useStore } from "../store/app";
-import { Button, Callout, Checkbox, Dialog, Field, Input, Progress, Segmented, Spinner } from "./ui";
+import { Button, Callout, Checkbox, Dialog, Field, Input, Progress, Segmented, Spinner, useRadioGroup } from "./ui";
 import s from "./ModelDialog.module.css";
 
 const GPT2 = "openai-community/gpt2";
@@ -23,9 +23,10 @@ export function ModelDialog() {
   const [device, setDevice] = useState<Device>("auto");
   const [processWeights, setProcessWeights] = useState(true);
   const [revision, setRevision] = useState("");
-  const run = useActiveRun();
+  // Only the active run's spec: the dialog doesn't follow a run's progress.
+  const runModel = useStore((st) => (st.activeRunId ? st.runDetails[st.activeRunId]?.spec.model : undefined));
   const formRef = useStore((st) => st.form.modelRef);
-  const savedRef = run.detail?.spec.model ?? formRef;
+  const savedRef = runModel ?? formRef;
   const [presets, setPresets] = useState<ModelPreset[]>([]);
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [estimate, setEstimate] = useState<EstimateResponse | null>(null);
@@ -34,6 +35,16 @@ export function ModelDialog() {
 
   const id = choice === OTHER ? other.trim() : choice;
   const loading = model.state === "loading";
+  const shown = presets.length ? presets : [{ id: GPT2, label: "GPT-2 small", detail: "124M", tested: true, gated: false }];
+  // The presets and "Another model" are one radio group: one tab stop, arrow keys choose.
+  const radio = useRadioGroup([...shown.map((p) => ({ value: p.id })), { value: OTHER }], choice, setChoice);
+  // Choosing "Another model" (by click, Enter or Space) moves on to typing its id; moving through
+  // the options with the arrow keys doesn't take the focus out of the group.
+  const otherInput = useRef<HTMLInputElement>(null);
+  const chooseOther = () => {
+    setChoice(OTHER);
+    requestAnimationFrame(() => otherInput.current?.focus());
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -118,15 +129,15 @@ export function ModelDialog() {
         setDtype(savedRef.dtype); setDevice(savedRef.device); setProcessWeights(savedRef.process_weights);
       }}>Use saved experiment model settings</Button>}
       <div className={s.models} role="radiogroup" aria-label="Model">
-        {(presets.length ? presets : [{ id: GPT2, label: "GPT-2 small", detail: "124M", tested: true, gated: false }]).map((p) => (
-          <button key={p.id} type="button" role="radio" aria-checked={choice === p.id} className={s.model} onClick={() => setChoice(p.id)}>
+        {shown.map((p, i) => (
+          <button key={p.id} type="button" role="radio" aria-checked={choice === p.id} className={s.model} onClick={() => setChoice(p.id)} {...radio(i)}>
             <span className={s.dot} />
             <span className={s.modelName}>{p.label}</span>
             <span className={s.modelDetail}>{p.detail}</span>
             {p.tested && <span className={s.tag}>Tested</span>}
           </button>
         ))}
-        <button type="button" role="radio" aria-checked={choice === OTHER} className={s.model} onClick={() => setChoice(OTHER)}>
+        <button type="button" role="radio" aria-checked={choice === OTHER} className={s.model} onClick={chooseOther} {...radio(shown.length)}>
           <span className={s.dot} />
           <span className={s.modelName}>Another model</span>
           <span className={s.modelDetail}>Any Hugging Face model TransformerLens can load, checked when it loads</span>
@@ -134,7 +145,7 @@ export function ModelDialog() {
       </div>
       {choice === OTHER && (
         <Field label="Hugging Face id" help="Like owner/name. Only safetensors weights are loaded.">
-          <Input value={other} onChange={(e) => setOther(e.target.value)} placeholder="EleutherAI/pythia-70m" list="model-suggestions" spellCheck={false} autoFocus />
+          <Input ref={otherInput} value={other} onChange={(e) => setOther(e.target.value)} placeholder="EleutherAI/pythia-70m" list="model-suggestions" spellCheck={false} />
           <datalist id="model-suggestions">
             {suggestions.map((x) => (
               <option key={x} value={x} />

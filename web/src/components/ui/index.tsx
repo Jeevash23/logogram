@@ -5,8 +5,10 @@ import {
   forwardRef,
   useContext,
   useId,
+  useRef,
   type ButtonHTMLAttributes,
   type InputHTMLAttributes,
+  type KeyboardEvent,
   type ReactNode,
   type SelectHTMLAttributes,
   type TextareaHTMLAttributes,
@@ -129,6 +131,50 @@ export function Select({ className, children, id, ...rest }: SelectHTMLAttribute
   );
 }
 
+/**
+ * A radio group's keyboard (WAI-ARIA): one tab stop, on the checked option or else the first
+ * that can be chosen; the arrow keys move to the next or previous option, wrapping around, and
+ * choose it; Home and End go to the first and last. Disabled options are skipped. Returns the
+ * props for the option at an index.
+ */
+export function useRadioGroup<T>(
+  options: { value: T; disabled?: boolean }[],
+  selected: T | null | undefined,
+  onChange: (value: T) => void,
+) {
+  const refs = useRef<(HTMLButtonElement | null)[]>([]);
+  const enabled = options.map((o) => !o.disabled);
+  const checked = options.findIndex((o) => o.value === selected);
+  const stop = checked >= 0 && enabled[checked] ? checked : enabled.indexOf(true);
+  const step = (from: number, by: 1 | -1) => {
+    const n = options.length;
+    for (let k = 1; k <= n; k++) {
+      const i = (((from + by * k) % n) + n) % n;
+      if (enabled[i]) return i;
+    }
+    return from;
+  };
+  return (index: number) => ({
+    ref: (el: HTMLButtonElement | null) => {
+      refs.current[index] = el;
+    },
+    tabIndex: index === stop ? 0 : -1,
+    onKeyDown: (e: KeyboardEvent<HTMLButtonElement>) => {
+      let next: number;
+      if (e.key === "ArrowRight" || e.key === "ArrowDown") next = step(index, 1);
+      else if (e.key === "ArrowLeft" || e.key === "ArrowUp") next = step(index, -1);
+      else if (e.key === "Home") next = enabled.indexOf(true);
+      else if (e.key === "End") next = enabled.lastIndexOf(true);
+      else return;
+      if (e.altKey || e.ctrlKey || e.metaKey) return;
+      e.preventDefault();
+      if (next < 0 || next === index) return;
+      refs.current[next]?.focus();
+      onChange(options[next].value);
+    },
+  });
+}
+
 export function Segmented<T extends string>({
   value,
   options,
@@ -140,9 +186,10 @@ export function Segmented<T extends string>({
   onChange: (v: T) => void;
   label: string;
 }) {
+  const radio = useRadioGroup(options, value, onChange);
   return (
     <div className={s.segmented} role="radiogroup" aria-label={label}>
-      {options.map((o) => (
+      {options.map((o, i) => (
         <button
           key={o.value}
           type="button"
@@ -152,6 +199,7 @@ export function Segmented<T extends string>({
           disabled={o.disabled}
           title={o.title}
           onClick={() => onChange(o.value)}
+          {...radio(i)}
         >
           {o.label}
         </button>
@@ -173,6 +221,7 @@ export function Choices<T extends string>({
   label: string;
   columns?: number;
 }) {
+  const radio = useRadioGroup(options, value, onChange);
   return (
     <div
       className={s.choices}
@@ -180,7 +229,7 @@ export function Choices<T extends string>({
       aria-label={label}
       style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
     >
-      {options.map((o) => (
+      {options.map((o, i) => (
         <button
           key={o.value}
           type="button"
@@ -189,6 +238,7 @@ export function Choices<T extends string>({
           className={s.choice}
           disabled={o.disabled}
           onClick={() => onChange(o.value)}
+          {...radio(i)}
         >
           <span className={s.radioDot} />
           <span className={s.choiceTitle}>{o.title}</span>
@@ -386,6 +436,60 @@ export function Dialog({
           </div>
           <div className={s.dialogBody}>{children}</div>
           {footer && <div className={s.dialogFooter}>{footer}</div>}
+        </RadixDialog.Content>
+      </RadixDialog.Portal>
+    </RadixDialog.Root>
+  );
+}
+
+/**
+ * Ask before an action that can't be undone. The safe choice has the focus, so Enter, Space and
+ * Escape all keep things as they are; the action is the solid ink button.
+ */
+export function ConfirmDialog({
+  open,
+  onOpenChange,
+  title,
+  children,
+  keepLabel,
+  confirmLabel,
+  onConfirm,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  title: ReactNode;
+  children: ReactNode;
+  keepLabel: string;
+  confirmLabel: string;
+  onConfirm: () => void;
+}) {
+  const keep = useRef<HTMLButtonElement>(null);
+  return (
+    <RadixDialog.Root open={open} onOpenChange={onOpenChange}>
+      <RadixDialog.Portal>
+        <RadixDialog.Overlay className={s.overlay} />
+        <RadixDialog.Content
+          role="alertdialog"
+          className={cx(s.dialog, s.confirm)}
+          onOpenAutoFocus={(e) => {
+            e.preventDefault();
+            keep.current?.focus();
+          }}
+        >
+          <div className={s.dialogHeader}>
+            <div>
+              <RadixDialog.Title className={s.dialogTitle}>{title}</RadixDialog.Title>
+              <RadixDialog.Description className={s.dialogDescription}>{children}</RadixDialog.Description>
+            </div>
+          </div>
+          <div className={s.dialogFooter}>
+            <RadixDialog.Close asChild>
+              <Button ref={keep}>{keepLabel}</Button>
+            </RadixDialog.Close>
+            <Button variant="primary" onClick={onConfirm}>
+              {confirmLabel}
+            </Button>
+          </div>
         </RadixDialog.Content>
       </RadixDialog.Portal>
     </RadixDialog.Root>

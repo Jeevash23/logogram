@@ -14,8 +14,10 @@ export function useAnalysisContext() {
   const analysisSource = useStore((s) => s.analysisSource);
   const activeRunId = useStore((s) => s.activeRunId);
   const runDetails = useStore((s) => s.runDetails);
-  return useMemo(() => analysisContext({ form, model, datasetPath, dataset, project, analysisSource, activeRunId, runDetails }),
-    [form, model, datasetPath, dataset, project, analysisSource, activeRunId, runDetails]);
+  const view = useStore((s) => s.view);
+  const mapOverlay = useStore((s) => s.mapOverlay);
+  return useMemo(() => analysisContext({ form, model, datasetPath, dataset, project, analysisSource, activeRunId, runDetails, view, mapOverlay }),
+    [form, model, datasetPath, dataset, project, analysisSource, activeRunId, runDetails, view, mapOverlay]);
 }
 
 const MODEL_NAMES: Record<string, string> = {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
 import type { AttentionData } from "../api/types";
@@ -59,6 +59,47 @@ export function AttentionView() {
 
   const color = useMemo(() => inkScale(1, theme), [theme]);
 
+  // Kept between renders, so the maps are drawn again only for new data.
+  const labelAt = useMemo(() => new Map(Object.entries(data?.labels ?? {}).map(([label, pos]) => [pos, label])), [data]);
+  const axis: Axis[] = useMemo(() => (data?.tokens ?? []).map((t, i) => ({
+    key: String(i),
+    label: labelAt.has(i) ? `${visibleToken(t)} ${labelAt.get(i)}` : visibleToken(t),
+    emphasis: labelAt.has(i),
+  })), [data, labelAt]);
+  // The average mixes prompts: name a position only by what is true of all of them.
+  const avgLabelAt = useMemo(() => new Map(Object.entries(data?.average_labels ?? {}).map(([label, pos]) => [pos, label])), [data]);
+  const avgAxis: Axis[] = useMemo(() => (data?.average_tokens ?? []).map((t, i) => {
+    const base = t === null ? `#${i}` : visibleToken(t);
+    return {
+      key: String(i),
+      label: avgLabelAt.has(i) ? `${base} ${avgLabelAt.get(i)}` : base,
+      emphasis: avgLabelAt.has(i),
+    };
+  }), [data, avgLabelAt]);
+  const patternValue = useCallback((r: number, c: number) => (c > r || !data ? undefined : data.pattern[r][c]), [data]);
+  const averageValue = useCallback((r: number, c: number) => (c > r || !data ? undefined : data.average[r][c]), [data]);
+  const patternTip = useCallback((r: number, c: number) => data && (
+    <>
+      <div>
+        <strong>{visibleToken(data.tokens[r])}</strong> ({r}) reads <strong>{visibleToken(data.tokens[c])}</strong> ({c})
+      </div>
+      <div>weight {data.pattern[r][c].toFixed(3)}</div>
+    </>
+  ), [data]);
+  const averageTip = useCallback((r: number, c: number) => data && (
+    <>
+      <div>
+        position {r} reads position {c}
+      </div>
+      <div>mean weight {data.average[r][c].toFixed(3)}</div>
+    </>
+  ), [data]);
+  const chooseCell = useCallback((r: number, c: number) => { useStore.getState().setTokenPosition(r); setKeyPosition(c); }, []);
+  const last = data ? Math.min(token ?? data.length - 1, data.length - 1) : 0;
+  const selectedRow = token === null ? null : last;
+  const selectedCol = Math.min(keyPosition, last);
+  const selectedCell = useMemo(() => (selectedRow === null ? null : { r: selectedRow, c: selectedCol }), [selectedRow, selectedCol]);
+
   if (!head) {
     return (
       <div className={s.view}>
@@ -81,27 +122,6 @@ export function AttentionView() {
     );
   }
 
-  const labelAt = new Map<number, string>();
-  for (const [label, pos] of Object.entries(data?.labels ?? {})) labelAt.set(pos, label);
-  const axis: Axis[] = (data?.tokens ?? []).map((t, i) => ({
-    key: String(i),
-    label: labelAt.has(i) ? `${visibleToken(t)} ${labelAt.get(i)}` : visibleToken(t),
-    emphasis: labelAt.has(i),
-  }));
-  // The average mixes prompts: name a position only by what is true of all of them.
-  const avgLabelAt = new Map<number, string>();
-  for (const [label, pos] of Object.entries(data?.average_labels ?? {})) avgLabelAt.set(pos, label);
-  const avgAxis: Axis[] = (data?.average_tokens ?? []).map((t, i) => {
-    const base = t === null ? `#${i}` : visibleToken(t);
-    return {
-      key: String(i),
-      label: avgLabelAt.has(i) ? `${base} ${avgLabelAt.get(i)}` : base,
-      emphasis: avgLabelAt.has(i),
-    };
-  });
-
-  const last = data ? Math.min(token ?? data.length - 1, data.length - 1) : 0;
-  const chooseCell = (r: number, c: number) => { useStore.getState().setTokenPosition(r); setKeyPosition(c); };
   const topKey = (m: number[][] | undefined) => {
     if (!m) return null;
     const row = m[last];
@@ -163,24 +183,17 @@ export function AttentionView() {
               <Heatmap
                 rows={axis}
                 cols={axis}
-                value={(r, c) => (c > r ? undefined : data.pattern[r][c])}
+                value={patternValue}
                 color={color}
                 theme={theme}
-                selected={token === null ? null : { r: last, c: Math.min(keyPosition, last) }}
+                selected={selectedCell}
                 onSelect={chooseCell}
                 tokens
                 cellMin={8}
                 cellMax={26}
                 rowTitle="Query"
                 colTitle="Key"
-                tooltip={(r, c) => (
-                  <>
-                    <div>
-                      <strong>{visibleToken(data.tokens[r])}</strong> ({r}) reads <strong>{visibleToken(data.tokens[c])}</strong> ({c})
-                    </div>
-                    <div>weight {data.pattern[r][c].toFixed(3)}</div>
-                  </>
-                )}
+                tooltip={patternTip}
                 ariaLabel={`Attention pattern of L${head.layer} H${head.head} on prompt ${data.index}`}
               />
             </div>
@@ -196,24 +209,17 @@ export function AttentionView() {
               <Heatmap
                 rows={avgAxis}
                 cols={avgAxis}
-                value={(r, c) => (c > r ? undefined : data.average[r][c])}
+                value={averageValue}
                 color={color}
                 theme={theme}
-                selected={token === null ? null : { r: last, c: Math.min(keyPosition, last) }}
+                selected={selectedCell}
                 onSelect={chooseCell}
                 tokens
                 cellMin={8}
                 cellMax={26}
                 rowTitle="Query"
                 colTitle="Key"
-                tooltip={(r, c) => (
-                  <>
-                    <div>
-                      position {r} reads position {c}
-                    </div>
-                    <div>mean weight {data.average[r][c].toFixed(3)}</div>
-                  </>
-                )}
+                tooltip={averageTip}
                 ariaLabel={`Average attention pattern of L${head.layer} H${head.head}`}
               />
             </div>

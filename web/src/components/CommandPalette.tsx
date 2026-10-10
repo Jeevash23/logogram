@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { architectureOf } from "../lib/keys";
 import { parseHeadQuery } from "../lib/sites";
 import { useStore, VIEWS } from "../store/app";
+import { MOD, SHIFT } from "./Header";
 import { Icon, Kbd } from "./ui";
 import s from "./CommandPalette.module.css";
 
@@ -38,13 +39,39 @@ function useCommands(query: string): Command[] {
           run: () => useStore.setState({ robustnessDialogOpen: true }),
         },
         { id: "compare", label: "Compare two runs", group: "Actions", run: () => st.setView("compare") },
-        { id: "spec", label: "Show the spec", group: "Actions", keywords: "json cli", run: () => useStore.setState({ view: "spec", specSource: "run" }) },
+        { id: "spec", label: "Show the spec", group: "Actions", keywords: "json cli", run: () => { useStore.setState({ specSource: "run" }); st.setView("spec"); } },
         {
           id: "cancel",
-          label: "Cancel the running job",
+          label: "Cancel the running job…",
           group: "Actions",
-          disabled: st.job?.status !== "running" || st.job?.kind !== "run",
-          run: () => void st.cancelJob(),
+          disabled: st.job?.status !== "running" || st.job?.kind !== "run" || !!st.job?.cancelling,
+          run: () => useStore.setState({ cancelConfirmOpen: true }),
+        },
+      );
+      cmds.push(
+        {
+          id: "undo-form",
+          label: "Undo the last change to the experiment form",
+          group: "Experiment form",
+          keywords: "revert back restore",
+          shortcut: `${MOD} Z`,
+          disabled: st.formHistory.past.length === 0,
+          run: () => {
+            st.setView("experiment");
+            st.undoForm();
+          },
+        },
+        {
+          id: "redo-form",
+          label: "Redo the change to the experiment form",
+          group: "Experiment form",
+          keywords: "again restore",
+          shortcut: `${MOD} ${SHIFT} Z`,
+          disabled: st.formHistory.future.length === 0,
+          run: () => {
+            st.setView("experiment");
+            st.redoForm();
+          },
         },
       );
       if (st.selection) {
@@ -70,6 +97,7 @@ function useCommands(query: string): Command[] {
       { id: "projects", label: "All projects", group: "Project", run: () => st.goto("projects") },
       { id: "system", label: "System check", group: "Project", keywords: "gpu cuda doctor hardware", run: () => st.goto("system") },
       { id: "updates", label: "Check for updates", group: "Project", keywords: "version upgrade new release pypi", run: () => void st.checkUpdates() },
+      { id: "shortcuts", label: "Show keyboard shortcuts", group: "Help", keywords: "keys hotkeys keyboard help", shortcut: "?", run: () => useStore.setState({ shortcutsOpen: true }) },
       { id: "light", label: "White appearance", group: "Appearance", keywords: "theme light", run: () => st.setTheme("light") },
       { id: "dark", label: "Black appearance", group: "Appearance", keywords: "theme dark", run: () => st.setTheme("dark") },
       { id: "system-theme", label: "Match the system appearance", group: "Appearance", keywords: "theme", run: () => st.setTheme("system") },

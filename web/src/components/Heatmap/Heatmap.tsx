@@ -1,9 +1,10 @@
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { memo, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 
 import { cornerFlag, fitText, font, inkRing, prepareCanvas, useChromeColors, useElementSize } from "../../lib/canvas";
 import { textOn, type ResolvedTheme } from "../../lib/color";
 import { visibleToken } from "../../lib/format";
 import { moveCell, type Cell } from "../../lib/heatmapNavigation";
+import { usePrefersReducedMotion } from "../../lib/motion";
 import s from "./Heatmap.module.css";
 
 export interface Axis {
@@ -12,6 +13,10 @@ export interface Axis {
   emphasis?: boolean; // e.g. tokens that differ between clean and corrupt
 }
 
+/**
+ * Props that are functions should keep their identity between renders (useCallback in the
+ * caller): the cells are drawn again whenever value, color, flagged or format change.
+ */
 interface Props {
   rows: Axis[];
   cols: Axis[];
@@ -35,7 +40,11 @@ interface Props {
   aspect?: number; // cell height / width
 }
 
-export function Heatmap({
+const twoDecimals = (v: number) => v.toFixed(2);
+/** How long a newly arrived value takes to fade in. */
+const FADE_MS = 320;
+
+export const Heatmap = memo(function Heatmap({
   rows,
   cols,
   value,
@@ -51,14 +60,18 @@ export function Heatmap({
   cellMax = 34,
   tokens = false,
   showValues = false,
-  format = (v) => v.toFixed(2),
+  format = twoDecimals,
   fade = false,
   ariaLabel,
   aspect = 1,
 }: Props) {
   const colors = useChromeColors();
+  const reduceMotion = usePrefersReducedMotion();
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  // Hover and selection are drawn on a second canvas above the cells, so moving the pointer
+  // never redraws the whole map.
+  const overlayRef = useRef<HTMLCanvasElement>(null);
   const { width } = useElementSize(wrapRef);
   const [hover, setHover] = useState<{ r: number; c: number; x: number; y: number } | null>(null);
   const arrivals = useRef(new Map<string, number>());
@@ -68,12 +81,19 @@ export function Heatmap({
   const [tableOpen, setTableOpen] = useState(false);
   const helpId = useId();
   const valid = (cell: Cell | null | undefined): cell is Cell => !!cell && cell.r < rows.length && cell.c < cols.length && value(cell.r, cell.c) !== undefined;
-  let first: Cell | null = null;
-  for (let r = 0; r < rows.length && !first; r++) {
-    for (let c = 0; c < cols.length; c++) if (value(r, c) !== undefined) { first = { r, c }; break; }
-  }
+  // Where keyboard movement starts when nothing is selected: the first cell that exists.
+  const first = useMemo(() => {
+    for (let r = 0; r < rows.length; r++) {
+      for (let c = 0; c < cols.length; c++) if (value(r, c) !== undefined) return { r, c };
+    }
+    return null;
+  }, [rows.length, cols.length, value]);
   const active = valid(cursor) ? cursor : valid(externalSelected) ? externalSelected : first;
   const selected = focused ? active : externalSelected;
+  const selectedR = selected ? selected.r : -1;
+  const selectedC = selected ? selected.c : -1;
+  const hoverR = hover ? hover.r : -1;
+  const hoverC = hover ? hover.c : -1;
 
   const layout = useMemo(() => {
     const measure = document.createElement("canvas").getContext("2d");
@@ -111,9 +131,9 @@ export function Heatmap({
     };
   }, [width, rows, cols, colors, tokens, cellMin, cellMax, rowTitle, colTitle, aspect]);
 
-  // Fade in values as they arrive.
+  // Fade in values as they arrive, unless the person asked for less motion.
   useEffect(() => {
-    if (!fade) return;
+    if (!fade || reduceMotion) return;
     const now = performance.now();
     for (let r = 0; r < rows.length; r++) {
       for (let c = 0; c < cols.length; c++) {
@@ -122,8 +142,9 @@ export function Heatmap({
         if (v !== null && v !== undefined && !arrivals.current.has(key)) arrivals.current.set(key, now);
       }
     }
-  }, [fade, value, rows.length, cols.length]);
+  }, [fade, reduceMotion, value, rows.length, cols.length]);
 
+  // The cells, labels and titles: drawn again only when the data, layout or theme change.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !layout) return;
@@ -131,6 +152,7 @@ export function Heatmap({
     if (!ctx) return;
     const { cell, cellH, gap, left, top } = layout;
     const now = performance.now();
+    const animate = fade && !reduceMotion;
     let fading = false;
 
     // Titles.
@@ -195,8 +217,8 @@ export function Heatmap({
           ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
           continue;
         }
-        const arrived = fade && !window.matchMedia("(prefers-reduced-motion: reduce)").matches ? arrivals.current.get(`${r}:${c}`) ?? 0 : 0;
-        const alpha = arrived === 0 ? 1 : Math.min(1, (now - arrived) / 320);
+        const arrived = animate ? arrivals.current.get(`${r}:${c}`) ?? 0 : 0;
+        const alpha = arrived === 0 ? 1 : Math.min(1, (now - arrived) / FADE_MS);
         if (alpha < 1) fading = true;
         ctx.globalAlpha = alpha;
         const fill = color(v);
@@ -213,19 +235,28 @@ export function Heatmap({
       }
     });
 
-    if (hover && (!selected || hover.r !== selected.r || hover.c !== selected.c)) {
-      ctx.strokeStyle = colors.muted;
-      ctx.lineWidth = 1;
-      ctx.strokeRect(left + hover.c * cell - 1.5, top + hover.r * cellH - 1.5, cell - gap + 3, cellH - gap + 3);
-    }
-    if (selected && selected.r < rows.length && selected.c < cols.length) {
-      inkRing(ctx, left + selected.c * cell, top + selected.r * cellH, cell - gap, cellH - gap, colors.text, colors.surface);
-    }
     if (fading) {
       const frame = requestAnimationFrame(() => setTick((t) => t + 1));
       return () => cancelAnimationFrame(frame);
     }
-  }, [layout, rows, cols, value, color, colors, selected, hover, flagged, showValues, format, theme, fade, tick, colTitle, rowTitle]);
+  }, [layout, rows, cols, value, color, colors, flagged, showValues, format, theme, fade, reduceMotion, tick, colTitle, rowTitle]);
+
+  // Hover and selection, above the cells.
+  useEffect(() => {
+    const canvas = overlayRef.current;
+    if (!canvas || !layout) return;
+    const ctx = prepareCanvas(canvas, layout.width, layout.height);
+    if (!ctx) return;
+    const { cell, cellH, gap, left, top } = layout;
+    if (hoverR >= 0 && (hoverR !== selectedR || hoverC !== selectedC)) {
+      ctx.strokeStyle = colors.muted;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(left + hoverC * cell - 1.5, top + hoverR * cellH - 1.5, cell - gap + 3, cellH - gap + 3);
+    }
+    if (selectedR >= 0 && selectedR < rows.length && selectedC >= 0 && selectedC < cols.length) {
+      inkRing(ctx, left + selectedC * cell, top + selectedR * cellH, cell - gap, cellH - gap, colors.text, colors.surface);
+    }
+  }, [layout, colors, hoverR, hoverC, selectedR, selectedC, rows.length, cols.length]);
 
   const hit = (e: MouseEvent) => {
     const canvas = canvasRef.current;
@@ -246,7 +277,7 @@ export function Heatmap({
     const next = moveCell(active, e.key, rows.length, cols.length, (r, c) => value(r, c) !== undefined);
     setCursor(next);
     onSelect?.(next.r, next.c);
-    const scroll = canvasRef.current?.parentElement;
+    const scroll = canvasRef.current?.parentElement?.parentElement;
     if (scroll && layout) {
       const x = layout.left + next.c * layout.cell, y = layout.top + next.r * layout.cellH;
       const left = Math.max(x + layout.cell - scroll.clientWidth, Math.min(scroll.scrollLeft, x));
@@ -255,42 +286,49 @@ export function Heatmap({
     }
   };
 
+  const activeValue = active ? value(active.r, active.c) : undefined;
   return (
     <div className={s.wrap} ref={wrapRef}>
       <div className={s.scroll}>
-      <canvas
-        ref={canvasRef}
-        className={s.canvas}
-        tabIndex={first ? 0 : -1}
-        role="group"
-        aria-roledescription="interactive heatmap"
-        aria-label={ariaLabel}
-        aria-describedby={helpId}
-        onFocus={() => setFocused(true)}
-        onBlur={() => setFocused(false)}
-        onMouseMove={(e) => {
-          const h = hit(e);
-          setHover(h ? { ...h, x: e.clientX, y: e.clientY } : null);
-        }}
-        onMouseLeave={() => setHover(null)}
-        onClick={(e) => {
-          const h = hit(e);
-          if (h) { setCursor(h); onSelect?.(h.r, h.c); }
-        }}
-        onKeyDown={onKeyDown}
-        style={{ cursor: onSelect ? "pointer" : "default" }}
-      />
+        <div className={s.stage}>
+          <canvas
+            ref={canvasRef}
+            className={s.canvas}
+            tabIndex={first ? 0 : -1}
+            role="group"
+            aria-roledescription="interactive heatmap"
+            aria-label={ariaLabel}
+            aria-describedby={helpId}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
+            onMouseMove={(e) => {
+              const h = hit(e);
+              setHover(h ? { ...h, x: e.clientX, y: e.clientY } : null);
+            }}
+            onMouseLeave={() => setHover(null)}
+            onClick={(e) => {
+              const h = hit(e);
+              if (h) { setCursor(h); onSelect?.(h.r, h.c); }
+            }}
+            onKeyDown={onKeyDown}
+            style={{ cursor: onSelect ? "pointer" : "default" }}
+          />
+          <canvas ref={overlayRef} className={s.overlay} aria-hidden="true" />
+        </div>
       </div>
       <p id={helpId} className={s.help}>Arrow keys inspect cells. Home and End move to the first and last cell in a row.</p>
       <div className={s.keyboardReadout} aria-live="polite" aria-atomic="true">
-        {focused && active && <>{rowTitle ?? "Row"} {active.r}: {rows[active.r].label}; {colTitle ?? "Column"} {active.c}: {cols[active.c].label}. {value(active.r, active.c) === null ? "Waiting for a value" : `Value ${value(active.r, active.c)?.toPrecision(6)}`}</>}
+        {focused && active && <>{rowTitle ?? "Row"} {active.r}: {rows[active.r]?.label}; {colTitle ?? "Column"} {active.c}: {cols[active.c]?.label}. {activeValue === null ? "Waiting for a value" : `Value ${activeValue?.toPrecision(6)}`}</>}
       </div>
       <details onToggle={(e) => setTableOpen(e.currentTarget.open)} className={s.table}>
         <summary>View values as a table</summary>
         {tableOpen && <div className={s.scroll}><table>
           <caption>{ariaLabel}</caption>
           <thead><tr><th scope="col">{rowTitle ?? "Row"} / {colTitle ?? "Column"}</th>{cols.map((c, i) => <th scope="col" key={c.key}>{i}: {c.label}</th>)}</tr></thead>
-          <tbody>{rows.map((row, r) => <tr key={row.key}><th scope="row">{r}: {row.label}</th>{cols.map((col, c) => <td key={col.key}>{value(r, c) === undefined ? "Masked" : value(r, c) === null ? "Pending" : value(r, c)?.toPrecision(6)}</td>)}</tr>)}</tbody>
+          <tbody>{rows.map((row, r) => <tr key={row.key}><th scope="row">{r}: {row.label}</th>{cols.map((col, c) => {
+            const v = value(r, c);
+            return <td key={col.key}>{v === undefined ? "Masked" : v === null ? "Pending" : v.toPrecision(6)}</td>;
+          })}</tr>)}</tbody>
         </table></div>}
       </details>
       {hover && tooltip && (
@@ -300,4 +338,4 @@ export function Heatmap({
       )}
     </div>
   );
-}
+});

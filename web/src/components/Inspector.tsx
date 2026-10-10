@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "../api/client";
 import type { RunDetail, SiteDetail, SiteKind, SiteResult, Spec, Summary } from "../api/types";
-import { ci, count, num, plural, prob, signed } from "../lib/format";
+import { capitalize, ci, count, num, plural, prob, signed } from "../lib/format";
 import { siteValue, useActiveRun, useArchitecture } from "../lib/hooks";
 import {
   componentLabel,
@@ -251,6 +251,7 @@ function Evidence({
   const intervention = measureOf(exp) === "intervention";
   const noInterval = site.effect.lo === null || site.effect.hi === null;
   const byIndex = useMemo(() => new Map(detail?.prompts.map((p) => [p.index, p]) ?? []), [detail]);
+  const values = useMemo(() => detail?.prompts.map((p) => ({ index: p.index, value: p.effect })) ?? [], [detail]);
 
   return (
     <section className={s.section}>
@@ -293,7 +294,7 @@ function Evidence({
       </dl>
       {stats && (
         <p className={s.fine}>
-          {stats.method[0].toUpperCase() + stats.method.slice(1)}, {count(stats.bootstrap)} resamples, seed {stats.seed}.
+          {[capitalize(stats.method), `${count(stats.bootstrap)} resamples`, `seed ${stats.seed}`].filter(Boolean).join(", ")}.
         </p>
       )}
 
@@ -309,7 +310,7 @@ function Evidence({
           {site.variant && <DoseResponse site={site} ciLevel={ciLevel} />}
           <Distribution
             label={`Per-prompt ${words.effect.toLowerCase()}`}
-            values={detail.prompts.map((p) => ({ index: p.index, value: p.effect }))}
+            values={values}
             mean={site.effect.mean}
             lo={site.effect.lo}
             hi={site.effect.hi}

@@ -208,7 +208,8 @@ export function ExperimentView() {
           ? `Steering · ${scopeShort(form.scope).toLowerCase()}`
           : "";
   useEffect(() => {
-    if (!form.nameEdited && suggested && form.name !== suggested) setForm({ name: suggested });
+    // The suggested name follows the rest of the form: not a change of its own to undo.
+    if (!form.nameEdited && suggested && form.name !== suggested) setForm({ name: suggested }, { record: false });
   }, [suggested, form.nameEdited, form.name, setForm]);
 
   const n = dataset ? Math.min(dataset.n, form.limit ?? dataset.n) : 0;
@@ -253,9 +254,13 @@ export function ExperimentView() {
           </p>
         </div>
         <div className={s.headActions}>
+          <FormHistoryButtons />
           <Button
             variant="ghost"
-            onClick={() => useStore.setState({ view: "spec", specSource: "draft" })}
+            onClick={() => {
+              useStore.setState({ specSource: "draft" });
+              useStore.getState().setView("spec");
+            }}
             disabled={!spec}
           >
             Preview spec
@@ -509,6 +514,24 @@ export function ExperimentView() {
         </div>
 
       </div>
+    </div>
+  );
+}
+
+/** Undo and redo for the whole form, beside its title. Text fields keep their own undo. */
+function FormHistoryButtons() {
+  const canUndo = useStore((st) => st.formHistory.past.length > 0);
+  const canRedo = useStore((st) => st.formHistory.future.length > 0);
+  const undo = useStore((st) => st.undoForm);
+  const redo = useStore((st) => st.redoForm);
+  return (
+    <div className={e.history} role="group" aria-label="Form history">
+      <Button size="small" variant="ghost" icon="undo" disabled={!canUndo} onClick={undo} title={`Undo the last change to the form (${MOD}+Z)`} aria-keyshortcuts="Control+Z Meta+Z">
+        Undo
+      </Button>
+      <Button size="small" variant="ghost" icon="redo" disabled={!canRedo} onClick={redo} title={`Redo (${MOD}+Shift+Z)`} aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z Control+Y">
+        Redo
+      </Button>
     </div>
   );
 }

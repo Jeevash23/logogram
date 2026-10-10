@@ -1,0 +1,46 @@
+/* An error in place of what failed: no grey wash, a hairline marked in the alert color. */
+
+.inline {
+  padding: 28px 30px;
+}
+
+.page {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--bg);
+}
+
+.box {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: 560px;
+  padding: 2px 0 2px 16px;
+  border-left: 3px solid var(--alert);
+}
+
+.title {
+  font-size: var(--text-xl);
+}
+
+.message {
+  font-weight: 560;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.help {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}

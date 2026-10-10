@@ -61,7 +61,8 @@ export function History({ onOpen }: { onOpen?: () => void } = {}) {
 
   const compare = () => {
     if (checked.length !== 2) return;
-    useStore.setState({ compareIds: [checked[0], checked[1]], view: "compare" });
+    useStore.setState({ compareIds: [checked[0], checked[1]] });
+    useStore.getState().setView("compare");
   };
 
   return (

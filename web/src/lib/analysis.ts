@@ -6,9 +6,37 @@ export function predictionSettingsKey(s: PredictionSettings): string {
   return JSON.stringify([s.method, s.prompt_index, s.which, s.position.kind, s.position.kind === "index" ? s.position.index : null, s.top_k]);
 }
 
+export type AnalysisSource = "run" | "form";
+
+/** Whether a view shows the active run's results: the results themselves, and the model map
+ * while it paints them. */
+export function showsRun(view: string | undefined, mapOverlay: "data" | "structure" | undefined): boolean {
+  return view === "results" || (view === "explore" && (mapOverlay ?? "data") === "data");
+}
+
+/**
+ * Where prompts are read from, as the token strip, baseline, attention and predictions show
+ * them. The configure view works on the experiment form. A view that shows the active run reads
+ * the prompts as that run did (BOS, prompt limit, batch, model). The other views keep the last
+ * choice: attention opened from the results follows the run, and a baseline checked while
+ * setting up an experiment uses the form.
+ */
+export function analysisSourceFor(state: {
+  view?: string;
+  mapOverlay?: "data" | "structure";
+  analysisSource: AnalysisSource;
+  activeRunId: string | null;
+}): AnalysisSource {
+  if (state.view === "experiment") return "form";
+  if (state.activeRunId && showsRun(state.view, state.mapOverlay)) return "run";
+  return state.analysisSource;
+}
+
 /** One analysis context for the token strip, baseline, attention and their caches. */
 export function analysisContext(state: {
-  analysisSource: "run" | "form";
+  view?: string;
+  mapOverlay?: "data" | "structure";
+  analysisSource: AnalysisSource;
   activeRunId: string | null;
   runDetails: Record<string, { spec: Spec }>;
   form: FormState;
@@ -17,7 +45,7 @@ export function analysisContext(state: {
   dataset: DatasetDetail | null;
   project: { session_id: string } | null;
 }) {
-  const spec = state.analysisSource === "run" && state.activeRunId
+  const spec = analysisSourceFor(state) === "run" && state.activeRunId
     ? state.runDetails[state.activeRunId]?.spec : undefined;
   const info = state.model.info;
   const loaded = info ? {

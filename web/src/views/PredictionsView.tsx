@@ -4,7 +4,7 @@ import { api } from "../api/client";
 import type { PredictionReport, PredictionSettings } from "../api/types";
 import { Button, Callout, Empty, Field, Input, Segmented, Select, Spinner } from "../components/ui";
 import { font, prepareCanvas, useChromeColors, useElementSize } from "../lib/canvas";
-import { predictionSettingsKey } from "../lib/analysis";
+import { analysisSourceFor, predictionSettingsKey } from "../lib/analysis";
 import { pct, signed, visibleToken } from "../lib/format";
 import { useActiveRun, useAnalysisContext } from "../lib/hooks";
 import { formFromSpec, useStore } from "../store/app";
@@ -19,8 +19,8 @@ export function PredictionsView() {
   const selectedLayer = useStore(st => st.selection?.layer);
   const context = useAnalysisContext();
   const run = useActiveRun();
-  const saved = useStore(st => st.analysisSource === "run" ? st.runDetails[st.activeRunId ?? ""]?.spec.predictions : st.form.predictions);
-  const savedReport = useStore(st => st.analysisSource === "run" ? st.runDetails[st.activeRunId ?? ""]?.predictions : null);
+  const saved = useStore(st => analysisSourceFor(st) === "run" ? st.runDetails[st.activeRunId ?? ""]?.spec.predictions : st.form.predictions);
+  const savedReport = useStore(st => analysisSourceFor(st) === "run" ? st.runDetails[st.activeRunId ?? ""]?.predictions : null);
   const [which, setWhich] = useState<"clean" | "corrupt">(saved?.which ?? "clean");
   const [positionMode, setPositionMode] = useState<"last" | "index">(saved?.position.kind ?? "last");
   const [positionText, setPositionText] = useState(String(saved?.position.kind === "index" ? saved.position.index : 0));
@@ -48,8 +48,9 @@ export function PredictionsView() {
     setLoading(true); setError(null); setResponse(null);
     // Keep the exact context with the optional diagnostic when saving the next experiment spec.
     const st = useStore.getState();
-    const source = st.analysisSource === "run" && run.detail ? formFromSpec(run.detail.spec) : st.form;
-    useStore.setState({ form: { ...source, predictions: settings } });
+    const fromRun = analysisSourceFor(st) === "run" && !!run.detail;
+    const source = fromRun && run.detail ? formFromSpec(run.detail.spec) : st.form;
+    st.replaceForm({ ...source, predictions: settings }, fromRun ? {} : { notice: "Prediction diagnostic added to the experiment form" });
     try {
       const report = await api.predictions({ dataset, index, settings, ...context.options });
       if (seq === request.current) setResponse({ key: requestKey, report });
@@ -78,7 +79,7 @@ export function PredictionsView() {
     {!data && (model.state !== "ready" ? <Empty title="Load the model to inspect its layer predictions" action={<Button onClick={() => useStore.setState({ modelDialogOpen: true })}>Load a model</Button>}>This view computes a diagnostic using the model’s actual weights.</Empty> : !supported ? <Callout>Per-layer predictions need the model’s final normalization and unembedding to reproduce its output. For the loaded model they didn’t when it loaded, so this diagnostic would misdescribe it.</Callout> : !dataset ? <Empty title="Choose prompts first" action={<Button onClick={() => useStore.getState().setView("prompts")}>Set up prompts</Button>}>The diagnostic uses one prompt from the selected dataset.</Empty> : null)}
     {loading && <Spinner label="Projecting each layer’s residual output…" />}
     {data && <>
-      <div className={p.reportHeading}><div><h2>Prompt {data.index} · token {data.position} <span>{visibleToken(data.tokens[data.position])}</span></h2><p className={s.small}>{data.settings.which} input · batch members {data.batch_members.join(", ")} · {data.layers.length} layers</p></div><Button disabled={selectedLayer === undefined} onClick={() => { if (selectedLayer !== undefined) selectLayer(selectedLayer); useStore.setState({ view: "explore", exploreMode: "layer" }); }}>Open selected layer</Button></div>
+      <div className={p.reportHeading}><div><h2>Prompt {data.index} · token {data.position} <span>{visibleToken(data.tokens[data.position])}</span></h2><p className={s.small}>{data.settings.which} input · batch members {data.batch_members.join(", ")} · {data.layers.length} layers</p></div><Button disabled={selectedLayer === undefined} onClick={() => { if (selectedLayer !== undefined) selectLayer(selectedLayer); useStore.setState({ exploreMode: "layer" }); useStore.getState().setView("explore"); }}>Open selected layer</Button></div>
       {data.position !== data.tokens.length - 1 && <Callout>The answer and distractor below are the dataset’s reference tokens. At this earlier position, they are not necessarily the expected next token.</Callout>}
       <PredictionTrace data={data} selectedLayer={selectedLayer} />
       <div className={p.tableScroll}><table className={`${s.table} ${p.table}`}><caption>Per-layer vocabulary projections. Select a layer to inspect its residual output.</caption><thead><tr><th scope="col">Layer</th><th scope="col">Top projected tokens · probability</th><th scope="col">Answer · {visibleToken(data.answer)}</th><th scope="col">Distractor · {visibleToken(data.distractor)}</th><th scope="col">Logit difference</th></tr></thead><tbody>{data.layers.map(layer => <tr key={layer.layer} aria-selected={selectedLayer === layer.layer}><th scope="row"><button type="button" aria-label={`Select residual output of layer ${layer.layer}`} aria-pressed={selectedLayer === layer.layer} onClick={() => selectLayer(layer.layer)}>Layer {layer.layer}</button></th><td><div className={p.tokens}>{layer.top.map((t, i) => <span key={t.id} title={`Token id ${t.id} · probability ${t.prob.toPrecision(8)}`}><small>{i + 1}</small><strong>{visibleToken(t.token) || "∅"}</strong><span>{pct(t.prob, 2)}</span></span>)}</div></td><td>{pct(layer.answer_prob, 3)}</td><td>{pct(layer.distractor_prob, 3)}</td><td>{signed(layer.logit_diff, 3)}</td></tr>)}</tbody></table></div>

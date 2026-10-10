@@ -11,6 +11,7 @@ import s from "./Header.module.css";
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 export const MOD = isMac ? "⌘" : "Ctrl";
+export const SHIFT = isMac ? "⇧" : "Shift";
 
 /** The open project: its name, and where to go from here. */
 export function ProjectMenu() {
