@@ -36,6 +36,7 @@ const SECTIONS: { title: string; rows: [ReactNode, string][] }[] = [
     rows: [
       [<Keys keys={[MOD, "K"]} />, "Open the command palette. Type a head, such as L9H6, to select it."],
       [<Keys keys={["?"]} />, "Show these shortcuts."],
+      [<Keys keys={["↑", "↓", "Enter"]} />, "In the command palette, choose a command and run it."],
       [<Keys keys={["Esc"]} />, "Close a dialog, menu or the palette."],
     ],
   },
@@ -51,6 +52,7 @@ const SECTIONS: { title: string; rows: [ReactNode, string][] }[] = [
         "Go to Prompts, Baseline, Configure, Results, Attention, Compare runs or Spec.",
       ],
       [<Either>{[<Keys key="a" keys={["["]} />, <Keys key="b" keys={["]"]} />]}</Either>, "Show the previous or next prompt."],
+      [<Keys keys={["←", "→"]} />, "On the inspector's edge, make the inspector wider or narrower; with Shift, in bigger steps."],
     ],
   },
   {
@@ -64,6 +66,7 @@ const SECTIONS: { title: string; rows: [ReactNode, string][] }[] = [
       [<Keys keys={["A"]} />, "Open the selected head's attention."],
       [<Keys keys={["C"]} />, "Compare the component across runs."],
       [<Keys keys={[SHIFT, "F10"]} />, "On the model map, list these actions in a menu."],
+      [<Keys keys={["←", "→", "Home", "End"]} />, "In the layer explorer's diagram, go through the layer's components."],
     ],
   },
   {
