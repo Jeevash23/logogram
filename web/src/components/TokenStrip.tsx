@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useState } from "react";
 
 import { api } from "../api/client";
-import type { TokenStripData } from "../api/types";
+import type { Answer, AnswerTokens, TokenStripData } from "../api/types";
 import { answerText, capitalize, visibleToken } from "../lib/format";
 import { useAnalysisContext } from "../lib/hooks";
 import { useStore } from "../store/app";
@@ -67,9 +67,9 @@ export function TokenStrip() {
         <div className={s.spacer} />
         {tokenPosition !== null && <Button size="small" variant="ghost" onClick={() => useStore.getState().setTokenPosition(null)}>Token {tokenPosition} · clear selection</Button>}
         <span className={s.answer}>
-          answer <code className={s.tok}>{answerText(record.answer)}</code>
+          answer <AnswerReading read={data?.answer} written={record.answer} />
           <span className={s.vs}>vs</span>
-          distractor <code className={s.tok}>{answerText(record.distractor)}</code>
+          distractor <AnswerReading read={data?.distractor} written={record.distractor} />
         </span>
         <Button size="small" variant="ghost" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? "Hide tokens" : "Show tokens"}</Button>
       </div>
@@ -152,7 +152,7 @@ export function TokenGrid({ data }: { data: TokenStripData }) {
           )}
         </div>
       </div>
-      {(data.issues.length > 0 || data.answer.id === null || data.distractor.id === null) && (
+      {data.issues.length > 0 && (
         <div className={s.issues}>
           {data.issues.map((issue) => (
             <div key={issue.kind + issue.message} className={s.issue} role="alert">
@@ -164,4 +164,33 @@ export function TokenGrid({ data }: { data: TokenStripData }) {
       )}
     </>
   );
+}
+
+/** How many members of a set to show before saying how many more there are. */
+const SHOWN = 4;
+
+/**
+ * An answer or distractor as the loaded model reads it: one token, any token of a set, or a
+ * continuation of several tokens read in order. Without a model, as the dataset writes it.
+ */
+export function AnswerReading({ read, written }: { read?: AnswerTokens; written: Answer }) {
+  const tokens = read?.tokens ?? (Array.isArray(written) ? written : null);
+  const set = read ? !!read.alternatives : Array.isArray(written);
+  if (set && tokens) {
+    return (
+      <span className={s.reading} title={tokens.map(visibleToken).join(" ")}>
+        {tokens.slice(0, SHOWN).map((t, i) => <code key={i} className={s.tok}>{visibleToken(t)}</code>)}
+        <span className={s.readingNote}>{tokens.length > SHOWN ? `+${tokens.length - SHOWN} more · ` : ""}any of {tokens.length}</span>
+      </span>
+    );
+  }
+  if (read && read.tokens.length > 1) {
+    return (
+      <span className={s.reading}>
+        {read.tokens.map((t, i) => <code key={i} className={s.tok}>{visibleToken(t)}</code>)}
+        <span className={s.readingNote}>{read.tokens.length} tokens, in order</span>
+      </span>
+    );
+  }
+  return <code className={s.tok}>{answerText(written)}</code>;
 }

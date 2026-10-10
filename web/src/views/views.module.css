@@ -166,6 +166,13 @@
   white-space: pre;
 }
 
+/* How an answer is read, under it: a set's size, or tokens read in order. */
+.answerNote {
+  display: block;
+  font-size: var(--text-xs);
+  color: var(--faint);
+}
+
 .tabsInline {
   display: flex;
   gap: 4px;

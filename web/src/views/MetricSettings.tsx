@@ -42,7 +42,7 @@ export function MetricSettings({
         options={METRIC_KINDS.map((kind) => ({
           value: kind,
           title: TITLES[kind],
-          detail: `${METRICS[kind].formula}. ${METRICS[kind].detail}`,
+          detail: METRICS[kind].detail,
           disabled: direct && kind !== "logit_diff",
         }))}
       />
@@ -60,8 +60,8 @@ export function MetricSettings({
             onChange={(klTarget) => onChange({ klTarget })}
             columns={2}
             options={[
-              { value: "clean", title: "The clean prompt's prediction", detail: "KL(P_clean ‖ P): how far each run's next-token distribution is from the clean prompt's." },
-              { value: "corrupt", title: "The corrupt prompt's prediction", detail: "KL(P_corrupt ‖ P): how far it is from the corrupt prompt's." },
+              { value: "clean", title: "The clean prompt's prediction", detail: "KL(P_clean || P): how far each run's next-token distribution is from the clean prompt's." },
+              { value: "corrupt", title: "The corrupt prompt's prediction", detail: "KL(P_corrupt || P): how far it is from the corrupt prompt's." },
             ]}
           />
           {!form.klTarget && <p className={e.required}>Required: the target changes every value, so there's no default.</p>}

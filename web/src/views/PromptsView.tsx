@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "../api/client";
-import type { IOITemplate, PromptRecord, TokenStripData } from "../api/types";
+import type { Answer, IOITemplate, PromptRecord, TokenStripData } from "../api/types";
 import { TokenGrid } from "../components/TokenStrip";
 import { Button, Callout, Checkbox, Choices, Field, Input, Segmented, TextArea } from "../components/ui";
-import { plural } from "../lib/format";
+import { answerText, plural, visibleToken } from "../lib/format";
 import { modelName, useAnalysisContext } from "../lib/hooks";
 import { useStore } from "../store/app";
 import s from "./views.module.css";
@@ -43,7 +43,8 @@ export function PromptsView() {
           <h2 className={s.title}>Prompts</h2>
           <p className={s.subtitle}>
             Each prompt is a pair: a clean prompt where the model shows the behavior, and a corrupt prompt where it
-            shouldn't. The metric is the logit difference between the answer and a distractor at the last token.
+            shouldn't. The experiment's metric compares the answer with a distractor, such as their logit difference at the
+            last token. An answer can be one token, a set of tokens any of which counts, or several tokens read in order.
           </p>
         </div>
       </div>
@@ -123,10 +124,10 @@ function PairForm({ onCreated }: { onCreated: (path: string) => void }) {
         <Field label="Corrupt prompt" help="Same length in tokens, with the behavior removed or reversed.">
           <TextArea rows={2} value={record.corrupt} onChange={(e) => set("corrupt")(e.target.value)} />
         </Field>
-        <Field label="Answer" help="One token, usually with a leading space.">
+        <Field label="Answer" help="One token, usually with a leading space. Several tokens are read in order by the log-probability metrics.">
           <Input value={record.answer} onChange={(e) => set("answer")(e.target.value)} />
         </Field>
-        <Field label="Distractor" help="The wrong answer the logit difference is measured against.">
+        <Field label="Distractor" help="The wrong answer the metric compares the answer with.">
           <Input value={record.distractor} onChange={(e) => set("distractor")(e.target.value)} />
         </Field>
       </div>
@@ -356,6 +357,7 @@ function DatasetTable() {
     for (const i of dataset?.issues ?? []) map.set(i.index, [...(map.get(i.index) ?? []), i.message]);
     return map;
   }, [dataset]);
+  const continued = useMemo(() => new Set(dataset?.continuations ?? []), [dataset]);
   if (!dataset) return null;
   const shown = dataset.records.slice(0, 300);
   const nIssues = issuesByIndex.size;
@@ -414,8 +416,9 @@ function DatasetTable() {
                     w.differs ? <span key={k} className={s.diffWord}>{w.text}</span> : w.text,
                   )}
                 </td>
-                <td className={s.tok}>{r.answer}</td>
-                <td className={s.tok}>{r.distractor}</td>
+                {/* The loaded model splits this pair's answer or distractor: read token by token. */}
+                <td><AnswerCell answer={r.answer} note={continued.has(i) ? "several tokens in this pair, read in order" : undefined} /></td>
+                <td><AnswerCell answer={r.distractor} /></td>
               </tr>
             );
           })}
@@ -423,6 +426,24 @@ function DatasetTable() {
       </table>
       {dataset.n > shown.length && <p className={s.faint}>Showing the first {shown.length} prompts.</p>}
     </div>
+  );
+}
+
+/** An answer or distractor in the table: as written, or a set's members, any of which counts. */
+function AnswerCell({ answer, note }: { answer: Answer; note?: string }) {
+  if (Array.isArray(answer)) {
+    return (
+      <span title={answer.map(visibleToken).join(" ")}>
+        <span className={s.tok}>{answerText(answer, 6)}</span>
+        <span className={s.answerNote}>any of {answer.length}</span>
+      </span>
+    );
+  }
+  return (
+    <span>
+      <span className={s.tok}>{answer}</span>
+      {note && <span className={s.answerNote}>{note}</span>}
+    </span>
   );
 }
 

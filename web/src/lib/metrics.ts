@@ -10,7 +10,7 @@ export interface MetricWords {
   short: string;
   /** What is computed: "logit(answer) − logit(distractor)". */
   formula: string;
-  /** For choosing it: one plain line. */
+  /** For choosing it: one plain line, with what it computes. */
   detail: string;
 }
 
@@ -19,37 +19,37 @@ export const METRICS: Record<MetricKind, MetricWords> = {
     label: "logit difference",
     short: "logit diff",
     formula: "logit(answer) − logit(distractor)",
-    detail: "How much more the model prefers the answer than the distractor, at the last token. Reads single tokens and sets of single tokens.",
+    detail: "logit(answer) − logit(distractor) at the last token. Reads single tokens, and sets of them.",
   },
   logprob_diff: {
     label: "log-probability difference",
     short: "log-prob diff",
     formula: "log P(answer) − log P(distractor)",
-    detail: "The same comparison in log-probabilities. Reads answers of several tokens, one token at a time; equals the logit difference for single tokens.",
+    detail: "log P(answer) − log P(distractor). Also reads answers of several tokens, token by token.",
   },
   logprob: {
     label: "answer log-probability",
     short: "log P(answer)",
     formula: "log P(answer)",
-    detail: "How likely the answer is, ignoring the distractor. Reads answers of several tokens.",
+    detail: "log P(answer), ignoring the distractor. Reads answers of several tokens.",
   },
   prob: {
     label: "answer probability",
     short: "P(answer)",
     formula: "P(answer)",
-    detail: "The answer's probability, summed over a set. Bounded by 0 and 1, so it flattens where the model is already sure.",
+    detail: "P(answer), summed over a set. Flattens where the model is already sure.",
   },
   prob_diff: {
     label: "probability difference",
     short: "prob diff",
     formula: "P(answer) − P(distractor)",
-    detail: "The answer's probability minus the distractor's, as in the greater-than task, where each is a set of years.",
+    detail: "P(answer) − P(distractor), as in the greater-than task's sets of years.",
   },
   kl: {
     label: "KL divergence",
     short: "KL",
-    formula: "KL(P_target ‖ P)",
-    detail: "How far the whole next-token distribution is from a target prompt's prediction. Reads no answer.",
+    formula: "KL(P_target || P)",
+    detail: "How far the whole next-token distribution is from a target prompt's. Reads no answer.",
   },
 };
 
@@ -77,7 +77,7 @@ export function metricWords(metric: { kind?: string | null; target?: Side | null
     return {
       ...words,
       label: `KL divergence from the ${metric.target} prompt's prediction`,
-      formula: `KL(P_${metric.target} ‖ P)`,
+      formula: `KL(P_${metric.target} || P)`,
     };
   }
   return words;
