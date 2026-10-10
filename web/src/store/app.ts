@@ -400,8 +400,9 @@ export const useStore = create<Store>((set, get) => ({
   version: "",
   firstRun: false,
   projectsParent: "",
-  themeSetting: "light",
-  theme: "light",
+  // Until the saved appearance arrives, follow the system, as the page does (tokens.css).
+  themeSetting: "system",
+  theme: systemTheme(),
 
   project: null,
   model: { state: "none" },

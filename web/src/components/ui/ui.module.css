@@ -116,7 +116,7 @@
 .textarea {
   height: var(--control-h);
   padding: 0 9px;
-  border: 1px solid transparent;
+  border: 1px solid var(--control-line);
   border-radius: var(--radius);
   background: var(--surface-2);
   color: var(--text);
@@ -125,10 +125,16 @@
   transition: border-color var(--dur) var(--ease);
 }
 
-.input:hover,
-.select:hover,
-.textarea:hover {
-  border-color: var(--line);
+.input:hover:not(:disabled),
+.select:hover:not(:disabled),
+.textarea:hover:not(:disabled) {
+  border-color: var(--faint);
+}
+
+.input:disabled,
+.select:disabled,
+.textarea:disabled {
+  opacity: 0.55;
 }
 
 .input:focus-visible,
