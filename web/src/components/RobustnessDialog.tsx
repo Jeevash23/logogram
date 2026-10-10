@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import type { BaselineSpec, ExperimentSpec } from "../api/types";
+import { usesFeatures } from "../lib/buildSpec";
 import { DEFAULT_IG_STEPS } from "../lib/formState";
 import { experimentText } from "../lib/spec";
 import { useStore } from "../store/app";
@@ -154,8 +155,7 @@ export function RobustnessDialog() {
       detail: "The same sweep with activation patching: one patched run per site and prompt, exact rather than estimated.",
     });
     // SAE features are estimated from one gradient only.
-    const features = spec?.scope.kind === "features" || (spec?.scope.kind === "sites" && spec.scope.sites.some((x) => x.kind === "sae_feature"));
-    if (!features) options.push(
+    if (!(spec && usesFeatures(spec.scope))) options.push(
       exp.method === "gradient"
         ? {
             value: "estimator",

@@ -1,3 +1,4 @@
+import { SESSION_ENDED_TEXT } from "../api/client";
 import type { Job } from "../api/types";
 
 export interface Milestone {
@@ -16,7 +17,7 @@ export function milestone(
   connection: "connecting" | "connected" | "reconnecting" | "ended",
 ): Milestone {
   if (connection === "ended") {
-    return { key: "ended", text: "This page's session has ended. Open the link printed in the terminal where Logogram is running." };
+    return { key: "ended", text: SESSION_ENDED_TEXT };
   }
   if (connection === "reconnecting") {
     return { key: "reconnecting", text: "Disconnected from the server. Reconnecting; the progress shown may be out of date." };

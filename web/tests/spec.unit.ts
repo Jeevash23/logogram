@@ -7,7 +7,7 @@ import type { DatasetDetail, ModelStatus, PromptRecord, Spec } from "../src/api/
 import { analysisContext } from "../src/lib/analysis";
 import { buildSpec, datasetFacts, metricOf } from "../src/lib/buildSpec";
 import { DEFAULT_FORM, formFromSpec, type FormState } from "../src/lib/formState";
-import { METRIC_KINDS, metricWords } from "../src/lib/metrics";
+import { gapCheck, METRIC_KINDS, metricWords } from "../src/lib/metrics";
 import { measureWords, splitCount, workload, workloadText } from "../src/lib/spec";
 import { useStore } from "../src/store/app";
 
@@ -80,8 +80,8 @@ test("a method's restrictions on the metric and the answers are said before runn
   // Answers of several tokens: known once the loaded model has read the dataset.
   const records = [record(), record({ answer: " Buenos Aires", distractor: " Paris" }), record()];
   const facts = datasetFacts(dataset(records, [1]), null);
-  expect(facts).toMatchObject({ n: 3, sets: 0, continuations: 1, example: " Buenos Aires" });
-  expect(refused(form(), { facts })).toMatch(/^1 prompt has an answer or distractor of several tokens \(such as “·Buenos·Aires”\)\. The logit difference reads one token/);
+  expect(facts).toMatchObject({ n: 3, sets: 0, continuations: 1, notSingle: 1, example: { index: 1, answer: " Buenos Aires", distractor: " Paris" } });
+  expect(refused(form(), { facts })).toMatch(/^1 prompt has an answer or distractor of several tokens \(such as prompt 1, answer “·Buenos·Aires”, distractor “·Paris”\)\. The logit difference reads one token/);
   expect(built(form({ metric: "logprob_diff" }), { facts }).metric.kind).toBe("logprob_diff");
   expect(refused(form({ metric: "logprob_diff", kind: "path_patching", pathReceivers: [{ kind: "logits" }] }), { facts })).toContain("Path patching reads the metric at the last prompt position");
   expect(refused(form({ metric: "prob", kind: "ablation", baseline: { kind: "mean", reference: "corrupt" } }), { facts })).toContain("Mean ablation replaces each position");
@@ -92,7 +92,11 @@ test("a method's restrictions on the metric and the answers are said before runn
   // Sets of single tokens: the logit difference reads them, direct attribution doesn't.
   const sets = datasetFacts(dataset([record({ answer: ["33", "34"], distractor: ["31", "32"] })], []), null);
   expect(built(form(), { facts: sets }).metric.kind).toBe("logit_diff");
-  expect(refused(dla, { facts: sets })).toContain("an answer set or an answer of several tokens");
+  expect(refused(dla, { facts: sets })).toContain("1 prompt has a set or several tokens as an answer or distractor");
+  // A prompt with a set and a continuation of several tokens counts once.
+  const both = datasetFacts(dataset([record({ answer: ["33", "34"], distractor: " thirty one" }), record()], [0]), null);
+  expect(both).toMatchObject({ sets: 1, continuations: 1, notSingle: 1 });
+  expect(refused(dla, { facts: both })).toContain("1 prompt has a set");
 });
 
 test("the bootstrap resamples clusters only of a field every prompt has", () => {
@@ -165,6 +169,28 @@ test("the metric's own words name a run's values; direct attribution stays with 
   // Runs from before metrics could be chosen measured the logit difference.
   expect(metricWords(null).label).toBe("logit difference");
   expect(metricWords({ kind: "something new" }).short).toBe("logit diff");
+});
+
+test("the baseline judges the metric's clean–corrupt gap as a run will", () => {
+  const prompts = (pairs: [number | null, number | null][]) => pairs.map(([clean, corrupt], index) => ({ index, clean, corrupt }));
+  const label = "probability difference";
+  expect(gapCheck(prompts([[0.9, 0.1], [0.8, 0.2]]), "dataset_gap", label)).toEqual({ tone: "ok", text: "Effects are normalized by this gap." });
+  // A mean gap near zero leaves a normalized effect undefined: the run refuses to start.
+  const same = gapCheck(prompts([[0.5, 0.5], [0.3, 0.3]]), "dataset_gap", label);
+  expect(same.tone).toBe("error");
+  expect(same.text).toContain("almost the same probability difference (mean gap 0.0000)");
+  // Within three standard errors of zero: the run warns.
+  const noisy = gapCheck(prompts([[1, 0], [0, 1], [1.2, 0], [0, 1]]), "dataset_gap", label);
+  expect(noisy.tone).toBe("warning");
+  expect(noisy.text).toContain("The mean gap (0.050) is small next to its standard error (0.608)");
+  // Each prompt's own gap: none may be zero, and small ones are unstable.
+  const zero = gapCheck(prompts([[0.9, 0.1], [0.4, 0.4]]), "prompt_gap", label);
+  expect(zero.tone).toBe("error");
+  expect(zero.text).toMatch(/^Prompt 1 has no clean–corrupt gap/);
+  expect(gapCheck(prompts([[0.9, 0.1], [0.45, 0.4]]), "prompt_gap", label)).toMatchObject({ tone: "warning", text: expect.stringMatching(/^1 prompt has a clean–corrupt gap below 0\.1/) });
+  expect(gapCheck(prompts([[0.9, 0.1], [0.6, 0.4]]), "prompt_gap", label).tone).toBe("ok");
+  // A value that isn't a finite number (a 16-bit overflow) normalizes nothing.
+  expect(gapCheck(prompts([[0.9, null]]), "dataset_gap", label).text).toContain("isn't a finite number");
 });
 
 test("analyses read the prompts for the run's metric, or the form's", () => {

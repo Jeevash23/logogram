@@ -2,14 +2,14 @@ import { scaleLinear } from "d3-scale";
 import { useRef, useState } from "react";
 
 import { api } from "../api/client";
-import type { BaselinePrompt, BaselineReport, PromptRecord, TopToken } from "../api/types";
+import type { BaselinePrompt, BaselineReport, Normalization, PromptRecord, TopToken } from "../api/types";
 import { Button, Callout, Empty } from "../components/ui";
 import { useElementSize } from "../lib/canvas";
 import { divergingScale, markColor, niceBound } from "../lib/color";
 import { answerText, capitalize, num, plural, prob, signed, visibleToken } from "../lib/format";
 import { modelName, useAnalysisContext } from "../lib/hooks";
 import { analysisContext } from "../lib/analysis";
-import { metricWords, signedMetric } from "../lib/metrics";
+import { gapCheck, metricWords, signedMetric } from "../lib/metrics";
 import { useStore } from "../store/app";
 import s from "./views.module.css";
 import b from "./BaselineView.module.css";
@@ -71,12 +71,12 @@ export function BaselineView() {
           {modelName(model.info?.id)} on {datasetPath}. This takes a moment on a CPU.
         </p>
       )}
-      {report && <Report report={report} index={index} />}
+      {report && <Report report={report} index={index} normalization={context.metric?.normalization ?? "dataset_gap"} />}
     </div>
   );
 }
 
-function Report({ report, index }: { report: BaselineReport; index: number }) {
+function Report({ report, index, normalization }: { report: BaselineReport; index: number; normalization: Normalization }) {
   const dataset = useStore((st) => st.dataset);
   const sum = report.summary;
   if (!sum) {
@@ -86,7 +86,6 @@ function Report({ report, index }: { report: BaselineReport; index: number }) {
       </Callout>
     );
   }
-  const present = behaviorPresent(report);
   const prompt = report.prompts.find((p) => p.index === index) ?? report.prompts[0];
   const metric = sum.metric;
   // A server from before metrics could be chosen measured the logit difference: the preference.
@@ -94,6 +93,17 @@ function Report({ report, index }: { report: BaselineReport; index: number }) {
   const words = metricWords(metric ?? { kind });
   const logitDiff = kind === "logit_diff";
   const gap = (logitDiff ? sum.gap : metric?.gap) ?? 0;
+  // Whether a run can normalize effects by this gap, as the run itself will judge it. A server
+  // from before metrics could be chosen reports the logit difference as the preference.
+  const check = gapCheck(
+    report.prompts.map((p) => ({
+      index: p.index,
+      clean: p.clean_metric ?? (logitDiff ? p.clean_logit_diff : null),
+      corrupt: p.corrupt_metric ?? (logitDiff ? p.corrupt_logit_diff : null),
+    })),
+    normalization,
+    words.label,
+  );
   return (
     <>
       <p className={s.sentence}>
@@ -102,16 +112,24 @@ function Report({ report, index }: { report: BaselineReport; index: number }) {
         {report.n}).{" "}
         {logitDiff ? (
           <>
-            The clean–corrupt gap is <strong>{num(gap)}</strong>
+            The clean–corrupt gap is <strong>{num(gap)}</strong>.
           </>
         ) : (
           <>
             In the {words.label}, clean prompts score <strong>{num(metric?.clean, 3)}</strong> and corrupt prompts{" "}
-            <strong>{num(metric?.corrupt, 3)}</strong>: a gap of <strong>{signed(gap, 3)}</strong>
+            <strong>{num(metric?.corrupt, 3)}</strong>: a gap of <strong>{signed(gap, 3)}</strong>.
           </>
         )}
-        {present ? ", which is what interventions are measured against." : ". Normalized effects will be noisy or undefined."}
+        {check.tone === "ok" && <> {check.text}</>}
       </p>
+      {check.tone !== "ok" && (
+        <Callout
+          tone={check.tone === "error" ? "error" : "info"}
+          title={check.tone === "error" ? "Effects can't be normalized by this gap" : "Effects normalized by this gap will be unreliable"}
+        >
+          {check.text}
+        </Callout>
+      )}
       <p className={s.small}>
         A preference is log P(answer) − log P(distractor), the logit difference for single tokens. A set of answers counts
         their probabilities together; an answer of several tokens multiplies its tokens' probabilities, each read after the

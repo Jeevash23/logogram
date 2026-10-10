@@ -87,6 +87,8 @@ test("choosing a metric and running names the run's values by it", async ({ page
   await page.getByRole("button", { name: "Check the baseline", exact: true }).click();
   expect((await request).postDataJSON().metric).toEqual({ kind: "logprob_diff", normalization: "dataset_gap" });
   await expect(page.getByText("Clean log-prob diff", { exact: true })).toBeVisible();
+  // The gap in the metric is judged as a run will judge it.
+  await expect(page.locator("p").filter({ hasText: "Effects are normalized by this gap." })).toContainText("a gap of −0.620.");
   await page.getByRole("button", { name: "Configure", exact: true }).click();
   await page.getByRole("button", { name: "Run", exact: true }).click();
   await expect(page.getByRole("radiogroup", { name: "Result values" }).getByRole("radio", { name: "Δ log-prob diff" })).toBeVisible({ timeout: 60_000 });

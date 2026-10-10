@@ -3,9 +3,9 @@
 // the metric and the answers (src/logogram/direct.py, paths.py, engine.py, features.py and
 // circuits.py) are checked here too, so a run doesn't fail on something the form could have said.
 
-import type { DatasetDetail, MetricSpec, ModelStatus, PositionSpec, SAEStatus, ScopeSpec, Spec } from "../api/types";
+import type { Answer, DatasetDetail, MetricSpec, ModelStatus, PositionSpec, SAEStatus, ScopeSpec, Spec } from "../api/types";
 import { siteSetsError } from "./circuits";
-import { plural, visibleToken } from "./format";
+import { plural, shortRevision, visibleToken } from "./format";
 import type { FormState } from "./formState";
 import { splitCount, suggestName } from "./spec";
 
@@ -18,8 +18,12 @@ export interface DatasetFacts {
   /** Prompts whose answer or distractor is a continuation of several tokens for the loaded model,
    * which only metrics that read continuations can score; null when no model is loaded. */
   continuations: number | null;
-  /** One such answer, to show. */
-  example: string | null;
+  /** Prompts with a set or a continuation of several tokens (each counted once): those whose
+   * answer and distractor aren't both single tokens. */
+  notSingle: number;
+  /** The first prompt with a continuation of several tokens, to show. Either its answer or its
+   * distractor (or both) is the continuation. */
+  example: { index: number; answer: Answer; distractor: Answer } | null;
   /** Fields of the meta every used prompt has (and that can name a cluster), with how many
    * different values each takes. */
   fields: { field: string; clusters: number }[];
@@ -35,8 +39,10 @@ export function datasetFacts(dataset: DatasetDetail | null | undefined, limit: n
   const n = records.length;
   const sets = records.filter((r) => Array.isArray(r.answer) || Array.isArray(r.distractor)).length;
   const continued = dataset.continuations?.filter((i) => i < n) ?? null;
-  const first = continued?.length ? records[continued[0]] : undefined;
-  const example = first ? [first.answer, first.distractor].find((a): a is string => typeof a === "string" && a.length > 0) ?? null : null;
+  const first = continued?.length ? continued[0] : null;
+  const example = first === null ? null : { index: first, answer: records[first].answer, distractor: records[first].distractor };
+  const several = new Set(continued ?? []);
+  const notSingle = records.filter((r, i) => Array.isArray(r.answer) || Array.isArray(r.distractor) || several.has(i)).length;
   const fields: DatasetFacts["fields"] = [];
   if (n > 0) {
     const keys = Object.keys(records[0].meta ?? {}).filter((k) => CLUSTER_KEY.test(k));
@@ -46,7 +52,17 @@ export function datasetFacts(dataset: DatasetDetail | null | undefined, limit: n
       fields.push({ field: key, clusters: values.size });
     }
   }
-  return { n, sets, continuations: continued?.length ?? null, example, fields };
+  return { n, sets, continuations: continued?.length ?? null, notSingle, example, fields };
+}
+
+/** A prompt with an answer or distractor of several tokens, in words, after "such as". */
+export function exampleText(example: DatasetFacts["example"]): string {
+  if (!example) return "";
+  const quoted = (a: Answer) =>
+    typeof a === "string"
+      ? `“${visibleToken(a)}”`
+      : `any of ${a.slice(0, 3).map((m) => `“${visibleToken(m)}”`).join(", ")}${a.length > 3 ? ", …" : ""}`;
+  return `prompt ${example.index}, answer ${quoted(example.answer)}, distractor ${quoted(example.distractor)}`;
 }
 
 /** A meta value as the bootstrap groups it (the server compares their text). */
@@ -186,11 +202,11 @@ export function buildSpec(
   const facts = ctx.facts;
   if (facts) {
     const several = facts.continuations ?? 0;
-    const example = facts.example ? ` (such as “${visibleToken(facts.example)}”)` : "";
+    const example = facts.example ? ` (such as ${exampleText(facts.example)})` : "";
     const have = (k: number) => `${plural(k, "prompt")} ${k === 1 ? "has" : "have"}`;
-    if (experiment.kind === "direct_logit_attribution" && (facts.sets > 0 || several > 0)) {
+    if (experiment.kind === "direct_logit_attribution" && facts.notSingle > 0) {
       return {
-        error: `Direct logit attribution splits the logit difference between two single tokens, and ${have(facts.sets + several)} an answer set or an answer of several tokens. Use single-token answers, or activation patching.`,
+        error: `Direct logit attribution splits the logit difference between two single tokens, and ${have(facts.notSingle)} a set or several tokens as an answer or distractor. Use single-token answers, or activation patching.`,
       };
     }
     if (several > 0 && metric.kind === "logit_diff") {
@@ -199,11 +215,11 @@ export function buildSpec(
       };
     }
     if (several > 0 && experiment.kind === "path_patching") {
-      return { error: `Path patching reads the metric at the last prompt position, and ${have(several)} answers of several tokens${example}. Use single-token answers or sets, or activation patching.` };
+      return { error: `Path patching reads the metric at the last prompt position, and ${have(several)} an answer or distractor of several tokens${example}. Use single-token answers or sets, or activation patching.` };
     }
     if (several > 0 && experiment.kind === "ablation" && experiment.baseline.kind === "mean" && everyPosition(scope)) {
       return {
-        error: `Mean ablation replaces each position with its mean over prompts of the same length, and the tokens appended to read answers of several tokens${example} have no such mean. Ablate at one position, use zero or resample ablation, or use single-token answers.`,
+        error: `Mean ablation replaces each position with its mean over prompts of the same length, and the tokens appended to read an answer or distractor of several tokens${example} have no such mean. Ablate at one position, use zero or resample ablation, or use single-token answers.`,
       };
     }
     const featuresEverywhere = (scope.kind === "features" && scope.position.kind === "all") ||
@@ -300,13 +316,12 @@ export function savedDifferences(
   const out: string[] = [];
   const ref = form.modelRef;
   const info = model.info;
-  const short = (rev: string | null | undefined) => (rev ? rev.slice(0, 7) : "latest");
   if (ref && info) {
     if (ref.id !== info.id) {
       out.push(`It was written for ${name(ref.id)}; the loaded model is ${name(info.id)}.`);
     } else {
       if (ref.revision && ref.revision !== info.revision) {
-        out.push(`It was written for revision ${short(ref.revision)}; the loaded model is ${short(info.revision)}.`);
+        out.push(`It was written for revision ${shortRevision(ref.revision)}; the loaded model is ${shortRevision(info.revision)}.`);
       }
       if (ref.dtype !== info.dtype) out.push(`It was written for ${ref.dtype}; the model is loaded in ${info.dtype}.`);
       if (ref.process_weights !== info.process_weights) out.push("Weight processing differs from the saved spec.");

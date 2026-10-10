@@ -232,7 +232,17 @@ function FaithfulnessChart({
             Faithfulness
           </text>
           {joined && (
-            <polyline className={c.curve} points={ordered.map((r) => `${xAt(r.size)},${yAt(r.row?.faithfulness?.mean ?? 0)}`).join(" ")} />
+            // A set without a faithfulness (still streaming, or undefined) is left out of the
+            // curve, not drawn at 0.
+            <polyline
+              className={c.curve}
+              points={ordered
+                .flatMap((r) => {
+                  const mean = r.row?.faithfulness?.mean;
+                  return mean === null || mean === undefined || !Number.isFinite(mean) ? [] : [`${xAt(r.size)},${yAt(mean)}`];
+                })
+                .join(" ")}
+            />
           )}
           {ordered.map((r) => {
             const f = r.row?.faithfulness;

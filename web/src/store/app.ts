@@ -649,40 +649,16 @@ export const useStore = create<Store>((set, get) => ({
     set({ stagedSites: [...staged, site] });
   },
   configureSets: (scope, options = {}) => {
-    const st = get();
-    const bos = analysisContext(st).options.prepend_bos;
-    const run = options.runId ? st.runDetails[options.runId]?.spec : undefined;
-    const saved = run ?? (analysisSourceFor(st) === "run" && st.activeRunId ? st.runDetails[st.activeRunId]?.spec : undefined);
-    const base = saved ? formFromSpec(saved) : st.form;
+    const base = formShown(get(), options.runId);
     // Sets are intervened on by patching or ablation; another method becomes patching, in the
     // direction the form has (an estimate's direction, from an attribution patching run).
     const kind = base.kind === "ablation" ? "ablation" : "activation_patching";
-    const staged = options.staged ? st.stagedSites : [];
-    set({ view: "experiment", analysisSource: "form", ...(options.staged ? { stagedSites: [] } : {}) });
-    swapForm({ ...base, kind, scope, draftId: null, nameEdited: false, name: "" }, {
-      onUndo: options.staged
-        ? () => useStore.setState((now) => ({
-            stagedSites: [...staged, ...now.stagedSites.filter((x) => !staged.some((y) => sameData(x, y)))],
-          }))
-        : undefined,
-    });
-    analysisChanged(bos);
+    configureForm({ ...base, kind, scope }, options.staged ?? false);
   },
   configureStaged: () => {
     const st = get();
     if (!st.stagedSites.length) return;
-    const bos = analysisContext(st).options.prepend_bos;
-    const staged = st.stagedSites;
-    const saved = analysisSourceFor(st) === "run" && st.activeRunId ? st.runDetails[st.activeRunId]?.spec : undefined;
-    const form = saved ? formFromSpec(saved) : st.form;
-    set({ view: "experiment", analysisSource: "form", stagedSites: [] });
-    swapForm({ ...form, scope: { kind: "sites", sites: staged }, draftId: null, nameEdited: false, name: "" }, {
-      // Undo returns the sites to the tray, beside any staged since.
-      onUndo: () => useStore.setState((now) => ({
-        stagedSites: [...staged, ...now.stagedSites.filter((x) => !staged.some((y) => sameData(x, y)))],
-      })),
-    });
-    analysisChanged(bos);
+    configureForm({ ...formShown(st), scope: { kind: "sites", sites: st.stagedSites } }, true);
   },
   pinHead: (selection) => {
     if (selection.part !== "head") return;
@@ -1075,6 +1051,31 @@ function followAnalysisSource(bosBefore: boolean): void {
     return;
   }
   analysisChanged(bosBefore);
+}
+
+/** The form to build on: from a run's spec (this one, or the run the analyses show), or the
+ * form itself. */
+function formShown(st: Store, runId?: string): FormState {
+  const run = runId ? st.runDetails[runId]?.spec : undefined;
+  const saved = run ?? (analysisSourceFor(st) === "run" && st.activeRunId ? st.runDetails[st.activeRunId]?.spec : undefined);
+  return saved ? formFromSpec(saved) : st.form;
+}
+
+/** Open the experiment form on `form`, as a new draft and one undo step. With `fromTray`, the
+ * staged sites went into it: they leave the tray, and Undo returns them, beside any staged since. */
+function configureForm(form: FormState, fromTray: boolean): void {
+  const st = useStore.getState();
+  const bos = analysisContext(st).options.prepend_bos;
+  const staged = fromTray ? st.stagedSites : [];
+  useStore.setState({ view: "experiment", analysisSource: "form", ...(fromTray ? { stagedSites: [] } : {}) });
+  swapForm({ ...form, draftId: null, nameEdited: false, name: "" }, {
+    onUndo: fromTray
+      ? () => useStore.setState((now) => ({
+          stagedSites: [...staged, ...now.stagedSites.filter((x) => !staged.some((y) => sameData(x, y)))],
+        }))
+      : undefined,
+  });
+  analysisChanged(bos);
 }
 
 /** After anything that can change the analysis context: tokens move when BOS changes, so the

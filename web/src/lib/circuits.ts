@@ -144,8 +144,10 @@ export function rankedSites(sites: SiteResult[]): SiteSpec[] {
 
 /** Two sites alone and together: the run reports what intervening on both does beyond the sum. */
 export function interactionSets(a: SiteSpec, b: SiteSpec): SiteSetSpec[] {
-  const la = short(siteText(a), 38);
-  const lb = short(siteText(b), 38);
+  // Each site's text gets half the room of a label, so that "A and B" fits in one.
+  const room = Math.floor((MAX_LABEL - " and ".length) / 2);
+  const la = short(siteText(a), room);
+  const lb = short(siteText(b), room);
   return [
     { label: la, sites: [a], complement: false },
     { label: lb === la ? `${lb} (2)` : lb, sites: [b], complement: false },

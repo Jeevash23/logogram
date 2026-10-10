@@ -1,4 +1,4 @@
-import { Fragment, useState, type ReactNode } from "react";
+import { Fragment, useMemo, useState, type ReactNode } from "react";
 
 import { api } from "../api/client";
 import type { Spec } from "../api/types";
@@ -52,7 +52,9 @@ export function SpecView() {
   const [copied, setCopied] = useState(false);
   const guard = useStore((st) => st.guard);
 
-  const draft = buildSpec(form, { model, datasetPath, datasetSha: dataset?.sha256 ?? null, sae, facts: datasetFacts(dataset, form.limit) });
+  // Facts read every prompt of the dataset: once per dataset and limit, not on every render.
+  const facts = useMemo(() => datasetFacts(dataset, form.limit), [dataset, form.limit]);
+  const draft = buildSpec(form, { model, datasetPath, datasetSha: dataset?.sha256 ?? null, sae, facts });
   const runSpec: Spec | undefined = run.detail?.spec;
   const showing: "run" | "draft" = source === "run" && runSpec ? "run" : "draft";
   const spec = showing === "run" ? runSpec : "spec" in draft ? draft.spec : undefined;

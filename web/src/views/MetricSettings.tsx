@@ -1,7 +1,7 @@
 import type { MetricKind } from "../api/types";
 import { Button, Callout, Choices, Field, Segmented } from "../components/ui";
-import type { DatasetFacts } from "../lib/buildSpec";
-import { plural, visibleToken } from "../lib/format";
+import { exampleText, type DatasetFacts } from "../lib/buildSpec";
+import { plural } from "../lib/format";
 import { METRIC_KINDS, METRICS } from "../lib/metrics";
 import type { FormState } from "../store/app";
 import s from "./views.module.css";
@@ -31,7 +31,7 @@ export function MetricSettings({
   // each component writes.
   const direct = form.kind === "direct_logit_attribution";
   const several = facts?.continuations ?? 0;
-  const example = facts?.example ? ` such as “${visibleToken(facts.example)}”` : "";
+  const example = facts?.example ? ` (such as ${exampleText(facts.example)})` : "";
   return (
     <div className={e.stack}>
       <Choices
@@ -68,8 +68,8 @@ export function MetricSettings({
         </>
       )}
       {!direct && several > 0 && form.metric === "logit_diff" && (
-        <Callout title={`${plural(several, "prompt")} ${several === 1 ? "has an answer" : "have answers"} of several tokens`}>
-          The logit difference reads one token at the last position, so it can't score answers{example}. The log-probability
+        <Callout title={`${plural(several, "prompt")} ${several === 1 ? "has an answer or distractor" : "have answers or distractors"} of several tokens`}>
+          The logit difference reads one token at the last position, so it can't score them{example}. The log-probability
           difference reads them one token at a time, and equals the logit difference for single tokens.
           <div className={e.calloutAction}>
             <Button size="small" onClick={() => onChange({ metric: "logprob_diff" })}>

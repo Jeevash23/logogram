@@ -6,6 +6,7 @@ import {
   circuitSetCount,
   circuitSets,
   interactionSets,
+  MAX_LABEL,
   MAX_SETS,
   nestedSizes,
   parseSiteQuery,
@@ -101,6 +102,12 @@ test("two sites are checked alone and together", () => {
   const out = build(form({ kind: "ablation", baseline: { kind: "zero" }, scope: { kind: "site_sets", universe: null, sets } }));
   if ("error" in out) throw new Error(out.error);
   expect(out.spec.scope).toEqual({ kind: "site_sets", universe: null, sets });
+  // Sites read at long position labels still give labels the server accepts.
+  const at = (label: string): SiteSpec["position"] => ({ kind: "label", label });
+  const long = interactionSets(head(1, 0, at("x".repeat(70))), head(1, 1, at("x".repeat(70))));
+  expect(Math.max(...long.map((x) => x.label.length))).toBeLessThanOrEqual(MAX_LABEL);
+  expect(new Set(long.map((x) => x.label)).size).toBe(3);
+  expect(siteSetsError(null, long)).toBeNull();
 });
 
 test("sets are refused as the server refuses them, with what to change", () => {

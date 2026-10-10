@@ -1,7 +1,8 @@
 // What a run measures, in words (mirroring METRIC_LABELS and describe_metric in
 // src/logogram/spec.py), and what each metric can read.
 
-import type { MetricKind, MetricSpec, Side, TaskInfo } from "../api/types";
+import type { MetricKind, MetricSpec, Normalization, Side, TaskInfo } from "../api/types";
+import { num, plural } from "./format";
 
 export interface MetricWords {
   /** In a sentence: "logit difference". */
@@ -97,4 +98,65 @@ export function taskMetric(task: Pick<TaskInfo, "metric" | "metric_when" | "opti
     if (value === rule.value) return rule.metric;
   }
   return task.metric;
+}
+
+export interface GapCheck {
+  /** "ok": effects can be normalized; "warning": they can, unreliably; "error": a run refuses. */
+  tone: "ok" | "warning" | "error";
+  text: string;
+}
+
+/**
+ * Whether the clean–corrupt gap in the metric can normalize effects, by the rule a run applies
+ * before it starts (check_gap in src/logogram/engine.py). Each prompt's gap is its clean value
+ * minus its corrupt value; a run's direction only flips its sign, which the rule ignores.
+ */
+export function gapCheck(
+  prompts: { index: number; clean: number | null | undefined; corrupt: number | null | undefined }[],
+  normalization: Normalization,
+  label: string,
+): GapCheck {
+  const gaps = prompts.map((p) => (typeof p.clean === "number" && typeof p.corrupt === "number" ? p.clean - p.corrupt : NaN));
+  const n = gaps.length;
+  const mean = gaps.reduce((a, g) => a + g, 0) / n;
+  if (!n || !Number.isFinite(mean)) {
+    return {
+      tone: "error",
+      text: `The clean–corrupt gap in the ${label} isn't a finite number, so effects can't be normalized. Use float32 if the model overflows.`,
+    };
+  }
+  if (normalization === "dataset_gap") {
+    if (Math.abs(mean) < 1e-3) {
+      return {
+        tone: "error",
+        text: `The clean and corrupt prompts give almost the same ${label} (mean gap ${num(mean, 4)}), so an effect normalized by it is undefined and a run will refuse to start. Use prompts on which the model shows the behavior.`,
+      };
+    }
+    if (n > 1) {
+      const sd = Math.sqrt(gaps.reduce((a, g) => a + (g - mean) ** 2, 0) / (n - 1));
+      const se = sd / Math.sqrt(n);
+      if (Math.abs(mean) < 3 * se) {
+        return {
+          tone: "warning",
+          text: `The mean gap (${num(mean, 3)}) is small next to its standard error (${num(se, 3)}), so effects normalized by it, and their intervals, will be unreliable. Use more prompts.`,
+        };
+      }
+    }
+    return { tone: "ok", text: "Effects are normalized by this gap." };
+  }
+  const zero = prompts.filter((_, i) => Math.abs(gaps[i]) < 1e-6).map((p) => p.index);
+  if (zero.length) {
+    return {
+      tone: "error",
+      text: `Prompt${zero.length === 1 ? "" : "s"} ${zero.slice(0, 5).join(", ")}${zero.length > 5 ? "…" : ""} ${zero.length === 1 ? "has" : "have"} no clean–corrupt gap, so ${zero.length === 1 ? "its" : "their"} own gap can't normalize an effect and a run will refuse to start. Normalize by the dataset's gap, or fix ${zero.length === 1 ? "that prompt" : "those prompts"}.`,
+    };
+  }
+  const small = gaps.filter((g) => Math.abs(g) < 0.1).length;
+  if (small) {
+    return {
+      tone: "warning",
+      text: `${plural(small, "prompt")} ${small === 1 ? "has" : "have"} a clean–corrupt gap below 0.1, so ${small === 1 ? "its" : "their"} effects normalized by ${small === 1 ? "it" : "them"} will be unstable.`,
+    };
+  }
+  return { tone: "ok", text: "Each prompt's effect is normalized by its own gap." };
 }

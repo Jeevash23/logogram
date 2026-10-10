@@ -350,7 +350,9 @@ function Corrections({ summary }: { summary: Summary }) {
   const st = summary.statistics;
   if (st.band_level === null || st.band_level === undefined) return null;
   const alpha = Math.round((1 - st.ci) * 1000) / 1000;
-  const sites = summary.sites.filter((x) => !x.variant?.control);
+  // The corrections cover every row the run reports, steering's random controls included, as the
+  // server computes them and the command line counts them.
+  const sites = summary.sites;
   const banded = sites.filter((x) => x.band && (x.band.lo > 0 || x.band.hi < 0)).length;
   const discoveries = sites.filter((x) => x.q !== null && x.q !== undefined && x.q < alpha).length;
   const single = sites.filter((x) => x.effect.lo !== null && x.effect.hi !== null && (x.effect.lo > 0 || x.effect.hi < 0)).length;
