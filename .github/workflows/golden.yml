@@ -1,0 +1,46 @@
+name: Golden
+
+# Once a week, every method on GPT-2 small's real weights, and the head sweep of the bundled
+# example checked against GPT-2 small's published indirect-object circuit
+# (scripts/validate_real_weights.py --golden). The tests use tiny random models; this catches a
+# change, in Logogram or in a dependency, that moves results on a real model.
+
+on:
+  schedule:
+    - cron: "41 4 * * 1" # Mondays, 04:41 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: golden-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  golden:
+    name: GPT-2 small, real weights
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      HF_HUB_DISABLE_TELEMETRY: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Read the model and revision the bundled example pins
+        id: model
+        run: |
+          spec=src/logogram/examples/ioi-gpt2/experiments/ioi-head-patching/spec.json
+          echo "id=$(jq -r .model.id "$spec")" >> "$GITHUB_OUTPUT"
+          echo "revision=$(jq -r .model.revision "$spec")" >> "$GITHUB_OUTPUT"
+      - name: Cache the model's files from Hugging Face
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/huggingface/hub
+          key: huggingface-${{ steps.model.outputs.id }}-${{ steps.model.outputs.revision }}
+      # CPU-only PyTorch, as in CI: GPT-2 small runs every method on a CPU in about ten minutes.
+      - run: uv venv --python 3.12
+      - run: uv pip install --torch-backend=cpu -e .
+      - run: uv run --no-sync python scripts/validate_real_weights.py --golden --device cpu

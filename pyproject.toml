@@ -29,7 +29,8 @@ dependencies = [
     "uvicorn>=0.30",
     "websockets>=12",
     "pydantic>=2.7",
-    "typer>=0.12",
+    # Typer 0.12 with Click 8.3 or later ignores --version and starts the server.
+    "typer>=0.13",
     "numpy>=1.26",
     "pyarrow>=15",
     "platformdirs>=4",
@@ -52,6 +53,7 @@ logogram = "logogram.cli:main"
 [dependency-groups]
 dev = [
     "pytest>=8",
+    "pytest-cov>=7",
     "httpx2>=2.13",
     "ruff==0.16.10",
 ]
@@ -71,6 +73,10 @@ artifacts = ["src/logogram/web_dist/**"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+
+[tool.coverage.run]
+# Coverage data then holds project-relative paths, not this machine's.
+relative_files = true
 
 [tool.ruff]
 line-length = 100
