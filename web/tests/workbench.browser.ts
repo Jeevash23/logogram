@@ -51,6 +51,63 @@ test("narrow workbench preserves the content and opens keyboard dismissible pane
   await page.keyboard.press("Escape");
 });
 
+// Before any test runs another experiment: the fixture's BOS-off run must be the one shown.
+test("a run's results read its prompts as it did, after the form was configured", async ({ page }) => {
+  const firstToken = page.getByRole("button", { name: /^clean token 0: / });
+  await page.getByRole("button", { name: "Evidence", exact: true }).click();
+  await expect(firstToken).toHaveAccessibleName("clean token 0: When");
+  await page.getByRole("button", { name: "Experiment", exact: true }).click();
+  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  await expect(firstToken).toHaveAccessibleName("clean token 0: <|endoftext|>");
+  await page.getByRole("button", { name: "Evidence", exact: true }).click();
+  await expect(firstToken).toHaveAccessibleName("clean token 0: When");
+  await expect(page.getByText(/^of 5$/)).toBeVisible();
+});
+
+test("a replaced experiment form can be undone, keeps the notes, and survives a reload", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.getByRole("button", { name: "Experiment", exact: true }).click();
+  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  const notes = page.getByRole("textbox", { name: "Notes" });
+  await notes.fill("Expect the name movers here.");
+  await page.getByRole("button", { name: "Explore", exact: true }).click();
+  await page.getByRole("group", { name: "Model map" }).focus();
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("p");
+  const notice = page.getByRole("status").filter({ hasText: "Experiment form replaced" });
+  await expect(notice).toBeVisible();
+  await expect(notes).toHaveValue("Expect the name movers here.");
+  const sweep = page.getByRole("radiogroup", { name: "Sweep" });
+  await expect(sweep.getByRole("radio", { name: "Single site" })).toHaveAttribute("aria-checked", "true");
+  await notice.getByRole("button", { name: "Undo" }).click();
+  await expect(sweep.getByRole("radio", { name: "Layer × head" })).toHaveAttribute("aria-checked", "true");
+  // Outside a text field, Ctrl+Z steps back through the form's history: here, to the patch again.
+  await page.getByRole("heading", { name: "New experiment" }).click();
+  await page.keyboard.press("Control+z");
+  await expect(sweep.getByRole("radio", { name: "Single site" })).toHaveAttribute("aria-checked", "true");
+  await page.reload();
+  await expect(page.getByRole("status").filter({ hasText: "Restored your unsaved experiment form" })).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("cancelling a run asks first, with the focus on keeping it", async ({ page }) => {
+  // Open the page as if a run were going.
+  await page.route("**/api/state", async (route) => {
+    const response = await route.fetch();
+    const state = await response.json();
+    state.job = { id: "pretend", kind: "run", title: "Heads sweep", status: "running", run_id: null, progress: {}, error: null, started: 0, version: 1, project_session: state.project.session_id };
+    await route.fulfill({ response, json: state });
+  });
+  await page.reload();
+  await page.locator("footer").getByRole("button", { name: "Cancel", exact: true }).click();
+  const dialog = page.getByRole("alertdialog", { name: "Cancel this run?" });
+  await expect(dialog).toContainText("none of them are saved");
+  await expect(dialog.getByRole("button", { name: "Keep running" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(dialog).not.toBeVisible();
+});
+
 test("layer selection stages exact sites and persists research notes", async ({ page }) => {
   await page.getByRole("radio", { name: "Layer explorer", exact: true }).click();
   await page.getByRole("button", { name: /^L0 H0: effect/ }).click();
