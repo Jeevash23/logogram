@@ -15,11 +15,15 @@ export function Notices() {
           role={n.tone === "error" ? "alert" : "status"}
         >
           <Icon name={n.tone === "error" ? "alert" : "info"} size={15} />
-          <div className={s.text}>{n.text}</div>
+          <div className={s.text} id={`notice-${n.id}`}>
+            {n.text}
+          </div>
           {n.action && (
             <button
               type="button"
               className={s.action}
+              // Another Undo can be on the page: say what this one undoes.
+              aria-describedby={`notice-${n.id}`}
               onClick={() => {
                 dismiss(n.id);
                 n.action?.run();

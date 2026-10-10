@@ -33,6 +33,7 @@ import type {
 } from "../api/types";
 import type { ResolvedTheme } from "../lib/color";
 import { siteFromSelection } from "../lib/spec";
+import { clearStoredForm, readStoredForm, writeStoredForm, type StoredForm } from "../lib/formDraft";
 import {
   continuesEdit,
   editFields,
@@ -41,6 +42,7 @@ import {
   pushHistory,
   redoHistory,
   sameData,
+  sameForm,
   undoHistory,
   type FormHistory,
   type LastEdit,
@@ -202,6 +204,7 @@ export interface ReplaceFormOptions {
 }
 
 export const FORM_REPLACED = "Experiment form replaced";
+export const FORM_RESTORED = "Restored your unsaved experiment form";
 
 export function formFromSpec(spec: Spec): FormState {
   const e = spec.experiment;
@@ -345,6 +348,9 @@ interface Store {
   replaceForm: (form: FormState, options?: ReplaceFormOptions) => boolean;
   undoForm: () => void;
   redoForm: () => void;
+  /** The form is saved as this draft: running it fills the draft's folder, and the copy kept
+   * in the browser in case of a reload is no longer needed. */
+  markFormSaved: (draftId: string) => void;
   /** A finished, failed or cancelled run's spec, in the form, to change and run again. */
   editRun: (spec: Spec) => void;
   prefillExperiment: (kind: FormState["kind"], sel: Selection) => void;
@@ -357,6 +363,9 @@ let noticeId = 0;
 // The last edit made in the form, so that typing makes one undo step rather than one per key.
 let lastEdit: LastEdit | null = null;
 const FORM_NOTICE = "form-replaced";
+// The form as the open project last saved or ran it (an empty form when the project opens). A
+// form that differs from it is unsaved, and is kept in the browser in case of a reload.
+let savedForm: FormState = DEFAULT_FORM;
 // Opening runs awaits the server; only the latest request may change what is shown.
 let openSeq = 0;
 let projectSeq = 0;
@@ -532,6 +541,9 @@ export const useStore = create<Store>((set, get) => ({
     if (get().project?.session_id === project.session_id) return;
     const seq = ++projectSeq;
     lastEdit = null;
+    savedForm = DEFAULT_FORM;
+    // Read before opening a draft or anything else can replace the form (and so the stored copy).
+    const stored = readStoredForm(project.path);
     setProjectSession(project.session_id);
     openSeq += 1; // whatever was being opened belongs to the previous project
     inflight.clear();
@@ -578,11 +590,13 @@ export const useStore = create<Store>((set, get) => ({
     } else if (finished) await get().openRun(finished.id, "explore");
     else if (draft) await get().openDraft(draft.id, { quiet: true });
     else set({ view: project.datasets.length ? "baseline" : "prompts" });
+    if (stored && seq === projectSeq) restoreForm(stored);
   },
 
   leaveProject: () => {
     projectSeq += 1;
     lastEdit = null;
+    savedForm = DEFAULT_FORM; // the stored copy stays, for when the project opens again
     openSeq += 1;
     datasetSeq += 1;
     inflight.clear();
@@ -678,6 +692,7 @@ export const useStore = create<Store>((set, get) => ({
     const bos = analysisContext(get()).options.prepend_bos;
     const form = { ...formFromSpec(detail.spec), draftId: id };
     set({ view: "experiment", activeRunId: id, analysisSource: "form" });
+    savedForm = form;
     if (options.quiet) set({ form });
     else swapForm(form);
     if (detail.spec.dataset.path !== get().datasetPath) await get().selectDataset(detail.spec.dataset.path);
@@ -765,11 +780,14 @@ export const useStore = create<Store>((set, get) => ({
     if (starting) return; // a second click while the first request is on its way
     starting = true;
     const seq = projectSeq;
-    const draftId = get().form.draftId;
+    const ran = get().form;
+    const draftId = ran.draftId;
     const out = await get().guard(() => api.startRun(spec, draftId));
     starting = false;
     if (!out || seq !== projectSeq) return;
     openSeq += 1;
+    // The run's folder keeps the spec: the form as run is saved.
+    savedForm = { ...ran, draftId: null };
     get().applyJob(out.job);
     set((s) => ({
       // The draft's folder now holds this run: no form, current or in the history, fills it again.
@@ -851,6 +869,11 @@ export const useStore = create<Store>((set, get) => ({
   undoForm: () => stepForm(undoHistory),
   redoForm: () => stepForm(redoHistory),
 
+  markFormSaved: (draftId) => {
+    savedForm = { ...get().form, draftId };
+    set((st) => ({ form: { ...st.form, draftId } }));
+  },
+
   editRun: (spec) => {
     const bos = analysisContext(get()).options.prepend_bos;
     set({ view: "experiment", analysisSource: "form" });
@@ -902,7 +925,9 @@ export const useStore = create<Store>((set, get) => ({
         if (now?.id !== before?.id || now?.revision !== before?.revision || now?.dtype !== before?.dtype || now?.process_weights !== before?.process_weights || now?.device !== before?.device) {
           set({ baselines: {}, tokenPosition: null, ...(!get().activeRunId ? { stagedSites: [], headPins: [], selection: null } : {}) });
           if (now?.extra?.bos === false && get().form.prependBos) {
-            // The spec says so too: the checkbox shows it, and the run records it.
+            // The spec says so too: the checkbox shows it, and the run records it. It follows the
+            // model, so a form that was saved stays saved.
+            if (sameForm(get().form, savedForm)) savedForm = { ...savedForm, prependBos: false };
             set((st) => ({ form: { ...st.form, prependBos: false } }));
             get().notify(`${now.id} has no beginning-of-sequence token, so prompts now start without one.`, "info", { persist: true });
           }
@@ -1018,6 +1043,23 @@ export const useStore = create<Store>((set, get) => ({
     }
   },
 }));
+
+// Keep an unsaved form across reloads: in this browser only, per project folder.
+useStore.subscribe((state, prev) => {
+  if (state.form === prev.form || !state.project || state.project.session_id !== prev.project?.session_id) return;
+  if (sameForm(state.form, savedForm) || sameForm(state.form, DEFAULT_FORM)) clearStoredForm(state.project.path);
+  else writeStoredForm(state.project.path, state.form);
+});
+
+/** Put back the form left unsaved when the project was last open, offering to undo that. */
+function restoreForm(stored: StoredForm): void {
+  const st = useStore.getState();
+  let form = stored.form;
+  // A draft that has run since, or was removed, has no folder for this form to fill.
+  if (form.draftId && !st.runs.some((r) => r.id === form.draftId && r.status === "draft")) form = { ...form, draftId: null };
+  if (sameForm(form, st.form)) return;
+  st.replaceForm(form, { notice: FORM_RESTORED });
+}
 
 /**
  * Replace the form as one undo step, with a notice offering to undo it. The caller handles what
