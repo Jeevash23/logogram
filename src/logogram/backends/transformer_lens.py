@@ -40,6 +40,8 @@ HOOKS: dict[str, str] = {
     "attn_out": "blocks.{layer}.hook_attn_out",
     "mlp_out": "blocks.{layer}.hook_mlp_out",
     "head": "blocks.{layer}.attn.hook_z",
+    # The MLP's input, normalized as the MLP reads it: what transcoders read. Not a site to patch.
+    "mlp_in": "blocks.{layer}.mlp.hook_in",
 }
 PATTERN_HOOK = "blocks.{layer}.attn.hook_pattern"
 
@@ -407,6 +409,8 @@ class TransformerLensBackend(ModelBackend):
             backend="transformer_lens",
             backend_version=version("transformer-lens"),
             extra={
+                # Sites an SAE or transcoder can read here, beyond the patchable ones.
+                "sae_sites": [k for k in ("mlp_in",) if hook_name(k, 0) in bridge.hook_dict],
                 "block_structure": structure,
                 "normalization": str(getattr(cfg, "normalization_type", "unknown")),
                 "activation": str(getattr(cfg, "act_fn", "unknown")),
@@ -513,19 +517,30 @@ class TransformerLensBackend(ModelBackend):
         layer: int,
         edit: Any,
         keep: int = 1,
+        read: str | None = None,
     ) -> torch.Tensor:
-        if kind not in ("resid_pre", "resid_post", "attn_out", "mlp_out"):
+        if kind not in ("resid_pre", "resid_post", "attn_out", "mlp_out", "head"):
             raise BackendError(f"Editing {kind} activations isn't supported.")
+        seen: dict[str, torch.Tensor] = {}
+
+        def keep_read(act: torch.Tensor, hook: Any = None) -> torch.Tensor:
+            seen["read"] = act
+            return act
 
         def fn(act: torch.Tensor, hook: Any = None) -> torch.Tensor:
-            return edit(act).to(dtype=act.dtype)
+            out = edit(act) if read is None else edit(act, seen["read"])
+            return out.to(dtype=act.dtype)
 
+        hooks: list[tuple[str, Callable[..., torch.Tensor]]] = []
+        if read is not None:
+            hooks.append((hook_name(read, layer), keep_read))
+        hooks.append((hook_name(kind, layer), fn))
         kwargs: dict[str, Any] = {"return_type": "logits"}
         if self._logits_to_keep:
             kwargs["logits_to_keep"] = keep
         with self.lock, torch.no_grad():
             logits = self._bridge().run_with_hooks(
-                tokens.to(self.device), fwd_hooks=[(hook_name(kind, layer), fn)], **kwargs
+                tokens.to(self.device), fwd_hooks=_combine(hooks), **kwargs
             )
             return logits[:, -keep:, :].float()
 

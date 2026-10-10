@@ -344,32 +344,43 @@ def sae_fit_report(
     if not prepared:
         raise ValueError("None of these prompts can be used with the loaded model.")
     start = _first_real_token(prepend_bos)
-    key = (sae.site, sae.layer)
-    acts, clean, spliced = [], [], []
+    key = (sae.site_in, sae.layer)
+    out_key = (sae.site, sae.layer)
+    acts, outs, clean, spliced = [], [], [], []
     scorer = Scorer(LogProbDiffMetric(kind="logprob_diff", normalization="dataset_gap"), prepared)
+
+    def written(x: torch.Tensor) -> torch.Tensor:
+        return sae.flat(x) if sae.site == "head" else x
 
     for group in group_by_length(prepared):
         length = group.length
 
-        def splice(x: torch.Tensor, length: int = length) -> torch.Tensor:
+        def splice(
+            x: torch.Tensor, read: torch.Tensor | None = None, length: int = length
+        ) -> torch.Tensor:
             # The prompt's real tokens only: not the beginning-of-sequence token, nor tokens
-            # appended to read a continuation.
+            # appended to read a continuation. A transcoder's prediction replaces its MLP's output.
             out = x.float().clone()
-            f, stats = sae.encode(out[:, start:length])
-            out[:, start:length] = sae.decode(f, stats)
+            source = out if read is None else read.float()
+            f, stats = sae.encode(sae.reads(source[:, start:length]))
+            out[:, start:length] = sae.decode(f, stats).reshape(out[:, start:length].shape)
             return out
 
         def edited(toks: torch.Tensor, keep: int, splice: Any = splice) -> torch.Tensor:
-            return backend.edit_logits(toks, sae.site, sae.layer, splice, keep)
+            read = sae.site_in if sae.transcoder else None
+            return backend.edit_logits(toks, sae.site, sae.layer, splice, keep, read)
 
         for begin in range(0, len(group.members), batch_size):
             idx = group.members[begin : begin + batch_size]
             tokens = group.clean[begin : begin + batch_size]
-            acts.append(backend.capture(tokens, [key])[key][:, start:].float())
+            captured = backend.capture(tokens, list(dict.fromkeys([key, out_key])))
+            acts.append(sae.reads(captured[key][:, start:].float()))
+            outs.append(written(captured[out_key][:, start:].float()))
             clean.append(scorer.score(patched_forward(backend, None), tokens, idx).pref)
             spliced.append(scorer.score(edited, tokens, idx).pref)
     flat = torch.cat([a.reshape(-1, a.shape[-1]) for a in acts])
-    fit = fit_on(sae, flat)
+    targets = torch.cat([a.reshape(-1, a.shape[-1]) for a in outs]) if sae.transcoder else None
+    fit = fit_on(sae, flat, targets)
     ld, ld_spliced = np.concatenate(clean), np.concatenate(spliced)
     fit.update(
         {
@@ -405,8 +416,8 @@ def token_features_report(
     _, target = _single(backend, records, index, prepend_bos)
     tokenized = target.clean if which == "clean" else target.corrupt
     tokens = torch.tensor([tokenized.ids], dtype=torch.long)
-    key = (sae.site, sae.layer)
-    f, _ = sae.encode(backend.capture(tokens, [key])[key][0].float())
+    key = (sae.site_in, sae.layer)
+    f, _ = sae.encode(sae.reads(backend.capture(tokens, [key])[key][0].float()))
     values, ids = f.topk(min(top_k, f.shape[-1]), dim=-1)
     per_token = [
         [
@@ -444,7 +455,7 @@ def feature_report(
     if not 0 <= feature < sae.d_sae:
         raise ValueError(f"The SAE has {sae.d_sae} features; there is no feature {feature}.")
     prepared, target = _single(backend, records, index, prepend_bos)
-    key = (sae.site, sae.layer)
+    key = (sae.site_in, sae.layer)
     start = _first_real_token(prepend_bos)
     strongest: list[dict[str, Any]] = []
     along: list[float] = []
@@ -453,7 +464,7 @@ def feature_report(
         for begin in range(0, len(group.members), batch_size):
             idx = group.members[begin : begin + batch_size]
             f, _ = sae.encode(
-                backend.capture(tokens[begin : begin + batch_size], [key])[key].float()
+                sae.reads(backend.capture(tokens[begin : begin + batch_size], [key])[key].float())
             )
             column = float64(f[..., feature]).cpu()  # [B, pos]
             for row, p in enumerate(idx):

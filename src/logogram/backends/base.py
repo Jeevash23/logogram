@@ -147,10 +147,14 @@ class ModelBackend(ABC):
         layer: int,
         edit: Any,
         keep: int = 1,
+        read: str | None = None,
     ) -> torch.Tensor:
         """Logits at the last ``keep`` positions, ``[B, keep, vocab]``, with the activation at
-        ``(kind, layer)`` replaced by ``edit(activation)``: ``[B, pos, d]`` in, the same shape
-        out. For residual-stream sites the edit changes the stream itself, as patching does."""
+        ``(kind, layer)`` replaced by ``edit(activation)``: ``[B, pos, d]`` in (``[B, pos, H,
+        d_head]`` for heads), the same shape out. For residual-stream sites the edit changes the
+        stream itself, as patching does. With ``read``, the edit also gets that site's activation
+        in the same layer and pass: ``edit(activation, read_activation)`` (a transcoder reads an
+        MLP's input and edits its output)."""
         raise BackendError("Editing activations isn't supported by this model backend.")
 
     def path_patch(

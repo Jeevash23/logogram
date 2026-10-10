@@ -188,9 +188,11 @@ def test_formats_logogram_cant_reproduce_are_refused(tmp_path):
     ):
         with pytest.raises(BackendError, match=message):
             read_sae(_saelens(tmp_path / message.replace(" ", "-").replace("'", ""), cfg, weights))
-    trans = tmp_path / "layers.1.mlp"
-    trans.mkdir()
-    (trans / "cfg.json").write_text(json.dumps({"k": 2, "transcode": True}), encoding="utf-8")
+    skip = tmp_path / "layers.1.mlp"
+    skip.mkdir()
+    (skip / "cfg.json").write_text(
+        json.dumps({"k": 2, "transcode": True, "skip_connection": True}), encoding="utf-8"
+    )
     save_file(
         {
             "encoder.weight": torch.zeros(f, d),
@@ -198,10 +200,10 @@ def test_formats_logogram_cant_reproduce_are_refused(tmp_path):
             "W_dec": torch.zeros(f, d),
             "b_dec": torch.zeros(d),
         },
-        str(trans / "sae.safetensors"),
+        str(skip / "sae.safetensors"),
     )
-    with pytest.raises(BackendError, match="Transcoders"):
-        read_sae(trans)
+    with pytest.raises(BackendError, match="skip connection"):
+        read_sae(skip)
 
 
 def test_an_exact_sae_explains_all_the_variance(tiny_backend, project, exact):

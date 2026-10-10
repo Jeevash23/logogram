@@ -415,14 +415,18 @@ class AppState:
         try:
             sae = load_sae(ref, backend.info.device, progress, cancel)
             info = backend.info
-            if sae.params.d_in != info.d_model:
+            from logogram.features import check_dimensions
+
+            check_dimensions(sae, info)
+            readable = set(info.site_kinds) | set(info.extra.get("sae_sites") or [])
+            if (
+                sae.layer >= info.n_layers
+                or sae.site not in info.site_kinds
+                or sae.site_in not in readable
+            ):
                 raise ValueError(
-                    f"This SAE reads {sae.params.d_in}-dimensional activations, but "
-                    f"{info.id}'s are {info.d_model}-dimensional: it was made for another model."
-                )
-            if sae.layer >= info.n_layers or sae.site not in info.site_kinds:
-                raise ValueError(
-                    f"This SAE reads {sae.site} in layer {sae.layer}, which {info.id} doesn't have."
+                    f"This SAE reads {sae.site_in} in layer {sae.layer}, which {info.id} doesn't "
+                    "have."
                 )
         except Cancelled:
             self._set_sae_status(state="none")

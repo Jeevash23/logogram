@@ -53,11 +53,7 @@ def run_features(
     spec: Spec, backend: ModelBackend, prompts: list[PreparedPrompt], sae: SAE, **kwargs: Any
 ) -> EngineResult:
     exp = spec.experiment
-    if sae.params.d_in != backend.info.d_model:
-        raise ScopeError(
-            f"This SAE reads {sae.params.d_in}-dimensional activations, but the loaded model's "
-            f"are {backend.info.d_model}-dimensional: it was made for another model."
-        )
+    check_dimensions(sae, backend.info)
     if isinstance(exp, AttributionPatching):
         return _attribution(spec, backend, prompts, sae, **kwargs)
     if isinstance(exp, ActivationPatching) or (
@@ -72,6 +68,24 @@ def run_features(
     raise ScopeError(
         "SAE features can be patched, zero-ablated, or estimated by attribution patching."
     )
+
+
+def check_dimensions(sae: SAE, info: Any) -> None:
+    """Refuse an SAE made for another model: its sizes must match the sites it reads and writes."""
+    heads = info.n_heads * info.d_head
+
+    def size(site: str) -> int:
+        return heads if site == "head" else info.d_model
+
+    for what, site, d in (
+        ("reads", sae.site_in, sae.params.d_in),
+        ("writes", sae.site, sae.params.d_out),
+    ):
+        if d != size(site):
+            raise ScopeError(
+                f"This SAE {what} {d}-dimensional activations, but the loaded model's are "
+                f"{size(site)}-dimensional there: it was made for another model."
+            )
 
 
 def _directions(
@@ -110,12 +124,31 @@ def _check_continuations(scorer: Any, positions: list[Any]) -> None:
         )
 
 
-def _fit(sae: SAE, acts: list[torch.Tensor], skip_first: bool) -> dict[str, Any]:
+def _fit(
+    sae: SAE,
+    acts: list[torch.Tensor],
+    skip_first: bool,
+    targets: list[torch.Tensor] | None = None,
+) -> dict[str, Any]:
     """The SAE's fit on the receiver prompts' activations (without the first token when it is
-    the beginning-of-sequence token, whose activations SAEs usually aren't trained on)."""
-    rows = [a[:, 1:] if skip_first and a.shape[1] > 1 else a for a in acts]
-    flat = torch.cat([r.reshape(-1, r.shape[-1]) for r in rows])
-    return fit_on(sae, flat)
+    the beginning-of-sequence token, whose activations SAEs usually aren't trained on). A
+    transcoder's fit is how well it predicts its MLP's outputs (``targets``) from the inputs."""
+
+    def stack(parts: list[torch.Tensor]) -> torch.Tensor:
+        rows = [sae.reads(a) if a.dim() == 4 else a for a in parts]
+        rows = [r[:, 1:] if skip_first and r.shape[1] > 1 else r for r in rows]
+        return torch.cat([r.reshape(-1, r.shape[-1]) for r in rows])
+
+    return fit_on(sae, stack(acts), stack(targets) if targets is not None else None)
+
+
+def _write_direction(sae: SAE, feature: int, stats: Any, like: torch.Tensor) -> torch.Tensor:
+    """What one unit of a feature adds to the activation it writes, shaped like ``like``'s last
+    dimensions (heads' outputs are written side by side)."""
+    direction = sae.feature_direction(feature, stats)
+    if like.dim() >= 2 and sae.site == "head":
+        return direction.reshape(like.shape[-2], like.shape[-1])
+    return direction
 
 
 def _patching(
@@ -147,7 +180,8 @@ def _patching(
     source = source_override or source
     warnings = check_gap(spec, baselines, prompts, receiver, reference)
     _check_continuations(scorer, [rs.site.position for rs in sites])
-    key = (sae.site, sae.layer)
+    key = (sae.site_in, sae.layer)  # what the features are read from
+    out_key = (sae.site, sae.layer)  # what they write (the same site, but for a transcoder)
     features = sorted({rs.site.feature for rs in sites if rs.site.feature is not None})
     column = {f: j for j, f in enumerate(features)}
     n = len(prompts)
@@ -165,6 +199,7 @@ def _patching(
         warnings=warnings,
     )
     receiver_acts: list[torch.Tensor] = []
+    receiver_outs: list[torch.Tensor] = []
     total = len(sites) * n
     done = 0
     local_of = {i: li for g in groups for li, i in enumerate(g.members)}
@@ -176,11 +211,14 @@ def _patching(
             source_tokens = group.clean if source == "clean" else group.corrupt
             for sl in _chunks(len(group.members), batch_size):
                 x = backend.capture(source_tokens[sl], [key])[key]
-                f, _ = sae.encode(x)
+                f, _ = sae.encode(sae.reads(x))
                 for row, p in enumerate(group.members[sl]):
                     targets[p] = f[row][:, features]  # [pos, n_features]
         for sl in _chunks(len(group.members), batch_size):
-            receiver_acts.append(backend.capture(tokens[sl], [key])[key].float())
+            captured = backend.capture(tokens[sl], list(dict.fromkeys([key, out_key])))
+            receiver_acts.append(captured[key].float())
+            if sae.transcoder:
+                receiver_outs.append(captured[out_key].float())
         rows = [(rs, p) for rs in sites for p in group.members]
         for sl in _chunks(len(rows), batch_size):
             if cancel is not None and cancel.is_set():
@@ -190,13 +228,16 @@ def _patching(
 
             def edit(
                 x: torch.Tensor,
+                read: torch.Tensor | None = None,
                 chunk: list[tuple[ResolvedSite, int]] = chunk,
                 targets: dict[int, torch.Tensor] = targets,
                 length: int = group.length,
             ) -> torch.Tensor:
                 # Only the prompt's positions: tokens appended to read a continuation stay as
-                # they are.
-                f, stats = sae.encode(x[:, :length])
+                # they are. A transcoder reads the MLP's input and changes its output; an SAE
+                # reads and changes the same activation.
+                source_x = x if read is None else read
+                f, stats = sae.encode(sae.reads(source_x[:, :length]))
                 out = x.float().clone()
                 for b, (rs, p) in enumerate(chunk):
                     i = int(rs.site.feature or 0)
@@ -212,13 +253,14 @@ def _patching(
                         keep[at] = change[at]
                         change = keep
                     row_stats = None if stats is None else (stats[0][b], stats[1][b])
-                    out[b, :length] = out[b, :length] + change[:, None] * sae.feature_direction(
-                        i, row_stats
-                    )
+                    direction = _write_direction(sae, i, row_stats, out[b, 0])
+                    shape = (-1,) + (1,) * direction.dim()
+                    out[b, :length] = out[b, :length] + change.reshape(shape) * direction
                 return out
 
             def forward(toks: torch.Tensor, keep: int, edit: Any = edit) -> torch.Tensor:
-                return backend.edit_logits(toks, sae.site, sae.layer, edit, keep)
+                read = sae.site_in if sae.transcoder else None
+                return backend.edit_logits(toks, sae.site, sae.layer, edit, keep, read)
 
             scores = scorer.score(forward, tokens[local], [p for _, p in chunk])
             for (rs, p), value, prob, pref in zip(
@@ -232,7 +274,12 @@ def _patching(
                 on_progress(done, total, sae.layer)
     result.extra["features"] = {
         "sae": sae.describe() | {"fit": None},
-        "fit": _fit(sae, receiver_acts, spec.tokenization.prepend_bos),
+        "fit": _fit(
+            sae,
+            receiver_acts,
+            spec.tokenization.prepend_bos,
+            receiver_outs if sae.transcoder else None,
+        ),
     }
     warnings.extend(check_values(patched, "patched values", backend.info.dtype))
     if on_layer is not None:
@@ -286,7 +333,9 @@ def _attribution(
             "SAE features are estimated from a single gradient. Choose that method, or estimate "
             "the model's components with integrated gradients."
         )
-    key = (sae.site, sae.layer)
+    key = (sae.site_in, sae.layer)  # the features are read here
+    out_key = (sae.site, sae.layer)  # and written here (the same site, but for a transcoder)
+    keys = list(dict.fromkeys([key, out_key]))
     n, d_sae = len(prompts), sae.d_sae
     W_dec = sae.params.W_dec
     # Every feature's estimate for every prompt (or, for chosen sites, those features' at every
@@ -294,6 +343,7 @@ def _attribution(
     estimates = np.zeros((n, d_sae)) if every else np.zeros((len(chosen), n))
     site_total = np.zeros(n)
     receiver_acts: list[torch.Tensor] = []
+    receiver_outs: list[torch.Tensor] = []
     done = 0
     for group in groups:
         receiver_tokens = group.clean if receiver == "clean" else group.corrupt
@@ -302,12 +352,23 @@ def _attribution(
             if cancel is not None and cancel.is_set():
                 raise Cancelled()
             idx = group.members[sl]
-            x_src = backend.capture(source_tokens[sl], [key])[key].float()
-            acts, grads = metric_gradients(backend, scorer, receiver_tokens[sl], idx, [key])
-            x_rec, grad = acts[key].float(), grads[key].float()
-            receiver_acts.append(x_rec)
+            src = backend.capture(source_tokens[sl], keys)
+            acts, grads = metric_gradients(backend, scorer, receiver_tokens[sl], idx, keys)
+            x_src = sae.reads(src[key].float())
+            x_rec = sae.reads(acts[key].float())
+            grad = (
+                sae.flat(grads[out_key].float()) if sae.site == "head" else grads[out_key].float()
+            )
+            receiver_acts.append(acts[key].float())
+            if sae.transcoder:
+                receiver_outs.append(acts[out_key].float())
+            out_src = sae.flat(src[out_key].float()) if sae.site == "head" else src[out_key].float()
+            out_rec = (
+                sae.flat(acts[out_key].float()) if sae.site == "head" else acts[out_key].float()
+            )
             positions = range(x_rec.shape[1])
-            per_position = ((x_src - x_rec) * grad).sum(-1)  # [B, pos]
+            # The whole site's estimate, to see how much of it the features account for.
+            per_position = ((out_src - out_rec) * grad).sum(-1)  # [B, pos]
             if every:
                 rows = float64(torch.zeros(len(idx), d_sae, device=x_rec.device))
                 for pos in positions:
@@ -401,7 +462,12 @@ def _attribution(
         extra={
             "features": {
                 "sae": sae.describe() | {"fit": None},
-                "fit": _fit(sae, receiver_acts, spec.tokenization.prepend_bos),
+                "fit": _fit(
+                    sae,
+                    receiver_acts,
+                    spec.tokenization.prepend_bos,
+                    receiver_outs if sae.transcoder else None,
+                ),
                 "site_estimate": float(site_total.mean()),
                 "features_estimate": None if features_sum is None else float(features_sum.mean()),
                 "evaluated": d_sae if every else len(chosen),

@@ -136,6 +136,7 @@ MODEL_SUGGESTIONS = [
     "HuggingFaceTB/SmolLM2-360M",
     "Qwen/Qwen3-0.6B-Base",
     "google/gemma-3-270m",
+    "google/gemma-3-1b-pt",
     "microsoft/phi-1_5",
 ]
 
@@ -172,6 +173,34 @@ SAE_SUGGESTIONS: dict[str, list[dict[str, str]]] = {
         {
             "repo": "EleutherAI/sae-llama-3.2-1b-131k",
             "detail": "TopK SAEs · MLP outputs · 131,072 features",
+        }
+    ],
+    "google/gemma-3-270m": [
+        {
+            "repo": "google/gemma-scope-2-270m-pt",
+            "detail": "Gemma Scope 2 · SAEs on each layer's output, attention heads and MLP, and "
+            "transcoders · 16k to 262k features · load the model with weight processing off",
+        }
+    ],
+    "google/gemma-3-270m-it": [
+        {
+            "repo": "google/gemma-scope-2-270m-it",
+            "detail": "Gemma Scope 2 · SAEs and transcoders · load the model with weight "
+            "processing off",
+        }
+    ],
+    "google/gemma-3-1b-pt": [
+        {
+            "repo": "google/gemma-scope-2-1b-pt",
+            "detail": "Gemma Scope 2 · SAEs on each layer's output, attention heads and MLP, and "
+            "transcoders · 16k to 262k features · load the model with weight processing off",
+        }
+    ],
+    "google/gemma-3-1b-it": [
+        {
+            "repo": "google/gemma-scope-2-1b-it",
+            "detail": "Gemma Scope 2 · SAEs and transcoders · load the model with weight "
+            "processing off",
         }
     ],
 }
