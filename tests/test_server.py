@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -168,6 +169,32 @@ def test_gui_flow_end_to_end(app, client, tiny_backend, tmp_path: Path, spec_fac
     assert derived[0]["derived_from"]["kind"] == "robustness"
     comparison = client.get(f"/api/compare?a={run_id}&b={robust['run_id']}", headers=AUTH).json()
     assert comparison["same_layout"] and comparison["spec_differences"]
+
+
+def test_dataset_detail_names_answers_read_as_continuations(app, client, tiny_backend, tmp_path):
+    """The app says before a run which answers only a metric that reads continuations can score."""
+    headers = {**AUTH, **ORIGIN}
+    client.post("/api/projects", json={"name": "Answers", "parent": str(tmp_path)}, headers=headers)
+    clean = "When Mary and John went to the store, John gave a drink to"
+    corrupt = "When Mary and John went to the store, Mary gave a drink to"
+    lines = [
+        {"clean": clean, "corrupt": corrupt, "answer": " Mary", "distractor": " John"},
+        {"clean": clean, "corrupt": corrupt, "answer": " Mary Mary", "distractor": " John"},
+        # A set of single tokens is read at one position, like a single token.
+        {"clean": clean, "corrupt": corrupt, "answer": [" Mary", " John"], "distractor": " to"},
+    ]
+    text = "\n".join(json.dumps(line) for line in lines)
+    created = client.post(
+        "/api/datasets/import", json={"name": "answers", "text": text}, headers=headers
+    )
+    assert created.status_code == 200, created.text
+    params = {"path": "datasets/answers.jsonl"}
+    # Without a model there are no tokens to count.
+    assert client.get("/api/dataset", params=params, headers=AUTH).json()["continuations"] is None
+    app.state.logogram.backend = tiny_backend
+    app.state.logogram.model_status = {"state": "ready"}
+    detail = client.get("/api/dataset", params=params, headers=AUTH).json()
+    assert detail["issues"] == [] and detail["continuations"] == [1]
 
 
 def test_every_endpoint_matches_its_schema(app, client, tiny_backend, tmp_path, spec_factory):

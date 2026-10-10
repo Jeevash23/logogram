@@ -1,7 +1,7 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useCallback, useMemo } from "react";
 
-import type { ExperimentSpec, Layout, SiteBase, SiteResult, Spec } from "../api/types";
+import type { ExperimentSpec, Layout, Side, SiteBase, SiteResult, Spec } from "../api/types";
 import { Heatmap, type Axis } from "../components/Heatmap/Heatmap";
 import { ScaleBar } from "../components/Heatmap/ScaleBar";
 import { Logogram } from "../components/Logogram";
@@ -10,7 +10,8 @@ import { divergingScale, niceBound, SCALE_FLOOR, type ColorScale, type ResolvedT
 import { ago, capitalize, ci, count, duration, num, pct, shortRevision, signed } from "../lib/format";
 import { modelName, siteValue, useActiveRun, useRunProfile } from "../lib/hooks";
 import { findSite, gridKey, layoutTitle, selectionOfSite, siteGrid, type Selection } from "../lib/sites";
-import { baselineText, measureOf, measureWords, positionText } from "../lib/spec";
+import { metricWords } from "../lib/metrics";
+import { baselineText, experimentText, measureOf, measureWords, positionText } from "../lib/spec";
 import { useStore } from "../store/app";
 import { Distribution } from "../components/Distribution";
 import { api } from "../api/client";
@@ -69,7 +70,9 @@ export function ResultsView() {
   const layout = run.layout;
   const selectedSite = findSite(run.sites, selection);
 
-  const words = measureWords(spec?.experiment);
+  const metricSpec = summary?.metric ?? spec?.metric;
+  const words = measureWords(spec?.experiment, metricSpec);
+  const measured = metricWords(metricSpec);
   const attribution = measureOf(spec?.experiment) === "attribution";
   const strongest = resultList
     .filter((x) => x.effect.mean !== null && !x.variant?.control)
@@ -213,12 +216,12 @@ export function ResultsView() {
           ) : (
             <>
               <div>
-                <dt>Clean logit diff</dt>
-                <dd className="figure">{signed(summary.baseline.clean.logit_diff.mean)}</dd>
+                <dt>Clean {measured.short}</dt>
+                <dd className="figure">{signed((summary.baseline.clean.metric ?? summary.baseline.clean.logit_diff).mean)}</dd>
               </div>
               <div>
-                <dt>Corrupt logit diff</dt>
-                <dd className="figure">{signed(summary.baseline.corrupt.logit_diff.mean)}</dd>
+                <dt>Corrupt {measured.short}</dt>
+                <dd className="figure">{signed((summary.baseline.corrupt.metric ?? summary.baseline.corrupt.logit_diff).mean)}</dd>
               </div>
               <div>
                 <dt>Gap the effects are measured against</dt>
@@ -261,6 +264,7 @@ export function ResultsView() {
               results={run.results}
               metric={metric}
               experiment={spec?.experiment}
+              measuredBy={metricSpec}
               color={color}
               theme={theme}
               flagged={flagged}
@@ -302,6 +306,7 @@ function ResultsHeatmap({
   results,
   metric,
   experiment,
+  measuredBy,
   color,
   theme,
   flagged,
@@ -314,6 +319,8 @@ function ResultsHeatmap({
   results: Record<number, SiteResult>;
   metric: "effect" | "delta";
   experiment: ExperimentSpec | undefined;
+  /** The run's metric, which names its values. */
+  measuredBy: { kind?: string | null; target?: Side | null } | undefined;
   color: ColorScale;
   theme: ResolvedTheme;
   flagged: Set<number>;
@@ -334,7 +341,7 @@ function ResultsHeatmap({
       })),
     [layout],
   );
-  const words = useMemo(() => measureWords(experiment), [experiment]);
+  const words = useMemo(() => measureWords(experiment, measuredBy), [experiment, measuredBy]);
   const attribution = measureOf(experiment) === "attribution";
   const value = useCallback(
     (ri: number, ci_: number) => {
@@ -425,7 +432,7 @@ function MethodsLine({ spec, n }: { spec: Spec; n: number | undefined }) {
           : e.kind === "direct_logit_attribution"
             ? `Direct logit attribution of the ${e.prompts} prompts`
             : e.kind === "attribution_patching"
-              ? `Estimate patching ${e.direction === "clean_to_corrupt" ? "clean → corrupt" : "corrupt → clean"} (attribution patching)`
+              ? `${experimentText(e)} (attribution patching)`
               : e.kind === "path_patching"
                 ? `Path patching ${e.direction === "clean_to_corrupt" ? "clean → corrupt" : "corrupt → clean"} into ${e.receivers.map((x) => (x.kind === "logits" ? "logits" : `L${x.layer} H${x.head} ${x.input}`)).join(", ")}${e.freeze_mlps ? ", MLPs held" : ""}`
                 : e.kind === "steering"
@@ -436,7 +443,7 @@ function MethodsLine({ spec, n }: { spec: Spec; n: number | undefined }) {
       <span className={r.sep}>·</span>
       {e.kind === "direct_logit_attribution"
         ? `logit difference, as a share of ${spec.metric.normalization === "dataset_gap" ? "the mean" : "each prompt's"}`
-        : `logit difference, normalized by ${spec.metric.normalization === "dataset_gap" ? "the dataset gap" : "each prompt's gap"}`}
+        : `${metricWords(spec.metric).label}, normalized by ${spec.metric.normalization === "dataset_gap" ? "the dataset gap" : "each prompt's gap"}`}
       {n !== undefined && <><span className={r.sep}>·</span>n = {count(n)}</>}
       <span className={r.sep}>·</span>{Math.round(spec.statistics.ci * 100)}% CI, {count(spec.statistics.bootstrap)} resamples, seed {spec.statistics.seed}
       <span className={r.sep}>·</span>{modelName(spec.model.id)}{spec.model.revision ? ` @ ${shortRevision(spec.model.revision)}` : ""}, {spec.model.dtype}

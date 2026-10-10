@@ -94,3 +94,8 @@
   background: var(--hover);
   color: var(--text);
 }
+
+/* A button that resolves what a callout in the form points out. */
+.calloutAction {
+  margin-top: 8px;
+}

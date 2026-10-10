@@ -9,6 +9,8 @@ import { KIND_SHORT, parseHeadQuery } from "../lib/sites";
 import { buildSpec, datasetFacts, parseStrengths, savedDifferences } from "../lib/buildSpec";
 import { experimentText, receiverLabel, scopeFor, scopeShort, scopeText, siteText, suggestName, workload, workloadText } from "../lib/spec";
 import { useStore, type FormState } from "../store/app";
+import { metricWords } from "../lib/metrics";
+import { MetricSettings } from "./MetricSettings";
 import s from "./views.module.css";
 import e from "./ExperimentView.module.css";
 
@@ -214,9 +216,9 @@ export function ExperimentView() {
               {form.kind === "attribution_patching" && (
                 <p className={s.small}>
                   Estimates what patching each site would do, to first order: (source activation − receiver activation) · the
-                  gradient of the logit difference at the receiver run. One gradient covers every site, so large sweeps take
-                  seconds. It misses saturation and can miss or even invert an effect: verify the strongest sites by patching
-                  from the results.
+                  gradient of the metric at the receiver run. One gradient covers every site, so large sweeps take seconds. It
+                  misses saturation and can miss or even invert an effect: verify the strongest sites by patching from the
+                  results.
                 </p>
               )}
             </div>
@@ -240,48 +242,7 @@ export function ExperimentView() {
 
         <section className={e.section}>
           <h3 className={e.sectionTitle}>Metric</h3>
-          <p className={e.text}>
-            Logit difference at the last token: logit(answer) − logit(distractor). Per-prompt values are always kept.
-          </p>
-          {form.kind === "direct_logit_attribution" ? (
-            <Field
-              label="Express each direct effect as a share of"
-              help={
-                form.normalization === "dataset_gap"
-                  ? "Each prompt's term divided by the mean logit difference of the chosen prompts. With the embeddings and biases, the shares add up to one."
-                  : "Each prompt's term divided by its own logit difference. Unstable when a prompt's logit difference is near zero."
-              }
-            >
-              <Segmented
-                label="Normalization"
-                value={form.normalization}
-                onChange={(normalization) => setForm({ normalization })}
-                options={[
-                  { value: "dataset_gap", label: "Mean logit difference" },
-                  { value: "prompt_gap", label: "Each prompt's" },
-                ]}
-              />
-            </Field>
-          ) : (
-            <Field
-              label="Normalize the effect by"
-              help={
-                form.normalization === "dataset_gap"
-                  ? "Each prompt's change divided by the dataset's mean clean–corrupt gap. Stable, and its mean is the usual normalized metric."
-                  : "Each prompt's change divided by its own clean–corrupt gap. Exactly 0 to 1 per prompt, but unstable when a gap is small."
-              }
-            >
-              <Segmented
-                label="Normalization"
-                value={form.normalization}
-                onChange={(normalization) => setForm({ normalization })}
-                options={[
-                  { value: "dataset_gap", label: "Dataset mean gap" },
-                  { value: "prompt_gap", label: "Each prompt's gap" },
-                ]}
-              />
-            </Field>
-          )}
+          <MetricSettings form={form} onChange={setForm} facts={facts} />
         </section>
 
         <section className={e.section}>
@@ -368,7 +329,8 @@ export function ExperimentView() {
           ) : (
             spec && (
               <p className={e.summaryText}>
-                <strong>{experimentText(spec.experiment)}</strong> at {scopeText(spec.scope)}, over {plural(n, "prompt")}.
+                <strong>{experimentText(spec.experiment)}</strong> at {scopeText(spec.scope)}, over {plural(n, "prompt")},
+                measured by the {metricWords(spec.metric).label}.
                 {rows !== null && <> {workloadText(spec, rows)}</>}{" "}
                 <span className="faint">
                   Press <Kbd>{MOD}</Kbd> <Kbd>Enter</Kbd> to run.

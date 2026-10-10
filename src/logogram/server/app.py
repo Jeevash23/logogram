@@ -613,6 +613,11 @@ def create_app(
             prepared, issues = prepare_with_issues(state.backend, records, prepend_bos)
             out["issues"] = [i.to_dict() for i in issues]
             out["lengths"] = sorted({p.length for p in prepared})
+            # Answers this model reads as continuations of several tokens: only the metrics that
+            # read continuations can score them, which the app says before a run is started.
+            out["continuations"] = [
+                p.index for p in prepared if p.answer.positions > 1 or p.distractor.positions > 1
+            ]
         return out
 
     @app.get("/api/ioi/templates", response_model=list[M.IOITemplateOut])

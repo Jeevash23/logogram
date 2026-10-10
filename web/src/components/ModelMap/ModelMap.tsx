@@ -6,6 +6,7 @@ import { cornerFlag, font, inkRing, prepareCanvas, useChromeColors, useElementSi
 import { divergingScale, niceBound, SCALE_FLOOR } from "../../lib/color";
 import { ci, signed } from "../../lib/format";
 import { siteValue, useActiveRun, useArchitecture, modelName } from "../../lib/hooks";
+import { measureWords } from "../../lib/spec";
 import { usePrefersReducedMotion } from "../../lib/motion";
 import {
   componentLabel,
@@ -378,10 +379,11 @@ export function ModelMap({ prominent = false, structureOnly = false }: { promine
   const hoverData = hover ? cells.get(cellKey(hover.sel.layer, hover.sel.part, hover.sel.head)) : undefined;
   // Screen readers can't see the canvas: announce the selected cell and its value.
   const selectedData = selection ? cells.get(cellKey(selection.layer, selection.part, selection.head)) : undefined;
+  const words = measureWords(run.detail?.spec.experiment, run.detail?.summary?.metric ?? run.detail?.spec.metric);
   const announcement = selection
     ? `${readoutLabel(selection, selectedData)}: ${
         selectedData?.site
-          ? `${metric === "effect" ? "normalized effect" : "change in logit difference"} ${signed(siteValue(selectedData.site, metric), 3)}, confidence interval ${
+          ? `${(metric === "effect" ? words.effect : words.delta).toLowerCase()} ${signed(siteValue(selectedData.site, metric), 3)}, confidence interval ${
               metric === "effect"
                 ? ci(selectedData.site.effect.lo, selectedData.site.effect.hi)
                 : ci(selectedData.site.delta.lo, selectedData.site.delta.hi)
@@ -391,7 +393,7 @@ export function ModelMap({ prominent = false, structureOnly = false }: { promine
             : "not measured in this run"
       }`
     : "";
-  const statsTitle = metric === "effect" ? "effect" : "Δ logit diff";
+  const statsTitle = metric === "effect" ? "effect" : words.delta;
 
   return (
     <div className={`${s.map} ${prominent ? s.prominent : ""}`}>

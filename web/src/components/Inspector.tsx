@@ -14,6 +14,7 @@ import {
   type ResidKind,
   type Selection,
 } from "../lib/sites";
+import { metricWords } from "../lib/metrics";
 import { baselineText, experimentText, measureOf, measureWords, positionText } from "../lib/spec";
 import { useStore } from "../store/app";
 import { Distribution } from "./Distribution";
@@ -97,6 +98,7 @@ function ComponentHeader({ selection }: { selection: Selection }) {
 
 function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | null; selection: Selection }) {
   const exp = spec.experiment;
+  const measured = metricWords(summary?.metric ?? spec.metric);
   const base = summary ? findSite(summary.sites, selection) : null;
   const position = base ? positionText(base.position) : selection.positionKey ? `position ${selection.positionKey}` : "the positions in the spec";
   const kind = base?.kind ?? selection.kind;
@@ -151,14 +153,14 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
     const [receiver, source] = exp.direction === "clean_to_corrupt" ? ["corrupt", "clean"] : ["clean", "corrupt"];
     how =
       `Estimates, to first order, what changing ${what} at ${position} in each ${receiver} prompt to its value in the paired ${source} ` +
-      `prompt would do: (${source} − ${receiver} feature activation) × the gradient of the logit difference along the feature's ` +
+      `prompt would do: (${source} − ${receiver} feature activation) × ${gradient(exp, receiver, measured.label)} along the feature's ` +
       "decoder direction. Nothing is changed; verify the strongest by patching.";
   } else if (exp.kind === "attribution_patching") {
     const [receiver, source] = exp.direction === "clean_to_corrupt" ? ["corrupt", "clean"] : ["clean", "corrupt"];
     how =
       `Estimates, to first order, what replacing ${what} at ${position} in each ${receiver} prompt with its value from the paired ` +
-      `${source} prompt would do: (${source} activation − ${receiver} activation) · the gradient of the logit difference at the ` +
-      `${receiver} run. Nothing is replaced. The estimate misses saturation and can miss or even invert an effect; verify it by patching.`;
+      `${source} prompt would do: (${source} activation − ${receiver} activation) · ${gradient(exp, receiver, measured.label)}. ` +
+      `Nothing is replaced. ${exp.method === "integrated_gradients" ? "Averaging the gradient along the way corrects much of the saturation one gradient misses, but it is still an estimate" : "The estimate misses saturation and can miss or even invert an effect"}; verify it by patching.`;
   } else if (exp.kind === "path_patching") {
     const [receiver, source] = exp.direction === "clean_to_corrupt" ? ["corrupt", "clean"] : ["clean", "corrupt"];
     const into = exp.receivers.map((r) => (r.kind === "logits" ? "the logits" : `L${r.layer} H${r.head}'s ${{ q: "query", k: "key", v: "value" }[r.input]}`)).join(", ");
@@ -189,6 +191,7 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
     how = `Runs each clean prompt and replaces ${what} at ${position} with ${source}.`;
   }
   const receiver = summary?.receiver ?? ((exp.kind === "activation_patching" || exp.kind === "attribution_patching" || exp.kind === "path_patching") && exp.direction === "clean_to_corrupt" ? "corrupt" : "clean");
+  const metricText = `${measured.formula}${(summary?.metric ?? spec.metric).kind === "logit_diff" ? " at the last token" : ""}`;
   const reference = summary?.reference ?? (receiver === "corrupt" ? "clean" : "corrupt");
   const gap = summary?.metric.denominator;
   return (
@@ -201,7 +204,7 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
       <p className={s.text}>{how}</p>
       <h4 className={s.sectionTitle}>Metric</h4>
       <p className={s.text}>
-        Logit difference at the last token: logit(answer) − logit(distractor).
+        {capitalize(measured.label)}: {metricText}.
       </p>
       <p className={s.text}>
         {exp.kind === "attribution_patching" ? "Estimated effect = (estimated patched" : exp.kind === "steering" ? "Normalized effect = (steered" : "Normalized effect = (patched"} − {receiver}) ÷{" "}
@@ -249,8 +252,11 @@ function Evidence({
 
   const stats = summary?.statistics;
   const ciLevel = stats ? Math.round(stats.ci * 100) : 95;
-  const exp = useActiveRun().detail?.spec.experiment;
-  const words = measureWords(exp);
+  const active = useActiveRun().detail;
+  const exp = active?.spec.experiment;
+  const measuredBy = summary?.metric ?? active?.spec.metric;
+  const words = measureWords(exp, measuredBy);
+  const short = metricWords(measuredBy).short;
   const intervention = measureOf(exp) === "intervention";
   const noInterval = site.effect.lo === null || site.effect.hi === null;
   const byIndex = useMemo(() => new Map(detail?.prompts.map((p) => [p.index, p]) ?? []), [detail]);
@@ -319,8 +325,8 @@ function Evidence({
             hi={site.effect.hi}
             onPick={(i) => setPromptIndex(i)}
           />
-          <PromptList title="Strongest" indices={detail.strongest} byIndex={byIndex} onPick={setPromptIndex} intervention={intervention} />
-          <PromptList title="Weakest" indices={detail.weakest} byIndex={byIndex} onPick={setPromptIndex} intervention={intervention} />
+          <PromptList title="Strongest" indices={detail.strongest} byIndex={byIndex} onPick={setPromptIndex} intervention={intervention} short={short} />
+          <PromptList title="Weakest" indices={detail.weakest} byIndex={byIndex} onPick={setPromptIndex} intervention={intervention} short={short} />
         </>
       )}
     </section>
@@ -391,12 +397,15 @@ function PromptList({
   byIndex,
   onPick,
   intervention,
+  short,
 }: {
   title: string;
   indices: number[];
   byIndex: Map<number, SiteDetail["prompts"][number]>;
   onPick: (i: number) => void;
   intervention: boolean;
+  /** The run's metric, as a label. */
+  short: string;
 }) {
   return (
     <div className={s.promptList}>
@@ -413,7 +422,11 @@ function PromptList({
               {p.answer && p.distractor ? `${p.answer.trim()} vs ${p.distractor.trim()} · ` : ""}
               {intervention ? (
                 <>
-                  logit diff {signed(p.receiver_logit_diff, 2)} → {signed(p.patched_logit_diff, 2)}
+                  {p.receiver_metric !== undefined && p.receiver_metric !== null ? (
+                    <>{short} {signed(p.receiver_metric, 2)} → {signed(p.patched_metric, 2)}</>
+                  ) : (
+                    <>logit diff {signed(p.receiver_logit_diff, 2)} → {signed(p.patched_logit_diff, 2)}</>
+                  )}
                   {p.flipped ? " · flipped" : ""}
                 </>
               ) : (
@@ -556,6 +569,7 @@ function RunOverview() {
   const run = useActiveRun();
   const select = useStore((st) => st.select);
   const summary = run.detail?.summary;
+  const short = metricWords(summary?.metric ?? run.detail?.spec.metric).short;
   const top = useMemo(() => {
     const list = Object.values(run.results).filter((x) => x.effect.mean !== null);
     return list.sort((a, b) => Math.abs(b.effect.mean ?? 0) - Math.abs(a.effect.mean ?? 0)).slice(0, 5);
@@ -582,12 +596,12 @@ function RunOverview() {
           <dd>{count(summary.n_prompts)}</dd>
           <dt>Clean</dt>
           <dd>
-            logit diff {signed(summary.baseline.clean.logit_diff.mean)}{" "}
+            {short} {signed((summary.baseline.clean.metric ?? summary.baseline.clean.logit_diff).mean)}{" "}
             <span className={s.muted}>· prefers answer in {summary.baseline.clean.prefers_answer}</span>
           </dd>
           <dt>Corrupt</dt>
           <dd>
-            logit diff {signed(summary.baseline.corrupt.logit_diff.mean)}{" "}
+            {short} {signed((summary.baseline.corrupt.metric ?? summary.baseline.corrupt.logit_diff).mean)}{" "}
             <span className={s.muted}>· prefers answer in {summary.baseline.corrupt.prefers_answer}</span>
           </dd>
         </dl>
@@ -617,4 +631,11 @@ function RunOverview() {
       <p className={s.fine}>Select a cell on the map or in the results for its evidence.</p>
     </div>
   );
+}
+
+/** The gradient an estimate multiplies by: at the receiver run, or averaged along the way. */
+function gradient(exp: { method?: string; steps?: number | null }, receiver: string, metric: string): string {
+  return exp.method === "integrated_gradients"
+    ? `the gradient of the ${metric}, averaged over ${exp.steps} runs between the ${receiver} prompt and the other (integrated gradients)`
+    : `the gradient of the ${metric} at the ${receiver} run`;
 }

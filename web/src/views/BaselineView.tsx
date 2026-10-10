@@ -2,13 +2,14 @@ import { scaleLinear } from "d3-scale";
 import { useRef, useState } from "react";
 
 import { api } from "../api/client";
-import type { BaselinePrompt, BaselineReport, TopToken } from "../api/types";
+import type { BaselinePrompt, BaselineReport, PromptRecord, TopToken } from "../api/types";
 import { Button, Callout, Empty } from "../components/ui";
 import { useElementSize } from "../lib/canvas";
 import { divergingScale, markColor, niceBound } from "../lib/color";
-import { num, plural, prob, signed, visibleToken } from "../lib/format";
+import { answerText, capitalize, num, plural, prob, signed, visibleToken } from "../lib/format";
 import { modelName, useAnalysisContext } from "../lib/hooks";
 import { analysisContext } from "../lib/analysis";
+import { metricWords, signedMetric } from "../lib/metrics";
 import { useStore } from "../store/app";
 import s from "./views.module.css";
 import b from "./BaselineView.module.css";
@@ -34,6 +35,7 @@ export function BaselineView() {
 
   const ready = model.state === "ready" && !!datasetPath && !context.error && !!context.metric;
   const verdict = report?.summary ? (behaviorPresent(report) ? "The behavior is present" : "The behavior is weak or missing") : null;
+  const measured = metricWords(context.metric ?? context.tokenMetric);
 
   return (
     <div className={s.view}>
@@ -53,7 +55,7 @@ export function BaselineView() {
         </div>
       </div>
 
-      <p className={s.small}>{context.label}</p>
+      <p className={s.small}>{context.label} · {measured.label}</p>
       {context.error && <Callout tone="error" title="The loaded model differs">{context.error}</Callout>}
       {!context.error && context.metricError && <Callout tone="error" title="The metric isn't complete">{context.metricError}</Callout>}
 
@@ -75,6 +77,7 @@ export function BaselineView() {
 }
 
 function Report({ report, index }: { report: BaselineReport; index: number }) {
+  const dataset = useStore((st) => st.dataset);
   const sum = report.summary;
   if (!sum) {
     return (
@@ -83,16 +86,36 @@ function Report({ report, index }: { report: BaselineReport; index: number }) {
       </Callout>
     );
   }
-  const gap = sum.gap ?? 0;
   const present = behaviorPresent(report);
   const prompt = report.prompts.find((p) => p.index === index) ?? report.prompts[0];
+  const metric = sum.metric;
+  // A server from before metrics could be chosen measured the logit difference: the preference.
+  const kind = metric?.kind ?? "logit_diff";
+  const words = metricWords(metric ?? { kind });
+  const logitDiff = kind === "logit_diff";
+  const gap = (logitDiff ? sum.gap : metric?.gap) ?? 0;
   return (
     <>
       <p className={s.sentence}>
         Clean prompts prefer {preference(sum.clean_logit_diff)} on average ({sum.clean_prefers_answer} of {report.n}{" "}
         prefer the answer); corrupt prompts prefer {preference(sum.corrupt_logit_diff)} ({sum.corrupt_prefers_answer} of{" "}
-        {report.n}). The clean–corrupt gap is <strong>{num(gap)}</strong>
+        {report.n}).{" "}
+        {logitDiff ? (
+          <>
+            The clean–corrupt gap is <strong>{num(gap)}</strong>
+          </>
+        ) : (
+          <>
+            In the {words.label}, clean prompts score <strong>{num(metric?.clean, 3)}</strong> and corrupt prompts{" "}
+            <strong>{num(metric?.corrupt, 3)}</strong>: a gap of <strong>{signed(gap, 3)}</strong>
+          </>
+        )}
         {present ? ", which is what interventions are measured against." : ". Normalized effects will be noisy or undefined."}
+      </p>
+      <p className={s.small}>
+        A preference is log P(answer) − log P(distractor), the logit difference for single tokens. A set of answers counts
+        their probabilities together; an answer of several tokens multiplies its tokens' probabilities, each read after the
+        ones before it.
       </p>
       {report.issues.length > 0 && (
         <Callout tone="error" title={`${plural(report.issues.length, "issue")} in this dataset`}>
@@ -104,23 +127,23 @@ function Report({ report, index }: { report: BaselineReport; index: number }) {
         </Callout>
       )}
       <div className={b.stats}>
-        <Stat label="Clean logit diff" value={signed(sum.clean_logit_diff)} />
-        <Stat label="Corrupt logit diff" value={signed(sum.corrupt_logit_diff)} />
+        <Stat label={`Clean ${words.short}`} value={signed(logitDiff ? sum.clean_logit_diff : metric?.clean, logitDiff ? 2 : 3)} />
+        <Stat label={`Corrupt ${words.short}`} value={signed(logitDiff ? sum.corrupt_logit_diff : metric?.corrupt, logitDiff ? 2 : 3)} />
         <Stat label="Clean answer prob." value={prob(sum.clean_answer_prob)} />
         <Stat label="Corrupt answer prob." value={prob(sum.corrupt_answer_prob)} />
       </div>
-      <DotPlot prompts={report.prompts} selected={index} />
-      {prompt && <TopTokens prompt={prompt} />}
+      <DotPlot prompts={report.prompts} selected={index} kind={kind} label={words.label} formula={words.formula} />
+      {prompt && <TopTokens prompt={prompt} record={dataset?.records[prompt.index]} metricLabel={logitDiff ? null : words.short} />}
     </>
   );
 }
 
-/** Which token a mean logit difference prefers, and by how much: "the answer by 2.90 logits". */
+/** Which token a mean preference favors, and by how much: "the answer by 2.90". */
 function preference(ld: number | null) {
   const value = ld ?? 0;
   return (
     <>
-      the {value >= 0 ? "answer" : <strong>distractor</strong>} by <strong>{num(Math.abs(value))}</strong> logits
+      the {value >= 0 ? "answer" : <strong>distractor</strong>} by <strong>{num(Math.abs(value))}</strong>
     </>
   );
 }
@@ -140,47 +163,54 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-function DotPlot({ prompts, selected }: { prompts: BaselinePrompt[]; selected: number }) {
+/** Each prompt's value in the metric, clean and corrupt. A difference's sign says which of answer
+ * and distractor the model prefers, in the effect colors; other metrics are drawn in ink. */
+function DotPlot({ prompts, selected, kind, label, formula }: { prompts: BaselinePrompt[]; selected: number; kind: string; label: string; formula: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const { width } = useElementSize(ref);
   const setIndex = useStore((st) => st.setPromptIndex);
-  const values = prompts.flatMap((p) => [p.clean_logit_diff ?? 0, p.corrupt_logit_diff ?? 0, 0]);
+  const valueOf = (p: BaselinePrompt, which: "clean" | "corrupt") =>
+    kind === "logit_diff" ? p[`${which}_logit_diff`] : (p[`${which}_metric`] ?? null);
+  const values = prompts.flatMap((p) => [valueOf(p, "clean") ?? 0, valueOf(p, "corrupt") ?? 0, 0]);
   const theme = useStore((st) => st.theme);
+  const colored = signedMetric(kind);
   // Positive: the model prefers the answer (cobalt); negative: the distractor (amber).
   const signScale = divergingScale(niceBound(values, 1), theme);
   const x = scaleLinear()
     .domain([Math.min(...values), Math.max(...values)])
     .nice()
     .range([60, Math.max(120, width - 12)]);
-  const rows: { key: "clean_logit_diff" | "corrupt_logit_diff"; label: string; y: number }[] = [
-    { key: "clean_logit_diff", label: "clean", y: 22 },
-    { key: "corrupt_logit_diff", label: "corrupt", y: 52 },
+  const rows: { which: "clean" | "corrupt"; y: number }[] = [
+    { which: "clean", y: 22 },
+    { which: "corrupt", y: 52 },
   ];
   return (
     <div ref={ref} className={b.plot}>
-      <div className={s.small}>Logit difference per prompt (answer − distractor). Click a dot to show that prompt.</div>
+      <div className={s.small}>
+        {capitalize(label)} per prompt ({formula}).{colored ? " Positive values prefer the answer." : ""} Click a dot to show that prompt.
+      </div>
       {width > 0 && (
-        <svg width={width} height={92} role="img" aria-label="Clean and corrupt logit differences per prompt">
+        <svg width={width} height={92} role="img" aria-label={`Clean and corrupt ${label} per prompt`}>
           <line className={b.zero} x1={x(0)} x2={x(0)} y1={6} y2={68} />
           {rows.map((row) => (
-            <g key={row.key}>
+            <g key={row.which}>
               <text className={b.rowLabel} x={0} y={row.y + 4}>
-                {row.label}
+                {row.which}
               </text>
               <line className={b.track} x1={60} x2={width - 12} y1={row.y} y2={row.y} />
               {prompts.map((p) => {
-                const v = p[row.key];
+                const v = valueOf(p, row.which);
                 if (v === null) return null;
                 const isSel = p.index === selected;
                 return (
                   <circle
                     tabIndex={0}
                     role="button"
-                    aria-label={`Show prompt ${p.index}: ${row.label} logit difference ${signed(v, 3)}`}
+                    aria-label={`Show prompt ${p.index}: ${row.which} ${label} ${signed(v, 3)}`}
                     onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setIndex(p.index); } }}
                     key={p.index}
                     className={isSel ? b.dotSelected : b.dot}
-                    style={isSel ? undefined : { fill: markColor(signScale, v) }}
+                    style={isSel || !colored ? undefined : { fill: markColor(signScale, v) }}
                     cx={x(v)}
                     cy={row.y}
                     r={isSel ? 5 : 3.5}
@@ -203,24 +233,65 @@ function DotPlot({ prompts, selected }: { prompts: BaselinePrompt[]; selected: n
   );
 }
 
-function TopTokens({ prompt }: { prompt: BaselinePrompt }) {
+/** log P from a probability; nothing for none. */
+function logOf(p: number | null | undefined): number | null {
+  return p === null || p === undefined || !(p > 0) ? null : Math.log(p);
+}
+
+/** How an answer is read: one token, any of a set, or several tokens in order. */
+function reading(answer: PromptRecord["answer"] | undefined): string {
+  if (Array.isArray(answer)) return ` · any of ${answer.length}`;
+  if (typeof answer === "string" && /\S\s+\S/.test(answer.trim())) return " · in order";
+  return "";
+}
+
+function TopTokens({ prompt, record, metricLabel }: { prompt: BaselinePrompt; record: PromptRecord | undefined; metricLabel: string | null }) {
+  // The tokens that count for the answer and for the distractor: one token, or a set's members.
+  const members = (a: PromptRecord["answer"] | undefined) => new Set(a === undefined ? [] : Array.isArray(a) ? a : [a]);
+  const answers = members(record?.answer);
+  const distractors = members(record?.distractor);
   return (
     <div className={s.grid2}>
       {(["clean", "corrupt"] as const).map((which) => {
         const top: TopToken[] = which === "clean" ? prompt.clean_top : prompt.corrupt_top;
-        const ld = which === "clean" ? prompt.clean_logit_diff : prompt.corrupt_logit_diff;
+        const pref = which === "clean" ? prompt.clean_logit_diff : prompt.corrupt_logit_diff;
+        const metric = which === "clean" ? prompt.clean_metric : prompt.corrupt_metric;
+        // log P(distractor) = log P(answer) − (log P(answer) − log P(distractor)).
+        const logAnswer = logOf(which === "clean" ? prompt.clean_answer_prob : prompt.corrupt_answer_prob);
+        const logDistractor = logAnswer === null || pref === null ? null : logAnswer - pref;
         return (
           <div key={which} className={s.panel}>
             <div className={b.topHead}>
               <span className={s.panelTitle}>
                 Prompt {prompt.index} · {which}
               </span>
-              <span className={s.small}>logit diff {signed(ld)}</span>
+              <span className={s.small}>
+                logit diff {signed(pref)}
+                {metricLabel && metric !== undefined && metric !== null && <> · {metricLabel} {signed(metric, 3)}</>}
+              </span>
             </div>
             <p className={b.promptText}>{which === "clean" ? prompt.clean : prompt.corrupt}</p>
+            <dl className={b.answers}>
+              <dt>log P(answer)</dt>
+              <dd>
+                {signed(logAnswer)}{" "}
+                <span className={b.answerText}>
+                  {record ? answerText(record.answer, 6) : prompt.answer}
+                  {reading(record?.answer)}
+                </span>
+              </dd>
+              <dt>log P(distractor)</dt>
+              <dd>
+                {signed(logDistractor)}{" "}
+                <span className={b.answerText}>
+                  {record ? answerText(record.distractor, 6) : prompt.distractor}
+                  {reading(record?.distractor)}
+                </span>
+              </dd>
+            </dl>
             <div className={b.top}>
               {top.map((t) => {
-                const role = t.token === prompt.answer ? "answer" : t.token === prompt.distractor ? "distractor" : null;
+                const role = answers.has(t.token) ? "answer" : distractors.has(t.token) ? "distractor" : null;
                 return (
                   <div key={t.id} className={b.topRow}>
                     <span className={`${b.topToken} ${role ? b.marked : ""}`}>{visibleToken(t.token)}</span>

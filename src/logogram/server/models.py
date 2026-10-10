@@ -177,6 +177,9 @@ class DatasetDetail(_Out):
     records: list[dict[str, Any]]
     issues: list[PromptIssue] | None = None
     lengths: list[int] | None = None
+    # With a model loaded: the prompts whose answer or distractor it reads as a continuation of
+    # several tokens (dataset indices), which the logit difference can't score.
+    continuations: list[int] | None = None
 
 
 class DatasetCreated(_Out):
