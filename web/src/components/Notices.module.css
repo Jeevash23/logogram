@@ -36,9 +36,33 @@
   color: var(--alert);
 }
 
+.withAction {
+  grid-template-columns: 16px 1fr auto auto;
+}
+
 .text {
   line-height: 1.45;
   overflow-wrap: anywhere;
+}
+
+/* The notice's one action, such as Undo: outlined in ink, without filling the notice. */
+.action {
+  align-self: center;
+  height: 22px;
+  margin: -2px 0;
+  padding: 0 9px;
+  border: 1px solid var(--text);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text);
+  font-size: var(--text-xs);
+  font-weight: 620;
+  white-space: nowrap;
+}
+
+.action:hover {
+  background: var(--text);
+  color: var(--on-ink);
 }
 
 .close {

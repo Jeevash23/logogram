@@ -511,6 +511,20 @@
   width: min(760px, calc(100vw - 32px));
 }
 
+/* A question with two answers: narrow, and its text reads at body size. */
+.confirm {
+  width: min(440px, calc(100vw - 32px));
+}
+
+.confirm .dialogHeader {
+  padding-bottom: 14px;
+}
+
+.confirm .dialogDescription {
+  margin-top: 8px;
+  line-height: 1.5;
+}
+
 .dialogHeader {
   display: flex;
   align-items: flex-start;

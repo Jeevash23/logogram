@@ -85,11 +85,32 @@ export interface LiveRun {
   model?: ModelShape;
 }
 
+export interface NoticeAction {
+  label: string;
+  run: () => void;
+}
+
 export interface Notice {
   id: number;
   tone: "info" | "error";
   text: string;
+  /** A button beside the text, such as Undo. The notice closes when it is pressed. */
+  action?: NoticeAction;
+  /** Kept until dismissed: it carries an action, or something the reader must not miss. Only
+   * plain confirmations close by themselves. */
+  persist?: boolean;
+  /** A newer notice with the same key replaces this one. */
+  key?: string;
 }
+
+export interface NoticeOptions {
+  action?: NoticeAction;
+  persist?: boolean;
+  key?: string;
+}
+
+/** How long a plain confirmation stays on screen. */
+export const NOTICE_MS = 5000;
 
 /** The experiment form. Choices that change a number, such as an ablation's baseline or which
  * prompts a direct attribution splits, have no default: they stay empty until chosen. */
@@ -245,6 +266,8 @@ interface Store {
   paletteOpen: boolean;
   modelDialogOpen: boolean;
   robustnessDialogOpen: boolean;
+  /** Asking whether to cancel the running job, which discards its partial results. */
+  cancelConfirmOpen: boolean;
   notices: Notice[];
 
   // actions
@@ -254,7 +277,7 @@ interface Store {
   resolveTheme: () => void;
   goto: (screen: Screen) => void;
   setView: (v: View) => void;
-  notify: (text: string, tone?: Notice["tone"]) => void;
+  notify: (text: string, tone?: Notice["tone"], options?: NoticeOptions) => number;
   dismiss: (id: number) => void;
   guard: <T>(fn: () => Promise<T>) => Promise<T | undefined>;
 
@@ -360,6 +383,7 @@ export const useStore = create<Store>((set, get) => ({
   paletteOpen: false,
   modelDialogOpen: false,
   robustnessDialogOpen: false,
+  cancelConfirmOpen: false,
   notices: [],
 
   boot: async () => {
@@ -429,10 +453,16 @@ export const useStore = create<Store>((set, get) => ({
   goto: (screen) => set({ screen }),
   setView: (view) => set({ view, ...(view === "experiment" ? { analysisSource: "form" as const } : {}) }),
 
-  notify: (text, tone = "info") => {
+  notify: (text, tone = "info", options = {}) => {
     const id = ++noticeId;
-    set((s) => ({ notices: [...s.notices.slice(-3), { id, tone, text }] }));
-    if (tone === "info") window.setTimeout(() => get().dismiss(id), 5000);
+    const notice: Notice = { id, tone, text, ...options };
+    set((s) => {
+      const others = notice.key ? s.notices.filter((n) => n.key !== notice.key) : s.notices;
+      return { notices: [...others.slice(-3), notice] };
+    });
+    // Errors, notices with an action and important ones stay until dismissed (WCAG 2.2.1).
+    if (tone === "info" && !notice.action && !notice.persist) globalThis.setTimeout(() => get().dismiss(id), NOTICE_MS);
+    return id;
   },
   dismiss: (id) => set((s) => ({ notices: s.notices.filter((n) => n.id !== id) })),
 
@@ -464,6 +494,7 @@ export const useStore = create<Store>((set, get) => ({
       view: "prompts",
       inspectorFocus: null,
       robustnessDialogOpen: false,
+      cancelConfirmOpen: false,
       notices: [],
       screen: "workbench",
       runs: [],
@@ -508,7 +539,7 @@ export const useStore = create<Store>((set, get) => ({
       runs: [], runDetails: {}, activeRunId: null, pendingRunId: null, live: {}, selection: null,
       compareIds: [null, null], flags: {}, form: DEFAULT_FORM, baselines: {}, specSource: "run",
       analysisSource: "form", view: "prompts", inspectorFocus: null, robustnessDialogOpen: false,
-      notices: [],
+      cancelConfirmOpen: false, notices: [],
     });
   },
 
@@ -775,7 +806,7 @@ export const useStore = create<Store>((set, get) => ({
           if (now?.extra?.bos === false && get().form.prependBos) {
             // The spec says so too: the checkbox shows it, and the run records it.
             set((st) => ({ form: { ...st.form, prependBos: false } }));
-            get().notify(`${now.id} has no beginning-of-sequence token, so prompts now start without one.`);
+            get().notify(`${now.id} has no beginning-of-sequence token, so prompts now start without one.`, "info", { persist: true });
           }
           void get().reloadDataset();
         }
@@ -789,7 +820,7 @@ export const useStore = create<Store>((set, get) => ({
           void get().refreshRuns();
           if (job.status === "failed" && job.error) get().notify(job.error, "error");
           if (job.kind === "load_model" && job.status === "finished") get().notify("Model loaded.");
-          if (job.kind === "load_sae" && job.status === "finished") get().notify("SAE loaded. Measure its fit on these prompts before trusting its features.");
+          if (job.kind === "load_sae" && job.status === "finished") get().notify("SAE loaded. Measure its fit on these prompts before trusting its features.", "info", { persist: true });
         }
         break;
       }
@@ -861,7 +892,7 @@ export const useStore = create<Store>((set, get) => ({
             if (cmp) set((s) => ({ flags: { ...s.flags, [from.run]: { against: runId, sites: cmp.flagged } } }));
           }
         });
-        if (status === "cancelled" && !data.replay) get().notify("Run cancelled. The spec and any dataset snapshot remain; partial results were discarded.");
+        if (status === "cancelled" && !data.replay) get().notify("Run cancelled. The spec and any dataset snapshot remain; partial results were discarded.", "info", { persist: true });
         break;
       }
       case "sae": {

@@ -11,7 +11,6 @@ export function StatusLine() {
   const connection = useStore((st) => st.connection);
   const connectionError = useStore((st) => st.connectionError);
   const live = useStore((st) => (st.job?.run_id ? st.live[st.job.run_id] : undefined));
-  const cancel = useStore((st) => st.cancelJob);
 
   const running = job?.status === "running";
   let text = "Ready";
@@ -65,7 +64,7 @@ export function StatusLine() {
           </div>
         )}
         {running && job.kind === "run" && (
-          <Button size="small" onClick={() => void cancel()} disabled={job.cancelling}>
+          <Button size="small" onClick={() => useStore.setState({ cancelConfirmOpen: true })} disabled={job.cancelling}>
             {job.cancelling ? "Cancelling…" : "Cancel"}
           </Button>
         )}

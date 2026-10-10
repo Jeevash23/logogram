@@ -41,10 +41,10 @@ function useCommands(query: string): Command[] {
         { id: "spec", label: "Show the spec", group: "Actions", keywords: "json cli", run: () => useStore.setState({ view: "spec", specSource: "run" }) },
         {
           id: "cancel",
-          label: "Cancel the running job",
+          label: "Cancel the running job…",
           group: "Actions",
-          disabled: st.job?.status !== "running" || st.job?.kind !== "run",
-          run: () => void st.cancelJob(),
+          disabled: st.job?.status !== "running" || st.job?.kind !== "run" || !!st.job?.cancelling,
+          run: () => useStore.setState({ cancelConfirmOpen: true }),
         },
       );
       if (st.selection) {

@@ -5,6 +5,7 @@ import {
   forwardRef,
   useContext,
   useId,
+  useRef,
   type ButtonHTMLAttributes,
   type InputHTMLAttributes,
   type ReactNode,
@@ -386,6 +387,60 @@ export function Dialog({
           </div>
           <div className={s.dialogBody}>{children}</div>
           {footer && <div className={s.dialogFooter}>{footer}</div>}
+        </RadixDialog.Content>
+      </RadixDialog.Portal>
+    </RadixDialog.Root>
+  );
+}
+
+/**
+ * Ask before an action that can't be undone. The safe choice has the focus, so Enter, Space and
+ * Escape all keep things as they are; the action is the solid ink button.
+ */
+export function ConfirmDialog({
+  open,
+  onOpenChange,
+  title,
+  children,
+  keepLabel,
+  confirmLabel,
+  onConfirm,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  title: ReactNode;
+  children: ReactNode;
+  keepLabel: string;
+  confirmLabel: string;
+  onConfirm: () => void;
+}) {
+  const keep = useRef<HTMLButtonElement>(null);
+  return (
+    <RadixDialog.Root open={open} onOpenChange={onOpenChange}>
+      <RadixDialog.Portal>
+        <RadixDialog.Overlay className={s.overlay} />
+        <RadixDialog.Content
+          role="alertdialog"
+          className={cx(s.dialog, s.confirm)}
+          onOpenAutoFocus={(e) => {
+            e.preventDefault();
+            keep.current?.focus();
+          }}
+        >
+          <div className={s.dialogHeader}>
+            <div>
+              <RadixDialog.Title className={s.dialogTitle}>{title}</RadixDialog.Title>
+              <RadixDialog.Description className={s.dialogDescription}>{children}</RadixDialog.Description>
+            </div>
+          </div>
+          <div className={s.dialogFooter}>
+            <RadixDialog.Close asChild>
+              <Button ref={keep}>{keepLabel}</Button>
+            </RadixDialog.Close>
+            <Button variant="primary" onClick={onConfirm}>
+              {confirmLabel}
+            </Button>
+          </div>
         </RadixDialog.Content>
       </RadixDialog.Portal>
     </RadixDialog.Root>

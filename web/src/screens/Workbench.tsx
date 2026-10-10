@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
+import { CancelRunDialog } from "../components/CancelRunDialog";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import { DatasetChip, ModelChip } from "../components/Header";
 import { History } from "../components/History";
@@ -92,6 +93,7 @@ export function Workbench() {
       }} /><aside className={s.inspector} style={{ width: inspectorWidth }} aria-label="Inspector"><SafeInspector /></aside></>}
     </div>
     <StatusLine />
+    <CancelRunDialog />
     <ModelDialog />
     <RobustnessDialog />
     <NoteEditorDialog />

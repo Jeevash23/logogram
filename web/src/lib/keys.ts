@@ -51,7 +51,7 @@ export function useGlobalKeys(): void {
         useStore.setState({ paletteOpen: !st.paletteOpen });
         return;
       }
-      if (st.screen !== "workbench" || st.paletteOpen || st.modelDialogOpen || st.robustnessDialogOpen) return;
+      if (st.screen !== "workbench" || st.paletteOpen || st.modelDialogOpen || st.robustnessDialogOpen || st.cancelConfirmOpen) return;
       if (e.defaultPrevented || overlayOpen || typing(e.target) || mod || e.altKey) return;
       const target = e.target instanceof HTMLElement ? e.target : null;
 
