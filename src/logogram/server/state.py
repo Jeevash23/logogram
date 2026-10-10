@@ -489,7 +489,7 @@ class AppState:
                     job.update(status="finished")
             except Cancelled:
                 job.update(status="cancelled")
-            except Exception as exc:  # noqa: BLE001 - reported to the UI
+            except Exception as exc:
                 log.exception("job failed")
                 job.update(status="failed", error=str(exc) or type(exc).__name__)
             self.hub.publish("job", job.to_dict())
@@ -571,8 +571,9 @@ class AppState:
             else:
                 folder = project.run_dir(draft_id)
                 project.readable(folder / "spec.json")
-                running = self.job is not None and self.job.status == "running"
-                if (folder / "manifest.json").exists() or (running and self.job.run_id == draft_id):
+                job = self.job
+                running = job is not None and job.status == "running" and job.run_id == draft_id
+                if (folder / "manifest.json").exists() or running:
                     raise Conflict(
                         f"{draft_id} has run, so its spec stays as it ran. Save a new draft instead."
                     )

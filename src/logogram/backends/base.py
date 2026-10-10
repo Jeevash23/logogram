@@ -232,13 +232,13 @@ class ModelBackend(ABC):
         if dev == "mps" and hasattr(torch, "mps"):
             try:
                 return int(torch.mps.current_allocated_memory())
-            except Exception:
+            except Exception:  # noqa: BLE001 - a memory readout is best effort
                 return None
         try:
             import psutil
 
             return int(psutil.Process().memory_info().rss)
-        except Exception:
+        except Exception:  # noqa: BLE001 - a memory readout is best effort
             return None
 
     def close(self) -> None:  # noqa: B027 - optional hook

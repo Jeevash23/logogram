@@ -933,7 +933,7 @@ def _cached_tokenizer(model_id: str) -> tuple[Any, Any]:
         tok = AutoTokenizer.from_pretrained(
             model_id, local_files_only=True, trust_remote_code=False
         )
-    except Exception as exc:  # noqa: BLE001 - transformers raises many kinds for a missing model
+    except Exception as exc:
         raise _fail(
             f"{model_id}'s tokenizer isn't in the Hugging Face cache. Load the model once (in the "
             "app or with `logogram run`), or leave out --tokenizer."

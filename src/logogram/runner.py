@@ -58,7 +58,7 @@ def scrub_paths(message: str, *roots: Path | str | None) -> str:
 
         places.append((str(Path(constants.HF_HUB_CACHE).resolve()), "<huggingface cache>"))
         places.append((str(constants.HF_HUB_CACHE), "<huggingface cache>"))
-    except Exception:  # noqa: BLE001 - no cache to name
+    except Exception:  # noqa: BLE001, S110 - no cache to name
         pass
     home = Path.home()
     places.append((str(home.resolve()), "~"))
@@ -127,13 +127,17 @@ def default_provider(on_event: EventFn | None = None) -> ModelProvider:
     def provide(ref: ModelRef) -> ModelBackend:
         from logogram.backends.transformer_lens import load_model
 
+        progress = None
+        if on_event is not None:
+            emit = on_event
+            progress = lambda p: emit("model", p)  # noqa: E731
         return load_model(
             ref.id,
             revision=ref.revision,
             dtype=ref.dtype,
             device=ref.device,
             process_weights=ref.process_weights,
-            on_progress=(lambda p: on_event("model", p)) if on_event else None,
+            on_progress=progress,
         )
 
     return provide

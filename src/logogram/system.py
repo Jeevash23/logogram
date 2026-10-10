@@ -93,7 +93,7 @@ def cpu_name() -> str:
             name = platform.processor()
             if name:
                 return name
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001, S110 - the generic name below will do
         pass
     return platform.processor() or platform.machine() or "Unknown CPU"
 
@@ -260,7 +260,7 @@ def system_report() -> SystemReport:
                     "Free some space, or set HF_HOME to a disk with more room.",
                 )
             )
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001, S110 - the disk check is only advice
         pass
 
     bf16 = any(g.bf16 for g in gpus)
@@ -335,7 +335,7 @@ def available_memory(device: str) -> int:
             return int(torch.mps.recommended_max_memory()) - int(
                 torch.mps.current_allocated_memory()
             )
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110 - fall back to the RAM that is free
             pass
     return int(psutil.virtual_memory().available)
 

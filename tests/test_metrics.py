@@ -104,7 +104,7 @@ def test_continuations_are_read_token_by_token(tiny_backend, project):
             answer = prompts[p].answer
             assert len(answer.ids) == 2 and not answer.alternatives
             # Teacher forcing by hand: the prompt, then the answer's first token.
-            tokens = torch.tensor([prompts[p].clean.ids + [answer.ids[0]]])
+            tokens = torch.tensor([[*prompts[p].clean.ids, answer.ids[0]]])
             lp = torch.log_softmax(tiny_backend.logits(tokens, None, 2).double(), -1)
             expected = float(lp[0, 0, answer.ids[0]] + lp[0, 1, answer.ids[1]])
             # A batch and a pass of its own round differently in float32.

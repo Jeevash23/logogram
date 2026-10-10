@@ -174,7 +174,7 @@ class Project:
             meta = ProjectMeta.model_validate_json(
                 read_limited(resolved, JSON_LIMIT, "Restore project.json from a backup.")
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise ProjectError(f"project.json can't be read: {exc}") from exc
         project = cls(root, meta)
         project.ensure_layout()
@@ -351,11 +351,12 @@ def layer_profile(summary: dict[str, Any]) -> list[float] | None:
     strong. Layers without a measured value are 0.
     """
     sites = summary.get("sites") or []
-    layers = [s.get("layer") for s in sites if isinstance(s.get("layer"), int)]
+    layers: list[int] = [s["layer"] for s in sites if isinstance(s.get("layer"), int)]
     if not layers:
         return None
     model = summary.get("model") or {}
-    n_layers = model.get("n_layers") if isinstance(model.get("n_layers"), int) else max(layers) + 1
+    declared = model.get("n_layers")
+    n_layers = declared if isinstance(declared, int) else max(layers) + 1
     out = [0.0] * max(n_layers, max(layers) + 1)
     for site in sites:
         layer = site.get("layer")

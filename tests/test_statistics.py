@@ -79,7 +79,7 @@ def test_simultaneous_bands_contain_each_interval_and_hold_together():
     inside = ((boot >= stats.band_lo[:, None]) & (boot <= stats.band_hi[:, None])).all(0)
     assert inside.mean() == pytest.approx(0.95, abs=0.02)
     # One site alone: the band is its ordinary interval, near enough.
-    lo, hi, level = simultaneous_band(boot[:1], 0.95)
+    lo, _hi, level = simultaneous_band(boot[:1], 0.95)
     assert level == pytest.approx(0.025, abs=0.003)
     assert lo[0] == pytest.approx(stats.effect_lo[0], abs=0.02)
 
@@ -110,7 +110,7 @@ def test_paired_differences_use_shared_resamples():
     base = rng.normal(0, 3, (1, 40))  # large spread between prompts
     shifted = base + 0.3 + rng.normal(0, 0.01, (1, 40))  # a small, consistent shift
     counts = resample_counts(40, 1000, 0)
-    mean, lo, hi = paired_difference(base, shifted, counts, 0.95)
+    mean, lo, _hi = paired_difference(base, shifted, counts, 0.95)
     assert mean[0] == pytest.approx(0.3, abs=0.01)
     assert lo[0] > 0  # paired, the shift is clear; unpaired intervals would overlap
     a, b = _stats(base, counts), _stats(shifted, counts)

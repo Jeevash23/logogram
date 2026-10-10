@@ -20,7 +20,7 @@ everything).
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import numpy as np
@@ -127,7 +127,7 @@ def set_rows(scope: SiteSetsScope) -> tuple[list[ResolvedSite], dict[str, Any]]:
 
 
 def replaced(
-    s: SiteSet, universe: list[str] | None, prompt: PreparedPrompt, info: ModelInfo
+    s: SiteSet, universe: Sequence[str] | None, prompt: PreparedPrompt, info: ModelInfo
 ) -> dict[Key, torch.Tensor]:
     """For one prompt, which entries of each activation the set replaces: per (kind, layer), a
     boolean mask over positions ([L]) or positions and heads ([L, H])."""
@@ -157,7 +157,9 @@ def replaced(
     return {k: m for k, m in masks.items() if bool(m.any())}
 
 
-def tail_masks(s: SiteSet, universe: list[str] | None, info: ModelInfo) -> dict[Key, torch.Tensor]:
+def tail_masks(
+    s: SiteSet, universe: Sequence[str] | None, info: ModelInfo
+) -> dict[Key, torch.Tensor]:
     """What the set replaces at the positions of tokens appended to read a continuation, per
     (kind, layer): a component (or head) at every position covers them too; a site at one prompt
     position doesn't. ``[H]`` for heads, a single value otherwise."""
@@ -530,8 +532,7 @@ def circuit_summary(result: EngineResult, stats: Any, ci: float) -> dict[str, An
             "without": None,
             "interaction": None,
         }
-        whole = everything is not None and boot is not None
-        if whole and i != everything:
+        if everything is not None and boot is not None and i != everything:
             with np.errstate(divide="ignore", invalid="ignore"):
                 share = interval(
                     boot[i] / boot[everything],
@@ -545,7 +546,7 @@ def circuit_summary(result: EngineResult, stats: Any, ci: float) -> dict[str, An
                     "lo": 1.0 - share["hi"],
                     "hi": 1.0 - share["lo"],
                 }
-        if whole and s.complement:
+        if everything is not None and boot is not None and s.complement:
             larger = next(
                 (
                     j

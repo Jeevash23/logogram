@@ -237,7 +237,7 @@ def run_steering(
                     [
                         own[p]
                         + variants[v][0]
-                        * (control_direction if variants[v][1] else direction).to(own.device)
+                        * _along(variants[v][1], direction, control_direction).to(own.device)
                         for v, p in chunk
                     ]
                 ).to(dtype)
@@ -321,3 +321,13 @@ def control_warnings(comparison: list[dict[str, Any]], ci: float) -> list[str]:
         "difference needs pairs that differ the same way: in IOI prompts that mix the ABBA and "
         "BABA orders, the differences cancel out."
     ]
+
+
+def _along(
+    control: bool, direction: torch.Tensor, control_direction: torch.Tensor | None
+) -> torch.Tensor:
+    """The direction a variant adds: the steering direction, or its random control."""
+    if not control:
+        return direction
+    assert control_direction is not None  # a control variant exists only with a control
+    return control_direction

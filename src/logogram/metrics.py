@@ -116,9 +116,9 @@ class Scorer:
 
     def single_position(self, rows: list[int] | None = None) -> bool:
         """Whether every answer and distractor is read at the last prompt position."""
-        rows = range(len(self.prompts)) if rows is None else rows
+        read = range(len(self.prompts)) if rows is None else rows
         return all(
-            self.answer(r).positions == 1 and self.distractor(r).positions == 1 for r in rows
+            self.answer(r).positions == 1 and self.distractor(r).positions == 1 for r in read
         )
 
     # -- scoring ------------------------------------------------------------------------------

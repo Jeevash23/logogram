@@ -431,7 +431,7 @@ class TransformerLensBackend(ModelBackend):
         probe = torch.tensor([[self._bos_or_zero(), self._bos_or_zero()]], device=self.device)
         try:
             with torch.no_grad():
-                out = self.bridge(probe, return_type="logits", logits_to_keep=1)
+                out = self._bridge()(probe, return_type="logits", logits_to_keep=1)
             return tuple(out.shape[:2]) == (1, 1)
         except Exception:  # noqa: BLE001 - architecture without logits_to_keep
             return False
@@ -642,7 +642,7 @@ class TransformerLensBackend(ModelBackend):
                 for layer, value in (frozen_mlps or {}).items():
                     held.append((hook_name("mlp_out", layer), hold(value)))
                 bridge.run_with_hooks(
-                    tokens, fwd_hooks=_combine(held + [(final, keep_own)]), return_type=None
+                    tokens, fwd_hooks=_combine([*held, (final, keep_own)]), return_type=None
                 )
             second: dict[str, Any] = {"return_type": "logits"}
             if self._logits_to_keep:
@@ -1026,7 +1026,7 @@ def boot_local(folder: Path, *, device: str, dtype: str) -> Any:
                 torch_dtype=DTYPES[dtype],
                 attn_implementation="eager",
             )
-            model = model.to(device)
+            model = model.to(device)  # type: ignore[arg-type]  # transformers types .to oddly
             tokenizer = AutoTokenizer.from_pretrained(
                 str(folder),
                 local_files_only=True,
@@ -1045,7 +1045,7 @@ def boot_local(folder: Path, *, device: str, dtype: str) -> Any:
             return bridge
     except BackendError:
         raise
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         if is_out_of_memory(exc):
             raise  # load_model frees the memory and says what to do
         raise BackendError(
@@ -1060,5 +1060,5 @@ def _quiet_transformers() -> None:
 
         transformers.utils.logging.set_verbosity_error()
         transformers.utils.logging.disable_progress_bar()
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001, S110 - quieter logs are a nicety
         pass

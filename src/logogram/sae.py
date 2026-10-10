@@ -150,7 +150,7 @@ class SAE:
 
 def fit_on(
     sae: SAE, activations: torch.Tensor, targets: torch.Tensor | None = None
-) -> dict[str, float]:
+) -> dict[str, Any]:
     """How well the SAE reconstructs ``activations`` ``[N, d_in]`` (a transcoder: predicts
     ``targets`` ``[N, d_out]``, its MLP's outputs, from its inputs): the fraction of variance it
     explains (1 is perfect, 0 is no better than the mean), and how many features fire per token."""

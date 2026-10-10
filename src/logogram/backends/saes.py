@@ -335,7 +335,7 @@ def list_saes(repo: str, revision: str | None = None) -> tuple[str, list[str]]:
 
     try:
         info = HfApi().model_info(repo, revision=revision)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise _friendly_hub_error(repo, exc) from exc
     names = {s.rfilename for s in info.siblings or []}
     folders = sorted(
@@ -373,7 +373,7 @@ def download_sae(
     prefix = f"{path.strip('/')}/" if path.strip("/") else ""
     try:
         info = HfApi().model_info(repo, revision=revision, files_metadata=True)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         if hub._is_offline_error(exc):
             cached = _cached(repo, prefix, revision)
             if cached is not None:

@@ -286,7 +286,7 @@ def common_labels(prompts: list[PreparedPrompt]) -> list[str]:
 def seeded_split(n: int, fraction: float, seed: int) -> tuple[list[int], list[int]]:
     """Positions of a seeded share of ``n`` prompts, and of the rest, each in order: a shuffle
     from the raw PCG64 stream, so the split is the same on every machine and NumPy version."""
-    first = int(round(n * fraction))
+    first = round(n * fraction)
     order = list(range(n))
     raw = np.random.PCG64(seed).random_raw(n)
     for t in range(n - 1, 0, -1):

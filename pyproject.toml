@@ -74,6 +74,12 @@ artifacts = ["src/logogram/web_dist/**"]
 testpaths = ["tests"]
 addopts = "-ra"
 
+[tool.pyright]
+# CI runs `npx pyright@1.1.408 --pythonpath .venv/bin/python` (the version is pinned there).
+include = ["src"]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
+
 [tool.coverage.run]
 # Coverage data then holds project-relative paths, not this machine's.
 relative_files = true
@@ -84,5 +90,19 @@ target-version = "py311"
 src = ["src", "tests", "scripts"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "B", "UP", "SIM"]
-ignore = ["E501", "B008"]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "S", "ASYNC", "BLE", "RUF"]
+ignore = [
+    "E501",
+    "B008",
+    "S101",  # assert states invariants, and tests are made of them
+    "S311",  # seeded random.Random makes datasets reproducible; nothing here is a secret
+    "S607",  # hardware probes run tools such as nvidia-smi by name, never through a shell
+    "RUF001",  # typography: −, ×, → and … are meant
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Fixed session tokens, temporary folders and subprocesses of this Python in tests.
+"tests/**" = ["S105", "S106", "S108", "S603"]
+"scripts/smoke_wheel.py" = ["S106"]

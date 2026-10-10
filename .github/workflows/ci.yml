@@ -44,6 +44,24 @@ jobs:
       - run: uvx ruff@0.16.10 check src tests scripts
       - run: uvx ruff@0.16.10 format --check src tests scripts
 
+  types:
+    name: Type check
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      # Pyright reads [tool.pyright] in pyproject.toml, and the installed packages for imports.
+      - run: uv venv --python 3.12
+      - run: uv pip install --torch-backend=cpu -e .
+      - run: npx --yes pyright@1.1.408 --pythonpath .venv/bin/python
+
   lock:
     name: Lockfile matches pyproject.toml
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository

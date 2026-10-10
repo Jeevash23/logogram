@@ -53,7 +53,7 @@ def main() -> None:
 
         def get(path: str) -> bytes:
             request = urllib.request.Request(f"http://127.0.0.1:{port}{path}", headers=headers)
-            with urllib.request.urlopen(request, timeout=5) as response:
+            with urllib.request.urlopen(request, timeout=5) as response:  # noqa: S310 - local http
                 return response.read()
 
         state = json.loads(get("/api/state"))

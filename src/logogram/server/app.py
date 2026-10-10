@@ -8,6 +8,7 @@ import hashlib
 import logging
 import os
 import threading
+from collections.abc import Callable
 from importlib import resources
 from pathlib import Path
 from typing import Any, Literal
@@ -655,14 +656,18 @@ def create_app(
 
         project = state.require_project()
         backend = state.backend
-        single = count = None
+        single: Callable[[str], bool] | None = None
+        count: Callable[[str], int] | None = None
         if backend is not None:  # words this model splits are left out, and pairs keep one length
+            model = backend
 
-            def single(text: str) -> bool:
-                return backend.single_token_id(text) is not None
+            def single_token(text: str) -> bool:
+                return model.single_token_id(text) is not None
 
-            def count(text: str) -> int:
-                return len(backend.tokenize(text, prepend_bos=False).ids)
+            def token_count(text: str) -> int:
+                return len(model.tokenize(text, prepend_bos=False).ids)
+
+            single, count = single_token, token_count
 
         records = generate_task(
             body.task, body.n, body.seed, body.options, single_token=single, token_count=count

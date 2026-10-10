@@ -16,7 +16,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, fields
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import torch
@@ -132,7 +132,9 @@ def _chunks(n: int, size: int) -> Iterator[slice]:
         yield slice(start, min(start + size, n))
 
 
-def answer_tensors(prompts: list[PreparedPrompt], idx: list[int]) -> tuple[torch.Tensor, ...]:
+def answer_tensors(
+    prompts: list[PreparedPrompt], idx: list[int]
+) -> tuple[torch.Tensor, torch.Tensor]:
     """The answer and distractor tokens of single-token prompts, for methods that read one."""
     return (
         torch.tensor([prompts[i].answer_id for i in idx], dtype=torch.long),
@@ -719,7 +721,7 @@ def _build_patch(
         if baseline_kind == "patch":
             src_prompts = [r.prompt for r in rows]
         else:
-            src_prompts = [r.donor for r in rows]  # type: ignore[misc]
+            src_prompts = cast(list[int], [r.donor for r in rows])
         if all_pos:
             # Patch pairs share a length; resample donors are drawn from the same length group.
             assert all(group_of[p] == group_index for p in src_prompts)
