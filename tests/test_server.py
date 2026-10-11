@@ -219,6 +219,7 @@ def test_every_endpoint_matches_its_schema(app, client, tiny_backend, tmp_path, 
     app.state.logogram.model_status = {"state": "ready"}
     client.post("/api/projects", json={"name": "Schemas", "parent": str(tmp_path)}, headers=headers)
     assert client.get("/api/projects/recent", headers=AUTH).json()[0]["name"] == "Schemas"
+    assert client.get("/api/queue", headers=AUTH).json() == []
     client.post("/api/datasets/ioi", json={"name": "ioi", "n": 6}, headers=headers)
     detail = client.get("/api/datasets/ioi.jsonl", headers=AUTH).json()
     assert detail["n"] == 6 and detail["issues"] == [] and len(detail["lengths"]) >= 1

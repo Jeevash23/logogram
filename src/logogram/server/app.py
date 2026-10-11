@@ -47,10 +47,10 @@ from logogram.research import (
     read_notebook,
     save_note,
 )
-from logogram.schema import Manifest, RunListing, Summary
+from logogram.schema import Manifest, QueuedRunInfo, RunListing, Summary
 from logogram.server import models as M
 from logogram.server.security import SecurityConfig, SecurityMiddleware
-from logogram.server.state import AppState, Conflict, EventHub, Missing, request_project
+from logogram.server.state import AppState, Conflict, EventHub, Job, Missing, request_project
 from logogram.spec import (
     SINGLE_POSITION_METRICS,
     Metric,
@@ -423,11 +423,14 @@ def create_app(
     @app.get("/api/state", response_model=M.ServerState)
     def get_state() -> dict[str, Any]:
         settings = state.settings()
+        # Before the job: a run leaves the queue only once its job has started.
+        queue = state.queued_runs()
         return {
             "version": __version__,
             "project": state.project.to_dict() if state.project else None,
             "model": state.model_payload(),
             "job": state.job.to_dict() if state.job else None,
+            "queue": queue,
             "first_run": not settings.get("system_check_seen", False),
             "theme": settings.get("theme", "light"),
             "projects_parent": str(default_projects_parent()),
@@ -1071,6 +1074,31 @@ def create_app(
         job = state.cancel_job()
         return {"job": job.to_dict() if job else None}
 
+    # -- the run queue -----------------------------------------------------------------------
+
+    @app.get("/api/queue", response_model=list[QueuedRunInfo])
+    def queued_runs() -> list[dict[str, Any]]:
+        state.require_project()
+        return state.queued_runs()
+
+    @app.post("/api/queue", response_model=M.QueueAdded)
+    def queue_run(body: RunRequest) -> dict[str, Any]:
+        """Run a spec when the job in progress ends, or now if nothing is running."""
+        spec = Spec.model_validate(body.spec)
+        state.require_project()
+        out = state.queue_run(spec, draft_id=body.draft_id)
+        started, queued = (out, None) if isinstance(out, Job) else (None, out)
+        return {
+            "run_id": started.run_id if started else None,
+            "job": started.to_dict() if started else None,
+            "queued": queued.to_dict() if queued else None,
+            "queue": state.queued_runs(),
+        }
+
+    @app.delete("/api/queue/{queued_id}", response_model=list[QueuedRunInfo])
+    def remove_queued_run(queued_id: str) -> list[dict[str, Any]]:
+        return state.remove_queued_run(queued_id)
+
     # -- events ------------------------------------------------------------------------------
 
     @app.websocket("/ws")
@@ -1196,6 +1224,7 @@ PROJECT_SCOPED = (
     "/api/runs",
     "/api/drafts",
     "/api/compare",
+    "/api/queue",
 )
 
 

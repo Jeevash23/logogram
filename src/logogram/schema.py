@@ -357,6 +357,36 @@ class RunEnded(_Model):
     error: str | None = None
 
 
+class QueuedRunInfo(_Model):
+    """A run waiting for the job in progress to end, in the open project's queue."""
+
+    id: str
+    # The spec's name.
+    title: str
+    spec: dict[str, Any]
+    draft_id: str | None
+    derived_from: DerivedFrom | None
+    project_session: str
+    # Seconds since the epoch, like a job's start.
+    queued_at: float
+
+
+class QueueChanged(_Model):
+    """The whole queue, first in line first, after any change."""
+
+    project_session: str | None
+    runs: list[QueuedRunInfo]
+
+
+class QueueSkipped(_Model):
+    """A queued run that couldn't start when its turn came, and left the queue."""
+
+    project_session: str
+    id: str
+    title: str
+    error: str
+
+
 EVENT_SCHEMAS: dict[str, type[BaseModel]] = {
     "run.started": RunStarted,
     "run.layer": RunLayer,
@@ -364,11 +394,13 @@ EVENT_SCHEMAS: dict[str, type[BaseModel]] = {
     "run.finished": RunEnded,
     "run.failed": RunEnded,
     "run.cancelled": RunEnded,
+    "queue": QueueChanged,
+    "queue.skipped": QueueSkipped,
 }
 
 
 def validate_event(kind: str, data: dict[str, Any]) -> dict[str, Any]:
-    """Check a run event against its schema before it is sent."""
+    """Check an event against its schema before it is sent."""
     schema = EVENT_SCHEMAS.get(kind)
     if schema is None:
         return data
