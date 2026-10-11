@@ -77,18 +77,6 @@ export function ago(iso: string | null | undefined, now = Date.now()): string {
   return d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 }
 
-export function clock(iso: string | null | undefined): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleString(undefined, {
-    day: "numeric",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
 /** Show token whitespace explicitly: a leading space as a middle dot, newlines as ⏎. A missing
  * token shows as nothing. */
 export function visibleToken(token: string | null | undefined): string {

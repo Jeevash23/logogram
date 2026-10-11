@@ -241,4 +241,3 @@ export const api = {
   cancelJob: () => post<{ job: Job | null }>("/api/jobs/cancel"),
 };
 
-export type Api = typeof api;
