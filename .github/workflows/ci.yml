@@ -121,10 +121,7 @@ jobs:
       # dependencies at the highest that fit), on the oldest supported Python.
       - run: uv venv --python 3.11
       - run: uv pip install --resolution lowest-direct --torch-backend=cpu -e . --group dev
-      # The finite-difference check on the tiny random GPT-2 is skipped: transformers before 5.15
-      # initializes that model differently, and on that model float32 differences stray past the
-      # test's tolerance (the gradients match float64 differences there to 1e-6).
-      - run: uv run --no-sync pytest -q --deselect "tests/test_atp.py::test_the_gradients_match_finite_differences[gpt2]"
+      - run: uv run --no-sync pytest -q
 
   audit:
     name: Known vulnerabilities in dependencies
