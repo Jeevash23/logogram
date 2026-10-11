@@ -239,7 +239,8 @@ export interface SAEFit {
 }
 
 export interface SAEInfo extends SAERef {
-  site: StreamKind;
+  /** The site it writes: heads' outputs (z, every head of the layer side by side) for "head". */
+  site: StreamKind | "head";
   layer: number;
   d_in: number;
   d_sae: number;
@@ -249,6 +250,11 @@ export interface SAEInfo extends SAERef {
   format: string;
   note: string;
   fit: SAEFit | null;
+  /** The site it reads: the MLP's input ("mlp_in") for a transcoder. */
+  site_in?: string;
+  transcoder?: boolean;
+  /** A transcoder that also adds its input times a skip matrix to what it writes. */
+  skip?: boolean;
 }
 
 export interface SAEStatus {
@@ -542,6 +548,8 @@ export interface Summary {
     fit: SAEFit;
     site_estimate?: number | null;
     features_estimate?: number | null;
+    /** Through a transcoder's skip connection, which no feature carries. */
+    skip_estimate?: number | null;
     evaluated?: number | null;
     /** Every feature, chosen on some prompts and reported on the others: their dataset indices. */
     chosen_on?: number[] | null;

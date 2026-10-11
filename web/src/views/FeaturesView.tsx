@@ -12,8 +12,11 @@ import { useStore } from "../store/app";
 import s from "./views.module.css";
 import f from "./FeaturesView.module.css";
 
-/** The activation an SAE reads, in words. */
+/** What an SAE reads (and a transcoder writes), in words. */
 function siteOf(info: SAEInfo): string {
+  if (info.transcoder) {
+    return `layer ${info.layer}'s MLP input and writes its output${info.skip ? ", plus a skip connection from the input" : ""}`;
+  }
   switch (info.site) {
     case "resid_pre":
       return `the residual stream entering layer ${info.layer}`;
@@ -23,6 +26,8 @@ function siteOf(info: SAEInfo): string {
       return `layer ${info.layer}'s attention output`;
     case "mlp_out":
       return `layer ${info.layer}'s MLP output`;
+    case "head":
+      return `the outputs (z) of every attention head in layer ${info.layer}, side by side`;
     default:
       return `the ${KIND_NAMES[info.site]} of layer ${info.layer}`;
   }
@@ -121,7 +126,7 @@ function Loader() {
         </div>
       )}
       <div className={s.row}>
-        <Field label="Hugging Face repository" help="SAEs in SAELens or EleutherAI format, read from safetensors files only.">
+        <Field label="Hugging Face repository" help="SAEs and transcoders in SAELens, EleutherAI or Gemma Scope 2 format, read from safetensors files only.">
           <Input value={repo} onChange={(e) => { setRepo(e.target.value); setFolders(null); }} placeholder="owner/name" spellCheck={false} style={{ width: 360 }} />
         </Field>
         <Button onClick={() => void find()} disabled={!/^[\w.-]+\/[\w.-]+$/.test(repo.trim()) || finding}>

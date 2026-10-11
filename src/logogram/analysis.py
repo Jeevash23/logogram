@@ -362,8 +362,9 @@ def sae_fit_report(
             # appended to read a continuation. A transcoder's prediction replaces its MLP's output.
             out = x.float().clone()
             source = out if read is None else read.float()
-            f, stats = sae.encode(sae.reads(source[:, start:length]))
-            out[:, start:length] = sae.decode(f, stats).reshape(out[:, start:length].shape)
+            sae_in = sae.reads(source[:, start:length])
+            f, stats = sae.encode(sae_in)
+            out[:, start:length] = sae.decode(f, stats, sae_in).reshape(out[:, start:length].shape)
             return out
 
         def edited(toks: torch.Tensor, keep: int, splice: Any = splice) -> torch.Tensor:
@@ -418,7 +419,8 @@ def token_features_report(
     tokenized = target.clean if which == "clean" else target.corrupt
     tokens = torch.tensor([tokenized.ids], dtype=torch.long)
     key = (sae.site_in, sae.layer)
-    f, _ = sae.encode(sae.reads(backend.capture(tokens, [key])[key][0].float()))
+    # The whole batch is read, so heads' outputs [1, pos, H, d_head] are put side by side.
+    f, _ = sae.encode(sae.reads(backend.capture(tokens, [key])[key].float())[0])
     values, ids = f.topk(min(top_k, f.shape[-1]), dim=-1)
     per_token = [
         [

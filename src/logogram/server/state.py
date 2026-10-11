@@ -449,20 +449,9 @@ class AppState:
 
         try:
             sae = load_sae(ref, backend.info.device, progress, cancel)
-            info = backend.info
-            from logogram.features import check_dimensions
+            from logogram.features import check_sae_fits
 
-            check_dimensions(sae, info)
-            readable = set(info.site_kinds) | set(info.extra.get("sae_sites") or [])
-            if (
-                sae.layer >= info.n_layers
-                or sae.site not in info.site_kinds
-                or sae.site_in not in readable
-            ):
-                raise ValueError(
-                    f"This SAE reads {sae.site_in} in layer {sae.layer}, which {info.id} doesn't "
-                    "have."
-                )
+            check_sae_fits(sae, backend.info)
         except Cancelled:
             self._set_sae_status(state="none")
             raise

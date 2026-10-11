@@ -423,14 +423,28 @@ thousands of features and reporting them on the same prompts biases their effect
 (the winner's curse), so the sweep can choose them on a seeded share of the prompts and report
 them only on the rest (`choose_on` and `seed` in the scope).
 
-Logogram reads the SAELens and EleutherAI formats, and Gemma Scope 2 (`config.json` and
-`params.safetensors`, JumpReLU), from safetensors files only; the first Gemma Scope's NumPy
-archives are refused, as are SAEs whose input scaling or architecture it can't reproduce exactly.
+Logogram reads the SAELens and EleutherAI (sparsify) formats, and Gemma Scope 2 (`config.json`
+and `params.safetensors`, JumpReLU), from safetensors files only; the first Gemma Scope's NumPy
+archives are refused, as are SAEs whose input scaling, architecture, settings or tensors it can't
+reproduce exactly (such as sparsify's group-max activation, or settings from forks of sparsify).
 **Transcoders** (from Gemma Scope 2 or EleutherAI) read an MLP's input and write its output: a
 feature's value comes from the MLP's input, and patching it changes the MLP's output along the
-feature's decoder direction. SAEs trained on attention heads' outputs (SAELens `hook_z`, Gemma
-Scope 2's attention SAEs) read every head of the layer at once. Cross-layer transcoders and
-crosscoders are refused for now.
+feature's decoder direction. **Skip transcoders** also add their input times a matrix:
+EleutherAI's add `x @ W_skip.T`, as sparsify computes it, and Gemma Scope 2's affine ones add
+`x @ affine_skip_connection` (on Gemma 3 270M this explains 91% of an MLP output's variance, and
+the transpose 34%, so this is the way round the files mean). The input doesn't change when a
+feature is patched, so neither does the skip connection, and attribution patching reports the
+part of the site's estimate that flows through it beside the features' part. sparsify files
+written before February 2025 don't record whether they are transcoders, so Logogram reads it from
+their training run's `config.json` at the top of the repository (they also subtract `b_dec` from
+the input, as sparsify did then). SAEs trained on attention heads' outputs (SAELens `hook_z`,
+Gemma Scope 2's attention SAEs) read the output `z` of every head of the layer, side by side as
+the output projection reads it; patching a feature changes every head's output, which reaches
+the residual stream through the output projection. SAEs with a skip connection (which rebuild an
+activation partly from itself), cross-layer transcoders and crosscoders are refused for now. The
+fit measured on your prompts remains the last check, since a file can be trained on something its
+configuration doesn't record: EleutherAI's SmolLM2 skip transcoders were trained on normalized
+inputs and outputs, which only their model card says, and they fit poorly as published.
 
 **Sites** are abstract: `resid_pre`, `resid_mid`, `resid_post`, `attn_out`, `mlp_out` and `head`
 (an attention head's output `z`), each at a layer, head and position. Positions are `all`,
@@ -662,8 +676,12 @@ of the Llama, Pythia, Qwen 2, Gemma 2 and OLMo 2 families without downloading an
 added was checked on GPT-2 small: patching the whole input gives an effect of exactly 1 under
 every metric, including for answers of several tokens; the logit and log-probability differences
 agree to 5 × 10⁻⁷; integrated gradients, sets of sites, the tasks and clustered bootstraps give
-the results described above; and reruns are bit-identical. Gemma Scope 2's SAEs and transcoders
-were read from their published files; running them needs Gemma 3, which wasn't checked. The
+the results described above; and reruns are bit-identical. Gemma Scope 2's files were checked on
+Gemma 3 270M with weight processing off: the points they read (each MLP's input and output, and
+the attention's output projection's input) are exactly TransformerLens's hooks, and as read here
+an affine transcoder explains 91% of its MLP output's variance, the same transcoder without the
+skip connection 89%, and an attention SAE 76% (with weights from an ungated copy whose file hash is
+Google's). Other methods weren't run on Gemma 3. The
 example's names are single tokens for GPT-2 and Qwen but not all for Pythia; for another model,
 generate IOI prompts in the app, which keeps only names that are single tokens for it. A small
 model may not do the task at all (Pythia-70m prefers the repeated name), and its runs then say so.

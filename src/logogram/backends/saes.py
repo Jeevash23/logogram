@@ -3,24 +3,29 @@
 Three safetensors formats are read:
 
 * SAELens (``cfg.json`` + ``sae_weights.safetensors``), as in the GPT-2 small residual SAEs. The
-  config names the TransformerLens hook the SAE reads, such as ``blocks.8.hook_resid_pre``.
+  config names the TransformerLens hook the SAE reads, such as ``blocks.8.hook_resid_pre``, or
+  ``blocks.5.attn.hook_z`` for the outputs ``z`` of all the layer's attention heads, read side
+  by side as one vector (head after head) per position.
 * EleutherAI's sparsify (``cfg.json`` + ``sae.safetensors``), as for Pythia, SmolLM2 and Llama.
   The folder names the module whose output the SAE reads, such as ``layers.3`` (the residual
-  stream after layer 3) or ``layers.3.mlp`` (the MLP output); a transcoder (``transcode``) reads
-  that MLP's input and predicts its output.
+  stream after layer 3) or ``layers.3.mlp`` (the MLP output); a transcoder reads that MLP's input
+  and predicts its output. Skip transcoders also add ``x @ W_skip.T`` of the input ``x``.
 * Gemma Scope 2 (``config.json`` + ``params.safetensors``), for Gemma 3: JumpReLU SAEs on each
   layer's output, its attention heads' outputs (the input of ``o_proj``) and its MLP output, and
-  transcoders from each MLP's input to its output. The config names Hugging Face modules, such
-  as ``model.layers.12.output``.
+  transcoders from each MLP's input to its output, some with an affine skip connection that adds
+  ``x @ affine_skip_connection``. The config names Hugging Face modules, such as
+  ``model.layers.12.output``.
 
 Hook and module names are library details, so they are mapped to abstract sites here. Parameters
 are read only from safetensors; Gemma Scope's NumPy archives are refused rather than loaded with a
-different reader. Anything a format does that Logogram can't reproduce exactly (a learned scaling,
-a gated encoder, a skip connection, a transcoder across layers) is refused with the reason.
+different reader. Anything a file does that Logogram can't reproduce exactly (a learned scaling, a
+gated encoder, a skip connection on an SAE, a transcoder across layers, settings or tensors that
+sparsify's releases don't define) is refused with the reason.
 """
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import re
 from dataclasses import dataclass
@@ -37,8 +42,19 @@ CONFIG_FILES = {
     "sae.safetensors": "cfg.json",
     "params.safetensors": "config.json",
 }
+# sparsify writes the configuration of the whole training run here, at the top of its output.
+TRAINING_CONFIG = "config.json"
 
-_TL_HOOK = re.compile(r"blocks\.(\d+)\.hook_(resid_pre|resid_post|attn_out|mlp_out)")
+_TL_HOOK = re.compile(
+    r"blocks\.(\d+)\.(hook_resid_pre|hook_resid_post|hook_attn_out|hook_mlp_out|attn\.hook_z)"
+)
+_TL_SITES = {
+    "hook_resid_pre": "resid_pre",
+    "hook_resid_post": "resid_post",
+    "hook_attn_out": "attn_out",
+    "hook_mlp_out": "mlp_out",
+    "attn.hook_z": "head",
+}
 _MODULE = re.compile(r"(?:.*\.)?layers\.(\d+)(?:\.(mlp|attention|self_attn|attn))?")
 # Hugging Face module points, as Gemma Scope 2 names them (model.layers.N...), and the same points
 # in GPT-2 (transformer.h.N...) and Pythia (gpt_neox.layers.N...) naming.
@@ -61,12 +77,38 @@ _HF_POINTS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(_HF_LAYER + r"\.mlp\.input"), "mlp_in"),
 ]
 
+# What sparsify's released versions write in cfg.json and sae.safetensors. Forks of it add other
+# settings and tensors, whose meaning Logogram can't check, so a file that uses any is refused.
+_SPARSIFY_KEYS = frozenset(
+    {
+        "activation",
+        "expansion_factor",
+        "normalize_decoder",
+        "num_latents",
+        "k",
+        "multi_topk",
+        "skip_connection",
+        "transcode",
+        "d_in",
+    }
+)
+_SPARSIFY_TENSORS = frozenset({"encoder.weight", "encoder.bias", "W_dec", "b_dec", "W_skip"})
+_SAELENS_TENSORS = frozenset({"W_enc", "b_enc", "W_dec", "b_dec", "threshold"})
+_GEMMA_SCOPE_TENSORS = frozenset(
+    {"w_enc", "b_enc", "w_dec", "b_dec", "threshold", "affine_skip_connection"}
+)
+
 
 @dataclass
 class SAEParams:
     """An SAE (or transcoder) as read from its files: what it reads and writes, and how it encodes
     and decodes. An SAE reads and writes the same site; a transcoder reads an MLP's input
-    (``mlp_in``) and writes that MLP's output."""
+    (``mlp_in``) and writes that MLP's output.
+
+    Encoding: ``f = act((x - b_dec if subtract_b_dec else x) @ W_enc + b_enc)``, with ``x``
+    standardized first when ``normalize`` is ``layer_norm``. Decoding: ``f @ W_dec + b_dec``
+    (restored to the input's mean and spread when standardized), plus ``x @ W_skip`` for a
+    transcoder with a skip connection, where ``x`` is its input as read."""
 
     site: str  # abstract site it writes: resid_pre, resid_post, attn_out, mlp_out or head (z)
     layer: int
@@ -74,8 +116,8 @@ class SAEParams:
     d_sae: int
     W_enc: torch.Tensor  # [d_in, d_sae]
     b_enc: torch.Tensor  # [d_sae]
-    W_dec: torch.Tensor  # [d_sae, d_in]
-    b_dec: torch.Tensor  # [d_in]
+    W_dec: torch.Tensor  # [d_sae, d_out]
+    b_dec: torch.Tensor  # [d_out]
     activation: str  # relu, topk or jumprelu
     k: int | None
     threshold: torch.Tensor | None  # [d_sae], JumpReLU only
@@ -85,10 +127,13 @@ class SAEParams:
     note: str  # what the SAE says about itself, for the app (model name, training hook)
     # The site it reads: the same as ``site`` for an SAE, the MLP's input for a transcoder.
     site_in: str | None = None
+    # A transcoder's skip connection, input by output: it adds x @ W_skip to what it decodes.
+    W_skip: torch.Tensor | None = None  # [d_in, d_out]
 
     def __post_init__(self) -> None:
         if self.site_in is None:
             self.site_in = self.site
+        self._check_shapes()
 
     @property
     def transcoder(self) -> bool:
@@ -98,16 +143,42 @@ class SAEParams:
     def d_out(self) -> int:
         return int(self.W_dec.shape[1])
 
+    def _check_shapes(self) -> None:
+        d_in, d_sae, d_out = self.d_in, self.d_sae, self.d_out
+        expected = {
+            "W_enc": (d_in, d_sae),
+            "b_enc": (d_sae,),
+            "W_dec": (d_sae, d_out),
+            "b_dec": (d_out,),
+            "threshold": (d_sae,),
+            "W_skip": (d_in, d_out),
+        }
+        wrong = [
+            name
+            for name, shape in expected.items()
+            if getattr(self, name) is not None and tuple(getattr(self, name).shape) != shape
+        ]
+        if self.subtract_b_dec and d_in != d_out:
+            wrong.append("b_dec")
+        if wrong:
+            names = sorted(set(wrong))
+            verb = "has" if len(names) == 1 else "have"
+            raise BackendError(
+                f"The SAE's weights don't fit together: {_names(names)} {verb} "
+                "another shape than its other weights say. The file may be damaged or of another "
+                "format."
+            )
+
 
 def site_of_hook(name: str) -> tuple[str, int]:
     match = _TL_HOOK.fullmatch(name)
     if match is None:
         raise BackendError(
-            f"This SAE reads {name}, which Logogram can't map to a residual stream, attention "
-            "output or MLP output. SAEs on single heads or on the stream between attention and "
-            "MLP aren't supported yet."
+            f"This SAE reads {name}, which Logogram can't map to a residual stream, an attention "
+            "output, the attention heads' outputs (z) or an MLP output. SAEs on the stream "
+            "between attention and MLP aren't supported yet."
         )
-    return match.group(2), int(match.group(1))
+    return _TL_SITES[match.group(2)], int(match.group(1))
 
 
 def site_of_module(folder: str) -> tuple[str, int]:
@@ -137,7 +208,8 @@ def site_of_hf_point(name: str) -> tuple[str, int]:
 
 def read_sae(folder: Path, path: str = "") -> SAEParams:
     """Read an SAE (or transcoder) from a local folder holding its config and safetensors
-    weights."""
+    weights. ``path`` is the folder's path in its repository, whose top may hold the training
+    run's configuration (EleutherAI's sparsify writes it there)."""
     from safetensors.torch import load_file
 
     if (folder / "params.npz").exists():
@@ -160,16 +232,54 @@ def read_sae(folder: Path, path: str = "") -> SAEParams:
             "sae_weights.safetensors (SAELens) or sae.safetensors (EleutherAI), or config.json "
             "with params.safetensors (Gemma Scope 2)."
         )
-    try:
-        cfg: dict[str, Any] = json.loads(cfg_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise BackendError(f"The SAE's {cfg_path.name} can't be read: {exc}") from exc
+    cfg = _read_json(cfg_path, "The SAE's")
     tensors = load_file(str(weights), device="cpu")
     if weights.name == "sae_weights.safetensors":
         return _saelens(cfg, tensors)
     if weights.name == "params.safetensors":
         return _gemma_scope_2(cfg, tensors)
-    return _eleuther(cfg, tensors, path or folder.name)
+    # Only files from before sparsify recorded transcoders need the training run's configuration.
+    training = _training_config(folder, path) if "transcode" not in cfg else None
+    return _eleuther(cfg, tensors, path or folder.name, training)
+
+
+def _read_json(path: Path, whose: str) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise BackendError(f"{whose} {path.name} can't be read: {exc}") from exc
+    if not isinstance(data, dict):
+        raise BackendError(f"{whose} {path.name} isn't a JSON object.")
+    return data
+
+
+def _training_config(folder: Path, path: str) -> dict[str, Any] | None:
+    """The configuration of the training run that made the SAE in ``folder`` (``path`` in its
+    repository), which sparsify writes at the top of the run's output, if it is there."""
+    depth = len(Path(path.strip("/")).parts) if path.strip("/") else 0
+    if depth > len(folder.parents):
+        return None
+    root = folder.parents[depth - 1] if depth else folder
+    file = root / TRAINING_CONFIG
+    return _read_json(file, "The training run's") if file.is_file() else None
+
+
+def _unknown(names: set[str] | frozenset[str], known: frozenset[str]) -> list[str]:
+    return sorted(set(names) - known)
+
+
+def _names(names: list[str]) -> str:
+    """Names in a sentence: "a", "a and b", "a, b and c"."""
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+def _extra_tensors(tensors: dict[str, torch.Tensor], known: frozenset[str], what: str) -> None:
+    extra = _unknown(set(tensors), known)
+    if extra:
+        raise BackendError(
+            f"This {what} file holds {_names(extra)}, which Logogram doesn't know how to use, "
+            "so it can't reproduce the SAE exactly."
+        )
 
 
 def _gemma_scope_2(cfg: dict[str, Any], tensors: dict[str, torch.Tensor]) -> SAEParams:
@@ -184,10 +294,7 @@ def _gemma_scope_2(cfg: dict[str, Any], tensors: dict[str, torch.Tensor]) -> SAE
         raise BackendError(f"Gemma Scope 2 files of type {kind!r} aren't supported.")
     if cfg.get("architecture", "jump_relu") != "jump_relu":
         raise BackendError(f"Gemma Scope 2 {cfg.get('architecture')} SAEs aren't supported yet.")
-    if cfg.get("affine_connection"):
-        raise BackendError(
-            "This transcoder has an affine skip connection, which Logogram doesn't support yet."
-        )
+    _extra_tensors(tensors, _GEMMA_SCOPE_TENSORS, "Gemma Scope 2")
     point_in, point_out = cfg.get("hf_hook_point_in"), cfg.get("hf_hook_point_out")
     if not isinstance(point_in, str) or not isinstance(point_out, str):
         raise BackendError("The SAE's config.json doesn't say which modules it reads and writes.")
@@ -203,7 +310,23 @@ def _gemma_scope_2(cfg: dict[str, Any], tensors: dict[str, torch.Tensor]) -> SAE
     W_enc, b_enc, W_dec, b_dec, threshold = _need(
         tensors, "w_enc", "b_enc", "w_dec", "b_dec", "threshold"
     )
+    W_skip = None
+    affine = bool(cfg.get("affine_connection"))
+    if affine != ("affine_skip_connection" in tensors):
+        raise BackendError(
+            "The SAE's config.json and its parameters disagree about an affine skip connection, "
+            "so Logogram can't tell what it computes."
+        )
+    if affine:
+        if kind != "transcoder":
+            raise BackendError(_SKIP_ON_SAE)
+        # Stored input by output, like w_enc and w_dec: the transcoder adds
+        # x @ affine_skip_connection. (On Gemma 3 270M this reproduces the MLP's output better
+        # than the same transcoder without one; the transpose fits worse than none at all.)
+        (W_skip,) = _need(tensors, "affine_skip_connection")
     note = " · ".join(str(v) for v in (cfg.get("model_name"), point_in) if v)
+    if W_skip is not None:
+        note += " · affine skip connection"
     return SAEParams(
         site=site,
         layer=layer,
@@ -222,23 +345,43 @@ def _gemma_scope_2(cfg: dict[str, Any], tensors: dict[str, torch.Tensor]) -> SAE
         format="gemma_scope_2",
         note=note,
         site_in=site_in,
+        W_skip=W_skip,
     )
+
+
+_SKIP_ON_SAE = (
+    "This SAE has a skip connection: it rebuilds the activation partly from the activation "
+    "itself, so its features don't add up to it and one can't be changed alone. Logogram reads "
+    "skip connections on transcoders only, whose input isn't the activation they write."
+)
 
 
 def _need(tensors: dict[str, torch.Tensor], *names: str) -> list[torch.Tensor]:
     missing = [n for n in names if n not in tensors]
     if missing:
-        raise BackendError(f"The SAE's weights are missing {', '.join(missing)}.")
+        raise BackendError(f"The SAE's weights are missing {_names(missing)}.")
     return [tensors[n].float() for n in names]
 
 
 def _saelens(cfg: dict[str, Any], tensors: dict[str, torch.Tensor]) -> SAEParams:
-    hook = cfg.get("hook_name") or cfg.get("hook_point")
+    # SAELens 6 keeps where the SAE reads under "metadata"; earlier versions at the top.
+    meta: dict[str, Any] = cfg["metadata"] if isinstance(cfg.get("metadata"), dict) else {}
+    hook = cfg.get("hook_name") or cfg.get("hook_point") or meta.get("hook_name")
     if not isinstance(hook, str):
         raise BackendError("The SAE's cfg.json doesn't say which hook it reads.")
-    if cfg.get("hook_head_index", cfg.get("hook_point_head_index")) is not None:
-        raise BackendError("SAEs on a single attention head aren't supported yet.")
+    head = cfg.get("hook_head_index", cfg.get("hook_point_head_index", meta.get("hook_head_index")))
+    if head is not None:
+        raise BackendError(
+            "SAEs on a single attention head aren't supported yet; SAEs on all of a layer's "
+            "heads (hook_z) are."
+        )
     site, layer = site_of_hook(hook)
+    reshape = cfg.get("reshape_activations") or "none"
+    if reshape not in ("none", "hook_z") or (reshape == "hook_z" and site != "head"):
+        raise BackendError(
+            f"This SAE reshapes its input ({reshape}) in a way Logogram doesn't reproduce for "
+            f"{hook}."
+        )
     architecture = cfg.get("architecture", "standard")
     if architecture not in ("standard", "jumprelu", "topk"):
         raise BackendError(f"SAELens {architecture} SAEs aren't supported yet.")
@@ -248,6 +391,12 @@ def _saelens(cfg: dict[str, Any], tensors: dict[str, torch.Tensor]) -> SAEParams
             f"This SAE rescales its inputs ({normalize}) with a factor measured on its training "
             "data, which Logogram can't reproduce exactly."
         )
+    if cfg.get("finetuning_scaling_factor") or "finetuning_scaling_factor" in tensors:
+        raise BackendError(
+            "This SAE scales its features by a factor fitted after training "
+            "(finetuning_scaling_factor), which Logogram doesn't reproduce yet."
+        )
+    _extra_tensors(tensors, _SAELENS_TENSORS, "SAELens")
     W_enc, b_enc, W_dec, b_dec = _need(tensors, "W_enc", "b_enc", "W_dec", "b_dec")
     activation, k, threshold = "relu", None, None
     fn = cfg.get("activation_fn_str") or cfg.get("activation_fn") or "relu"
@@ -262,7 +411,12 @@ def _saelens(cfg: dict[str, Any], tensors: dict[str, torch.Tensor]) -> SAEParams
             raise BackendError("This TopK SAE doesn't say how many features it keeps (k).")
     elif fn != "relu":
         raise BackendError(f"SAEs with a {fn} activation aren't supported yet.")
-    note = " · ".join(str(v) for v in (cfg.get("model_name"), hook) if v)
+    if "threshold" in tensors and activation != "jumprelu":
+        raise BackendError(
+            f"This SAE holds JumpReLU thresholds but says its architecture is {architecture}, so "
+            "Logogram can't tell how it encodes."
+        )
+    note = " · ".join(str(v) for v in (cfg.get("model_name") or meta.get("model_name"), hook) if v)
     return SAEParams(
         site=site,
         layer=layer,
@@ -282,16 +436,50 @@ def _saelens(cfg: dict[str, Any], tensors: dict[str, torch.Tensor]) -> SAEParams
     )
 
 
-def _eleuther(cfg: dict[str, Any], tensors: dict[str, torch.Tensor], folder: str) -> SAEParams:
-    for flag, what in (
-        ("skip_connection", "SAEs and transcoders with a skip connection"),
-        ("signed", "Signed SAEs"),
-    ):
-        if cfg.get(flag):
-            raise BackendError(f"{what} aren't supported yet.")
+def _on(value: Any) -> bool:
+    """Whether a setting in a config changes anything: not off, zero, empty or "none"."""
+    return value not in (None, False, 0, "", "none", [], {})
+
+
+def _eleuther(
+    cfg: dict[str, Any],
+    tensors: dict[str, torch.Tensor],
+    folder: str,
+    training: dict[str, Any] | None,
+) -> SAEParams:
+    """sparsify's format, in both of its versions.
+
+    Since February 2025 cfg.json says whether the file is a transcoder (``transcode``), and a
+    transcoder encodes its input as it is. Files written before then don't say: only the training
+    run's config.json does, and every input had ``b_dec`` subtracted before encoding (the
+    published Llama 3.2 1B and DeepSeek-R1-Distill-Qwen 1.5B skip transcoders are of this kind).
+    Either way, a skip connection adds ``x @ W_skip.T`` of the raw input to the decoded output.
+    """
+    if _on(cfg.get("signed")):
+        raise BackendError("Signed SAEs (whose features can be negative) aren't supported yet.")
+    unknown = [key for key in _unknown(set(cfg), _SPARSIFY_KEYS) if _on(cfg[key])]
+    if unknown:
+        raise BackendError(
+            f"This EleutherAI file sets {_names(unknown)}, which sparsify's released versions "
+            "don't define, so Logogram can't tell what it computes. Choose a file written by "
+            "sparsify itself."
+        )
+    _extra_tensors(tensors, _SPARSIFY_TENSORS, "EleutherAI")
+    activation = cfg.get("activation", "topk")
+    if activation != "topk":
+        raise BackendError(
+            f"This SAE keeps features with sparsify's {activation} activation, which Logogram "
+            "doesn't reproduce yet; TopK SAEs are read."
+        )
     site, layer = site_of_module(folder)
+    if "transcode" in cfg:
+        transcoder = bool(cfg["transcode"])
+        subtract_b_dec = not transcoder
+    else:
+        transcoder = _trained_as_transcoder(training, folder)
+        subtract_b_dec = True
     site_in = site
-    if cfg.get("transcode"):
+    if transcoder:
         if site != "mlp_out":
             raise BackendError(
                 "Logogram reads transcoders from an MLP's input to its output; this one hooks "
@@ -301,9 +489,29 @@ def _eleuther(cfg: dict[str, Any], tensors: dict[str, torch.Tensor], folder: str
     encoder, b_enc, W_dec, b_dec = _need(
         tensors, "encoder.weight", "encoder.bias", "W_dec", "b_dec"
     )
+    W_skip = None
+    if _on(cfg.get("skip_connection")) != ("W_skip" in tensors):
+        raise BackendError(
+            "The SAE's cfg.json and its weights disagree about a skip connection, so Logogram "
+            "can't tell what it computes."
+        )
+    if "W_skip" in tensors:
+        if not transcoder:
+            raise BackendError(_SKIP_ON_SAE)
+        # sparsify stores it output by input and adds x @ W_skip.T.
+        W_skip = _need(tensors, "W_skip")[0].T.contiguous()
     k = int(cfg.get("k") or 0)
     if k <= 0:
         raise BackendError("This TopK SAE doesn't say how many features it keeps (k).")
+    d_in = cfg.get("d_in")
+    if d_in is not None and int(d_in) != int(encoder.shape[1]):
+        raise BackendError(
+            f"The SAE's cfg.json says it reads {d_in} dimensions, but its encoder reads "
+            f"{int(encoder.shape[1])}."
+        )
+    note = f"EleutherAI sparsify · {folder}"
+    if transcoder:
+        note += " · skip transcoder" if W_skip is not None else " · transcoder"
     return SAEParams(
         site=site,
         layer=layer,
@@ -316,12 +524,31 @@ def _eleuther(cfg: dict[str, Any], tensors: dict[str, torch.Tensor], folder: str
         activation="topk",
         k=k,
         threshold=None,
-        subtract_b_dec=True,
+        subtract_b_dec=subtract_b_dec,
         normalize="none",
         format="eleuther",
-        note=f"EleutherAI sparsify · {folder}" + (" · transcoder" if site_in != site else ""),
+        note=note,
         site_in=site_in,
+        W_skip=W_skip,
     )
+
+
+def _trained_as_transcoder(training: dict[str, Any] | None, folder: str) -> bool:
+    """Whether a file from before sparsify recorded transcoders is one: its training run's
+    configuration says so, for the hookpoint it was trained on."""
+    if training is None:
+        return False
+    # Hookpoints may be given as patterns, such as layers.*.mlp.
+    hookpoints = [str(p) for p in training.get("hookpoints") or []]
+    name = folder.strip("/").split("/")[-1]
+    if hookpoints and not any(fnmatch.fnmatchcase(name, p) for p in hookpoints):
+        raise BackendError(
+            f"The training run's config.json beside this SAE doesn't list {name} among the "
+            "modules it trained on, so it may describe other files. Logogram can't tell whether "
+            "this one is a transcoder."
+        )
+    sae: dict[str, Any] = training["sae"] if isinstance(training.get("sae"), dict) else {}
+    return bool(training.get("transcode") or sae.get("transcode"))
 
 
 # -- the Hub -----------------------------------------------------------------------------------
@@ -399,14 +626,16 @@ def download_sae(
             "sae_weights.safetensors or sae.safetensors, or config.json with params.safetensors, "
             "there."
         )
+    wanted = [
+        (f"{prefix}{config}", sizes[f"{prefix}{config}"]),
+        (f"{prefix}{weights}", sizes[f"{prefix}{weights}"]),
+    ]
+    if weights == "sae.safetensors" and TRAINING_CONFIG in sizes:
+        # sparsify's training run configuration: files written before it recorded transcoders in
+        # cfg.json say only there whether they are one. First, so the SAE's folder comes back.
+        wanted.insert(0, (TRAINING_CONFIG, sizes[TRAINING_CONFIG]))
     files = hub.RepoFiles(
-        revision=str(info.sha),
-        files=[
-            (f"{prefix}{config}", sizes[f"{prefix}{config}"]),
-            (f"{prefix}{weights}", sizes[f"{prefix}{weights}"]),
-        ],
-        n_params=None,
-        gated=bool(info.gated),
+        revision=str(info.sha), files=wanted, n_params=None, gated=bool(info.gated)
     )
     folder = hub.download(repo, files, progress, cancel=cancel)
     return str(info.sha), folder
