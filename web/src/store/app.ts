@@ -583,16 +583,20 @@ export const useStore = create<Store>((set, get) => ({
     const draft = runs.find((r) => r.status === "draft");
     if (running) set((s) => ({ live: { ...s.live, [running.id]: s.live[running.id] ?? emptyLive(running.id) } }));
     if (wanted?.compare && runOf(wanted.compare[0]) && runOf(wanted.compare[1])) set({ compareIds: wanted.compare });
-    if (asked && asked.status !== "draft") await get().openRun(asked.id, wanted.view);
+    // A place chosen while the project was opening (a workspace clicked as the page loads) wins
+    // over the one restored here.
+    const chosen = get().view !== "prompts" ? get().view : undefined;
+    if (asked && asked.status !== "draft") await get().openRun(asked.id, chosen ?? wanted.view);
     else if (asked) {
       await get().openDraft(asked.id, { quiet: true });
-      set({ view: wanted.view });
-    } else if (running) await get().openRun(running.id, wanted?.view ?? "results");
-    else if (finished) await get().openRun(finished.id, wanted?.view ?? "explore");
+      set({ view: chosen ?? wanted.view });
+    } else if (running) await get().openRun(running.id, chosen ?? wanted?.view ?? "results");
+    else if (finished) await get().openRun(finished.id, chosen ?? wanted?.view ?? "explore");
     else if (draft) {
       await get().openDraft(draft.id, { quiet: true });
-      if (wanted) set({ view: wanted.view });
-    } else set({ view: wanted?.view ?? (project.datasets.length ? "baseline" : "prompts") });
+      const view = chosen ?? wanted?.view;
+      if (view) set({ view });
+    } else set({ view: chosen ?? wanted?.view ?? (project.datasets.length ? "baseline" : "prompts") });
     if (stored && seq === projectSeq) restoreForm(stored);
     if (seq === projectSeq) set({ entering: false, pendingRoute: null, ...(route?.screen === "projects" ? { screen: "projects" as const } : {}) });
   },
