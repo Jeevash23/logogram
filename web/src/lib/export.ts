@@ -98,7 +98,7 @@ export async function exportFigure(run: RunDetail, metric: "effect" | "delta", u
     ctx.fillStyle = fill;
     const x = left + site.col * cell, y = top + site.row * cell;
     ctx.fillRect(x, y, cell - 2, cell - 2);
-    ctx.fillStyle = textOn(fill, "light");
+    ctx.fillStyle = textOn(fill);
     ctx.textAlign = "center";
     ctx.font = `12px ${font}`;
     ctx.fillText(value === null ? "∅" : value.toFixed(2), x + (cell - 2) / 2, y + 26, cell - 6);

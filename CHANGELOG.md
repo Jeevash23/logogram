@@ -101,6 +101,9 @@ gradients, all checked by patching.
   resize handle belongs to the inspector, so screen reader users can move through each page by
   its headings and landmarks.
 - Pydantic before 2.10 no longer warns about a field named `model_id` when Logogram starts.
+- Text on data colors (heatmap values, the model map's labels and a feature's token highlights)
+  is black or white, whichever contrasts more; some mid-tone cells in the black theme had light
+  text below the 4.5:1 that small text needs.
 
 ### Development
 

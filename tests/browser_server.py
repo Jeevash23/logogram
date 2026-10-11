@@ -62,7 +62,8 @@ def main() -> None:
         state.backend = backend
         state.model_status = {"state": "ready"}
         state.model_ref = spec.model
-        state.update_settings(system_check_seen=True)
+        # The browser's color scheme picks the theme, so the checks run in white and in black.
+        state.update_settings(system_check_seen=True, theme="system")
         state.open_project(project)
         if os.environ.get("LOGOGRAM_FIXTURE_SAE"):
             # A tiny SAE that reconstructs layer 1's residual stream exactly, for checking by eye.
