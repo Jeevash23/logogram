@@ -1,0 +1,242 @@
+/* The prompt pairs of a dataset: a search, pages of rows, and edits saved as a new dataset.
+   White and black: hairlines, ink and space, no fills. */
+
+.prompts {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* Unsaved edits, framed in ink so they can't be missed. */
+.edits {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--text);
+  border-radius: 4px;
+}
+
+.editsTitle {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  font-stretch: inherit;
+  letter-spacing: inherit;
+  line-height: inherit;
+  margin-bottom: 2px;
+}
+
+.saveRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 10px;
+}
+
+.saveRow > :first-child {
+  flex: 0 1 280px;
+}
+
+.problem {
+  color: var(--alert);
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 220px;
+  max-width: 380px;
+}
+
+.search > svg {
+  position: absolute;
+  left: 9px;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.search input {
+  width: 100%;
+  padding-left: 29px;
+  padding-right: 30px;
+}
+
+/* The browser's own clear button is drawn in its colors: this one is ink. */
+.search input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.clear {
+  position: absolute;
+  right: 2px;
+}
+
+.found {
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.range {
+  font-size: var(--text-xs);
+  color: var(--muted);
+  white-space: nowrap;
+  margin-right: 4px;
+}
+
+/* Row headers in the body are cells like the others: not sticky, no fill of their own. */
+.table tbody th {
+  position: static;
+  z-index: auto;
+  background: transparent;
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--text);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  vertical-align: top;
+}
+
+.table tbody tr[aria-selected="true"] th {
+  background: var(--surface-2);
+  box-shadow: inset 2px 0 0 var(--text);
+}
+
+/* A row's number selects it. */
+.select {
+  border: 0;
+  padding: 0 2px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.select:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* "edited" or "removed", under the row's number. */
+.mark {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  text-align: right;
+}
+
+.table tbody tr[data-edit="removed"] td {
+  color: var(--faint);
+  text-decoration: line-through;
+}
+
+.table tbody tr[data-edit="removed"] td.actions {
+  text-decoration: none;
+}
+
+.issue {
+  margin-top: 2px;
+  color: var(--alert);
+  font-size: var(--text-xs);
+}
+
+.meta {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+.actions {
+  width: 1%;
+  white-space: nowrap;
+  text-align: right;
+}
+
+/* Level with the row's first line of text. */
+.actions button {
+  height: 22px;
+  margin: -2px 0;
+}
+
+.actions button + button {
+  margin-left: 2px;
+}
+
+.none {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  font-size: var(--text-sm);
+}
+
+/* The editor */
+
+.editor {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.positions {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.legend {
+  padding: 0;
+  font-size: var(--text-xs);
+  font-weight: 560;
+  color: var(--muted);
+}
+
+.spans {
+  align-self: stretch;
+  display: grid;
+  grid-template-columns: minmax(64px, 1fr) 72px 72px minmax(0, 2fr) auto;
+  gap: 6px 8px;
+  align-items: center;
+}
+
+.spanHead {
+  font-size: var(--text-2xs);
+  color: var(--muted);
+}
+
+.covers {
+  font-size: var(--text-xs);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}

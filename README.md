@@ -279,6 +279,11 @@ A dataset is a JSONL file in the project's `datasets/` folder, one prompt pair p
 The app shows both prompts token by token, highlights where they differ, and refuses to run on
 prompts that can't be used, saying which and why.
 
+**Editing prompts.** The Prompts view searches a dataset's pairs (both prompts, the answers and
+`meta`), shows them a hundred at a time, and edits or removes pairs, including answer sets and
+positions. A dataset file never changes, since runs record its hash: edits stay in the tab, marked
+as unsaved, until they are saved as a new dataset, checked as an import is.
+
 **Tasks.** Logogram writes seeded datasets for six classic tasks, from the app's Prompts view, the
 command line (`logogram tasks`, `logogram generate`) or Python (`lg.generate`). Each fills
 templates whose clean and corrupt prompts have the same token length, names its positions, and
