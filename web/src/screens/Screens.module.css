@@ -182,6 +182,10 @@
   max-width: 560px;
 }
 
+.backRow {
+  margin-top: 20px;
+}
+
 .loadingRow {
   display: flex;
   align-items: center;

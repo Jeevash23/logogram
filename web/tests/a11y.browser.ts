@@ -75,6 +75,26 @@ test("every view has no accessibility violations", async ({ page }) => {
     await open(page, view);
     await expectAccessible(page, `Experiment, ${view}`);
   }
+  // A prompt pair being edited, and edits waiting to be saved as a new dataset.
+  await open(page, "Prompts");
+  await page.getByRole("button", { name: "Edit prompt 0", exact: true }).click();
+  const editor = page.getByRole("dialog", { name: "Edit prompt 0" });
+  await editor.getByRole("radiogroup", { name: "Answer: one answer or a set" }).getByRole("radio", { name: "Set of tokens" }).click();
+  await expect(editor.getByText("How the loaded model tokenizes it")).toBeVisible();
+  await expectAccessible(page, "Experiment, a prompt pair being edited");
+  await editor.getByRole("button", { name: "Add a position", exact: true }).click();
+  await expect(editor.getByRole("alert").filter({ hasText: "Name each position, or remove it." })).toBeVisible();
+  await expectAccessible(page, "Experiment, a prompt pair that can't be applied");
+  await editor.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.getByRole("button", { name: "Remove prompt 1", exact: true }).click();
+  await page.getByRole("searchbox", { name: "Search the prompt pairs" }).fill("went");
+  await expect(page.getByRole("region", { name: "Unsaved edits" })).toBeVisible();
+  await expectAccessible(page, "Experiment, unsaved edits and a search");
+  await page.getByRole("button", { name: "Discard edits", exact: true }).click();
+  const question = page.getByRole("alertdialog", { name: "Discard the unsaved edits?" });
+  await expectAccessible(page, "Experiment, discarding edits");
+  await question.getByRole("button", { name: "Discard edits", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Unsaved edits" })).toHaveCount(0);
   await page.getByRole("button", { name: "Evidence", exact: true }).click();
   for (const view of ["Results", "Compare runs", "Research notes"]) {
     await open(page, view);

@@ -11,9 +11,9 @@ import { Splitter } from "../components/Splitter";
 import { StatusLine } from "../components/StatusLine";
 import { TokenStrip } from "../components/TokenStrip";
 import { TopBar } from "../components/TopBar";
-import { Button, Dialog, Icon } from "../components/ui";
+import { Button, Dialog, Icon, Tip } from "../components/ui";
 import { useAnalysisContext } from "../lib/hooks";
-import { useStore, workspaceFor, type View, type Workspace } from "../store/app";
+import { useStore, workspaceFor, WORKSPACE_VIEWS, type View, type Workspace } from "../store/app";
 import { AttentionView } from "../views/AttentionView";
 import { BaselineView } from "../views/BaselineView";
 import { CompareView } from "../views/CompareView";
@@ -28,18 +28,13 @@ import { ResultsView } from "../views/ResultsView";
 import { SpecView } from "../views/SpecView";
 import s from "./Workbench.module.css";
 
-const WORKSPACES: { id: Workspace; label: string; views: { id: View; label: string }[] }[] = [
-  { id: "explore", label: "Explore", views: [{ id: "explore", label: "Model" }, { id: "attention", label: "Attention" }, { id: "heads", label: "Head comparison" }, { id: "predictions", label: "Layer predictions" }, { id: "features", label: "Features" }] },
-  { id: "experiment", label: "Experiment", views: [{ id: "prompts", label: "Prompts" }, { id: "baseline", label: "Baseline" }, { id: "experiment", label: "Configure" }, { id: "spec", label: "Spec" }] },
-  { id: "evidence", label: "Evidence", views: [{ id: "results", label: "Results" }, { id: "compare", label: "Compare runs" }, { id: "notes", label: "Research notes" }] },
-];
-
 export function Workbench() {
   const view = useStore(st => st.view);
   const setView = useStore(st => st.setView);
   const workspace = workspaceFor(view);
   const pins = useStore(st => st.headPins.length);
   const staged = useStore(st => st.stagedSites.length);
+  const singleKeys = useStore(st => st.singleKeys);
   const runs = useStore(st => st.runs.length);
   const inspectorFocus = useStore(st => st.inspectorFocus);
   const project = useStore(st => st.project?.session_id);
@@ -71,9 +66,12 @@ export function Workbench() {
     w === "experiment" && staged > 0 ? useStore.getState().configureStaged() : setView(lastView.current[w]);
 
   return <div className={s.workbench} style={{ ["--ws" as string]: `var(--${workspace})` }}>
+    {/* Past the top bar and the tabs, straight to the view. It moves focus without touching the
+        URL, whose fragment holds the route. */}
+    <a href="#main" className={s.skip} onClick={(e) => { e.preventDefault(); document.getElementById("main")?.focus(); }}>Skip to the view</a>
     <TopBar workspace={workspace} onWorkspace={goWorkspace} onHistory={() => setDrawer("history")} runs={runs} staged={staged} />
     <div className={s.subbar}>
-      <nav className={s.tabs} aria-label={`${workspace} views`}>{WORKSPACES.find(w => w.id === workspace)?.views.map(v => <button key={v.id} type="button" className={s.tab} aria-current={view === v.id ? "page" : undefined} onClick={() => setView(v.id)}>{v.label}{v.id === "heads" && pins > 0 && <span className={s.count}>{pins}/2</span>}</button>)}</nav>
+      <nav className={s.tabs} aria-label={`${workspace} views`}>{WORKSPACE_VIEWS.find(w => w.id === workspace)?.views.map((v, i) => <button key={v.id} type="button" className={s.tab} aria-current={view === v.id ? "page" : undefined} aria-keyshortcuts={singleKeys ? String(i + 1) : undefined} onClick={() => setView(v.id)}>{v.label}{v.id === "heads" && pins > 0 && <span className={s.count}>{pins}/2</span>}</button>)}</nav>
       <div className={s.context}>
         <NextStep />
         <ModelChip />
@@ -82,9 +80,9 @@ export function Workbench() {
       </div>
     </div>
     <div className={s.body}>
-      <main className={s.center}>
+      <main className={s.center} id="main" tabIndex={-1}>
         <div className={s.view} ref={viewPane}><ErrorBoundary key={view} name="This view"><ActiveView view={view} /></ErrorBoundary></div>
-        {!["notes", "compare", "spec"].includes(view) && <ErrorBoundary name="The token strip" resetKey={view}><TokenStrip /></ErrorBoundary>}
+        {!["notes", "compare", "spec", "features"].includes(view) && <ErrorBoundary name="The token strip" resetKey={view}><TokenStrip /></ErrorBoundary>}
       </main>
       {showInspector && <aside className={s.inspectorPane} aria-label="Inspector"><Splitter orientation="vertical" label="Resize the inspector" value={inspectorWidth} min={280} max={480} onReset={() => setInspectorWidth(320)} onResize={(delta, phase) => {
         if (phase === "start") { startWidth.current = inspectorWidth; return; }
@@ -114,11 +112,11 @@ function NextStep() {
   const step = model.state !== "ready" ? 0 : !dataset ? 1 : !baseline ? 2 : 3;
   const go = () =>
     step === 0 ? useStore.setState({ modelDialogOpen: true }) : useStore.getState().setView(step === 1 ? "prompts" : step === 2 ? "baseline" : "experiment");
-  return <button type="button" className={s.next} onClick={go} aria-label={`Next step: ${STEPS[step]}`} title="Your first experiment, in four steps">
-    <span className={s.nextDots} aria-hidden="true">{STEPS.map((label, i) => <span key={label} data-state={i < step ? "done" : i === step ? "now" : "todo"} />)}</span>
+  return <Tip text="Your first experiment, in four steps" side="bottom"><button type="button" className={s.next} onClick={go} aria-label={`Next step: ${STEPS[step]}`}>
+    <span className={s.nextDots} aria-hidden="true">{STEPS.map((label, i) => <span key={label} data-state={i < step ? "done" : i === step ? "now" : "todo"} data-workspace={i > 0 ? "experiment" : undefined} />)}</span>
     <span className={s.nextText}><span className={s.nextCount}>Step {step + 1} of 4</span>{STEPS[step]}</span>
     <Icon name="arrowRight" size={14} />
-  </button>;
+  </button></Tip>;
 }
 
 /** The inspector, contained: an error in it leaves the rest of the workbench working. Choosing

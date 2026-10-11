@@ -25,6 +25,7 @@ from logogram.datasets import (
     PromptRecord,
     check_dataset_name,
     decode_dataset,
+    derive_records,
     file_sha256,
     load_dataset,
     parse_jsonl,
@@ -47,10 +48,10 @@ from logogram.research import (
     read_notebook,
     save_note,
 )
-from logogram.schema import Manifest, RunListing, Summary
+from logogram.schema import Manifest, QueuedRunInfo, RunListing, Summary
 from logogram.server import models as M
 from logogram.server.security import SecurityConfig, SecurityMiddleware
-from logogram.server.state import AppState, Conflict, EventHub, Missing, request_project
+from logogram.server.state import AppState, Conflict, EventHub, Job, Missing, request_project
 from logogram.spec import (
     SINGLE_POSITION_METRICS,
     Metric,
@@ -257,6 +258,20 @@ class PairRequest(BaseModel):
     overwrite: bool = False
 
 
+class DeriveRequest(BaseModel):
+    """A dataset's prompts, some edited and some left out, saved as a new dataset. The dataset
+    they come from never changes: runs record its hash."""
+
+    # The dataset edited, as specs name it (a run's saved copy too), and the version edited.
+    dataset: str
+    dataset_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    # The new dataset's name, checked as is: a name that is really a path is refused.
+    name: str
+    # Indices of the prompts to leave out, and the new value of each edited prompt by index.
+    remove: list[int] = []
+    replace: dict[int, Any] = {}
+
+
 class AnalysisRequest(BaseModel):
     """An interactive analysis. The choices that change its numbers are stated, as in a spec."""
 
@@ -281,6 +296,20 @@ class EstimateRequest(BaseModel):
     dtype: Literal["float32", "float16", "bfloat16"] = "float32"
     device: Literal["auto", "cpu", "cuda", "mps"] = "auto"
     process_weights: bool = True
+
+
+class RunMemoryRequest(BaseModel):
+    batch_size: int = Field(ge=1, le=4096)
+    # The longest prompt, in tokens of the loaded model.
+    seq_len: int = Field(ge=1, le=1_000_000)
+    method: Literal[
+        "activation_patching",
+        "ablation",
+        "attribution_patching",
+        "direct_logit_attribution",
+        "path_patching",
+        "steering",
+    ]
 
 
 class BaselineRequest(AnalysisRequest):
@@ -355,6 +384,9 @@ class SettingsRequest(BaseModel):
     theme: Literal["light", "dark", "system"] | None = None
     # Whether Logogram may ask PyPI about new versions once a day. Off until the user says yes.
     update_check: bool | None = None
+    # Whether single keys (1 to 5, [ and ], P, B, A, C and ?) act as shortcuts. On until turned
+    # off, for someone who uses speech input or presses keys by accident.
+    single_key_shortcuts: bool | None = None
 
 
 # -- app factory -------------------------------------------------------------------------------
@@ -423,13 +455,18 @@ def create_app(
     @app.get("/api/state", response_model=M.ServerState)
     def get_state() -> dict[str, Any]:
         settings = state.settings()
+        # Before the job: a run leaves the queue only once its job has started.
+        queue = state.queued_runs()
         return {
             "version": __version__,
             "project": state.project.to_dict() if state.project else None,
             "model": state.model_payload(),
             "job": state.job.to_dict() if state.job else None,
+            "queue": queue,
             "first_run": not settings.get("system_check_seen", False),
-            "theme": settings.get("theme", "light"),
+            # Until someone picks one, the app follows the computer's light or dark setting.
+            "theme": settings.get("theme", "system"),
+            "single_key_shortcuts": settings.get("single_key_shortcuts", True),
             "projects_parent": str(default_projects_parent()),
             "update": state.update_status(),
             "sae": state.sae_payload(),
@@ -568,12 +605,19 @@ def create_app(
     def _new_dataset_path(project: Project, name: str) -> Path:
         return project.dataset_file(check_dataset_name(Path(name).name))
 
-    def _write_new(path: Path, records: list[PromptRecord], overwrite: bool) -> dict[str, Any]:
+    def _write_new(
+        path: Path,
+        records: list[PromptRecord],
+        overwrite: bool,
+        fix: str = "Choose another name, or replace it explicitly.",
+    ) -> dict[str, Any]:
+        exists = f"{path.name} already exists. {fix}"
         if os.path.lexists(path) and not overwrite:
-            raise DatasetError(
-                f"{path.name} already exists. Choose another name, or replace it explicitly."
-            )
-        write_dataset(path, records)
+            raise DatasetError(exists)
+        try:
+            write_dataset(path, records, replace=overwrite)
+        except FileExistsError:  # created since the check: it is never replaced
+            raise DatasetError(exists) from None
         return {"name": path.name, "path": f"datasets/{path.name}", "n": len(records)}
 
     def _records(
@@ -690,6 +734,26 @@ def create_app(
         )
         return _write_new(_new_dataset_path(project, body.name), [record], body.overwrite)
 
+    @app.post("/api/datasets/derive", response_model=M.DatasetCreated)
+    def derive_dataset(body: DeriveRequest) -> dict[str, Any]:
+        """Save a dataset's prompts, some edited and some left out, as a new dataset. Nothing is
+        ever replaced: neither the dataset edited nor a file already called ``name``."""
+        project = state.require_project()
+        path = project.dataset_file(check_dataset_name(body.name))
+        fix = "Choose another name."
+        if os.path.lexists(path):  # say so before reading the prompts
+            raise DatasetError(f"{path.name} already exists. {fix}")
+        source = project.resolve_dataset(body.dataset)
+        content = read_dataset_bytes(source)
+        if hashlib.sha256(content).hexdigest() != body.dataset_sha256:
+            raise Conflict(
+                f"{source.name} changed since these edits were made, so they no longer match its "
+                "prompts. Discard them and edit the file as it is now."
+            )
+        records = parse_jsonl(decode_dataset(content, body.dataset), source=body.dataset)
+        derived = derive_records(records, remove=body.remove, replace=body.replace)
+        return _write_new(path, derived, overwrite=False, fix=fix)
+
     @app.post("/api/tokenize", response_model=M.TokenStrip)
     def tokenize(body: TokenizeRequest) -> dict[str, Any]:
         from logogram.analysis import tokenize_pair
@@ -766,6 +830,28 @@ def create_app(
             "support_note": support_note,
             "estimate": est.to_dict(),
         }
+
+    @app.post("/api/models/run-memory", response_model=M.RunMemoryOut)
+    def run_memory(body: RunMemoryRequest) -> dict[str, Any]:
+        """What a run of this batch size needs on the loaded model, against the memory free."""
+        from logogram.system import ALL_LAYER_METHODS, estimate_run_memory
+
+        backend = state.backend
+        if backend is None:
+            raise Conflict("Load a model to estimate what a run on it needs.")
+        info = backend.info
+        return estimate_run_memory(
+            n_layers=info.n_layers,
+            n_heads=info.n_heads,
+            d_model=info.d_model,
+            d_mlp=info.d_mlp or 0,
+            d_vocab=info.d_vocab,
+            dtype=info.dtype,
+            device=info.device,
+            batch_size=body.batch_size,
+            seq_len=body.seq_len,
+            all_layers=body.method in ALL_LAYER_METHODS,
+        ).to_dict()
 
     @app.post("/api/models/load", response_model=M.JobInfo)
     def load(body: ModelRef) -> dict[str, Any]:
@@ -1071,6 +1157,31 @@ def create_app(
         job = state.cancel_job()
         return {"job": job.to_dict() if job else None}
 
+    # -- the run queue -----------------------------------------------------------------------
+
+    @app.get("/api/queue", response_model=list[QueuedRunInfo])
+    def queued_runs() -> list[dict[str, Any]]:
+        state.require_project()
+        return state.queued_runs()
+
+    @app.post("/api/queue", response_model=M.QueueAdded)
+    def queue_run(body: RunRequest) -> dict[str, Any]:
+        """Run a spec when the job in progress ends, or now if nothing is running."""
+        spec = Spec.model_validate(body.spec)
+        state.require_project()
+        out = state.queue_run(spec, draft_id=body.draft_id)
+        started, queued = (out, None) if isinstance(out, Job) else (None, out)
+        return {
+            "run_id": started.run_id if started else None,
+            "job": started.to_dict() if started else None,
+            "queued": queued.to_dict() if queued else None,
+            "queue": state.queued_runs(),
+        }
+
+    @app.delete("/api/queue/{queued_id}", response_model=list[QueuedRunInfo])
+    def remove_queued_run(queued_id: str) -> list[dict[str, Any]]:
+        return state.remove_queued_run(queued_id)
+
     # -- events ------------------------------------------------------------------------------
 
     @app.websocket("/ws")
@@ -1196,6 +1307,7 @@ PROJECT_SCOPED = (
     "/api/runs",
     "/api/drafts",
     "/api/compare",
+    "/api/queue",
 )
 
 

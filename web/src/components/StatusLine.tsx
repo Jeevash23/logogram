@@ -14,6 +14,7 @@ export function StatusLine() {
   const connection = useStore((st) => st.connection);
   const connectionError = useStore((st) => st.connectionError);
   const live = useStore((st) => (st.job?.run_id ? st.live[st.job.run_id] : undefined));
+  const queued = useStore((st) => st.queue.length);
   const said = useMilestones();
 
   const running = job?.status === "running";
@@ -71,9 +72,10 @@ export function StatusLine() {
         {running && <Spinner />}
         <span className={s.text}>{text}</span>
         {detail && <span className={s.detail}>{detail}</span>}
+        {running && queued > 0 && <span className={s.queued}>{queued} queued</span>}
         {running && (
           <div className={s.bar}>
-            <Progress value={progress} />
+            <Progress value={progress} label={job.kind === "run" ? "Progress of the run" : "Progress of the job"} />
           </div>
         )}
         {running && job.kind === "run" && (

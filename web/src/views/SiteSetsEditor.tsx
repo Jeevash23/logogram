@@ -119,7 +119,7 @@ export function SiteSetsEditor({
           <Button
             size="small"
             disabled={full}
-            title="A set that replaces the sites staged in the model explorer"
+            tip="One set made of the sites staged on the model map"
             onClick={() => onChange({ ...scope, sets: [...scope.sets, { label: freeLabel(scope.sets, "Staged sites"), sites: usable, complement: false }] })}
           >
             Add the staged sites as a set

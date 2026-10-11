@@ -32,8 +32,8 @@ export function Legend({ bound, hasFlags, flagCount }: { bound: number; hasFlags
           value={metric === "effect" ? scaleMode : "auto"}
           onChange={(v) => useStore.setState({ scaleMode: v })}
           options={[
-            { value: "auto", label: "Fit", title: "Scale to the largest value in this run" },
-            { value: "unit", label: "±1", title: "Fixed scale from −1 to 1", disabled: metric !== "effect" },
+            { value: "auto", label: "Fit" },
+            { value: "unit", label: "±1", disabled: metric !== "effect" },
           ]}
         />
       </div>

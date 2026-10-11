@@ -7,6 +7,7 @@ import { inkScale, textOn } from "../lib/color";
 import { bytes, count, num, pct, signed, visibleToken } from "../lib/format";
 import { modelName, useAnalysisContext } from "../lib/hooks";
 import { KIND_NAMES } from "../lib/sites";
+import { POOR_FIT } from "../lib/thresholds";
 import { useStore } from "../store/app";
 import s from "./views.module.css";
 import f from "./FeaturesView.module.css";
@@ -28,7 +29,6 @@ function siteOf(info: SAEInfo): string {
 }
 
 /** Below this, an SAE describes too little of the activations for its features to mean much. */
-const POOR_FIT = 0.6;
 
 export function FeaturesView() {
   const model = useStore((st) => st.model);
@@ -150,7 +150,7 @@ function Loader() {
           <span className={s.small}>
             <Spinner /> {sae.total ? `Downloading ${bytes(sae.done ?? 0)} of ${bytes(sae.total)}` : "Loading the SAE"}
           </span>
-          <Progress value={sae.total ? (sae.done ?? 0) / sae.total : null} />
+          <Progress value={sae.total ? (sae.done ?? 0) / sae.total : null} label="Loading the SAE" />
         </div>
       )}
       {sae.state === "error" && sae.error && <Callout tone="error" title="The SAE didn't load">{sae.error}</Callout>}
@@ -219,7 +219,8 @@ function Loaded({ info }: { info: SAEInfo }) {
         )}
         {fit && fit.variance_explained < POOR_FIT && (
           <Callout title="This SAE fits these activations poorly">
-            It explains {pct(fit.variance_explained)} of their variance, so its features describe little of what the model does here.
+            It explains {pct(fit.variance_explained)} of their variance, under the {pct(POOR_FIT)} counted as a fit, so its features
+            describe little of what the model does here.
             SAEs only fit activations like the ones they were trained on: try loading the model with TransformerLens's weight
             processing switched the other way, or an SAE trained on this model.
           </Callout>
@@ -260,13 +261,14 @@ function TokenPanel({ info, selected, onFeature }: { info: SAEInfo; selected: nu
         <span className={s.panelTitle}>Prompt {index}, token by token</span>
         <Segmented label="Prompt" value={which} onChange={setWhich} options={[{ value: "clean", label: "Clean" }, { value: "corrupt", label: "Corrupt" }]} />
       </div>
+      <p className={s.small}>Choose a token to patch features at its position; choose a feature to read it.</p>
       {error && <Callout tone="error">{error}</Callout>}
       {!data && !error && <p className={s.small}><Spinner /> Encoding the prompt</p>}
       {data && (
         <ol className={f.tokens}>
           {data.tokens.map((t, p) => (
             <li key={p} className={f.tokenRow} aria-current={token === p ? "true" : undefined}>
-              <button type="button" className={f.token} onClick={() => useStore.getState().setTokenPosition(p)} title="Use this token's position">
+              <button type="button" className={f.token} onClick={() => useStore.getState().setTokenPosition(p)}>
                 <span className={f.position}>{p}</span>
                 <span className={f.text}>{visibleToken(t)}</span>
               </button>
@@ -343,8 +345,8 @@ function FeaturePanel({ info, feature }: { info: SAEInfo; feature: number }) {
       <div className={f.panelHead}>
         <span className={s.panelTitle}>Feature {feature}</span>
         <div className={s.headActions}>
-          <Button size="small" onClick={patch} title={token === null ? "Patch it at the last token" : `Patch it at token ${token}`}>
-            Patch this feature
+          <Button size="small" onClick={patch}>
+            {token === null ? "Patch this feature at the last token" : `Patch this feature at token ${token}`}
           </Button>
           <Button size="small" variant="ghost" onClick={estimate}>
             Estimate every feature

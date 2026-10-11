@@ -3,8 +3,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { architectureOf } from "../lib/keys";
 import { parseHeadQuery } from "../lib/sites";
-import { useStore, VIEWS } from "../store/app";
+import { useStore, workspaceFor, WORKSPACE_VIEWS } from "../store/app";
 import { MOD, SHIFT } from "./Header";
+import { WORKSPACE_ITEMS } from "./TopBar";
 import { Icon, Kbd } from "./ui";
 import s from "./CommandPalette.module.css";
 
@@ -18,14 +19,27 @@ interface Command {
   run: () => void;
 }
 
+const WORKSPACE_NAMES = Object.fromEntries(WORKSPACE_ITEMS.map((w) => [w.id, w.label])) as Record<string, string>;
+
 function useCommands(query: string): Command[] {
   const st = useStore();
   return useMemo(() => {
     const cmds: Command[] = [];
     const inWorkbench = st.screen === "workbench";
+    // Single keys are shown only while they work.
+    const key = (k: string) => (st.singleKeys ? k : undefined);
     if (inWorkbench) {
-      VIEWS.forEach((v, i) =>
-        cmds.push({ id: `view-${v.id}`, label: `Go to ${v.label.toLowerCase()}`, group: "Views", shortcut: i < 7 ? String(i + 1) : undefined, run: () => st.setView(v.id) }),
+      const open = workspaceFor(st.view);
+      WORKSPACE_VIEWS.forEach((w) =>
+        w.views.forEach((v, i) =>
+          cmds.push({
+            id: `view-${v.id}`,
+            label: `Go to ${v.label}`,
+            group: WORKSPACE_NAMES[w.id],
+            shortcut: w.id === open ? key(String(i + 1)) : undefined,
+            run: () => st.setView(v.id),
+          }),
+        ),
       );
       cmds.push(
         { id: "model", label: "Load a model…", group: "Actions", keywords: "gpt2 hugging face download", run: () => useStore.setState({ modelDialogOpen: true }) },
@@ -77,10 +91,10 @@ function useCommands(query: string): Command[] {
       if (st.selection) {
         const sel = st.selection;
         cmds.push(
-          { id: "patch-here", label: "Patch here", group: "Selected component", shortcut: "P", disabled: sel.part === "set", run: () => st.prefillExperiment("activation_patching", sel) },
-          { id: "ablate-here", label: "Ablate here", group: "Selected component", shortcut: "B", disabled: sel.part === "set", run: () => st.prefillExperiment("ablation", sel) },
-          { id: "attention", label: "Open attention", group: "Selected component", shortcut: "A", disabled: sel.part !== "head", run: () => st.setView("attention") },
-          { id: "across", label: "Compare across runs", group: "Selected component", shortcut: "C", run: () => st.focusInspector("runs") },
+          { id: "patch-here", label: "Patch here", group: "Selected component", shortcut: key("P"), disabled: sel.part === "set", run: () => st.prefillExperiment("activation_patching", sel) },
+          { id: "ablate-here", label: "Ablate here", group: "Selected component", shortcut: key("B"), disabled: sel.part === "set", run: () => st.prefillExperiment("ablation", sel) },
+          { id: "attention", label: "Open attention", group: "Selected component", shortcut: key("A"), disabled: sel.part !== "head", run: () => st.setView("attention") },
+          { id: "across", label: "Compare across runs", group: "Selected component", shortcut: key("C"), run: () => st.focusInspector("runs") },
         );
       }
       for (const r of st.runs.slice(0, 12)) {
@@ -97,7 +111,10 @@ function useCommands(query: string): Command[] {
       { id: "projects", label: "All projects", group: "Project", run: () => st.goto("projects") },
       { id: "system", label: "System check", group: "Project", keywords: "gpu cuda doctor hardware", run: () => st.goto("system") },
       { id: "updates", label: "Check for updates", group: "Project", keywords: "version upgrade new release pypi", run: () => void st.checkUpdates() },
-      { id: "shortcuts", label: "Show keyboard shortcuts", group: "Help", keywords: "keys hotkeys keyboard help", shortcut: "?", run: () => useStore.setState({ shortcutsOpen: true }) },
+      { id: "shortcuts", label: "Show keyboard shortcuts", group: "Help", keywords: "keys hotkeys keyboard help", shortcut: key("?"), run: () => useStore.setState({ shortcutsOpen: true }) },
+      st.singleKeys
+        ? { id: "single-keys", label: "Turn off single-key shortcuts", group: "Help", keywords: "keys hotkeys keyboard speech accessibility", run: () => st.setSingleKeys(false) }
+        : { id: "single-keys", label: "Turn on single-key shortcuts", group: "Help", keywords: "keys hotkeys keyboard speech accessibility", run: () => st.setSingleKeys(true) },
       { id: "light", label: "White appearance", group: "Appearance", keywords: "theme light", run: () => st.setTheme("light") },
       { id: "dark", label: "Black appearance", group: "Appearance", keywords: "theme dark", run: () => st.setTheme("dark") },
       { id: "system-theme", label: "Match the system appearance", group: "Appearance", keywords: "theme", run: () => st.setTheme("system") },

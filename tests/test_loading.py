@@ -244,3 +244,30 @@ def test_the_memory_estimate_counts_every_layer_for_gradient_methods(monkeypatch
     long = estimate_memory(**GPT2_SMALL, dtype="float32", device="cuda", seq_len=256)
     assert long.verdict == "fits" and long.all_layers_verdict == "wont_fit"
     assert "smaller execution.batch_size" in long.explanation
+
+
+def test_a_runs_memory_counts_its_batch_against_the_memory_free(monkeypatch):
+    """With the model loaded, a run needs one batch's activations beyond its weights; the methods
+    that hold every layer at once need several times more, and a long batch can't fit."""
+    from logogram.system import estimate_run_memory
+
+    monkeypatch.setattr("logogram.system.available_memory", lambda device: 2 * 1024**3)
+    shape = {k: v for k, v in GPT2_SMALL.items() if k != "n_params"}
+    patching = estimate_run_memory(
+        **shape, dtype="float32", device="cuda", batch_size=64, seq_len=32, all_layers=False
+    )
+    gradients = estimate_run_memory(
+        **shape, dtype="float32", device="cuda", batch_size=64, seq_len=32, all_layers=True
+    )
+    assert patching.verdict == "fits" and patching.available == 2 * 1024**3
+    assert gradients.activations > 4 * patching.activations
+    assert patching.total > patching.activations  # with the margin
+    assert "every layer's at once" in gradients.explanation
+    long = estimate_run_memory(
+        **shape, dtype="float32", device="cuda", batch_size=64, seq_len=512, all_layers=True
+    )
+    assert long.verdict == "wont_fit"
+    smaller = estimate_run_memory(
+        **shape, dtype="float32", device="cuda", batch_size=4, seq_len=512, all_layers=True
+    )
+    assert smaller.total < long.total

@@ -5,7 +5,7 @@ import { test, expect, type Page } from "@playwright/test";
 
 test.describe.configure({ mode: "serial" });
 
-const ORIGIN = { origin: "http://127.0.0.1:8877" };
+const ORIGIN = { origin: `http://127.0.0.1:${process.env.LOGOGRAM_BROWSER_PORT ?? "8877"}` };
 let previous: string | null = null;
 
 test.beforeEach(async ({ page }) => {
@@ -73,7 +73,8 @@ test("choosing a metric and running names the run's values by it", async ({ page
   // The KL divergence has no default target: the form says so and won't run.
   await metric.getByRole("radio", { name: /^KL divergence/ }).click();
   await expect(page.getByText("Required: the target changes every value, so there's no default.")).toBeVisible();
-  await expect(page.getByRole("alert").filter({ hasText: "Choose which prompt's prediction the KL divergence is measured from." })).toBeVisible();
+  // Beside the Run button, the summary says what is missing.
+  await expect(page.getByRole("region", { name: "Not ready to run" })).toContainText("Choose which prompt's prediction the KL divergence is measured from.");
   await expect(page.getByRole("button", { name: "Run", exact: true })).toBeDisabled();
   await page.getByRole("radiogroup", { name: "KL divergence measured from" }).getByRole("radio", { name: /^The clean prompt's prediction/ }).click();
   await expect(page.getByRole("button", { name: "Run", exact: true })).toBeEnabled();
@@ -103,7 +104,7 @@ test("a circuit built from staged sites runs, and its faithfulness is read", asy
   await freshProject(page, "Circuit");
   await generateIOI(page, 8);
   await page.getByRole("button", { name: "Explore", exact: true }).click();
-  await page.getByRole("radio", { name: "Layer explorer", exact: true }).click();
+  await page.getByRole("radio", { name: "One layer", exact: true }).click();
   for (const name of [/^L0 H0:/, /^L0 H2:/]) {
     await page.getByRole("button", { name }).click();
     await page.getByRole("button", { name: "Add to experiment", exact: true }).click();

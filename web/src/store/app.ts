@@ -13,6 +13,7 @@ import type {
   ModelShape,
   ModelStatus,
   ProjectInfo,
+  QueuedRun,
   RobustnessChange,
   RunDetail,
   MetricKind,
@@ -45,7 +46,9 @@ import {
   type FormHistory,
   type LastEdit,
 } from "../lib/formHistory";
+import type { Route } from "../lib/route";
 import { fitSelection, isResidKind, sitesOnComponent, type Selection } from "../lib/sites";
+import { hasEdits, type PromptEdits } from "../lib/promptEdits";
 
 export type Screen = "loading" | "system" | "projects" | "workbench" | "error";
 export type View =
@@ -62,22 +65,41 @@ export type View =
   | "compare"
   | "spec";
 
-export const VIEWS: { id: View; label: string }[] = [
-  { id: "prompts", label: "Prompts" },
-  { id: "baseline", label: "Baseline" },
-  { id: "experiment", label: "Experiment" },
-  { id: "results", label: "Results" },
-  { id: "attention", label: "Attention" },
-  { id: "compare", label: "Compare" },
-  { id: "spec", label: "Spec" },
-  { id: "explore", label: "Model explorer" },
-  { id: "heads", label: "Head comparison" },
-  { id: "predictions", label: "Layer predictions" },
-  { id: "features", label: "Features" },
-  { id: "notes", label: "Research notes" },
+export type Workspace = "explore" | "experiment" | "evidence";
+
+/** Each workspace's tabs, in order: the one place their names are set, so the tabs, the command
+ * palette and the number keys agree. */
+export const WORKSPACE_VIEWS: { id: Workspace; views: { id: View; label: string }[] }[] = [
+  {
+    id: "explore",
+    views: [
+      { id: "explore", label: "Model" },
+      { id: "attention", label: "Attention" },
+      { id: "heads", label: "Head comparison" },
+      { id: "predictions", label: "Layer predictions" },
+      { id: "features", label: "Features" },
+    ],
+  },
+  {
+    id: "experiment",
+    views: [
+      { id: "prompts", label: "Prompts" },
+      { id: "baseline", label: "Baseline" },
+      { id: "experiment", label: "Configure" },
+      { id: "spec", label: "Spec" },
+    ],
+  },
+  {
+    id: "evidence",
+    views: [
+      { id: "results", label: "Results" },
+      { id: "compare", label: "Compare runs" },
+      { id: "notes", label: "Research notes" },
+    ],
+  },
 ];
 
-export type Workspace = "explore" | "experiment" | "evidence";
+export const VIEWS: { id: View; label: string }[] = WORKSPACE_VIEWS.flatMap((w) => w.views);
 
 /** A sweep over sets of sites, each intervened on at once. */
 export type SiteSetsScope = Extract<ScopeSpec, { kind: "site_sets" }>;
@@ -160,18 +182,25 @@ interface Store {
   projectsParent: string;
   themeSetting: ThemeSetting;
   theme: ResolvedTheme;
+  /** Whether single keys (digits, [ and ], letters, ?) act as shortcuts. */
+  singleKeys: boolean;
 
   project: ProjectInfo | null;
   model: ModelStatus;
   /** The loaded sparse autoencoder; it belongs to the loaded model. */
   sae: SAEStatus;
   job: Job | null;
+  /** Runs waiting for the job in progress to end, first in line first (the server's queue). */
+  queue: QueuedRun[];
   runs: RunListing[];
 
   view: View;
   datasetPath: string | null;
   dataset: DatasetDetail | null;
   promptIndex: number;
+  /** Unsaved edits to datasets' prompt pairs, by dataset path. A dataset file never changes:
+   * edits are saved as a new dataset (lib/promptEdits). */
+  datasetEdits: Record<string, PromptEdits>;
   activeRunId: string | null;
   runDetails: Record<string, RunDetail>;
   live: Record<string, LiveRun>;
@@ -183,6 +212,10 @@ interface Store {
   /** What is known about newer versions; checked only as the user allows. */
   update: UpdateStatus | null;
   compareIds: [string | null, string | null];
+  /** True while a project is being opened: its several steps are one place, not many. */
+  entering: boolean;
+  /** Where the URL the page was opened with asks to be: the project opens there. */
+  pendingRoute: Route | null;
   compareMode: "side" | "diff";
   flags: Record<string, { against: string; sites: number[] }>;
   form: FormState;
@@ -207,6 +240,7 @@ interface Store {
   applyServerState: (s: ServerState) => void;
   setTheme: (t: ThemeSetting) => void;
   resolveTheme: () => void;
+  setSingleKeys: (on: boolean) => void;
   goto: (screen: Screen) => void;
   /** Show a view. Views that show the active run read its prompts as it did; see
    * analysisSourceFor. */
@@ -223,6 +257,8 @@ interface Store {
   selectDataset: (path: string | null, source?: "run" | "form") => Promise<void>;
   reloadDataset: () => Promise<void>;
   setPromptIndex: (i: number) => void;
+  /** Keep a dataset's unsaved edits, or drop them (null, or edits that change nothing). */
+  setDatasetEdits: (path: string, edits: PromptEdits | null) => void;
   applyJob: (job: Job) => void;
   checkUpdates: () => Promise<void>;
   setUpdateConsent: (allowed: boolean) => Promise<void>;
@@ -243,6 +279,10 @@ interface Store {
   pinHead: (selection: Selection) => void;
   prepareNote: (sites: SiteSpec[]) => void;
   startRun: (spec: Spec) => Promise<void>;
+  /** Run the spec when the job in progress ends: it waits in the queue until then. */
+  queueRun: (spec: Spec) => Promise<void>;
+  /** Take a run out of the queue before it starts. */
+  removeQueuedRun: (id: string) => Promise<void>;
   startRobustness: (runId: string, change: RobustnessChange) => Promise<void>;
   /** Patch, for real, the strongest sites an attribution patching run estimated. */
   startVerification: (runId: string, top: number) => Promise<void>;
@@ -314,17 +354,20 @@ export const useStore = create<Store>((set, get) => ({
   // Until the saved appearance arrives, follow the system, as the page does (tokens.css).
   themeSetting: "system",
   theme: systemTheme(),
+  singleKeys: true,
 
   project: null,
   model: { state: "none" },
   sae: { state: "none" },
   job: null,
+  queue: [],
   runs: [],
 
   view: "prompts",
   datasetPath: null,
   dataset: null,
   promptIndex: 0,
+  datasetEdits: {},
   activeRunId: null,
   runDetails: {},
   live: {},
@@ -334,6 +377,8 @@ export const useStore = create<Store>((set, get) => ({
   cellValues: false,
   update: null,
   compareIds: [null, null],
+  entering: false,
+  pendingRoute: null,
   compareMode: "side",
   flags: {},
   form: DEFAULT_FORM,
@@ -354,9 +399,10 @@ export const useStore = create<Store>((set, get) => ({
     try {
       const state = await api.state();
       get().applyServerState(state);
-      if (state.first_run) set({ screen: "system" });
+      // The URL's place only applies to the project open at boot.
+      if (state.first_run) set({ screen: "system", pendingRoute: null });
       else if (state.project) await get().enterProject(state.project);
-      else set({ screen: "projects" });
+      else set({ screen: "projects", pendingRoute: null });
     } catch (err) {
       set({ screen: "error", bootError: err instanceof Error ? err.message : String(err) });
     }
@@ -368,8 +414,10 @@ export const useStore = create<Store>((set, get) => ({
       firstRun: s.first_run,
       projectsParent: s.projects_parent,
       themeSetting: s.theme,
+      singleKeys: s.single_key_shortcuts ?? true,
       update: s.update ?? null,
       sae: s.sae ?? { state: "none" },
+      queue: s.queue ?? [],
     });
     get().handleEvent({ type: "model", ...s.model });
     if (s.job) get().applyJob(s.job);
@@ -405,6 +453,11 @@ export const useStore = create<Store>((set, get) => ({
     set({ themeSetting: t });
     get().resolveTheme();
     void api.settings({ theme: t }).catch(() => undefined);
+  },
+
+  setSingleKeys: (on) => {
+    set({ singleKeys: on });
+    void api.settings({ single_key_shortcuts: on }).catch(() => undefined);
   },
 
   resolveTheme: () => {
@@ -464,9 +517,11 @@ export const useStore = create<Store>((set, get) => ({
       project,
       tokenPosition: null, stagedSites: [], headPins: [], noteEditor: null, researchVersion: 0,
       job: get().job?.project_session && get().job?.project_session !== project.session_id ? null : get().job,
+      queue: get().queue.filter((q) => q.project_session === project.session_id),
       datasetPath: null,
       dataset: null,
       promptIndex: 0,
+      datasetEdits: {},
       analysisSource: "form",
       view: "prompts",
       inspectorFocus: null,
@@ -481,6 +536,7 @@ export const useStore = create<Store>((set, get) => ({
       live: {},
       selection: null,
       compareIds: [null, null],
+      entering: true,
       flags: {},
       form: DEFAULT_FORM,
       formHistory: EMPTY_HISTORY,
@@ -493,17 +549,29 @@ export const useStore = create<Store>((set, get) => ({
     await get().refreshRuns();
     if (seq !== projectSeq) return;
     const runs = get().runs;
-    // A run in progress (after a reload, say) comes first: its map fills in as it streams.
+    // The page's URL (after a reload, or a kept link) names the view and run to open, where they
+    // still exist. Otherwise a run in progress comes first: its map fills in as it streams.
+    const route = get().pendingRoute;
+    const wanted = route?.screen === "workbench" ? route : null;
+    const runOf = (id: string | undefined) => (id ? runs.find((r) => r.id === id) : undefined);
+    const asked = wanted && runOf(wanted.compare?.[0] ?? wanted.run);
     const running = runs.find((r) => r.status === "running");
     const finished = runs.find((r) => r.status === "finished");
     const draft = runs.find((r) => r.status === "draft");
-    if (running) {
-      set((s) => ({ live: { ...s.live, [running.id]: s.live[running.id] ?? emptyLive(running.id) } }));
-      await get().openRun(running.id, "results");
-    } else if (finished) await get().openRun(finished.id, "explore");
-    else if (draft) await get().openDraft(draft.id, { quiet: true });
-    else set({ view: project.datasets.length ? "baseline" : "prompts" });
+    if (running) set((s) => ({ live: { ...s.live, [running.id]: s.live[running.id] ?? emptyLive(running.id) } }));
+    if (wanted?.compare && runOf(wanted.compare[0]) && runOf(wanted.compare[1])) set({ compareIds: wanted.compare });
+    if (asked && asked.status !== "draft") await get().openRun(asked.id, wanted.view);
+    else if (asked) {
+      await get().openDraft(asked.id, { quiet: true });
+      set({ view: wanted.view });
+    } else if (running) await get().openRun(running.id, wanted?.view ?? "results");
+    else if (finished) await get().openRun(finished.id, wanted?.view ?? "explore");
+    else if (draft) {
+      await get().openDraft(draft.id, { quiet: true });
+      if (wanted) set({ view: wanted.view });
+    } else set({ view: wanted?.view ?? (project.datasets.length ? "baseline" : "prompts") });
     if (stored && seq === projectSeq) restoreForm(stored);
+    if (seq === projectSeq) set({ entering: false, pendingRoute: null, ...(route?.screen === "projects" ? { screen: "projects" as const } : {}) });
   },
 
   leaveProject: () => {
@@ -514,11 +582,11 @@ export const useStore = create<Store>((set, get) => ({
     datasetSeq += 1;
     inflight.clear();
     setProjectSession(null);
-    set({ project: null, screen: "projects", datasetPath: null, dataset: null, promptIndex: 0,
+    set({ project: null, screen: "projects", datasetPath: null, dataset: null, promptIndex: 0, datasetEdits: {},
       tokenPosition: null, stagedSites: [], headPins: [], noteEditor: null, researchVersion: 0,
-      job: get().job?.project_session ? null : get().job,
+      job: get().job?.project_session ? null : get().job, queue: [],
       runs: [], runDetails: {}, activeRunId: null, pendingRunId: null, live: {}, selection: null,
-      compareIds: [null, null], flags: {}, form: DEFAULT_FORM, formHistory: EMPTY_HISTORY, baselines: {}, specSource: "run",
+      compareIds: [null, null], entering: false, flags: {}, form: DEFAULT_FORM, formHistory: EMPTY_HISTORY, baselines: {}, specSource: "run",
       analysisSource: "form", view: "prompts", inspectorFocus: null, robustnessDialogOpen: false,
       cancelConfirmOpen: false, notices: [],
     });
@@ -570,6 +638,11 @@ export const useStore = create<Store>((set, get) => ({
     if (n === 0) return;
     const next = Math.max(0, Math.min(n - 1, i));
     set({ promptIndex: next, ...(next !== get().promptIndex ? { tokenPosition: null } : {}) });
+  },
+
+  setDatasetEdits: (path, edits) => {
+    const { [path]: _dropped, ...rest } = get().datasetEdits;
+    set({ datasetEdits: edits && hasEdits(edits) ? { ...rest, [path]: edits } : rest });
   },
 
   openRun: async (id, view) => {
@@ -692,28 +765,38 @@ export const useStore = create<Store>((set, get) => ({
     starting = true;
     const seq = projectSeq;
     const ran = get().form;
-    const draftId = ran.draftId;
-    const out = await get().guard(() => api.startRun(spec, draftId));
+    const out = await get().guard(() => api.startRun(spec, ran.draftId));
     starting = false;
     if (!out || seq !== projectSeq) return;
-    openSeq += 1;
-    // The run's folder keeps the spec: the form as run is saved.
-    savedForm = { ...ran, draftId: null };
-    get().applyJob(out.job);
-    set((s) => ({
-      // The draft's folder now holds this run: no form, current or in the history, fills it again.
-      form: { ...s.form, draftId: null },
-      formHistory: draftId ? forgetDraft(s.formHistory, draftId) : s.formHistory,
-      pendingRunId: out.run_id,
-      activeRunId: out.run_id,
-      analysisSource: "run",
-      view: "results",
-      // The run's first events may already have arrived over the WebSocket; keep them.
-      live: { ...s.live, [out.run_id]: s.live[out.run_id] ?? emptyLive(out.run_id) },
-    }));
-    get().fitSelection();
-    await get().refreshRuns();
-    void get().loadRun(out.run_id, true);
+    await showStartedRun(ran, out.run_id, out.job);
+  },
+
+  queueRun: async (spec) => {
+    if (starting) return; // a second press while the first request is on its way
+    starting = true;
+    const seq = projectSeq;
+    const ran = get().form;
+    const out = await get().guard(() => api.queueRun(spec, ran.draftId));
+    starting = false;
+    if (!out || seq !== projectSeq) return;
+    // Nothing was running or waiting any more: it started at once, as Run would have.
+    if (out.run_id && out.job) return showStartedRun(ran, out.run_id, out.job);
+    formSent(ran);
+    // The queue event shows it waiting; the notice says what it waits for.
+    const place = out.queue.findIndex((q) => q.id === out.queued?.id);
+    const job = get().job;
+    const ahead = place > 0 ? out.queue[place - 1].title : place === 0 && job?.status === "running" ? job.title : null;
+    get().notify(ahead ? `Queued “${spec.name}”. It starts after “${ahead}”.` : `Queued “${spec.name}”.`);
+  },
+
+  removeQueuedRun: async (id) => {
+    const seq = projectSeq;
+    const run = get().queue.find((q) => q.id === id);
+    const left = await get().guard(() => api.removeQueuedRun(id));
+    if (!left || seq !== projectSeq) return;
+    // The queue event says so too; take it out now, so it can't be removed twice.
+    set((s) => ({ queue: s.queue.filter((q) => q.id !== id) }));
+    get().notify(run ? `Removed “${run.title}” from the queue.` : "Removed the run from the queue.");
   },
 
   startRobustness: async (runId, change) => {
@@ -949,6 +1032,12 @@ export const useStore = create<Store>((set, get) => ({
         if (status === "cancelled" && !data.replay) get().notify("Run cancelled. The spec and any dataset snapshot remain; partial results were discarded.", "info", { persist: true });
         break;
       }
+      case "queue":
+        set({ queue: (data.runs as QueuedRun[] | undefined) ?? [] });
+        break;
+      case "queue.skipped":
+        get().notify(`“${String(data.title)}” couldn't start and was taken out of the queue. ${String(data.error)}`, "error");
+        break;
       case "sae": {
         const { type: _type, ...rest } = event;
         set({ sae: rest as unknown as SAEStatus });
@@ -1018,6 +1107,39 @@ function swapForm(next: FormState, options: ReplaceFormOptions = {}): boolean {
     });
   }
   return true;
+}
+
+/**
+ * The form `ran` went to the server to run, now or from the queue. The run's folder or the queue
+ * keeps its spec, so the form as sent is saved. A draft's folder belongs to that run now: no form,
+ * current or in the history, fills it again.
+ */
+function formSent(ran: FormState): void {
+  savedForm = { ...ran, draftId: null };
+  const draftId = ran.draftId;
+  useStore.setState((s) => ({
+    form: { ...s.form, draftId: null },
+    formHistory: draftId ? forgetDraft(s.formHistory, draftId) : s.formHistory,
+  }));
+}
+
+/** Show a run of the form `ran` that has just started, its results filling in as they stream. */
+async function showStartedRun(ran: FormState, runId: string, job: Job): Promise<void> {
+  const st = useStore.getState();
+  openSeq += 1;
+  formSent(ran);
+  st.applyJob(job);
+  useStore.setState((s) => ({
+    pendingRunId: runId,
+    activeRunId: runId,
+    analysisSource: "run",
+    view: "results",
+    // The run's first events may already have arrived over the WebSocket; keep them.
+    live: { ...s.live, [runId]: s.live[runId] ?? emptyLive(runId) },
+  }));
+  st.fitSelection();
+  await st.refreshRuns();
+  void st.loadRun(runId, true);
 }
 
 /** Undo or redo one step of the form's history. */

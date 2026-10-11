@@ -70,7 +70,7 @@ export function ResearchView() {
   };
 
   return <div className={s.view}>
-    <div className={s.head}><div className={s.titleBlock}><h1 className={s.title}>Research notes</h1><p className={s.subtitle}>Keep a selection, its provenance, and the question you want to investigate next.</p></div><Button onClick={() => useStore.getState().setView("explore")}>Choose a component</Button></div>
+    <div className={s.head}><div className={s.titleBlock}><h1 className={s.title}>Saved selections and what you observed</h1><p className={s.subtitle}>Keep a selection, its provenance, and the question you want to investigate next.</p></div><Button onClick={() => useStore.getState().setView("explore")}>Choose a component</Button></div>
     <p className={s.small}>Saved in this project’s research.json. Model, revision, sites, positions, and source run travel with each note.</p>
     {error && <Callout tone="error">{error}</Callout>}
     {loading && <Spinner label="Reading notes…" />}
@@ -78,7 +78,7 @@ export function ResearchView() {
     <div className={r.notebook}>{notes.map(note => <article key={note.id} className={r.note}>
       <div className={r.noteHeading}><div><h2>{note.title}</h2><p className={s.small}>{modelName(note.model.id)} · revision {shortRevision(note.model.revision)} · {note.model.dtype} · {note.model.device} · weights {note.model.process_weights ? "processed" : "original"}</p></div><time className={s.faint} dateTime={note.updated} title={note.updated}>{ago(note.updated)}</time></div>
       {note.body ? <p className={r.body}>{note.body}</p> : <p className={s.faint}>No written observation yet.</p>}
-      <div className={r.sites}>{note.sites.map((site, i) => <span key={i} title={positionText(site.position)}>{siteText(site)}{site.position.kind === "all" ? " · all positions" : ""}</span>)}</div>
+      <div className={r.sites}>{note.sites.map((site, i) => <span key={i}>{siteText(site)} · {positionText(site.position)}</span>)}</div>
       <div className={r.footer}><span className={s.faint}>{note.run_id ? `Source run · ${note.run_id}` : "Saved from model exploration"}</span><div className={s.headActions}><Button size="small" variant="ghost" disabled={busy} onClick={() => setRemoving(note)}>Delete</Button><Button size="small" disabled={busy} onClick={() => useStore.setState({ noteEditor: { value: inputOf(note), edit: { id: note.id, revision: note.revision } } })}>Edit note</Button><Button size="small" disabled={busy} onClick={() => void restore(note)}>Open selection</Button></div></div>
     </article>)}</div>
     <Dialog open={!!removing} onOpenChange={open => { if (!open && !busy) setRemoving(null); }} title="Delete this research note?" description={removing?.title} footer={<><Button disabled={busy} onClick={() => setRemoving(null)}>Keep note</Button><Button variant="primary" disabled={busy} onClick={() => void remove()}>Delete note</Button></>}><p>The saved selection and written observation will be removed from this project. Its experiment run will remain available.</p></Dialog>

@@ -20,16 +20,18 @@
   user-select: none;
 }
 
-.button:hover:not(:disabled) {
+.button:hover:not(:disabled):not([aria-disabled="true"]) {
   border-color: var(--text);
 }
 
-.button:active:not(:disabled) {
+.button:active:not(:disabled):not([aria-disabled="true"]) {
   background: var(--press);
 }
 
-.button:disabled {
+.button:disabled,
+.button[aria-disabled="true"] {
   opacity: 0.45;
+  cursor: default;
 }
 
 /* The action that moves the work forward: solid ink (white on black in the dark theme). */
@@ -40,17 +42,18 @@
   font-weight: 620;
 }
 
-.primary:hover:not(:disabled) {
+.primary:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--text);
   border-color: var(--text);
   opacity: 0.86;
 }
 
-.primary:active:not(:disabled) {
+.primary:active:not(:disabled):not([aria-disabled="true"]) {
   opacity: 0.78;
 }
 
-.primary:disabled {
+.primary:disabled,
+.primary[aria-disabled="true"] {
   background: var(--surface-2);
   border-color: var(--surface-2);
   color: var(--muted);
@@ -63,7 +66,7 @@
   color: var(--muted);
 }
 
-.ghost:hover:not(:disabled) {
+.ghost:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--hover);
   border-color: transparent;
   color: var(--text);
@@ -200,6 +203,21 @@
   opacity: 0.4;
 }
 
+.segmentedWithNote {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  max-width: 100%;
+}
+
+.segmentedNote {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--muted);
+  line-height: 1.45;
+}
+
 /* Choice cards (radio with explanation) */
 
 .choices {
@@ -332,7 +350,7 @@
 .progressBar {
   position: absolute;
   inset: 0 auto 0 0;
-  background: var(--ws, var(--accent));
+  background: var(--ws, var(--text));
   transition: width 200ms linear;
 }
 
@@ -341,7 +359,7 @@
   top: 0;
   bottom: 0;
   width: 30%;
-  background: var(--ws, var(--accent));
+  background: var(--ws, var(--text));
   animation: slide 1.4s var(--ease) infinite;
 }
 
@@ -359,7 +377,7 @@
   width: 14px;
   height: 14px;
   flex: none;
-  color: var(--ws, var(--accent));
+  color: var(--ws, var(--text));
 }
 
 .spinner svg {
@@ -451,9 +469,9 @@
   grid-template-columns: 16px 1fr;
   gap: 8px;
   padding: 11px 14px;
-  border: 0;
+  border: 1px solid var(--line);
   border-radius: var(--radius-lg);
-  background: var(--surface-2);
+  background: transparent;
   font-size: var(--text-sm);
 }
 
@@ -462,7 +480,8 @@
 }
 
 .calloutError {
-  background: color-mix(in srgb, var(--alert) 9%, var(--bg));
+  border-color: color-mix(in srgb, var(--alert) 40%, var(--line));
+  background: color-mix(in srgb, var(--alert) 7%, var(--bg));
 }
 
 .calloutError > svg {

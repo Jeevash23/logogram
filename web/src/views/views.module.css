@@ -144,12 +144,8 @@
   background: var(--hover);
 }
 
-.table tr[aria-selected="true"] td {
-  background: var(--surface-2);
-}
-
 .table tr[aria-selected="true"] td:first-child {
-  box-shadow: inset 2px 0 0 var(--text);
+  box-shadow: inset 3px 0 0 var(--text);
 }
 
 .num {

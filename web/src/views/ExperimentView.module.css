@@ -47,12 +47,107 @@
   font-weight: 560;
 }
 
-.summary {
-  padding-top: 16px;
-  border-top: 1px solid var(--line);
+/* The form, and beside it on a wide window what will run, in view while the form scrolls. */
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 860px) minmax(280px, 340px);
+  gap: 40px;
+  align-items: start;
+}
+
+.panel {
+  position: sticky;
+  top: 16px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
+  min-width: 0;
+  padding-left: 24px;
+  border-left: 1px solid var(--line);
+}
+
+.panelTitle {
+  font-size: var(--text-md);
+  font-weight: 620;
+  font-stretch: inherit;
+  letter-spacing: inherit;
+  line-height: inherit;
+}
+
+.missing {
+  font-size: var(--text-sm);
+  font-weight: 560;
+  line-height: 1.5;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px 14px;
+  margin: 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+  font-size: var(--text-sm);
+}
+
+.facts dt {
+  color: var(--muted);
+}
+
+.facts dd {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+
+.factNote {
+  font-size: var(--text-xs);
+  color: var(--faint);
+  line-height: 1.45;
+}
+
+.factAction {
+  margin-left: -10px;
+}
+
+.alert {
+  color: var(--alert);
+  font-weight: 560;
+}
+
+.runRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.runHint {
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+
+/* Narrower: what will run comes first, under the title, with Run beside it. */
+@container (max-width: 1100px) {
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 24px;
+  }
+
+  .panel {
+    position: static;
+    order: -1;
+    max-width: 860px;
+    padding-left: 0;
+    padding-bottom: 20px;
+    border-left: 0;
+    border-bottom: 1px solid var(--line);
+  }
 }
 
 .summaryText {

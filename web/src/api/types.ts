@@ -81,6 +81,28 @@ export interface Job {
   cancelling?: boolean;
 }
 
+/** A run waiting for the job in progress to end, in the open project's queue. */
+export interface QueuedRun {
+  id: string;
+  /** The spec's name. */
+  title: string;
+  spec: Spec;
+  draft_id: string | null;
+  derived_from: DerivedFrom | null;
+  project_session: string;
+  /** Seconds since the epoch, like a job's start. */
+  queued_at: number;
+}
+
+/** A run sent to the queue: started at once when nothing was running (run_id and job), or
+ * waiting its turn (queued). */
+export interface QueueAdded {
+  run_id: string | null;
+  job: Job | null;
+  queued: QueuedRun | null;
+  queue: QueuedRun[];
+}
+
 export interface DatasetListing {
   name: string;
   path: string;
@@ -122,9 +144,13 @@ export interface ServerState {
   job: Job | null;
   first_run: boolean;
   theme: ThemeSetting;
+  /** Whether single keys act as shortcuts (on until turned off). */
+  single_key_shortcuts?: boolean;
   projects_parent: string;
   update: UpdateStatus;
   sae?: SAEStatus;
+  /** The runs waiting for the job in progress, first in line first. */
+  queue?: QueuedRun[];
 }
 
 export interface RecentProject {
@@ -628,7 +654,8 @@ export interface Manifest {
     deterministic_algorithms: boolean;
   };
   dtype?: string;
-  dataset?: { path: string; sha256: string; n: number };
+  /** The prompts the run read: its saved copy, and the dataset it was copied from. */
+  dataset?: { path: string; sha256: string; n: number; source_path?: string | null };
   derived_from?: DerivedFrom | null;
 }
 
@@ -874,6 +901,20 @@ export interface Comparison {
   n_differs?: number;
 }
 
+/** What a run would need beyond the loaded model's weights (POST /api/models/run-memory). */
+export interface RunMemory {
+  device: string;
+  batch_size: number;
+  seq_len: number;
+  /** Whether the method holds every layer's activations at once. */
+  all_layers: boolean;
+  activations: number;
+  total: number;
+  available: number;
+  verdict: "fits" | "tight" | "wont_fit";
+  explanation: string;
+}
+
 export interface MemoryEstimate {
   device: string;
   dtype: Dtype;
@@ -941,6 +982,18 @@ export interface DatasetCreated {
   name: string;
   path: string;
   n: number;
+}
+
+/** A dataset's prompt pairs, some edited and some left out, to save as a new dataset (POST
+ * /api/datasets/derive). The dataset they come from never changes. */
+export interface DeriveRequest {
+  /** The dataset edited, by its path in the project, and the version of it that was edited. */
+  dataset: string;
+  dataset_sha256: string;
+  name: string;
+  /** Indices of the prompt pairs to leave out, and the new value of each edited one by index. */
+  remove: number[];
+  replace: Record<number, PromptRecord>;
 }
 
 export interface TaskDatasetCreated extends DatasetCreated {

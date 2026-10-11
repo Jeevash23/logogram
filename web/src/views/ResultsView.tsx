@@ -20,7 +20,7 @@ import { downloadBlob, exportFigure, methodsText } from "../lib/export";
 import { CircuitDialog } from "../components/CircuitDialog";
 import { rankedSites, universeText } from "../lib/circuits";
 import { CircuitResults } from "./CircuitResults";
-import { Forest } from "./Forest";
+import { FlagMark, Forest } from "./Forest";
 import s from "./views.module.css";
 import r from "./ResultsView.module.css";
 
@@ -113,13 +113,13 @@ export function ResultsView() {
                   variant="primary"
                   disabled={job?.status === "running"}
                   onClick={() => void useStore.getState().startVerification(run.id as string, VERIFY_TOP)}
-                  title="Patch the sites with the largest estimated effects, for real, and compare"
+                  tip={job?.status === "running" ? "A run is in progress. This can start when it finishes." : "Patch the sites with the largest estimated effects, for real, and compare"}
                 >
                   Verify top {VERIFY_TOP} by patching
                 </Button>
               )}
               {ranked.length > 0 && (
-                <Button onClick={() => setCircuitOpen(true)} title="Keep the strongest sites alone, 1, 2, 4, 8 … of them, and replace the rest of the model">
+                <Button onClick={() => setCircuitOpen(true)} tip="Keep the strongest sites alone, 1, 2, 4, 8 … of them, and replace the rest of the model">
                   Test the top sites as a circuit
                 </Button>
               )}
@@ -275,15 +275,13 @@ export function ResultsView() {
           )}
         </dl>
       )}
-      {summary && <Corrections summary={summary} />}
-
       {run.id && ranked.length > 0 && <CircuitDialog open={circuitOpen} onOpenChange={setCircuitOpen} ranked={ranked} runId={run.id} />}
       {layout && layout.kind !== "site_sets" && <div className={r.controls}>
         <Segmented label="Result values" value={metric} onChange={mapMetric => useStore.setState({ mapMetric })} options={[{ value: "effect", label: words.effect }, { value: "delta", label: words.delta }]} />
         <Segmented label="Result scale" value={scaleMode} onChange={scaleMode => useStore.setState({ scaleMode })} options={[{ value: "auto", label: "Fit" }, { value: "unit", label: "±1", disabled: metric !== "effect" }]} />
         <Checkbox checked={cellValues} onChange={(v) => useStore.setState({ cellValues: v })}>Show values</Checkbox>
         <span className={r.controlsSpacer} />
-        <Button size="small" variant="ghost" icon="explore" onClick={() => { useStore.setState({ exploreMode: "atlas" }); useStore.getState().setView("explore"); }}>Open model atlas</Button>
+        <Button size="small" variant="ghost" icon="explore" onClick={() => { useStore.setState({ exploreMode: "atlas" }); useStore.getState().setView("explore"); }}>Show on the model map</Button>
         {run.detail?.predictions && <Button size="small" variant="ghost" onClick={() => useStore.getState().setView("predictions")}>Open saved predictions</Button>}
       </div>}
       {layout?.kind === "site_sets" && (
@@ -303,6 +301,11 @@ export function ResultsView() {
           <div className={r.heat}>
             <div className={r.heatHead}>
               <span className={s.panelTitle}>{layoutTitle(layout)}</span>
+              {flagged.size > 0 && (
+                <span className={r.flagNote}>
+                  <FlagMark /> {flagged.size} conclusion{flagged.size === 1 ? "" : "s"} changed in the robustness check
+                </span>
+              )}
               <ScaleBar bound={bound} theme={theme} label={metric === "effect" ? words.effect : words.delta} />
             </div>
             <ResultsHeatmap
@@ -329,6 +332,7 @@ export function ResultsView() {
       {layout?.kind === "sites" && (
         <Forest ciLevel={run.ciLevel} results={resultList} selectedIndex={selectedSite?.index ?? null} onSelect={(site) => select(selectionOfSite(site))} flagged={flagged} limit={50} />
       )}
+      {summary && <Corrections summary={summary} />}
 
       {summary?.warnings.map((w) => (
         <Callout key={w} title="Note">
@@ -364,11 +368,14 @@ function Corrections({ summary }: { summary: Summary }) {
         bands and <strong>{count(discoveries)}</strong> have q below {alpha}, where {count(single)} intervals exclude zero one
         {" "}{unit} at a time.
       </p>
-      <p className={s.small}>
-        With many sites, some intervals exclude zero by chance alone. A simultaneous band holds for every site at once, so a
-        site whose band excludes zero still stands out after the number of sites is counted; a q-value is the share of
-        false findings expected among the sites at least as strong.{st.multiple_comparisons ? ` ${st.multiple_comparisons}` : ""}
-      </p>
+      <details className={r.correctionsMore}>
+        <summary>What the corrections mean</summary>
+        <p className={s.small}>
+          With many sites, some intervals exclude zero by chance alone. A simultaneous band holds for every site at once, so a
+          site whose band excludes zero still stands out after the number of sites is counted; a q-value is the share of
+          false findings expected among the sites at least as strong.{st.multiple_comparisons ? ` ${st.multiple_comparisons}` : ""}
+        </p>
+      </details>
     </section>
   );
 }
@@ -585,7 +592,7 @@ function RunningBanner() {
             ? `Loading ${modelName(model.id)}…`
             : "Preparing prompts…"}
       </div>
-      <Progress value={p ? p.done / p.total : null} />
+      <Progress value={p ? p.done / p.total : null} label="Progress of this run" />
     </div>
   );
 }

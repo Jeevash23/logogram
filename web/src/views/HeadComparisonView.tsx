@@ -50,7 +50,7 @@ export function HeadComparisonView() {
   const chooseCell = useCallback((r: number, c: number) => { useStore.getState().setTokenPosition(r); setKeyPosition(c); }, []);
 
   return <div className={s.view}>
-    <div className={s.head}><div className={s.titleBlock}><h1 className={s.title}>Head comparison</h1><p className={s.subtitle}>Two heads, the same prompt, and a shared attention scale. Select a query token to follow what each head reads.</p></div><Segmented label="Prompt variant" value={which} onChange={setWhich} options={[{ value: "clean", label: "Clean" }, { value: "corrupt", label: "Corrupt" }]} /></div>
+    <div className={s.head}><div className={s.titleBlock}><h1 className={s.title}>{pins.length === 2 ? `${componentLabel(pins[0])} beside ${componentLabel(pins[1])}` : "Two heads on the same prompt"}</h1><p className={s.subtitle}>Two heads, the same prompt, and a shared attention scale. Select a query token to follow what each head reads.</p></div><Segmented label="Prompt variant" value={which} onChange={setWhich} options={[{ value: "clean", label: "Clean" }, { value: "corrupt", label: "Corrupt" }]} /></div>
     <p className={s.small}>{context.label}</p>
     {!arch ? <Empty title="Load a model to compare its heads" action={<Button onClick={() => useStore.setState({ modelDialogOpen: true })}>Load a model</Button>}>You can also pin heads while exploring a saved experiment.</Empty> : <>
       {(context.error || error) && <Callout tone="error">{context.error ?? error}</Callout>}
@@ -80,7 +80,7 @@ export function HeadComparisonView() {
       {!!data.length && <ScaleBar bound={1} theme={theme} kind="ink" label="Attention weight · shared scale" />}
       <p className={s.small}>Attention weights describe which positions a head reads. The intervention effect is a separate causal measurement from the selected run, with its own position and method.</p>
       <SelectionTray />
-      <Button onClick={() => useStore.getState().setView("explore")}>Return to model explorer</Button>
+      <Button onClick={() => useStore.getState().setView("explore")}>Back to the model map</Button>
     </>}
   </div>;
 }

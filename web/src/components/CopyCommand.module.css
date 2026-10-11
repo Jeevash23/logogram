@@ -6,7 +6,6 @@
   padding: 6px 6px 6px 10px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: var(--surface-2);
   min-width: 0;
 }
 
@@ -23,7 +22,7 @@
 }
 
 .command code:focus-visible {
-  outline: 2px solid var(--ws, var(--text));
+  outline: 2px solid var(--text);
   outline-offset: 2px;
 }
 

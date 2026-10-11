@@ -2,6 +2,8 @@ import { test, expect } from "@playwright/test";
 
 test.describe.configure({ mode: "serial" });
 
+const ORIGIN = { origin: `http://127.0.0.1:${process.env.LOGOGRAM_BROWSER_PORT ?? "8877"}` };
+
 test.beforeEach(async ({ page }) => {
   await page.goto("/?token=browser-test-token");
   await expect(page.getByRole("main").getByRole("heading", { name: "tiny-gpt2", exact: true })).toBeVisible();
@@ -109,7 +111,7 @@ test("cancelling a run asks first, with the focus on keeping it", async ({ page 
 });
 
 test("layer selection stages exact sites and persists research notes", async ({ page }) => {
-  await page.getByRole("radio", { name: "Layer explorer", exact: true }).click();
+  await page.getByRole("radio", { name: "One layer", exact: true }).click();
   await page.getByRole("button", { name: /^L0 H0: effect/ }).click();
   await page.getByRole("button", { name: /^clean token 9:/ }).click();
   await page.getByRole("button", { name: "Save selection", exact: true }).click();
@@ -154,6 +156,8 @@ test("two heads share a query and prediction reports survive a completed run", a
   // Predictions are saved before the sweep ends; reload once the whole run has finished.
   await expect(page.locator("footer")).toContainText("Ready");
   await page.reload();
+  // A reload keeps the place it was at (the finished run's results), so go back to Explore.
+  await page.getByRole("button", { name: "Explore", exact: true }).click();
   await page.getByRole("button", { name: "Layer predictions", exact: true }).click();
   await expect(page.getByText(/Saved diagnostic from Prediction regression/)).toBeVisible();
   await expect(table).toHaveText(projection, { useInnerText: true });
@@ -164,11 +168,11 @@ test("project changes clear the other tab and reject its stale writes", async ({
   const second = await context.newPage();
   await second.goto("/");
   await expect(second.getByRole("main").getByRole("heading", { name: "tiny-gpt2", exact: true })).toBeVisible();
-  const created = await second.request.post("/api/projects", { data: { name: "Second project", parent: state.projects_parent }, headers: { origin: "http://127.0.0.1:8877" } });
+  const created = await second.request.post("/api/projects", { data: { name: "Second project", parent: state.projects_parent }, headers: ORIGIN });
   expect(created.ok()).toBe(true);
   await expect(page.getByText("No prompts yet.", { exact: false })).toBeVisible();
   await expect(page.getByRole("main").getByRole("heading", { name: "tiny-gpt2", exact: true })).not.toBeVisible();
-  const response = await page.request.post("/api/drafts", { data: { spec: {} }, headers: { origin: "http://127.0.0.1:8877", "x-logogram-project": state.project.session_id } });
+  const response = await page.request.post("/api/drafts", { data: { spec: {} }, headers: { ...ORIGIN, "x-logogram-project": state.project.session_id } });
   expect(response.status()).toBe(409);
   await page.getByRole("spinbutton", { name: "Prompts", exact: true }).fill("4");
   await page.getByRole("button", { name: "Generate 4 prompts", exact: true }).click();

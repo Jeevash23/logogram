@@ -152,3 +152,8 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+.plotFocus {
+  align-self: flex-start;
+  border-radius: var(--radius-sm);
+}

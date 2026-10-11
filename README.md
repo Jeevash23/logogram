@@ -82,17 +82,34 @@ This starts a local server on 127.0.0.1, prints its address and opens your brows
    and flags them on the map.
 
 Keyboard: arrow keys move across the map, **Ctrl/⌘ K** opens the command palette (type `L9H9` to
-jump to a head), **1–7** switch views, **[** and **]** step through prompts, **P**, **B**, **A**
-and **C** patch, ablate, show attention or compare the selected component, and **Ctrl/⌘ Enter**
-runs the experiment form. **Ctrl/⌘ Z** and **Ctrl/⌘ Shift Z** undo and redo changes to the form,
-and **?** lists every shortcut.
+jump to a head), **1–5** go to the open workspace's tabs, **[** and **]** step through prompts,
+**P**, **B**, **A** and **C** patch, ablate, show attention or compare the selected component, and
+**Ctrl/⌘ Enter** runs the experiment form (or queues it while another job runs). **Ctrl/⌘ Z** and
+**Ctrl/⌘ Shift Z** undo and redo changes to the form, and **?** lists every shortcut. The keys
+without Ctrl or ⌘ can be turned off there, or from the command palette, for speech input or keys
+pressed by accident.
+
+The address keeps your place: the view, and the run it shows or the two it compares. Back and
+Forward move between views, a reload comes back to the same place, and **All projects** leads back
+to the open project as you left it.
+
+Beside the experiment form, a summary says what will run, how much work it is, whether a batch of
+that size fits in the memory free, whether the baseline was checked, and, when it can't run yet,
+what is missing, right above **Run**.
+
+While a job runs, **Run** reads **Queue**: the experiment waits in line, listed under **Queued** in
+**History**, and starts when the jobs ahead of it end, whether they finish, fail or are cancelled.
+A queued run can be removed until it starts. The queue belongs to the open project and lives in
+the server's memory: changing projects or restarting `logogram` empties it.
 
 When an action elsewhere replaces the experiment form (**Patch here**, **Edit and rerun**, staged
 sites), a notice offers to undo it. An unsaved form is kept in this browser for each project and
-restored when the project opens again; saving or running it clears that copy.
+restored when the project opens again; saving, running or queueing it clears that copy.
 
-Use **History** to reopen experiments or compare two runs. On a narrow window, **Inspector**
-opens a panel that closes with Escape.
+Use **History** to reopen experiments or compare two runs. On **Compare runs**, choose a cell (or a
+row of the table) to see that site in both runs: each run's effect and interval, the difference
+(paired prompt by prompt when the runs share prompts), its flags, and a way into each run at that
+site. On a narrow window, **Inspector** opens a panel that closes with Escape.
 Attention heatmaps support arrow keys, Home and End, with a spoken value readout and an optional
 values table. Baseline and attention show whether they use the selected run or the experiment
 form, including BOS, prompt limit and batch size. Inspecting a saved run requires its model,
@@ -278,6 +295,11 @@ A dataset is a JSONL file in the project's `datasets/` folder, one prompt pair p
 
 The app shows both prompts token by token, highlights where they differ, and refuses to run on
 prompts that can't be used, saying which and why.
+
+**Editing prompts.** The Prompts view searches a dataset's pairs (both prompts, the answers and
+`meta`), shows them a hundred at a time, and edits or removes pairs, including answer sets and
+positions. A dataset file never changes, since runs record its hash: edits stay in the tab, marked
+as unsaved, until they are saved as a new dataset, checked as an import is.
 
 **Tasks.** Logogram writes seeded datasets for six classic tasks, from the app's Prompts view, the
 command line (`logogram tasks`, `logogram generate`) or Python (`lg.generate`). Each fills

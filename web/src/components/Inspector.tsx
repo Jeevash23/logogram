@@ -18,6 +18,7 @@ import { setWhat, universeText } from "../lib/circuits";
 import { metricWords } from "../lib/metrics";
 import { siteText } from "../lib/spec";
 import { baselineText, experimentText, measureOf, measureWords, positionText } from "../lib/spec";
+import { prefersReducedMotion } from "../lib/motion";
 import { useStore } from "../store/app";
 import { Distribution } from "./Distribution";
 import { Button, Icon, Spinner } from "./ui";
@@ -444,6 +445,7 @@ function Evidence({
           />
           <PromptList title="Strongest" indices={detail.strongest} byIndex={byIndex} onPick={setPromptIndex} intervention={intervention} short={short} />
           <PromptList title="Weakest" indices={detail.weakest} byIndex={byIndex} onPick={setPromptIndex} intervention={intervention} short={short} />
+          <p className={s.fine}>Choose a prompt to show it in the token strip.</p>
         </>
       )}
     </section>
@@ -531,7 +533,7 @@ function PromptList({
         const p = byIndex.get(i);
         if (!p) return null;
         return (
-          <button key={i} type="button" className={s.prompt} onClick={() => onPick(i)} title="Show this prompt in the token strip">
+          <button key={i} type="button" className={s.prompt} onClick={() => onPick(i)}>
             <span className={s.promptIndex}>{i}</span>
             <span className={s.promptText}>{p.clean ?? `Prompt ${i}`}</span>
             <span className={s.promptValue}>{signed(p.effect, 2)}</span>
@@ -593,7 +595,7 @@ function Actions({ selection }: { selection: Selection }) {
         Ablate here
       </Button>
       {selection.part === "head" && (
-        <Button size="small" disabled={!modelReady} onClick={() => setView("attention")} title={modelReady ? undefined : "Load a model first"}>
+        <Button size="small" disabled={!modelReady} onClick={() => setView("attention")} tip={modelReady ? undefined : "Load a model first"}>
           Open attention
         </Button>
       )}
@@ -615,7 +617,7 @@ function AcrossRuns({ selection }: { selection: Selection }) {
     if (focus?.section === "runs") {
       setOpen(true);
       useStore.setState({ inspectorFocus: null }); // once: reselecting later doesn't reopen it
-      window.setTimeout(() => ref.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+      window.setTimeout(() => ref.current?.scrollIntoView({ behavior: prefersReducedMotion() ? "auto" : "smooth", block: "start" }), 50);
     }
   }, [focus]);
 

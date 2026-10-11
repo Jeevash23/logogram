@@ -3,7 +3,7 @@ import { useState } from "react";
 
 import { api } from "../api/client";
 import { FolderPicker } from "./FolderPicker";
-import { Icon, Spinner, menuClasses } from "./ui";
+import { Icon, Spinner, Tip, menuClasses } from "./ui";
 import { modelName, useAnalysisContext } from "../lib/hooks";
 import { pct, plural } from "../lib/format";
 import { useStore } from "../store/app";
@@ -89,7 +89,8 @@ export function ModelChip() {
   if (model.state === "ready" && model.info) {
     const info = model.info;
     return (
-      <button type="button" className={s.chip} onClick={open} title={`${info.id} @ ${info.revision ?? ""}`}>
+      <Tip text={info.revision ? `${info.id}, revision ${info.revision}` : info.id} side="bottom">
+      <button type="button" className={s.chip} onClick={open}>
         <span className={s.live} aria-hidden="true" />
         <span>
           {modelName(info.id)}
@@ -99,6 +100,7 @@ export function ModelChip() {
           </span>
         </span>
       </button>
+      </Tip>
     );
   }
   return (

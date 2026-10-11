@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState, type KeyboardEvent } from "react";
 
 import { api } from "../api/client";
 import type { Answer, AnswerTokens, TokenStripData } from "../api/types";
@@ -7,6 +7,19 @@ import { useAnalysisContext } from "../lib/hooks";
 import { useStore } from "../store/app";
 import { Button, Icon } from "./ui";
 import s from "./TokenStrip.module.css";
+
+const EXPANDED_KEY = "logogram.tokensShown";
+
+/** Whether the tokens are shown: as this viewer last left them, else unless the window is short. */
+function initiallyExpanded(): boolean {
+  try {
+    const stored = localStorage.getItem(EXPANDED_KEY);
+    if (stored !== null) return stored === "1";
+  } catch {
+    /* storage unavailable: use the default */
+  }
+  return window.innerHeight >= 760;
+}
 
 export function TokenStrip() {
   const dataset = useStore((st) => st.dataset);
@@ -17,8 +30,17 @@ export function TokenStrip() {
   const context = useAnalysisContext();
   const [data, setData] = useState<TokenStripData | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpandedState] = useState(initiallyExpanded);
+  const setExpanded = (next: boolean) => {
+    setExpandedState(next);
+    try {
+      localStorage.setItem(EXPANDED_KEY, next ? "1" : "0");
+    } catch {
+      /* remembered for this page only */
+    }
+  };
   const tokenPosition = useStore(st => st.tokenPosition);
+  const singleKeys = useStore((st) => st.singleKeys);
 
   const record = dataset?.records[index];
 
@@ -54,11 +76,11 @@ export function TokenStrip() {
     <div className={s.strip}>
       <div className={s.top}>
         <div className={s.nav}>
-          <Button size="small" variant="ghost" icon="chevronLeft" aria-label="Previous prompt ([)" disabled={index === 0} onClick={() => setIndex(index - 1)} />
+          <Button size="small" variant="ghost" icon="chevronLeft" aria-label={singleKeys ? "Previous prompt ([)" : "Previous prompt"} disabled={index === 0} onClick={() => setIndex(index - 1)} />
           <span className={s.counter}>
             Prompt <strong>{index}</strong> <span className={s.of}>of {context.n}</span>
           </span>
-          <Button size="small" variant="ghost" icon="chevronRight" aria-label="Next prompt (])" disabled={index >= context.n - 1} onClick={() => setIndex(index + 1)} />
+          <Button size="small" variant="ghost" icon="chevronRight" aria-label={singleKeys ? "Next prompt (])" : "Next prompt"} disabled={index >= context.n - 1} onClick={() => setIndex(index + 1)} />
         </div>
         {origin && <span className={s.meta}>{origin}</span>}
         <div className={s.spacer} />
@@ -96,10 +118,44 @@ export function TokenStrip() {
   );
 }
 
+const ROWS = ["clean", "corrupt"] as const;
+
 export function TokenGrid({ data }: { data: TokenStripData }) {
   const selected = useStore(st => st.tokenPosition);
   const select = useStore(st => st.setTokenPosition);
   const n = Math.max(data.clean.tokens.length, data.corrupt.tokens.length);
+  const grid = useRef<HTMLDivElement>(null);
+  // The tokens are one tab stop; the arrow keys move between them. The stop is the token last
+  // focused, else the selected position, else the first token.
+  const present = (row: number, col: number) => col >= 0 && col < n && data[ROWS[row]].tokens[col] !== undefined;
+  const [last, setLast] = useState<{ row: number; col: number } | null>(null);
+  const stop = last && present(last.row, last.col)
+    ? last
+    : selected !== null && present(0, selected)
+      ? { row: 0, col: selected }
+      : { row: 0, col: Math.max(0, data.clean.tokens.findIndex((t) => t !== undefined)) };
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    const cell = (e.target as HTMLElement).closest<HTMLElement>("[data-col]");
+    if (!cell || e.altKey || e.ctrlKey || e.metaKey) return;
+    let row = Number(cell.dataset.row);
+    let col = Number(cell.dataset.col);
+    const along = (from: number, step: number) => {
+      for (let c = from + step; c >= 0 && c < n; c += step) if (present(row, c)) return c;
+      return from;
+    };
+    if (e.key === "ArrowLeft") col = along(col, -1);
+    else if (e.key === "ArrowRight") col = along(col, 1);
+    else if (e.key === "Home") col = along(-1, 1);
+    else if (e.key === "End") col = along(n, -1);
+    else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+      const other = row === 0 ? 1 : 0;
+      if (!present(other, col)) return;
+      row = other;
+    } else return;
+    e.preventDefault();
+    setLast({ row, col });
+    grid.current?.querySelector<HTMLElement>(`[data-row="${row}"][data-col="${col}"]`)?.focus();
+  };
   const differs = new Set(data.differs);
   const labelAt = new Map<number, string[]>();
   for (const [label, pos] of Object.entries(data.labels)) {
@@ -109,14 +165,22 @@ export function TokenGrid({ data }: { data: TokenStripData }) {
   return (
     <>
       <div className={s.scroller}>
-        <div className={s.grid} style={{ gridTemplateColumns: `auto repeat(${n}, auto)` }}>
+        <div
+          ref={grid}
+          className={s.grid}
+          style={{ gridTemplateColumns: `auto repeat(${n}, auto)` }}
+          role="group"
+          aria-label="Tokens of the clean and corrupt prompt. Arrow keys move between them; Enter selects a position."
+          data-arrow-keys
+          onKeyDown={onKeyDown}
+        >
           <span className={s.rowLabel} />
           {cols.map((i) => (
             <span key={`p${i}`} className={`${s.pos} ${differs.has(i) ? s.diffCol : ""}`}>
               {i}
             </span>
           ))}
-          {(["clean", "corrupt"] as const).map((row) => (
+          {ROWS.map((row, r) => (
             <Fragment key={row}>
               <span className={s.rowLabel}>{row}</span>
               {cols.map((i) => {
@@ -129,6 +193,10 @@ export function TokenGrid({ data }: { data: TokenStripData }) {
                     disabled={token === undefined}
                     aria-label={`${row} token ${i}: ${token === undefined ? "missing" : visibleToken(token)}`}
                     aria-pressed={selected === i}
+                    data-row={r}
+                    data-col={i}
+                    tabIndex={stop.row === r && stop.col === i ? 0 : -1}
+                    onFocus={() => setLast({ row: r, col: i })}
                     onClick={() => select(selected === i ? null : i)}
                   >
                     {token === undefined ? "∅" : visibleToken(token) || "∅"}

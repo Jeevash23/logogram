@@ -5,11 +5,32 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
+from typing import Any
 
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
+# Another port lets two checkouts run the browser checks at once.
+PORT = int(os.environ.get("LOGOGRAM_BROWSER_PORT", "8877"))
+# Runs with this name wait until they are cancelled, so the checks can queue runs behind one.
+HELD_RUN = "Held run"
+
+
+def hold_runs() -> None:
+    """Make runs named HELD_RUN wait, before they start, until they are cancelled (or for five
+    minutes at most, so a check that forgets to cancel one can't stall the server)."""
+    from logogram import runner
+
+    run_spec = runner.run_spec
+
+    def held(spec: Any, project: Any, **kwargs: Any) -> Any:
+        cancel = kwargs.get("cancel")
+        if spec.name == HELD_RUN and cancel is not None:
+            cancel.wait(300)
+        return run_spec(spec, project, **kwargs)
+
+    runner.run_spec = held
 
 
 def main() -> None:
@@ -57,7 +78,7 @@ def main() -> None:
         outcome = run_spec(spec, project, backend=backend)
         assert outcome.status == "finished", outcome.manifest.get("error")
         # The fixture credential is scoped to this short-lived loopback server only.
-        app = create_app(SecurityConfig(token="browser-test-token", port=8877))
+        app = create_app(SecurityConfig(token="browser-test-token", port=PORT))
         state = app.state.logogram
         state.backend = backend
         state.model_status = {"state": "ready"}
@@ -71,7 +92,8 @@ def main() -> None:
 
             state.sae = exact_sae(root / "sae", backend.info.d_model)
             state.sae_status = {"state": "ready"}
-        uvicorn.run(app, host="127.0.0.1", port=8877, log_level="warning", access_log=False)
+        hold_runs()
+        uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning", access_log=False)
 
 
 if __name__ == "__main__":

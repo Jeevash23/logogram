@@ -45,11 +45,11 @@ export function ExploreView() {
 
   return <div className={s.explorer}>
     <div className={s.heading}>
-      <div><p className={s.eyebrow}>Model explorer</p><h1>{arch ? modelName(arch.id) : "Look inside a model"}</h1>
+      <div><h1>{arch ? modelName(arch.id) : "Look inside a model"}</h1>
         <p className={s.description}>{arch ? `${count(arch.nLayers)} layers · ${count(arch.nLayers * arch.nHeads)} heads${arch.dModel ? ` · ${count(arch.dModel)} residual dimensions` : ""}` : "Explore its structure, choose a component, and follow the evidence."}</p>
       </div>
       <div className={s.controls}>
-        <Segmented label="Explorer view" value={mode} onChange={v => useStore.setState({ exploreMode: v })} options={[{ value: "atlas", label: "Model atlas" }, { value: "layer", label: "Layer explorer" }]} />
+        <Segmented label="Show" value={mode} onChange={v => useStore.setState({ exploreMode: v })} options={[{ value: "atlas", label: "Model map" }, { value: "layer", label: "One layer" }]} />
         <Select aria-label="Model overlay" value={overlay} onChange={e => useStore.getState().setMapOverlay(e.target.value as "data" | "structure")}><option value="data">Intervention results</option><option value="structure">Architecture</option></Select>
       </div>
     </div>
@@ -226,8 +226,8 @@ export function SelectionTray() {
   return <section className={s.tray} aria-label="Experiment selection">
     <div className={s.trayHeading}><div><span className={s.eyebrow}>Experiment selection</span><strong>{sites.length} site{sites.length === 1 ? "" : "s"}</strong></div><div className={s.controls}>
       <Button size="small" onClick={() => useStore.getState().prepareNote(sites)}>Save selection</Button>
-      <Button size="small" disabled={!!pairError} title={pairError ?? "Each site alone, and both together, in one run"} onClick={() => pair && useStore.getState().configureSets({ kind: "site_sets", universe: null, sets: pair }, { staged: true })}>Check how they interact</Button>
-      <Button disabled={!!circuitError} title={circuitError ?? "Keep these sites alone, remove them, and replace everything"} onClick={() => setCircuitOpen(true)}>Test as a circuit</Button>
+      <Button size="small" disabled={!!pairError} tip={pairError ?? "Each site alone, and both together, in one run"} onClick={() => pair && useStore.getState().configureSets({ kind: "site_sets", universe: null, sets: pair }, { staged: true })}>Check how they interact</Button>
+      <Button disabled={!!circuitError} tip={circuitError ?? "Keep these sites alone, remove them, and replace everything"} onClick={() => setCircuitOpen(true)}>Test as a circuit</Button>
       <Button variant="primary" onClick={() => useStore.getState().configureStaged()}>Configure experiment</Button>
     </div></div>
     <div className={s.chips}>{sites.map((site, i) => <span key={`${siteText(site)}-${i}`} className={s.chip}>{siteText(site)}<span className={s.hint}>{site.position.kind === "all" ? " · all positions" : ""}</span><button type="button" aria-label={`Remove ${siteText(site)} from experiment`} onClick={() => useStore.setState({ stagedSites: sites.filter((_, j) => i !== j) })}>×</button></span>)}</div>

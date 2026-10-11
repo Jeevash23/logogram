@@ -362,34 +362,29 @@ def estimate_memory(
     """
     b = DTYPE_BYTES[dtype]
     weights = n_params * b
-    tokens = batch_size * seq_len
-    # One forward pass: residual-sized tensors per block, MLP hidden states, attention scores and
-    # patterns, final logits for the last position, plus one layer of cached source activations.
-    per_layer = tokens * (8 * d_model + 2 * d_mlp) * b + 3 * batch_size * n_heads * seq_len**2 * b
-    activations = per_layer * 2 + batch_size * d_vocab * 4 + 3 * tokens * d_model * b
+    activations, all_layers = activation_bytes(
+        n_layers=n_layers,
+        n_heads=n_heads,
+        d_model=d_model,
+        d_mlp=d_mlp,
+        d_vocab=d_vocab,
+        dtype=dtype,
+        batch_size=batch_size,
+        seq_len=seq_len,
+    )
     # TransformerLens processes the weights on float32 copies, on the model's device: while the
     # model loads, that takes about three more float32 copies of the weights, or four for a 16-bit
     # model (measured on GPT-2 and Pythia).
     processing = n_params * 4 * (3 if dtype == "float32" else 4) if process_weights else 0
-    # Attribution patching and direct logit attribution keep every layer's activations for the
-    # backward pass, and path patching holds every head's (and MLP's) output: about one layer's
-    # tensors for each layer, plus the gradients they produce.
-    all_layers = per_layer * n_layers + batch_size * d_vocab * 4 + 3 * tokens * d_model * b
     need = weights + max(activations, processing)
-    overhead = 512 * 1024**2 if device == "cuda" else 256 * 1024**2
+    overhead = _overhead(device)
     margin = int(0.15 * need) + overhead
     total = need + margin
     available = available_memory(device) + loaded_bytes
-
-    def verdict_for(total: int) -> str:
-        if total <= 0.8 * available:
-            return "fits"
-        return "tight" if total <= available else "wont_fit"
-
-    verdict = verdict_for(total)
+    verdict = _verdict(total, available)
     deep = weights + all_layers
-    all_layers_verdict = verdict_for(deep + int(0.15 * deep) + overhead)
-    where = {"cuda": "GPU memory", "mps": "unified memory", "cpu": "RAM"}.get(device, "memory")
+    all_layers_verdict = _verdict(deep + int(0.15 * deep) + overhead, available)
+    where = _where(device)
     explanation = (
         f"{n_params / 1e6:,.0f}M stored values × {b} bytes ({dtype}) for weights; activations for a "
         f"batch of {batch_size} prompts of {seq_len} tokens"
@@ -421,6 +416,116 @@ def estimate_memory(
         all_layers=all_layers,
         all_layers_verdict=all_layers_verdict,
     )
+
+
+def activation_bytes(
+    *,
+    n_layers: int,
+    n_heads: int,
+    d_model: int,
+    d_mlp: int,
+    d_vocab: int,
+    dtype: str,
+    batch_size: int,
+    seq_len: int,
+) -> tuple[int, int]:
+    """One batch's activations: for a forward pass, and with every layer's held at once.
+
+    A forward pass holds residual-sized tensors per block, MLP hidden states, attention scores
+    and patterns, final logits for the last position, plus one layer of cached source
+    activations. Attribution patching and direct logit attribution keep every layer's
+    activations for the backward pass, and path patching holds every head's (and MLP's) output:
+    about one layer's tensors for each layer, plus the gradients they produce.
+    """
+    b = DTYPE_BYTES[dtype]
+    tokens = batch_size * seq_len
+    per_layer = tokens * (8 * d_model + 2 * d_mlp) * b + 3 * batch_size * n_heads * seq_len**2 * b
+    shared = batch_size * d_vocab * 4 + 3 * tokens * d_model * b
+    return per_layer * 2 + shared, per_layer * n_layers + shared
+
+
+@dataclass
+class RunMemory:
+    """What a run needs beyond the loaded model's weights, against the memory free now."""
+
+    device: str
+    batch_size: int
+    seq_len: int
+    all_layers: bool
+    activations: int
+    total: int
+    available: int
+    verdict: str  # fits | tight | wont_fit
+    explanation: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+# Methods that hold every layer's activations at once: the gradient methods keep them for the
+# backward pass, and path patching keeps every head's and MLP's output.
+ALL_LAYER_METHODS = frozenset({"attribution_patching", "direct_logit_attribution", "path_patching"})
+
+
+def estimate_run_memory(
+    *,
+    n_layers: int,
+    n_heads: int,
+    d_model: int,
+    d_mlp: int,
+    d_vocab: int,
+    dtype: str,
+    device: str,
+    batch_size: int,
+    seq_len: int,
+    all_layers: bool,
+) -> RunMemory:
+    """A batch's activations for a run on the loaded model (every layer's at once for the methods
+    that hold them), plus the same margin as a model's estimate, against the memory free now
+    (the weights are already in it)."""
+    one, every = activation_bytes(
+        n_layers=n_layers,
+        n_heads=n_heads,
+        d_model=d_model,
+        d_mlp=d_mlp,
+        d_vocab=d_vocab,
+        dtype=dtype,
+        batch_size=batch_size,
+        seq_len=seq_len,
+    )
+    activations = every if all_layers else one
+    total = activations + int(0.15 * activations) + _overhead(device)
+    available = available_memory(device)
+    held = ", every layer's at once," if all_layers else ""
+    explanation = (
+        f"Activations for a batch of {batch_size} prompts of up to {seq_len} tokens{held} plus a "
+        f"margin, against the {_where(device)} free with the model loaded."
+    )
+    return RunMemory(
+        device=device,
+        batch_size=batch_size,
+        seq_len=seq_len,
+        all_layers=all_layers,
+        activations=activations,
+        total=total,
+        available=available,
+        verdict=_verdict(total, available),
+        explanation=explanation,
+    )
+
+
+def _overhead(device: str) -> int:
+    return 512 * 1024**2 if device == "cuda" else 256 * 1024**2
+
+
+def _verdict(total: int, available: int) -> str:
+    if total <= 0.8 * available:
+        return "fits"
+    return "tight" if total <= available else "wont_fit"
+
+
+def _where(device: str) -> str:
+    return {"cuda": "GPU memory", "mps": "unified memory", "cpu": "RAM"}.get(device, "memory")
 
 
 def format_bytes(n: int | float | None) -> str:

@@ -2,7 +2,7 @@ import { Fragment, useId, type ReactNode } from "react";
 
 import { useStore } from "../store/app";
 import { MOD, SHIFT } from "./Header";
-import { Dialog, Kbd } from "./ui";
+import { Checkbox, Dialog, Kbd } from "./ui";
 import s from "./ShortcutsDialog.module.css";
 
 /** Keys pressed together, such as Ctrl K. */
@@ -47,9 +47,9 @@ const SECTIONS: { title: string; rows: [ReactNode, string][] }[] = [
         <span className={s.keys}>
           <Kbd>1</Kbd>
           <span className={s.or}>to</span>
-          <Kbd>7</Kbd>
+          <Kbd>5</Kbd>
         </span>,
-        "Go to Prompts, Baseline, Configure, Results, Attention, Compare runs or Spec.",
+        "Go to a tab of the open workspace, counting from the left.",
       ],
       [<Either>{[<Keys key="a" keys={["["]} />, <Keys key="b" keys={["]"]} />]}</Either>, "Show the previous or next prompt."],
       [<Keys keys={["←", "→"]} />, "On the inspector's edge, make the inspector wider or narrower; with Shift, in bigger steps."],
@@ -66,7 +66,7 @@ const SECTIONS: { title: string; rows: [ReactNode, string][] }[] = [
       [<Keys keys={["A"]} />, "Open the selected head's attention."],
       [<Keys keys={["C"]} />, "Compare the component across runs."],
       [<Keys keys={[SHIFT, "F10"]} />, "On the model map, list these actions in a menu."],
-      [<Keys keys={["←", "→", "Home", "End"]} />, "In the layer explorer's diagram, go through the layer's components."],
+      [<Keys keys={["←", "→", "Home", "End"]} />, "In one layer's diagram, go through the layer's components."],
     ],
   },
   {
@@ -79,7 +79,7 @@ const SECTIONS: { title: string; rows: [ReactNode, string][] }[] = [
   {
     title: "Experiment form (Configure)",
     rows: [
-      [<Keys keys={[MOD, "Enter"]} />, "Run the experiment."],
+      [<Keys keys={[MOD, "Enter"]} />, "Run the experiment, or queue it while another job runs."],
       [<Keys keys={[MOD, "Z"]} />, "Undo the last change to the form. In a text field, this undoes typing first."],
       [<Either>{[<Keys key="a" keys={[MOD, SHIFT, "Z"]} />, <Keys key="b" keys={["Ctrl", "Y"]} />]}</Either>, "Redo the change."],
     ],
@@ -96,6 +96,8 @@ const SECTIONS: { title: string; rows: [ReactNode, string][] }[] = [
 /** Every keyboard shortcut, from ? or the command palette. */
 export function ShortcutsDialog() {
   const open = useStore((st) => st.shortcutsOpen);
+  const singleKeys = useStore((st) => st.singleKeys);
+  const setSingleKeys = useStore((st) => st.setSingleKeys);
   const id = useId();
   return (
     <Dialog
@@ -105,6 +107,15 @@ export function ShortcutsDialog() {
       description="Single keys work when the focus isn't in a text field."
       wide
     >
+      <div className={s.setting}>
+        <Checkbox checked={singleKeys} onChange={setSingleKeys}>
+          Use single-key shortcuts
+        </Checkbox>
+        <p className={s.settingNote}>
+          The digits, letters, brackets and ? listed below. Turn them off if you use speech input or press keys by
+          accident; shortcuts with {MOD}, the arrow keys and Esc keep working.
+        </p>
+      </div>
       <div className={s.sections}>
         {SECTIONS.map((section, i) => (
           <section key={section.title} className={s.section} aria-labelledby={`${id}-${i}`}>

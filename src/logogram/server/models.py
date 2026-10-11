@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from logogram.schema import RunListing, SiteSummary
+from logogram.schema import QueuedRunInfo, RunListing, SiteSummary
 from logogram.spec import ModelRef, PredictionSettings
 
 
@@ -78,6 +78,16 @@ class CancelOut(_Out):
     job: JobInfo | None
 
 
+class QueueAdded(_Out):
+    """A run sent to the queue. With nothing running it started at once (``run_id`` and ``job``);
+    otherwise it waits its turn (``queued``). ``queue`` lists every run still waiting."""
+
+    run_id: str | None
+    job: JobInfo | None
+    queued: QueuedRunInfo | None
+    queue: list[QueuedRunInfo]
+
+
 class DraftSaved(_Out):
     run_id: str
     path: str
@@ -144,9 +154,12 @@ class ServerState(_Out):
     job: JobInfo | None
     first_run: bool
     theme: Literal["light", "dark", "system"]
+    single_key_shortcuts: bool = True
     projects_parent: str
     update: UpdateStatus
     sae: dict[str, Any] = {"state": "none"}
+    # The runs waiting for the job in progress, first in line first.
+    queue: list[QueuedRunInfo] = []
 
 
 class Settings(BaseModel):
@@ -155,6 +168,7 @@ class Settings(BaseModel):
     system_check_seen: bool | None = None
     theme: str | None = None
     update_check: bool | None = None
+    single_key_shortcuts: bool | None = None
 
 
 class OkOut(_Out):
@@ -373,6 +387,19 @@ class MemoryEstimateOut(_Out):
     # What gradient methods and path patching hold: every layer's activations at once.
     all_layers: int = 0
     all_layers_verdict: Literal["fits", "tight", "wont_fit"] = "fits"
+
+
+class RunMemoryOut(_Out):
+    device: str
+    batch_size: int
+    seq_len: int
+    # Whether the method holds every layer's activations at once.
+    all_layers: bool
+    activations: int
+    total: int
+    available: int
+    verdict: Literal["fits", "tight", "wont_fit"]
+    explanation: str
 
 
 class EstimateOut(_Out):

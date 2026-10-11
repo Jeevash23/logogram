@@ -1,7 +1,7 @@
 import type { RunDetail } from "../api/types";
 import { divergingScale, niceBound, SCALE_FLOOR, textOn } from "./color";
 import { describeMetric } from "./metrics";
-import { experimentText, measureWords, scopeText } from "./spec";
+import { baselineText, experimentText, measureWords, scopeText } from "./spec";
 
 export function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
@@ -12,33 +12,78 @@ export function downloadBlob(blob: Blob, filename: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-/** A copyable methods paragraph derived only from the executed spec and saved provenance. */
+/** A copyable methods paragraph derived only from the executed spec and saved provenance, in
+ * sentences a reader can follow: every choice that can change a number, said in words. */
 export function methodsText(run: RunDetail): string {
   const { spec: s, summary, manifest } = run;
+  const n = summary?.n_prompts;
+  const revision = s.model.revision ? `revision ${s.model.revision}` : "an unpinned revision (the main branch when it ran)";
+  const device = manifest?.device?.type ?? s.model.device;
+  const weights = s.model.process_weights
+    ? "with TransformerLens's weight processing (LayerNorm weights folded, writing weights and the unembedding centered), which leaves logit differences unchanged"
+    : "with its original weights, unprocessed";
+  const prompts = `${n === undefined ? "The" : `${n}`} prompt pair${n === 1 ? " was" : "s were"} read from ${s.dataset.path}${
+    s.dataset.sha256 ? ` (SHA-256 ${s.dataset.sha256})` : " (not pinned by a checksum)"
+  }${s.dataset.limit ? `, the first ${s.dataset.limit} of the file` : ""}, and tokenized ${
+    s.tokenization.prepend_bos ? "with" : "without"
+  } a beginning-of-sequence token.`;
+  const normalized =
+    s.metric.normalization === "dataset_gap"
+      ? "Effects were normalized by the mean clean–corrupt gap over the dataset"
+      : "Effects were normalized by each prompt's own clean–corrupt gap";
+  const formula = summary?.metric.normalized_effect;
   return [
-    `${experimentText(s.experiment)} at ${scopeText(s.scope)}.`,
-    `Model: ${s.model.id}, revision ${s.model.revision ?? "unpinned"}, ${s.model.dtype}, device ${manifest?.device?.type ?? s.model.device}; weight processing ${s.model.process_weights ? "enabled" : "disabled"}.`,
-    `Dataset: ${s.dataset.path}; SHA-256 ${s.dataset.sha256 ?? "unpinned"}; n = ${summary?.n_prompts ?? "unknown"}; limit ${s.dataset.limit ?? "none"}; prepend BOS ${s.tokenization.prepend_bos}.`,
-    `Metric: ${describeMetric(s.metric)}; normalization ${s.metric.normalization}. ${summary?.metric.normalized_effect ?? ""}.`,
-    `Execution batch size ${s.execution.batch_size}. ${statisticsText(run)}`,
-    s.experiment.kind === "ablation"
-      ? `Ablation baseline: ${JSON.stringify(s.experiment.baseline)}.`
-      : s.experiment.kind === "direct_logit_attribution"
-        ? `Direct logit attribution of the ${s.experiment.prompts} prompts: each component's output at the last token, read through the final normalization with its scale held at its value in the run.${summary?.direct ? ` Mean logit difference ${summary.direct.logit_diff?.toFixed(4)}: attention ${summary.direct.attention?.toFixed(4)}, MLPs ${summary.direct.mlp?.toFixed(4)}, embeddings ${summary.direct.embeddings?.toFixed(4)}, biases ${summary.direct.biases?.toFixed(4)}.` : ""}`
-        : s.experiment.kind === "path_patching"
-          ? `Path patching (direction ${s.experiment.direction}) into ${s.experiment.receivers.map((r) => (r.kind === "logits" ? "the logits" : `L${r.layer} H${r.head} ${r.input}`)).join(", ")}: each sender patched with every other attention head held at its receiver-run value${s.experiment.freeze_mlps ? " and the MLPs held too" : ", MLPs recomputed"}; the receivers' recorded inputs then patched into an unchanged run.`
-          : s.experiment.kind === "steering"
-          ? `Steering: a direction added to the ${s.experiment.apply_to} prompts, the mean of (${s.experiment.apply_to === "clean" ? "corrupt" : "clean"} − ${s.experiment.apply_to}) at each site over a training split of ${Math.round(s.experiment.train_fraction * 100)}% of the pairs (split seed ${s.experiment.seed}); strengths ${s.experiment.coefficients.join(", ")}; random control of the same length ${s.experiment.control ? "included" : "not run"}.${summary?.steering ? ` Directions from dataset prompts ${summary.steering.train.join(", ")}; measured on the ${summary.steering.test.length} held-out prompts.` : ""}`
-          : s.experiment.kind === "attribution_patching"
-          ? `Attribution patching (direction ${s.experiment.direction}): a first-order estimate of each site's patching effect, (source − receiver activation) · ${
-              s.experiment.method === "integrated_gradients"
-                ? `the gradient of the metric averaged over ${s.experiment.steps} runs whose input embeddings lie evenly between the receiver's and the source's (integrated gradients)`
-                : "the gradient of the metric at the receiver run"
-            }, not a patched forward pass.`
-          : `Direction: ${s.experiment.direction}.`,
-    `Run: ${run.id}. ${manifest?.versions ? `Software: ${Object.entries(manifest.versions).filter(([, v]) => v).map(([k, v]) => `${k} ${v}`).join(", ")}.` : ""}`,
-    ...(summary?.warnings.map((warning) => `Run note: ${warning}`) ?? []),
+    `${experimentText(s.experiment)}, at ${scopeText(s.scope)}.`,
+    `The model was ${s.model.id} at ${revision}, run in ${s.model.dtype} on ${device}, ${weights}.`,
+    prompts,
+    `The metric, for each prompt, was ${describeMetric(s.metric)}. ${normalized}${formula ? `: ${formula}` : ""}.`,
+    `Prompts ran in batches of ${s.execution.batch_size}. ${statisticsText(run)}`,
+    methodText(run),
+    `The run is ${run.id}.${
+      manifest?.versions
+        ? ` Software: ${Object.entries(manifest.versions).filter(([, v]) => v).map(([k, v]) => `${k} ${v}`).join(", ")}.`
+        : ""
+    }`,
+    ...(summary?.warnings.map((warning) => `Note from the run: ${warning}`) ?? []),
   ].join("\n\n");
+}
+
+/** What the method did, beyond its name: the baseline, the paths, the steering or the estimate. */
+function methodText(run: RunDetail): string {
+  const { spec: s, summary } = run;
+  const e = s.experiment;
+  const arrow = (d: "clean_to_corrupt" | "corrupt_to_clean") =>
+    d === "clean_to_corrupt" ? "from the clean prompt into the corrupt one" : "from the corrupt prompt into the clean one";
+  switch (e.kind) {
+    case "ablation":
+      return `Each site's activation was replaced by a baseline: ${baselineText(e.baseline)}.`;
+    case "activation_patching":
+      return `Each site's activation was copied ${arrow(e.direction)} of each pair.`;
+    case "direct_logit_attribution":
+      return `Direct logit attribution of the ${e.prompts} prompts: each component's output at the last token, read through the final normalization with its scale held at its value in the run.${
+        summary?.direct
+          ? ` The mean logit difference was ${summary.direct.logit_diff?.toFixed(4)}: attention ${summary.direct.attention?.toFixed(4)}, MLPs ${summary.direct.mlp?.toFixed(4)}, embeddings ${summary.direct.embeddings?.toFixed(4)} and biases ${summary.direct.biases?.toFixed(4)}.`
+          : ""
+      }`;
+    case "path_patching":
+      return `Path patching ${arrow(e.direction)}, into ${e.receivers.map((r) => (r.kind === "logits" ? "the logits" : `L${r.layer} H${r.head} ${r.input}`)).join(", ")}: each sender was patched while every other attention head was held at its value in the receiver run${
+        e.freeze_mlps ? ", and the MLPs were held too" : ", with the MLPs recomputed"
+      }; the receivers' recorded inputs were then patched into an unchanged run.`;
+    case "steering": {
+      const other = e.apply_to === "clean" ? "corrupt" : "clean";
+      return `Steering: a direction was added to the ${e.apply_to} prompts, the mean of (${other} − ${e.apply_to}) activations at each site over a training split of ${Math.round(
+        e.train_fraction * 100,
+      )}% of the pairs (split seed ${e.seed}), at strengths ${e.coefficients.join(", ")}. ${
+        e.control ? "A random direction of the same length was run as a control." : "No random control was run."
+      }${summary?.steering ? ` The directions came from dataset prompts ${summary.steering.train.join(", ")}; effects were measured on the ${summary.steering.test.length} held-out prompts.` : ""}`;
+    }
+    case "attribution_patching":
+      return `Attribution patching ${arrow(e.direction)}: a first-order estimate of each site's patching effect, (source − receiver activation) · ${
+        e.method === "integrated_gradients"
+          ? `the gradient of the metric averaged over ${e.steps} runs whose input embeddings lie evenly between the receiver's and the source's (integrated gradients)`
+          : "the gradient of the metric at the receiver run"
+      }, not a patched forward pass.`;
+  }
 }
 
 /** The bootstrap as run: over prompts or clusters of them, with the corrections for many sites. */
@@ -49,7 +94,7 @@ function statisticsText(run: RunDetail): string {
     ? `over clusters of prompts with the same ${st.cluster}${summary?.clusters ? ` (${summary.clusters} clusters)` : ""}`
     : "over prompts";
   const corrected = summary?.multiple_comparisons ? ` ${summary.multiple_comparisons}` : "";
-  return `Percentile bootstrap ${over}: ${st.bootstrap} resamples, ${st.ci * 100}% confidence interval, seed ${st.seed}.${corrected}`;
+  return `Intervals are ${st.ci * 100}% percentile bootstrap intervals ${over}, from ${st.bootstrap} resamples with seed ${st.seed}.${corrected}`;
 }
 
 /** Render an export with a fixed light background, full axis labels and a symmetric legend. */
@@ -73,7 +118,7 @@ export async function exportFigure(run: RunDetail, metric: "effect" | "delta", u
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("Your browser couldn't create the figure canvas.");
   ctx.scale(resolution, resolution);
-  ctx.fillStyle = "#f4f6f6";
+  ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, width, height);
   ctx.fillStyle = "#1c2226";
   const font = '"Instrument Sans Variable", "Instrument Sans", sans-serif';

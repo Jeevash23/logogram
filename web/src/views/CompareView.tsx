@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
-import type { Comparison, ComparisonChange, Layout, RunDetail, SiteSpec } from "../api/types";
+import type { Comparison, ComparisonChange, Layout, RunDetail, SiteBase, SiteResult, SiteSpec } from "../api/types";
 import { Heatmap, type Axis } from "../components/Heatmap/Heatmap";
 import { ScaleBar } from "../components/Heatmap/ScaleBar";
 import { Button, Callout, Empty, Field, Progress, Segmented, Select } from "../components/ui";
 import { divergingScale, niceBound, SCALE_FLOOR, type ColorScale, type ResolvedTheme } from "../lib/color";
 import { ci, count, num, pct, signed } from "../lib/format";
 import { siteValue } from "../lib/hooks";
-import { gridKey, isResidKind, partOfKind, selectionOfSite, siteGrid, siteKey } from "../lib/sites";
+import { findSite, gridKey, isResidKind, partOfKind, selectionOfSite, siteGrid, siteKey, type Selection } from "../lib/sites";
 import { siteText } from "../lib/spec";
+import { HOLDS_RHO } from "../lib/thresholds";
+import { FlagMark } from "./Forest";
 import { runView, useStore } from "../store/app";
 import s from "./views.module.css";
 import c from "./CompareView.module.css";
@@ -38,6 +40,7 @@ export function CompareView() {
   const liveA = useStore((st) => (aId ? st.live[aId] : undefined));
   const liveB = useStore((st) => (bId ? st.live[bId] : undefined));
   const select = useStore((st) => st.select);
+  const selection = useStore((st) => st.selection);
   const [comparison, setComparison] = useState<Comparison | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -101,6 +104,12 @@ export function CompareView() {
     const site = gridA.get(gridKey(r, col));
     if (site) select(selectionOfSite(site));
   }, [gridA, select]);
+  // The selected site, as each run measured it. The difference map is drawn on run A's cells.
+  const siteA = findSite(va.sites, selection);
+  const siteB = findSite(vb.sites, selection);
+  const selectedR = siteA?.row ?? null;
+  const selectedC = siteA?.col ?? null;
+  const diffSelected = useMemo(() => (selectedR !== null && selectedC !== null ? { r: selectedR, c: selectedC } : null), [selectedR, selectedC]);
   const diffTooltip = useCallback((r: number, col: number) => (
     <>
       <div style={{ fontWeight: 650 }}>{gridA.get(gridKey(r, col))?.label}</div>
@@ -112,7 +121,17 @@ export function CompareView() {
     <div className={s.view}>
       <div className={s.head}>
         <div className={s.titleBlock}>
-          <h1 className={s.title}>{verification ? "Estimates checked by patching" : robust ? "Robustness check" : "Compare runs"}</h1>
+          <h1 className={s.title}>
+            {verification
+              ? "Estimates checked by patching"
+              : robust
+                ? "Robustness check"
+                : da && db
+                  ? da.spec.name === db.spec.name
+                    ? `Two runs of ${da.spec.name}`
+                    : `${da.spec.name} against ${db.spec.name}`
+                  : "Two runs side by side"}
+          </h1>
           <p className={s.subtitle}>
             {verification
               ? "A estimates every site to first order; B patches the strongest of them for real. Where they disagree, the estimate is flagged."
@@ -170,7 +189,7 @@ export function CompareView() {
             Running run B
             {bLive.progress ? ` · layer ${bLive.progress.layer} · ${pct(bLive.progress.done / bLive.progress.total)}` : "…"}
           </span>
-          <Progress value={bLive.progress ? bLive.progress.done / bLive.progress.total : null} />
+          <Progress value={bLive.progress ? bLive.progress.done / bLive.progress.total : null} label="Progress of run B" />
         </div>
       )}
 
@@ -196,6 +215,7 @@ export function CompareView() {
           <div className={c.panel}>
             <div className={c.panelHead}>
               <span className={s.panelTitle}>Difference in normalized effect, B − A</span>
+              {flaggedKeys.size > 0 && <span className={c.flagNote}><FlagMark /> flagged: the conclusion differs</span>}
               <ScaleBar bound={diffBound} theme={theme} label="B − A" />
             </div>
             <Heatmap
@@ -208,6 +228,7 @@ export function CompareView() {
               colTitle={layout.col_title}
               tokens={layout.kind === "layer_position" && layout.cols[0]?.clean !== undefined}
               flagged={diffFlagged}
+              selected={diffSelected}
               onSelect={diffSelect}
               tooltip={diffTooltip}
               ariaLabel="Difference map"
@@ -229,16 +250,31 @@ export function CompareView() {
                 theme={theme}
                 running={label === "B" && bLive?.status === "running"}
                 flaggedKeys={flaggedKeys}
+                selection={selection}
               />
             ))}
             <div className={c.scale}>
               <ScaleBar bound={bound} theme={theme} label="Normalized effect (shared scale)" />
+              {flaggedKeys.size > 0 && <span className={c.flagNote}><FlagMark /> flagged: the conclusion differs</span>}
             </div>
           </div>
         )
       )}
 
-      {comparison && <ChangesTable changes={comparison.changes} topK={comparison.top_k} />}
+      {aId && bId && (siteA || siteB) && (
+        <SelectedSite
+          siteA={siteA}
+          siteB={siteB}
+          resultA={siteA ? va.results[siteA.index] : undefined}
+          resultB={siteB ? vb.results[siteB.index] : undefined}
+          comparison={comparison}
+          aId={aId}
+          bId={bId}
+          flagged={!!siteA && flaggedKeys.has(siteKey(siteA))}
+        />
+      )}
+
+      {comparison && <ChangesTable changes={comparison.changes} topK={comparison.top_k} selected={siteA ?? siteB} />}
     </div>
   );
 }
@@ -257,6 +293,7 @@ function ComparePanel({
   theme,
   running,
   flaggedKeys,
+  selection,
 }: {
   label: "A" | "B";
   id: string;
@@ -270,6 +307,7 @@ function ComparePanel({
   theme: ResolvedTheme;
   running: boolean;
   flaggedKeys: Set<string>;
+  selection: Selection | null;
 }) {
   const select = useStore((st) => st.select);
   const openRun = useStore((st) => st.openRun);
@@ -289,6 +327,10 @@ function ComparePanel({
     const site = grid.get(gridKey(r, col));
     if (site) select(selectionOfSite(site));
   }, [grid, select]);
+  const selectedSite = findSite(sites, selection);
+  const selectedR = selectedSite?.row ?? null;
+  const selectedC = selectedSite?.col ?? null;
+  const selected = useMemo(() => (selectedR !== null && selectedC !== null ? { r: selectedR, c: selectedC } : null), [selectedR, selectedC]);
   const tooltip = useCallback((r: number, col: number) => {
     const site = grid.get(gridKey(r, col));
     const res = site ? results[site.index] : undefined;
@@ -321,6 +363,7 @@ function ComparePanel({
         tokens={layout.kind === "layer_position" && layout.cols[0]?.clean !== undefined}
         fade={running}
         flagged={flagged}
+        selected={selected}
         onSelect={onSelect}
         tooltip={tooltip}
         ariaLabel={`Run ${label}`}
@@ -334,7 +377,7 @@ function Verdict({ comparison, robust, verification }: { comparison: Comparison;
   const k = comparison.top_k;
   const overlap = comparison.top_overlap;
   const flagged = comparison.flagged.length;
-  const stable = flagged === 0 && (rho ?? 0) > 0.8;
+  const stable = flagged === 0 && (rho ?? 0) > HOLDS_RHO;
   return (
     <div className={c.verdict}>
       <div className={c.metrics}>
@@ -381,14 +424,17 @@ function Verdict({ comparison, robust, verification }: { comparison: Comparison;
           )
         ) : stable ? (
           <>
-            <strong>The conclusions hold.</strong> The ranking agrees closely and no top component changes.
+            <strong>The conclusions hold.</strong> The ranking agrees closely (a rank correlation of {num(rho, 2)}, above the{" "}
+            {HOLDS_RHO} this check asks for) and no top component changes.
           </>
         ) : (
           <>
             <strong>
               {flagged} conclusion{flagged === 1 ? "" : "s"} {robust ? "depend on this choice" : "differ between the runs"}.
             </strong>{" "}
-            {flagged > 0 ? "They are listed below and flagged on the map." : "The overall ranking differs."}
+            {flagged > 0
+              ? "They are listed below and flagged on the map."
+              : `The overall ranking differs: a rank correlation of ${rho === null ? "unknown" : num(rho, 2)}, where the conclusions hold above ${HOLDS_RHO}.`}
           </>
         )}
       </p>
@@ -396,15 +442,106 @@ function Verdict({ comparison, robust, verification }: { comparison: Comparison;
   );
 }
 
-function ChangesTable({ changes, topK }: { changes: ComparisonChange[]; topK: number }) {
+function flagText(f: ComparisonChange["flags"][number], topK: number): string {
+  return f === "sign" ? "sign changed" : f === "left_top" ? `left the top ${topK}` : f === "entered_top" ? `entered the top ${topK}` : "differs prompt by prompt";
+}
+
+/** The selected site in both runs: what each measured there, how they differ, and a way into
+ * each run at that site. */
+function SelectedSite({
+  siteA,
+  siteB,
+  resultA,
+  resultB,
+  comparison,
+  aId,
+  bId,
+  flagged,
+}: {
+  siteA: SiteBase | null;
+  siteB: SiteBase | null;
+  resultA?: SiteResult;
+  resultB?: SiteResult;
+  comparison: Comparison | null;
+  aId: string;
+  bId: string;
+  flagged: boolean;
+}) {
+  const openRun = useStore((st) => st.openRun);
+  const select = useStore((st) => st.select);
+  const site = siteA ?? siteB;
+  if (!site) return null;
+  const key = siteKey(site);
+  const change = comparison?.changes.find((ch) => siteKey(ch) === key);
+  const paired = change?.difference ?? null;
+  const diff = siteA ? comparison?.diff.find((d) => d.index_a === siteA.index)?.value : undefined;
+  const runs = [
+    { label: "A", id: aId, site: siteA, result: resultA },
+    { label: "B", id: bId, site: siteB, result: resultB },
+  ] as const;
+  return (
+    <section className={c.selected} aria-label="The selected site in both runs">
+      <div className={c.panelHead}>
+        <h2 className={s.panelTitle}>{site.label}</h2>
+        <Button size="small" variant="ghost" onClick={() => select(null)}>
+          Clear selection
+        </Button>
+      </div>
+      <div className={c.metrics}>
+        {runs.map(({ label, id, site: here, result }) => (
+          <div key={label}>
+            <div className={c.metricValue}>{result ? signed(result.effect.mean, 3) : "—"}</div>
+            <div className={c.metricLabel}>
+              {!here
+                ? `Run ${label} didn't measure this site.`
+                : result
+                  ? `Run ${label}: normalized effect, CI ${ci(result.effect.lo, result.effect.hi)}`
+                  : `Run ${label} hasn't reached this site yet.`}
+            </div>
+            {here && (
+              <Button size="small" variant="ghost" className={c.open} onClick={() => void openRun(id, "results")}>
+                Open run {label} at this site
+              </Button>
+            )}
+          </div>
+        ))}
+        <div>
+          <div className={c.metricValue}>{paired ? signed(paired.mean, 3) : signed(diff, 3)}</div>
+          <div className={c.metricLabel}>
+            {paired
+              ? `B − A, paired prompt by prompt, CI ${ci(paired.lo, paired.hi)}`
+              : diff !== undefined
+                ? "B − A, the difference of the two means"
+                : comparison
+                  ? "B − A: only one run measured this site."
+                  : "B − A: shown once both runs have finished."}
+          </div>
+        </div>
+      </div>
+      {comparison && siteA && siteB && (
+        <p className={s.small}>
+          {change && change.flags.length > 0
+            ? `Flagged: ${change.flags.map((f) => flagText(f, comparison.top_k)).join(", ")}.`
+            : flagged
+              ? "Flagged."
+              : change
+                ? `Among the top ${comparison.top_k} components (rank ${change.rank_a} in A, ${change.rank_b} in B), and not flagged.`
+                : `Not flagged, and outside the top ${comparison.top_k} components of both runs.`}
+        </p>
+      )}
+    </section>
+  );
+}
+
+function ChangesTable({ changes, topK, selected }: { changes: ComparisonChange[]; topK: number; selected: SiteBase | null }) {
   const select = useStore((st) => st.select);
   if (changes.length === 0) return null;
-  const flagText = (f: ComparisonChange["flags"][number]) =>
-    f === "sign" ? "sign changed" : f === "left_top" ? `left the top ${topK}` : f === "entered_top" ? `entered the top ${topK}` : "differs prompt by prompt";
+  const selectedKey = selected ? siteKey(selected) : null;
   const paired = changes.some((ch) => ch.difference);
   return (
     <div className={c.changes}>
       <h2 className={s.panelTitle}>Top components in either run</h2>
+      <p className={s.small}>Choose a component to see it in both runs.</p>
       <table className={s.table}>
         <thead>
           <tr>
@@ -417,23 +554,25 @@ function ChangesTable({ changes, topK }: { changes: ComparisonChange[]; topK: nu
           </tr>
         </thead>
         <tbody>
-          {changes.map((ch) => (
-            <tr
-              key={siteKey(ch)}
-              data-clickable
-              onClick={() =>
-                select({
-                  layer: ch.layer,
-                  part: partOfKind(ch.kind),
-                  head: ch.head ?? undefined,
-                  feature: ch.feature ?? undefined,
-                  positionKey: ch.position_key === "all" ? undefined : ch.position_key,
-                  kind: isResidKind(ch.kind) ? ch.kind : undefined,
-                  variantKey: ch.variant_key ?? undefined,
-                })
-              }
-            >
-              <td>{ch.label}</td>
+          {changes.map((ch) => {
+            const choose = () =>
+              select({
+                layer: ch.layer,
+                part: partOfKind(ch.kind),
+                head: ch.head ?? undefined,
+                feature: ch.feature ?? undefined,
+                positionKey: ch.position_key === "all" ? undefined : ch.position_key,
+                kind: isResidKind(ch.kind) ? ch.kind : undefined,
+                variantKey: ch.variant_key ?? undefined,
+              });
+            const key = siteKey(ch);
+            return (
+            <tr key={key} data-clickable aria-selected={key === selectedKey} onClick={choose}>
+              <td>
+                <button type="button" className={c.rowButton} onClick={(e) => { e.stopPropagation(); choose(); }}>
+                  {ch.label}
+                </button>
+              </td>
               <td className={s.num}>
                 {signed(ch.effect_a.mean)} <span className="faint">[{ci(ch.effect_a.lo, ch.effect_a.hi)}]</span>
               </td>
@@ -455,10 +594,11 @@ function ChangesTable({ changes, topK }: { changes: ComparisonChange[]; topK: nu
                 {ch.rank_a} → {ch.rank_b}
               </td>
               <td className={ch.flags.length ? c.flagged : "faint"}>
-                {ch.flags.length ? ch.flags.map(flagText).join(", ") : "stable"}
+                {ch.flags.length ? ch.flags.map((f) => flagText(f, topK)).join(", ") : "stable"}
               </td>
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
     </div>

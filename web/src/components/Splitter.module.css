@@ -30,6 +30,6 @@
 .horizontal:hover,
 .vertical:focus-visible,
 .horizontal:focus-visible {
-  background-color: var(--ws, var(--text));
+  background-color: var(--text);
   outline: none;
 }

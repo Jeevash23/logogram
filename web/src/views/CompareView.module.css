@@ -94,6 +94,18 @@
 
 .scale {
   grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 20px;
+}
+
+.flagNote {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-xs);
+  color: var(--muted);
 }
 
 .changes {
@@ -104,4 +116,31 @@
 
 .flagged {
   font-weight: 600;
+}
+
+.selected {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.selected .metrics > div {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.open {
+  margin-top: 6px;
+  margin-left: -8px;
+}
+
+.rowButton {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
 }

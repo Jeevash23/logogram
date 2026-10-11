@@ -6,6 +6,7 @@ import type {
   Comparison,
   DatasetCreated,
   DatasetDetail,
+  DeriveRequest,
   EstimateResponse,
   FolderListing,
   Job,
@@ -36,6 +37,10 @@ import type {
   ResearchNote,
   PredictionReport,
   PredictionSettings,
+  QueueAdded,
+  QueuedRun,
+  RunMemory,
+  ExperimentKind,
   UpdateStatus,
 } from "./types";
 
@@ -91,6 +96,7 @@ export const PROJECT_SCOPED = [
   "/api/runs",
   "/api/drafts",
   "/api/compare",
+  "/api/queue",
   // Not on the server's list, but closing must name the project the tab means to close.
   "/api/projects/close",
 ];
@@ -151,7 +157,7 @@ export const api = {
   state: () => get<ServerState>("/api/state"),
   update: () => get<UpdateStatus>("/api/update"),
   checkUpdate: () => post<UpdateStatus>("/api/update/check"),
-  settings: (values: { system_check_seen?: boolean; theme?: ThemeSetting; update_check?: boolean }) =>
+  settings: (values: { system_check_seen?: boolean; theme?: ThemeSetting; update_check?: boolean; single_key_shortcuts?: boolean }) =>
     post<Record<string, unknown>>("/api/settings", values),
   system: () => get<SystemReport>("/api/system"),
 
@@ -174,6 +180,8 @@ export const api = {
     post<DatasetCreated>("/api/datasets/import", { name, text, overwrite }),
   savePair: (body: PromptRecord & { name: string; overwrite?: boolean }) =>
     post<DatasetCreated>("/api/datasets/pair", body),
+  /** Save a dataset's prompt pairs, some edited and some left out, as a new dataset. */
+  deriveDataset: (body: DeriveRequest) => post<DatasetCreated>("/api/datasets/derive", body),
   /** The metric decides whether answers of several tokens can be read. */
   tokenize: (body: { dataset?: string; index?: number; record?: PromptRecord; metric: MetricSpec } & AnalysisOptions) =>
     post<TokenStripData>("/api/tokenize", body),
@@ -185,6 +193,8 @@ export const api = {
     }>("/api/models/presets"),
   estimate: (body: { id: string; revision?: string | null; dtype: Dtype; device: Device; process_weights: boolean }) =>
     post<EstimateResponse>("/api/models/estimate", body),
+  /** What a run of this batch size would need on the loaded model, against the memory free. */
+  runMemory: (body: { batch_size: number; seq_len: number; method: ExperimentKind }) => post<RunMemory>("/api/models/run-memory", body),
   loadModel: (body: {
     id: string;
     revision?: string | null;
@@ -215,6 +225,10 @@ export const api = {
   exportRun: (id: string) => request<Blob>("GET", `/api/runs/${encodeURIComponent(id)}/export.csv`, undefined, "blob"),
   startRun: (spec: Spec, draftId: string | null = null) =>
     post<{ run_id: string; job: Job }>("/api/runs", { spec, draft_id: draftId }),
+  /** Run the spec when the job in progress ends, or now if nothing is running. */
+  queueRun: (spec: Spec, draftId: string | null = null) =>
+    post<QueueAdded>("/api/queue", { spec, draft_id: draftId }),
+  removeQueuedRun: (id: string) => request<QueuedRun[]>("DELETE", `/api/queue/${encodeURIComponent(id)}`),
   saveDraft: (spec: Spec, draftId: string | null = null) =>
     post<{ run_id: string; path: string }>("/api/drafts", { spec, draft_id: draftId }),
   rerun: (id: string) =>

@@ -1,5 +1,5 @@
 import { scaleLinear } from "d3-scale";
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState, type KeyboardEvent } from "react";
 
 import { api } from "../api/client";
 import type { BaselinePrompt, BaselineReport, Normalization, PromptRecord, TopToken } from "../api/types";
@@ -10,6 +10,7 @@ import { answerText, capitalize, num, plural, prob, signed, visibleToken } from 
 import { modelName, useAnalysisContext } from "../lib/hooks";
 import { analysisContext } from "../lib/analysis";
 import { gapCheck, metricWords, signedMetric } from "../lib/metrics";
+import { behaviorPresent, PRESENT_GAP } from "../lib/thresholds";
 import { useStore } from "../store/app";
 import s from "./views.module.css";
 import b from "./BaselineView.module.css";
@@ -34,7 +35,7 @@ export function BaselineView() {
   };
 
   const ready = model.state === "ready" && !!datasetPath && !context.error && !!context.metric;
-  const verdict = report?.summary ? (behaviorPresent(report) ? "The behavior is present" : "The behavior is weak or missing") : null;
+  const verdict = report?.summary ? (behaviorPresent(report.summary) ? "The behavior is present" : "The behavior is weak or missing") : null;
   const measured = metricWords(context.metric ?? context.tokenMetric);
 
   return (
@@ -46,6 +47,12 @@ export function BaselineView() {
           <p className={s.subtitle}>
             Run the model on the clean and corrupt prompts without intervening, to confirm the behavior exists before
             measuring what carries it.
+            {verdict && (
+              <>
+                {" "}It counts as present when the clean prompts prefer the answer and the clean–corrupt gap in the logit
+                difference is above {PRESENT_GAP}.
+              </>
+            )}
           </p>
         </div>
         <div className={s.headActions}>
@@ -167,11 +174,6 @@ function preference(ld: number | null) {
 }
 
 /** The clean prompts prefer the answer, by a gap large enough to measure interventions against. */
-function behaviorPresent(report: BaselineReport): boolean {
-  const sum = report.summary;
-  return !!sum && (sum.clean_logit_diff ?? 0) > 0 && (sum.gap ?? 0) > 0.5;
-}
-
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className={b.stat}>
@@ -202,13 +204,41 @@ function DotPlot({ prompts, selected, kind, label, formula }: { prompts: Baselin
     { which: "clean", y: 22 },
     { which: "corrupt", y: 52 },
   ];
+  // One tab stop: the arrow keys go from prompt to prompt, and the chosen one is read out.
+  const [focused, setFocused] = useState(false);
+  const order = useMemo(() => prompts.map((p) => p.index).sort((a, z) => a - z), [prompts]);
+  const chosen = prompts.find((p) => p.index === selected);
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.altKey || e.ctrlKey || e.metaKey || order.length === 0) return;
+    const at = order.indexOf(selected);
+    let next: number;
+    if (e.key === "ArrowLeft" || e.key === "ArrowDown") next = at <= 0 ? 0 : at - 1;
+    else if (e.key === "ArrowRight" || e.key === "ArrowUp") next = at < 0 ? 0 : Math.min(order.length - 1, at + 1);
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = order.length - 1;
+    else return;
+    e.preventDefault();
+    setIndex(order[next]);
+  };
   return (
     <div ref={ref} className={b.plot}>
       <div className={s.small}>
-        {capitalize(label)} per prompt ({formula}).{colored ? " Positive values prefer the answer." : ""} Click a dot to show that prompt.
+        {capitalize(label)} per prompt ({formula}).{colored ? " Positive values prefer the answer." : ""} Choose a dot, or use the
+        arrow keys, to show that prompt.
       </div>
       {width > 0 && (
-        <svg width={width} height={92} role="img" aria-label={`Clean and corrupt ${label} per prompt`}>
+        <div
+          className={b.plotFocus}
+          tabIndex={0}
+          role="group"
+          aria-roledescription="dot plot"
+          aria-label={`Clean and corrupt ${label} per prompt. The arrow keys choose a prompt.`}
+          data-arrow-keys
+          onKeyDown={onKeyDown}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+        >
+        <svg width={width} height={92} aria-hidden="true">
           <line className={b.zero} x1={x(0)} x2={x(0)} y1={6} y2={68} />
           {rows.map((row) => (
             <g key={row.which}>
@@ -222,10 +252,6 @@ function DotPlot({ prompts, selected, kind, label, formula }: { prompts: Baselin
                 const isSel = p.index === selected;
                 return (
                   <circle
-                    tabIndex={0}
-                    role="button"
-                    aria-label={`Show prompt ${p.index}: ${row.which} ${label} ${signed(v, 3)}`}
-                    onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setIndex(p.index); } }}
                     key={p.index}
                     className={isSel ? b.dotSelected : b.dot}
                     style={isSel || !colored ? undefined : { fill: markColor(signScale, v) }}
@@ -246,7 +272,13 @@ function DotPlot({ prompts, selected, kind, label, formula }: { prompts: Baselin
             </text>
           ))}
         </svg>
+        </div>
       )}
+      <div className="visually-hidden" aria-live="polite" aria-atomic="true">
+        {focused && chosen
+          ? `Prompt ${chosen.index}: clean ${signed(valueOf(chosen, "clean"), 3)}, corrupt ${signed(valueOf(chosen, "corrupt"), 3)}`
+          : ""}
+      </div>
     </div>
   );
 }

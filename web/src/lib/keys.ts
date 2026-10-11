@@ -3,7 +3,7 @@
 
 import { useEffect } from "react";
 
-import { useStore, VIEWS } from "../store/app";
+import { useStore, workspaceFor, WORKSPACE_VIEWS } from "../store/app";
 import { nextSelection } from "./sites";
 
 function typing(target: EventTarget | null): boolean {
@@ -31,7 +31,7 @@ function historyKey(e: KeyboardEvent): "undo" | "redo" | null {
 }
 
 // Controls that use arrow keys themselves.
-const ARROW_WIDGETS = "[role=menu], [role=menubar], [role=listbox], [role=separator], [role=slider], [role=radiogroup], [role=tablist], [role=grid]";
+const ARROW_WIDGETS = "[role=menu], [role=menubar], [role=listbox], [role=separator], [role=slider], [role=radiogroup], [role=tablist], [role=grid], [data-arrow-keys]";
 const OVERLAYS = "[role=dialog], [role=alertdialog], [role=menu], [role=listbox]";
 
 /** Whether the arrow keys would scroll something around the focused element. */
@@ -70,7 +70,7 @@ export function useGlobalKeys(): void {
         return;
       }
       // The list of shortcuts, from anywhere but a text field or an open dialog.
-      if (e.key === "?" && !mod && !e.altKey && !e.defaultPrevented && !overlayOpen && !typing(e.target) && !st.paletteOpen) {
+      if (e.key === "?" && st.singleKeys && !mod && !e.altKey && !e.defaultPrevented && !overlayOpen && !typing(e.target) && !st.paletteOpen) {
         e.preventDefault();
         useStore.setState({ shortcutsOpen: true });
         return;
@@ -101,10 +101,13 @@ export function useGlobalKeys(): void {
         return;
       }
       const sel = st.selection;
+      if (e.key === "Escape") {
+        st.select(null);
+        return;
+      }
+      // Character keys can be turned off, for speech input or keys pressed by accident.
+      if (!st.singleKeys) return;
       switch (e.key) {
-        case "Escape":
-          st.select(null);
-          return;
         case "[":
           st.setPromptIndex(st.promptIndex - 1);
           return;
@@ -124,7 +127,12 @@ export function useGlobalKeys(): void {
           if (sel) st.focusInspector("runs");
           return;
         default:
-          if (/^[1-7]$/.test(e.key)) st.setView(VIEWS[Number(e.key) - 1].id);
+          if (/^[1-9]$/.test(e.key)) {
+            // The open workspace's tabs, in the order they are shown.
+            const tabs = WORKSPACE_VIEWS.find((w) => w.id === workspaceFor(st.view))?.views ?? [];
+            const tab = tabs[Number(e.key) - 1];
+            if (tab) st.setView(tab.id);
+          }
       }
     };
     window.addEventListener("keydown", onKeyCapture, true);
