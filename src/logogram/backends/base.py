@@ -212,6 +212,26 @@ class ModelBackend(ABC):
         """
         raise BackendError("Direct logit attribution isn't supported by this model backend.")
 
+    def unembed_directions(self, residual: torch.Tensor, vectors: torch.Tensor) -> torch.Tensor:
+        """How much each of ``vectors`` (``[k, d_model]``) changes every logit when added to
+        ``residual`` (``[d_model]``, the residual stream entering the final normalization at one
+        token): read through the final normalization, with its scale held at its value for
+        ``residual``, and the unembedding, before any soft cap on the logits. With the scale held
+        both are affine, so this is exactly linear in each vector, as in direct logit
+        attribution. ``[k, vocab]`` in float32, on the CPU.
+
+        Backends must opt in: the final normalization and unembedding have to reproduce the
+        model's output (checked when it loads)."""
+        raise BackendError("Reading directions into the logits isn't supported by this backend.")
+
+    def head_writes(self, layer: int, z: torch.Tensor) -> torch.Tensor:
+        """What attention heads' outputs ``z`` (``[k, H, d_head]``) at ``layer`` write into the
+        residual stream: each head's through its slice of the attention's output projection,
+        summed, without the projection's bias. ``[k, d_model]`` in float64, on the CPU. This is
+        what the attention adds only where its output is the sum of its heads' writes, which
+        check_model measures when a model loads (``checks.heads``)."""
+        raise BackendError("Reading heads' writes isn't supported by this model backend.")
+
     def layer_logits(self, tokens: torch.Tensor, position: int, row: int) -> torch.Tensor:
         """Final-norm logit lens at resid_post, ``[layer, vocab]`` for one row, on CPU.
 

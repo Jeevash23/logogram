@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "../api/client";
-import type { ResultKind, RunDetail, SiteDetail, SiteResult, Spec, Summary } from "../api/types";
+import type { PositionSpec, ResultKind, RunDetail, SAERef, SiteDetail, SiteResult, Spec, Summary } from "../api/types";
 import { capitalize, ci, count, num, plural, prob, qText, signed } from "../lib/format";
-import { siteValue, useActiveRun, useArchitecture } from "../lib/hooks";
+import { siteValue, useActiveRun, useAnalysisContext, useArchitecture } from "../lib/hooks";
 import {
   componentLabel,
   findSite,
@@ -21,6 +21,7 @@ import { baselineText, experimentText, measureOf, measureWords, positionText } f
 import { prefersReducedMotion } from "../lib/motion";
 import { useStore } from "../store/app";
 import { Distribution } from "./Distribution";
+import { FeatureWrites } from "./FeatureWrites";
 import { Button, Icon, Spinner } from "./ui";
 import s from "./Inspector.module.css";
 
@@ -67,6 +68,14 @@ export function Inspector() {
             )}
             {site && selection.part === "set" && run.detail?.summary?.circuit && <SetReading site={site} summary={run.detail.summary} />}
             {run.detail?.spec && (site || pendingBase) && <Method spec={run.detail.spec} summary={run.detail.summary} selection={selection} />}
+            {selection.part === "feature" && selection.feature !== undefined && run.detail?.spec?.sae && (
+              <WhatItWrites
+                saeRef={run.detail.spec.sae}
+                feature={selection.feature}
+                position={pendingBase?.position ?? null}
+                receiver={run.detail.summary?.receiver ?? "clean"}
+              />
+            )}
             {selection.part !== "set" && <Actions selection={selection} />}
             {/* A set's label names different sites in different runs: no comparison across runs. */}
             {selection.part !== "set" && <AcrossRuns selection={selection} />}
@@ -299,6 +308,77 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
         )}
         . 0 is no change; 1 is a change as large as switching to the {reference} prompt.
       </p>
+    </section>
+  );
+}
+
+/** For a feature of the run's SAE: the tokens it promotes and suppresses directly, read with the
+ * loaded model and SAE at the site's position in the chosen prompt of the run's receiver side. */
+function WhatItWrites({
+  saeRef,
+  feature,
+  position,
+  receiver,
+}: {
+  saeRef: SAERef;
+  feature: number;
+  position: PositionSpec | null;
+  receiver: "clean" | "corrupt";
+}) {
+  const sae = useStore((st) => st.sae);
+  const modelReady = useStore((st) => st.model.state === "ready");
+  const dataset = useStore((st) => st.datasetPath);
+  const index = useStore((st) => st.promptIndex);
+  const jobRunning = useStore((st) => st.job?.status === "running");
+  const guard = useStore((st) => st.guard);
+  const context = useAnalysisContext();
+  const info = sae.state === "ready" ? sae.info : undefined;
+  const trim = (path: string) => path.replace(/^\/+|\/+$/g, "");
+  const loaded =
+    !!info && info.repo === saeRef.repo && trim(info.path) === trim(saeRef.path) && (!saeRef.revision || saeRef.revision === info.revision);
+  const load = async () => {
+    const out = await guard(() => api.loadSae({ repo: saeRef.repo, path: saeRef.path, revision: saeRef.revision }));
+    if (out) useStore.getState().applyJob(out);
+  };
+  return (
+    <section className={s.section}>
+      <h3 className={s.sectionTitle}>Tokens it promotes and suppresses directly</h3>
+      {!modelReady ? (
+        <p className={s.note}>Load the run's model to read what this feature writes.</p>
+      ) : context.error ? (
+        <p className={s.note}>{context.error}</p>
+      ) : !loaded ? (
+        <>
+          <p className={s.note}>
+            Load this run's SAE ({saeRef.repo}
+            {saeRef.path ? ` · ${saeRef.path}` : ""}) to read what this feature writes.
+          </p>
+          <div>
+            <Button size="small" disabled={sae.state === "loading" || jobRunning} onClick={() => void load()}>
+              {sae.state === "loading" ? "Loading the SAE…" : "Load the SAE"}
+            </Button>
+          </div>
+        </>
+      ) : dataset ? (
+        <>
+          <FeatureWrites
+            dataset={dataset}
+            index={index}
+            which={receiver}
+            feature={feature}
+            position={position?.kind === "all" ? null : position}
+            options={context.options}
+            optionsKey={context.key}
+            sae={`${info.repo}/${info.path}@${info.revision}`}
+            standardized={info.normalize === "layer_norm"}
+            compact
+          />
+          <p className={s.fine}>
+            Read in {receiver} prompt {index}, where the run measures the feature's change. Choose another prompt in the
+            evidence to read it there.
+          </p>
+        </>
+      ) : null}
     </section>
   );
 }

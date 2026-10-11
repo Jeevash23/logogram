@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { api } from "../api/client";
 import type { FeatureReport, SAEInfo, TokenFeatures } from "../api/types";
+import { FeatureWrites } from "../components/FeatureWrites";
 import { Button, Callout, Empty, Field, Input, Progress, Segmented, Select, Spinner, useRadioGroup } from "../components/ui";
 import { inkScale, textOn } from "../lib/color";
 import { bytes, count, num, pct, signed, visibleToken } from "../lib/format";
@@ -373,6 +374,20 @@ function FeaturePanel({ info, feature }: { info: SAEInfo; feature: number }) {
               );
             })}
           </div>
+          <h3 className={s.panelTitle}>Tokens it promotes and suppresses directly</h3>
+          {dataset && (
+            <FeatureWrites
+              dataset={dataset}
+              index={index}
+              which="clean"
+              feature={feature}
+              position={token === null ? null : { kind: "index", index: token }}
+              options={context.options}
+              optionsKey={context.key}
+              sae={`${info.repo}/${info.path}@${info.revision}`}
+              standardized={info.normalize === "layer_norm"}
+            />
+          )}
           <h3 className={s.panelTitle}>Where it fires most</h3>
           <p className={s.small}>
             It fires on {count(data.active_prompts)} of {count(data.n)} clean prompts. These are the strongest; descriptions of features live on

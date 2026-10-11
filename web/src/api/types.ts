@@ -257,6 +257,31 @@ export interface SAEInfo extends SAERef {
   skip?: boolean;
 }
 
+/** What one feature writes directly into the logits: one unit of its decoder direction, read
+ * through the final normalization (its scale held at its value at one token) and the
+ * unembedding, skipping every later layer. Logit changes are relative to the vocabulary's mean. */
+export interface FeatureWrites {
+  feature: number;
+  site: StreamKind | "head";
+  layer: number;
+  index: number;
+  which: "clean" | "corrupt";
+  tokens: string[];
+  /** The token it was read at, and why that one: chosen, where the feature fires most in the
+   * prompt, or the last token (it fires nowhere in the prompt). */
+  position: number;
+  token: string;
+  chosen: "given" | "fires_most" | "last";
+  /** The feature's activation at that token. */
+  activation: number;
+  promoted: { id: number; token: string; logit: number }[];
+  suppressed: { id: number; token: string; logit: number }[];
+  /** The length of one unit of the feature in the residual stream. */
+  norm: number;
+  /** The model's soft cap on its logits (the values are before it), or null. */
+  soft_cap: number | null;
+}
+
 export interface SAEStatus {
   state: "none" | "loading" | "ready" | "error";
   repo?: string;

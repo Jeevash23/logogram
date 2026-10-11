@@ -44,6 +44,8 @@ HOOKS: dict[str, str] = {
     "mlp_in": "blocks.{layer}.mlp.hook_in",
 }
 PATTERN_HOOK = "blocks.{layer}.attn.hook_pattern"
+# The final normalization's scale: held at its value in a run, it makes the normalization affine.
+FINAL_SCALE = "ln_final.hook_scale"
 
 DTYPES = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
 
@@ -756,7 +758,7 @@ class TransformerLensBackend(ModelBackend):
                 # that is the point, and the result is checked against the measured logit difference.
                 warnings.simplefilter("ignore")
                 final = kept[hook_name("resid_post", n - 1)].clone().requires_grad_(True)
-                with bridge.hooks(fwd_hooks=[("ln_final.hook_scale", hold)]):
+                with bridge.hooks(fwd_hooks=[(FINAL_SCALE, hold)]):
                     logits = final_projection(bridge, final[:, None, :])[:, 0]
                 rows = torch.arange(final.shape[0], device=final.device)
                 ld = (
@@ -797,6 +799,50 @@ class TransformerLensBackend(ModelBackend):
         total = out["embed"] + out["attn_out"].sum(1) + out["mlp_out"].sum(1)
         out["remainder"] = out["logit_diff"] - total
         return {k: v.cpu() for k, v in out.items()}
+
+    def unembed_directions(self, residual: torch.Tensor, vectors: torch.Tensor) -> torch.Tensor:
+        if self.info.extra.get("prediction_method") != "final_norm_logit_lens":
+            raise BackendError(
+                "Reading a direction into the logits needs the model's final normalization and "
+                "unembedding to reproduce its output, and for this model they didn't when it "
+                "loaded."
+            )
+        with self.lock, torch.no_grad():
+            bridge = self._bridge()
+            if FINAL_SCALE not in bridge.hook_dict:
+                raise BackendError(
+                    "This model's final normalization has no scale to hold, so a direction can't "
+                    "be read through it linearly."
+                )
+            dtype = DTYPES[self.info.dtype]
+            held: dict[str, torch.Tensor] = {}
+
+            def keep(scale: torch.Tensor, hook: Any = None) -> torch.Tensor:
+                held["scale"] = scale.detach().clone()
+                return scale
+
+            def hold(scale: torch.Tensor, hook: Any = None) -> torch.Tensor:
+                return held["scale"].to(scale.dtype).expand_as(scale).clone()
+
+            # The scale at this token, then each vector and zero read with it held: with the scale
+            # held, the normalization and unembedding are affine, so their difference is exactly
+            # what the vector adds (biases cancel).
+            with bridge.hooks(fwd_hooks=[(FINAL_SCALE, keep)]):
+                bridge.ln_final(residual.to(device=self.device, dtype=dtype).reshape(1, 1, -1))
+            batch = vectors.to(device=self.device, dtype=dtype)[:, None, :]
+            batch = torch.cat([batch, torch.zeros_like(batch[:1])])
+            with warnings.catch_warnings():
+                # The bridge warns that the held scale is used instead of the computed one: that
+                # is the point.
+                warnings.simplefilter("ignore")
+                with bridge.hooks(fwd_hooks=[(FINAL_SCALE, hold)]):
+                    logits = bridge.unembed(bridge.ln_final(batch))[:, 0].float()
+            return (logits[:-1] - logits[-1:]).cpu()
+
+    def head_writes(self, layer: int, z: torch.Tensor) -> torch.Tensor:
+        with self.lock, torch.no_grad():
+            w_o = float64(self._bridge().blocks[layer].attn.W_O.detach())  # [H, d_head, d_model]
+            return torch.einsum("khd,hdm->km", float64(z).to(w_o.device), w_o).cpu()
 
     def layer_logits(self, tokens: torch.Tensor, position: int, row: int) -> torch.Tensor:
         if self.info.extra.get("prediction_method") != "final_norm_logit_lens":

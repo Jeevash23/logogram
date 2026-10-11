@@ -56,6 +56,7 @@ from logogram.spec import (
     SINGLE_POSITION_METRICS,
     Metric,
     ModelRef,
+    Position,
     PredictionSettings,
     Spec,
 )
@@ -351,6 +352,12 @@ class FeatureRequest(SAEAnalysisRequest):
     index: int = Field(default=0, ge=0)
     which: Literal["clean", "corrupt"] = "clean"
     feature: int = Field(ge=0)
+
+
+class FeatureWritesRequest(FeatureRequest):
+    # The token to read it at, as a spec names positions; by default where it fires most.
+    position: Position | None = None
+    top: int = Field(default=10, ge=1, le=50)
 
 
 class NoteUpdate(NoteInput):
@@ -1008,6 +1015,26 @@ def create_app(
                 batch_size=body.batch_size,
             )
 
+    @app.post("/api/sae/writes")
+    def sae_writes(body: FeatureWritesRequest) -> dict[str, Any]:
+        """The tokens a feature promotes and suppresses directly, at one token of one prompt."""
+        from logogram.analysis import feature_writes_report
+
+        backend, sae = _analysis_backend(body), _sae()
+        records = _records(body.dataset, body.limit, body.dataset_sha256)
+        with backend.lock:
+            return feature_writes_report(
+                backend,
+                sae,
+                records,
+                feature=body.feature,
+                index=body.index,
+                which=body.which,
+                prepend_bos=body.prepend_bos,
+                position=body.position,
+                top=body.top,
+            )
+
     # -- runs --------------------------------------------------------------------------------
 
     def _read_run(project: Project, run_id: str) -> dict[str, Any]:
@@ -1304,6 +1331,7 @@ PROJECT_SCOPED = (
     "/api/sae/fit",
     "/api/sae/tokens",
     "/api/sae/feature",
+    "/api/sae/writes",
     "/api/runs",
     "/api/drafts",
     "/api/compare",

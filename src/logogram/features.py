@@ -102,6 +102,103 @@ def check_sae_fits(sae: SAE, info: Any) -> None:
         )
 
 
+def feature_writes(
+    backend: ModelBackend,
+    sae: SAE,
+    feature: int,
+    ids: list[int],
+    *,
+    position: int | None = None,
+    first: int = 0,
+    top: int = 10,
+) -> dict[str, Any]:
+    """The tokens one feature promotes and suppresses directly: what one unit of it writes, read
+    straight into the logits at one token of one prompt (``ids``).
+
+    One unit of the feature adds its decoder direction to the activation the SAE writes (times
+    the input's standard deviation, for an SAE that standardizes its inputs). For an SAE on
+    attention heads' outputs (z), that direction passes through each head's slice of the
+    attention's output projection, without its bias. The result is added to the residual stream
+    entering the final normalization at the token, skipping every later layer, and read through
+    the final normalization, with its scale held at its value at that token (as direct logit
+    attribution reads components), and the unembedding, before any soft cap on the logits. With
+    the scale held this is linear, so the numbers are each token's logit change per unit of the
+    feature. The scale is one positive number per token: tokens rank the same at every token, and
+    only the sizes change. Adding the same amount to every logit changes no probability, so each
+    change is given relative to the mean change over the vocabulary, which also makes it the same
+    with TransformerLens's weight processing (which centers the unembedding) or without.
+
+    ``position`` is the token; by default where the feature fires most from ``first`` on (the
+    first real token), or the last token if it fires nowhere.
+    """
+    info = backend.info
+    if not 0 <= feature < sae.d_sae:
+        raise ValueError(f"The SAE has {sae.d_sae} features; there is no feature {feature}.")
+    if not str(info.extra.get("block_structure", "")).startswith(("sequential", "parallel")):
+        raise ScopeError(
+            "When this model loaded, its residual stream couldn't be verified to be the sum of "
+            "its layers' outputs, so what a feature writes has no fixed path to the logits."
+        )
+    if sae.site == "head":
+        checks = info.extra.get("checks") or {}
+        heads = checks.get("heads")
+        if heads is None or heads > checks.get("tolerance", 0):
+            raise ScopeError(
+                "In this model the attention output isn't the sum of its heads' writes (it is "
+                "normalized after they are combined), so a direction in the heads' outputs "
+                "writes nothing fixed into the residual stream, and what these features write "
+                "can't be read out directly. Patching them is exact."
+            )
+    length = len(ids)
+    if position is not None and position < 0:
+        position += length
+    if position is not None and not 0 <= position < length:
+        raise ValueError(f"Token {position} is outside this prompt, which has {length} tokens.")
+    key, final = (sae.site_in, sae.layer), ("resid_post", info.n_layers - 1)
+    captured = backend.capture(
+        torch.tensor([ids], dtype=torch.long), list(dict.fromkeys([key, final]))
+    )
+    f, stats = sae.encode(sae.reads(captured[key].float())[0])  # [pos, d_sae]
+    column = f[:, feature]
+    if position is not None:
+        at, chosen = position, "given"
+    elif length > first and float(column[first:].max()) > 0:
+        at, chosen = first + int(column[first:].argmax()), "fires_most"
+    else:
+        at, chosen = length - 1, "last"
+    unit = sae.feature_direction(feature, None if stats is None else (stats[0][at], stats[1][at]))
+    if sae.site == "head":
+        z = unit.reshape(1, info.n_heads, info.d_head)
+        written = backend.head_writes(sae.layer, z)[0]
+    else:
+        written = float64(unit).cpu()
+    per_unit = float64(backend.unembed_directions(captured[final][0, at], written[None])[0])
+    change = per_unit - per_unit.mean()
+    top = min(top, change.shape[0])
+
+    def listing(order: torch.Tensor) -> list[dict[str, Any]]:
+        return [
+            {"id": int(t), "token": backend.token_str(int(t)), "logit": float(change[t])}
+            for t in order
+        ]
+
+    return {
+        "feature": feature,
+        "site": sae.site,
+        "layer": sae.layer,
+        "position": at,
+        "token": backend.token_str(ids[at]),
+        "chosen": chosen,
+        "activation": float(column[at]),
+        # Ties keep the vocabulary's order, so the lists are the same every time.
+        "promoted": listing(torch.argsort(change, descending=True, stable=True)[:top]),
+        "suppressed": listing(torch.argsort(change, stable=True)[:top]),
+        # How long a unit of the feature is in the residual stream.
+        "norm": float(written.norm()),
+        "soft_cap": info.extra.get("logit_soft_cap"),
+    }
+
+
 def _directions(
     exp: ActivationPatching | Ablation | AttributionPatching,
 ) -> tuple[str, str, str]:

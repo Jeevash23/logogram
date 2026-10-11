@@ -264,6 +264,10 @@ lg.check_robustness(run, experiment={"kind": "ablation", "baseline": {"kind": "z
 
 records = lg.generate("greater_than", 200, seed=0, model=model)
 lg.write_dataset(project, "greater-than", records)
+
+sae = lg.load_sae("jbloom/GPT2-Small-SAEs-Reformatted", "blocks.8.hook_resid_pre", model=model)
+lg.feature_writes(model, sae, 1234, "When Mary and John went to the store, John gave a drink to",
+                  prepend_bos=True)   # the tokens the feature promotes and suppresses directly
 ```
 
 Tables come back as pandas DataFrames when pandas is installed, and as pyarrow Tables otherwise.
@@ -412,6 +416,23 @@ way) is shown before anything else. The view then lists the features that fire o
 prompt and, for one feature, its activation along the prompt and the prompts where it fires most,
 all computed from your own prompts. Feature descriptions live on sites like Neuronpedia, which
 Logogram doesn't contact.
+
+**What a feature writes** lists the tokens it promotes and suppresses directly, in the feature's
+panel and in the inspector for a feature site of a run. One unit of the feature adds its decoder
+direction to the activation the SAE writes (times the input's spread at that token, for SAEs that
+standardize their inputs; through each head's slice of the output projection, for SAEs on
+attention heads' outputs). That direction is added to the residual stream entering the final
+normalization at one token, skipping every later layer, and read through the final normalization,
+with its scale held at its value at that token as direct logit attribution holds it, and the
+unembedding, before any soft cap on the logits. The values are each token's logit change per unit
+of the feature, relative to the mean change over the vocabulary (which also makes them the same
+with or without weight processing). The scale is one positive number per token, so the tokens rank
+the same at every token and only the sizes change. The token is the one chosen in the prompt,
+where the feature fires most, or, in the inspector, the site's position. It is refused where it
+isn't defined: when the residual stream couldn't be verified to be a sum of its components, when
+the final normalization and unembedding don't reproduce the model's output, and for SAEs on heads'
+outputs in models that normalize the attention output after combining its heads (Gemma 2 and 3,
+OLMo 2), where patching those features is still exact.
 
 Features are sites like any other (`sae_feature`, with a feature index). **Patching a feature**
 encodes the receiver's activation and changes only that feature, to its value in the source prompt

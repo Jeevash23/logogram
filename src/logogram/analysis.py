@@ -498,3 +498,36 @@ def feature_report(
         "active_prompts": sum(1 for r in strongest if r["max"] > 0),
         "n": len(strongest),
     }
+
+
+def feature_writes_report(
+    backend: ModelBackend,
+    sae: Any,
+    records: list[PromptRecord],
+    *,
+    feature: int,
+    index: int,
+    which: str,
+    prepend_bos: bool,
+    position: Any = None,
+    top: int = 10,
+) -> dict[str, Any]:
+    """The tokens one feature promotes and suppresses directly, read at one token of one prompt:
+    ``position`` (a spec position, such as a site's), or where the feature fires most in the
+    prompt. See :func:`logogram.features.feature_writes` for exactly what is computed."""
+    from logogram.features import feature_writes
+    from logogram.sites import resolve_position
+
+    _, target = _single(backend, records, index, prepend_bos)
+    tokenized = target.clean if which == "clean" else target.corrupt
+    at = None if position is None else resolve_position(position, target)
+    report = feature_writes(
+        backend,
+        sae,
+        feature,
+        tokenized.ids,
+        position=at,
+        first=_first_real_token(prepend_bos),
+        top=top,
+    )
+    return {**report, "index": index, "which": which, "tokens": tokenized.tokens}
