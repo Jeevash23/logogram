@@ -592,7 +592,7 @@ function RunningBanner() {
             ? `Loading ${modelName(model.id)}…`
             : "Preparing prompts…"}
       </div>
-      <Progress value={p ? p.done / p.total : null} />
+      <Progress value={p ? p.done / p.total : null} label="Progress of this run" />
     </div>
   );
 }

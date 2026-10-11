@@ -150,7 +150,7 @@ function Loader() {
           <span className={s.small}>
             <Spinner /> {sae.total ? `Downloading ${bytes(sae.done ?? 0)} of ${bytes(sae.total)}` : "Loading the SAE"}
           </span>
-          <Progress value={sae.total ? (sae.done ?? 0) / sae.total : null} />
+          <Progress value={sae.total ? (sae.done ?? 0) / sae.total : null} label="Loading the SAE" />
         </div>
       )}
       {sae.state === "error" && sae.error && <Callout tone="error" title="The SAE didn't load">{sae.error}</Callout>}

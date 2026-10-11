@@ -75,7 +75,7 @@ export function StatusLine() {
         {running && queued > 0 && <span className={s.queued}>{queued} queued</span>}
         {running && (
           <div className={s.bar}>
-            <Progress value={progress} />
+            <Progress value={progress} label={job.kind === "run" ? "Progress of the run" : "Progress of the job"} />
           </div>
         )}
         {running && job.kind === "run" && (

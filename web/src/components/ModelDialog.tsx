@@ -267,7 +267,7 @@ export function ModelDialog() {
                     ? "Processing weights"
                     : "Starting"}
           </div>
-          <Progress value={model.stage === "downloading" && model.total ? (model.done ?? 0) / model.total : null} />
+          <Progress value={model.stage === "downloading" && model.total ? (model.done ?? 0) / model.total : null} label="Loading the model" />
         </div>
       )}
       {model.state === "error" && model.error && <Callout tone="error" title="The model didn't load">{model.error}</Callout>}

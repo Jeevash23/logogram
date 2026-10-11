@@ -290,11 +290,13 @@ export function Kbd({ children }: { children: ReactNode }) {
   return <kbd className={s.kbd}>{children}</kbd>;
 }
 
-export function Progress({ value }: { value: number | null }) {
+/** A bar of progress; null while how far along it is isn't known. */
+export function Progress({ value, label }: { value: number | null; label: string }) {
   return (
     <div
       className={s.progress}
       role="progressbar"
+      aria-label={label}
       aria-valuemin={0}
       aria-valuemax={100}
       aria-valuenow={value === null ? undefined : Math.round(value * 100)}

@@ -189,7 +189,7 @@ export function CompareView() {
             Running run B
             {bLive.progress ? ` · layer ${bLive.progress.layer} · ${pct(bLive.progress.done / bLive.progress.total)}` : "…"}
           </span>
-          <Progress value={bLive.progress ? bLive.progress.done / bLive.progress.total : null} />
+          <Progress value={bLive.progress ? bLive.progress.done / bLive.progress.total : null} label="Progress of run B" />
         </div>
       )}
 
