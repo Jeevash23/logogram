@@ -283,6 +283,20 @@ class EstimateRequest(BaseModel):
     process_weights: bool = True
 
 
+class RunMemoryRequest(BaseModel):
+    batch_size: int = Field(ge=1, le=4096)
+    # The longest prompt, in tokens of the loaded model.
+    seq_len: int = Field(ge=1, le=1_000_000)
+    method: Literal[
+        "activation_patching",
+        "ablation",
+        "attribution_patching",
+        "direct_logit_attribution",
+        "path_patching",
+        "steering",
+    ]
+
+
 class BaselineRequest(AnalysisRequest):
     dataset: str
     metric: Metric
@@ -774,6 +788,28 @@ def create_app(
             "support_note": support_note,
             "estimate": est.to_dict(),
         }
+
+    @app.post("/api/models/run-memory", response_model=M.RunMemoryOut)
+    def run_memory(body: RunMemoryRequest) -> dict[str, Any]:
+        """What a run of this batch size needs on the loaded model, against the memory free."""
+        from logogram.system import ALL_LAYER_METHODS, estimate_run_memory
+
+        backend = state.backend
+        if backend is None:
+            raise Conflict("Load a model to estimate what a run on it needs.")
+        info = backend.info
+        return estimate_run_memory(
+            n_layers=info.n_layers,
+            n_heads=info.n_heads,
+            d_model=info.d_model,
+            d_mlp=info.d_mlp or 0,
+            d_vocab=info.d_vocab,
+            dtype=info.dtype,
+            device=info.device,
+            batch_size=body.batch_size,
+            seq_len=body.seq_len,
+            all_layers=body.method in ALL_LAYER_METHODS,
+        ).to_dict()
 
     @app.post("/api/models/load", response_model=M.JobInfo)
     def load(body: ModelRef) -> dict[str, Any]:

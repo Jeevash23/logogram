@@ -18,7 +18,7 @@ export function RunButton({
 }: {
   /** What to run, or null while it can't run. */
   spec: Spec | null;
-  /** Why it can't run, said in the button's title. */
+  /** Why it can't run, said on hover and focus (the form also shows it beside the button). */
   reason?: string | null;
   /** Start the run now. */
   onRun: (spec: Spec) => void;
@@ -54,7 +54,7 @@ export function RunButton({
         if (ev.detail < 2) press();
       }}
       disabled={!spec}
-      title={!spec ? (reason ?? undefined) : queue ? `Add to the queue: it starts when the jobs ahead of it end (${MOD}+Enter)` : `Run (${MOD}+Enter)`}
+      tip={!spec ? (reason ?? undefined) : queue ? `Add to the queue: it starts when the jobs ahead of it end (${MOD}+Enter)` : `Run (${MOD}+Enter)`}
       aria-keyshortcuts="Control+Enter Meta+Enter"
     >
       {queue ? "Queue" : "Run"}

@@ -38,6 +38,8 @@ import type {
   PredictionSettings,
   QueueAdded,
   QueuedRun,
+  RunMemory,
+  ExperimentKind,
   UpdateStatus,
 } from "./types";
 
@@ -188,6 +190,8 @@ export const api = {
     }>("/api/models/presets"),
   estimate: (body: { id: string; revision?: string | null; dtype: Dtype; device: Device; process_weights: boolean }) =>
     post<EstimateResponse>("/api/models/estimate", body),
+  /** What a run of this batch size would need on the loaded model, against the memory free. */
+  runMemory: (body: { batch_size: number; seq_len: number; method: ExperimentKind }) => post<RunMemory>("/api/models/run-memory", body),
   loadModel: (body: {
     id: string;
     revision?: string | null;

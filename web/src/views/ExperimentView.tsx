@@ -1,20 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
 
 import type { BaselineSpec, ExperimentKind, PathReceiverSpec, PositionSpec, SAEInfo, ScopeSpec, StreamKind } from "../api/types";
-import { Button, Callout, Checkbox, Choices, Field, Input, Kbd, Segmented, Select, TextArea } from "../components/ui";
+import { Button, Checkbox, Choices, Field, Input, Segmented, Select, TextArea } from "../components/ui";
 import { MOD } from "../components/Header";
-import { RunButton } from "../components/RunButton";
 import { plural, shortRevision } from "../lib/format";
 import { modelName } from "../lib/hooks";
 import { EVERYTHING, SET_SITE_KINDS } from "../lib/circuits";
 import { KIND_SHORT, parseHeadQuery } from "../lib/sites";
 import { buildSpec, datasetFacts, parseStrengths, savedDifferences, usesFeatures } from "../lib/buildSpec";
-import { experimentText, receiverLabel, scopeFor, scopeShort, scopeText, siteText, suggestName, workload, workloadText } from "../lib/spec";
+import { receiverLabel, scopeFor, scopeShort, siteText, suggestName, workload } from "../lib/spec";
 import { useStore, type FormState } from "../store/app";
-import { metricWords } from "../lib/metrics";
 import { MetricSettings } from "./MetricSettings";
 import { ClusterChooser } from "./StatisticsSettings";
 import { SiteSetsEditor } from "./SiteSetsEditor";
+import { RunSummary } from "./RunSummary";
 import s from "./views.module.css";
 import e from "./ExperimentView.module.css";
 
@@ -51,7 +50,6 @@ export function ExperimentView() {
   const model = useStore((st) => st.model);
   const dataset = useStore((st) => st.dataset);
   const datasetPath = useStore((st) => st.datasetPath);
-  const job = useStore((st) => st.job);
   const startRun = useStore((st) => st.startRun);
   const queueRun = useStore((st) => st.queueRun);
 
@@ -69,7 +67,6 @@ export function ExperimentView() {
   const built = buildSpec(form, { model, datasetPath, datasetSha: dataset?.sha256 ?? null, sae, facts });
   const differences = savedDifferences(form, model, datasetPath, dataset?.sha256 ?? null, modelName);
   const spec = "spec" in built ? built.spec : null;
-  const busy = job?.status === "running";
 
   const suggested = spec
     ? suggestName(spec)
@@ -123,10 +120,10 @@ export function ExperimentView() {
           >
             Preview spec
           </Button>
-          <RunButton spec={spec} reason={"error" in built ? built.error : null} onRun={startRun} onQueue={queueRun} />
         </div>
       </div>
 
+      <div className={e.layout}>
       <div className={e.form}>
         {form.predictions && <section className={e.section} aria-label="Included prediction diagnostic">
           <h2 className={e.sectionTitle}>Layer prediction diagnostic</h2>
@@ -298,31 +295,18 @@ export function ExperimentView() {
           </div>
         </section>
 
-        <div className={e.summary}>
-          {differences.length > 0 && (
-            <Callout title="This runs with something other than the saved spec">
-              {differences.join(" ")} Running uses what is loaded and chosen now, and records it in the new spec.
-            </Callout>
-          )}
-          {"error" in built ? (
-            <Callout tone="error" title="Not ready to run">
-              {built.error}
-            </Callout>
-          ) : (
-            spec && (
-              <p className={e.summaryText}>
-                <strong>{experimentText(spec.experiment)}</strong> at {scopeText(spec.scope)}, over {plural(n, "prompt")},
-                measured by the {metricWords(spec.metric).label}.
-                {rows !== null && <> {workloadText(spec, rows)}</>}{" "}
-                <span className="faint">
-                  Press <Kbd>{MOD}</Kbd> <Kbd>Enter</Kbd> to run.
-                </span>
-              </p>
-            )
-          )}
-          {busy && <p className={s.small}>Another job is running; this one can start when it finishes.</p>}
-        </div>
-
+      </div>
+      <RunSummary
+        spec={spec}
+        error={"error" in built ? built.error : null}
+        method={form.kind}
+        batchSize={form.batchSize}
+        n={n}
+        rows={rows}
+        differences={differences}
+        onRun={startRun}
+        onQueue={queueRun}
+      />
       </div>
     </div>
   );

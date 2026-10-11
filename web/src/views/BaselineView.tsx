@@ -10,7 +10,7 @@ import { answerText, capitalize, num, plural, prob, signed, visibleToken } from 
 import { modelName, useAnalysisContext } from "../lib/hooks";
 import { analysisContext } from "../lib/analysis";
 import { gapCheck, metricWords, signedMetric } from "../lib/metrics";
-import { PRESENT_GAP } from "../lib/thresholds";
+import { behaviorPresent, PRESENT_GAP } from "../lib/thresholds";
 import { useStore } from "../store/app";
 import s from "./views.module.css";
 import b from "./BaselineView.module.css";
@@ -35,7 +35,7 @@ export function BaselineView() {
   };
 
   const ready = model.state === "ready" && !!datasetPath && !context.error && !!context.metric;
-  const verdict = report?.summary ? (behaviorPresent(report) ? "The behavior is present" : "The behavior is weak or missing") : null;
+  const verdict = report?.summary ? (behaviorPresent(report.summary) ? "The behavior is present" : "The behavior is weak or missing") : null;
   const measured = metricWords(context.metric ?? context.tokenMetric);
 
   return (
@@ -174,11 +174,6 @@ function preference(ld: number | null) {
 }
 
 /** The clean prompts prefer the answer, by a gap large enough to measure interventions against. */
-function behaviorPresent(report: BaselineReport): boolean {
-  const sum = report.summary;
-  return !!sum && (sum.clean_logit_diff ?? 0) > 0 && (sum.gap ?? 0) > PRESENT_GAP;
-}
-
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className={b.stat}>

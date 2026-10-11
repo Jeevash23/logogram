@@ -900,6 +900,20 @@ export interface Comparison {
   n_differs?: number;
 }
 
+/** What a run would need beyond the loaded model's weights (POST /api/models/run-memory). */
+export interface RunMemory {
+  device: string;
+  batch_size: number;
+  seq_len: number;
+  /** Whether the method holds every layer's activations at once. */
+  all_layers: boolean;
+  activations: number;
+  total: number;
+  available: number;
+  verdict: "fits" | "tight" | "wont_fit";
+  explanation: string;
+}
+
 export interface MemoryEstimate {
   device: string;
   dtype: Dtype;

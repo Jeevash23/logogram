@@ -389,6 +389,19 @@ class MemoryEstimateOut(_Out):
     all_layers_verdict: Literal["fits", "tight", "wont_fit"] = "fits"
 
 
+class RunMemoryOut(_Out):
+    device: str
+    batch_size: int
+    seq_len: int
+    # Whether the method holds every layer's activations at once.
+    all_layers: bool
+    activations: int
+    total: int
+    available: int
+    verdict: Literal["fits", "tight", "wont_fit"]
+    explanation: str
+
+
 class EstimateOut(_Out):
     id: str
     revision: str

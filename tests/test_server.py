@@ -218,9 +218,18 @@ def test_every_endpoint_matches_its_schema(app, client, tiny_backend, tmp_path, 
     assert client.get("/api/state", headers=AUTH).json()["theme"] == "dark"
     client.post("/api/settings", json={"single_key_shortcuts": False}, headers=headers)
     assert client.get("/api/state", headers=AUTH).json()["single_key_shortcuts"] is False
+    # What a run would need is known only for a loaded model.
+    body = {"batch_size": 8, "seq_len": 16, "method": "attribution_patching"}
+    assert client.post("/api/models/run-memory", json=body, headers=headers).status_code == 409
 
     app.state.logogram.backend = tiny_backend
     app.state.logogram.model_status = {"state": "ready"}
+    memory = client.post("/api/models/run-memory", json=body, headers=headers).json()
+    assert memory["all_layers"] is True and memory["batch_size"] == 8 and memory["seq_len"] == 16
+    assert (
+        memory["verdict"] in ("fits", "tight", "wont_fit")
+        and memory["total"] > memory["activations"]
+    )
     client.post("/api/projects", json={"name": "Schemas", "parent": str(tmp_path)}, headers=headers)
     assert client.get("/api/projects/recent", headers=AUTH).json()[0]["name"] == "Schemas"
     assert client.get("/api/queue", headers=AUTH).json() == []
