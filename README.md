@@ -512,24 +512,25 @@ control the same way. Per-prompt values are always kept.
 
 ## The spec
 
-Every experiment is a `spec.json`. Nothing that can change a number is left implicit: a version 2
-spec must state every such choice, and a spec that leaves one out is refused with the field's
-name.
+Every experiment is a `spec.json`. Nothing that can change a number is left implicit: a spec
+must state every such choice, and a spec that leaves one out is refused with the field's name.
 
 ```json
 {
-  "logogram_spec": 2,
+  "logogram_spec": 3,
   "name": "Which heads restore the answer?",
   "notes": "",
   "model": {
     "id": "openai-community/gpt2",
+    "source": "hub",
     "revision": "607a30d783dfa663caf39e06633721c8d4cfcd7e",
+    "sha256": null,
     "dtype": "float32",
     "device": "auto",
     "process_weights": true
   },
   "dataset": {"path": "datasets/ioi.jsonl", "sha256": "2bd046d5…", "limit": null},
-  "tokenization": {"prepend_bos": true},
+  "tokenization": {"prepend_bos": true, "chat_template": null},
   "experiment": {"kind": "activation_patching", "direction": "clean_to_corrupt"},
   "scope": {"kind": "heads", "position": {"kind": "all"}},
   "metric": {"kind": "logit_diff", "normalization": "dataset_gap"},
@@ -540,14 +541,20 @@ name.
 
 Version 1 specs (from Logogram 0.1) still run. Where one leaves a choice out, it takes the value
 version 1 gave it, the run's first warning lists each such value, and the spec saved with the run
-states them all. `logogram validate SPEC.json` shows the list without running anything.
+states them all. `logogram validate SPEC.json` shows the list without running anything. Version 2
+specs (Logogram 0.2 to 0.4) read as version 3 with what version 3 added turned off, which is what
+they did: no chat template, a model from Hugging Face, and steering along the mean difference
+without continuations.
 
 | Field | Values |
 |---|---|
-| `model.revision` | A commit. `null` resolves the current main branch at run time; the saved spec pins what ran. |
+| `model.source` | `"hub"` for Hugging Face, or `"local"` for a folder on this machine added to Logogram's local models. A local model's `id` is the name it was added under, and its folder is found by `model.sha256`, the hash of its files, so the spec never holds a path. |
+| `model.revision` | A commit. `null` resolves the current main branch at run time; the saved spec pins what ran. Always `null` for a local model. |
+| `model.device` | `auto`, `cpu`, `cuda`, `cuda:N` (one GPU of several, such as `cuda:1`) or `mps`. |
+| `tokenization.chat_template` | `null` feeds each prompt as raw text. `{"kind": "user_turn", "system": null}` makes each prompt the person's message in the model's own chat template, so the answer is the first token of the reply; `{"kind": "assistant_prefix", "system": null, "user": "…"}` makes it the start of the model's reply to a fixed message. The template is the one the tokenizer ships at the model's revision. With a template, `prepend_bos` is `false`: the template writes the beginning of the text. |
 | `model.process_weights` | Fold LayerNorm and center weights, as TransformerLens does by default. Logit differences don't change. Value biases are folded into the attention output's bias, so zero ablation of head outputs and heads' direct effects do change (by up to several logits in Qwen 2.5, whose value biases are large); a layer's attention output doesn't. |
 | `dataset.sha256` | If set, the run refuses a dataset file that has changed. |
-| `experiment` | `{"kind": "activation_patching", "direction": "clean_to_corrupt" \| "corrupt_to_clean"}`, `{"kind": "ablation", "baseline": …}` with `{"kind": "zero"}`, `{"kind": "mean", "reference": "clean" \| "corrupt"}` or `{"kind": "resample", "pool": "clean" \| "corrupt", "donors": 10, "seed": 0}`, `{"kind": "attribution_patching", "direction": …, "method": "gradient", "steps": null}` (same directions as patching; or `"method": "integrated_gradients", "steps": 8`), `{"kind": "direct_logit_attribution", "prompts": "clean" \| "corrupt"}`, `{"kind": "path_patching", "direction": …, "receivers": [{"kind": "head", "layer": 9, "head": 9, "input": "q" \| "k" \| "v"}, {"kind": "logits"}], "freeze_mlps": false}`, or `{"kind": "steering", "apply_to": "clean" \| "corrupt", "coefficients": [-1, 1, 2], "train_fraction": 0.5, "seed": 0, "control": true}` with a scope of one residual component per layer (`layer_components`) or residual `sites`, at one token |
+| `experiment` | `{"kind": "activation_patching", "direction": "clean_to_corrupt" \| "corrupt_to_clean"}`, `{"kind": "ablation", "baseline": …}` with `{"kind": "zero"}`, `{"kind": "mean", "reference": "clean" \| "corrupt"}` or `{"kind": "resample", "pool": "clean" \| "corrupt", "donors": 10, "seed": 0}`, `{"kind": "attribution_patching", "direction": …, "method": "gradient", "steps": null}` (same directions as patching; or `"method": "integrated_gradients", "steps": 8`), `{"kind": "direct_logit_attribution", "prompts": "clean" \| "corrupt"}`, `{"kind": "path_patching", "direction": …, "receivers": [{"kind": "head", "layer": 9, "head": 9, "input": "q" \| "k" \| "v"}, {"kind": "logits"}], "freeze_mlps": false}`, or `{"kind": "steering", "apply_to": "clean" \| "corrupt", "direction": {"kind": "mean_difference"}, "coefficients": [-1, 1, 2], "train_fraction": 0.5, "seed": 0, "control": true, "continuations": null}` with a scope of one residual component per layer (`layer_components`) or residual `sites`, at one token. The direction can instead be one SAE feature's decoder direction, `{"kind": "sae_feature", "feature": 1234}`, and `continuations` can be `{"prompts": 3, "tokens": 20}` to record what the steered model goes on to say |
 | `scope` | `{"kind": "heads", "position": …}`, `{"kind": "layer_position", "site": "resid_pre", "positions": "each" \| "labels"}`, `{"kind": "layer_components", "components": ["attn_out", "mlp_out"], "position": …}` `{"kind": "sites", "sites": [{"kind": "head", "layer": 9, "head": 9, "position": {"kind": "label", "label": "end"}}]}` (feature sites are `{"kind": "sae_feature", "layer": 8, "feature": 1234, "position": …}`), for attribution patching, `{"kind": "features", "position": …, "top": 50, "choose_on": 0.5, "seed": 0}` (`choose_on` and `seed` both `null` to choose and report on every prompt), or `{"kind": "site_sets", "universe": ["head"], "sets": [{"label": "circuit", "sites": […], "complement": true}]}` |
 | `sae` | The SAE that feature sites belong to: `{"repo": "…", "path": "blocks.8.hook_resid_pre", "revision": "…"}`. The revision is pinned when a run starts. |
 | `metric` | `{"kind": "logit_diff" \| "logprob_diff" \| "logprob" \| "prob" \| "prob_diff", "normalization": …}` or `{"kind": "kl", "target": "clean" \| "corrupt", "normalization": …}` |

@@ -6,6 +6,8 @@ import type {
   PathReceiverSpec,
   ExperimentSpec,
   Measure,
+  ModelInfo,
+  ModelRef,
   PositionSpec,
   ScopeSpec,
   Side,
@@ -50,6 +52,19 @@ export function strengthText(c: number): string {
   return `×${String(c).replace("-", "−")}`;
 }
 
+/** The spec's model as the loaded one: where its weights came from, and the device asked for. */
+export function modelRefOf(info: ModelInfo, device: ModelRef["device"] = info.device): ModelRef {
+  return {
+    id: info.id,
+    source: info.source ?? "hub",
+    revision: info.revision,
+    sha256: info.sha256 ?? null,
+    dtype: info.dtype,
+    device,
+    process_weights: info.process_weights,
+  };
+}
+
 export function experimentText(e: ExperimentSpec): string {
   if (e.kind === "activation_patching") {
     return e.direction === "clean_to_corrupt" ? "Patch clean → corrupt" : "Patch corrupt → clean";
@@ -62,8 +77,10 @@ export function experimentText(e: ExperimentSpec): string {
       : `Estimate patching ${arrow}`;
   }
   if (e.kind === "steering") {
+    const strengths = `${e.coefficients.map(strengthText).join(", ")}${e.control ? ", random control" : ""}`;
+    if (e.direction.kind === "sae_feature") return `Steer ${e.apply_to} prompts along SAE feature ${e.direction.feature} (${strengths})`;
     const toward = e.apply_to === "clean" ? "corrupt" : "clean";
-    return `Steer ${e.apply_to} prompts toward ${toward} (${e.coefficients.map(strengthText).join(", ")}${e.control ? ", random control" : ""})`;
+    return `Steer ${e.apply_to} prompts toward ${toward} (${strengths})`;
   }
   if (e.kind === "path_patching") {
     const arrow = e.direction === "clean_to_corrupt" ? "clean → corrupt" : "corrupt → clean";

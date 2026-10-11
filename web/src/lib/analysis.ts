@@ -2,6 +2,7 @@ import type { AnalysisOptions } from "../api/client";
 import type { DatasetDetail, MetricSpec, ModelStatus, PredictionSettings, Spec } from "../api/types";
 import { metricOf } from "./buildSpec";
 import type { FormState } from "./formState";
+import { modelRefOf } from "./spec";
 
 export function predictionSettingsKey(s: PredictionSettings): string {
   return JSON.stringify([s.method, s.prompt_index, s.which, s.position.kind, s.position.kind === "index" ? s.position.index : null, s.top_k]);
@@ -49,10 +50,7 @@ export function analysisContext(state: {
   const spec = analysisSourceFor(state) === "run" && state.activeRunId
     ? state.runDetails[state.activeRunId]?.spec : undefined;
   const info = state.model.info;
-  const loaded = info ? {
-    id: info.id, revision: info.revision, dtype: info.dtype, device: info.device,
-    process_weights: info.process_weights,
-  } : undefined;
+  const loaded = info ? modelRefOf(info) : undefined;
   const model = spec?.model ?? loaded ?? state.form.modelRef ?? undefined;
   const options: AnalysisOptions = {
     model,

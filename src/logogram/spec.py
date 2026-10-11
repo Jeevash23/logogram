@@ -4,10 +4,12 @@ A spec is stored as ``experiments/<id>/spec.json``. Every methodological choice 
 a number (direction, baseline, position, metric, normalization, seeds, batch size, dtype) lives
 here explicitly, so a run can always be traced back to how it was produced.
 
-Version 2 specs state every such choice: no field that can change a number has a default. Version
-1 specs (Logogram 0.1) are still read: the fields they leave out take the values version 1 gave
-them, and :attr:`Spec.upgraded_fields` lists which, so a run can say so instead of assuming
-silently.
+Specs since version 2 state every such choice: no field that can change a number has a default.
+Version 1 specs (Logogram 0.1) are still read: the fields they leave out take the values version 1
+gave them, and :attr:`Spec.upgraded_fields` lists which, so a run can say so instead of assuming
+silently. Version 3 (Logogram 0.5) added chat templates, local models, a steering direction and
+steered continuations; a version 2 spec reads as version 3 with each of them off, which is what
+version 2 did.
 
 Specs refer to abstract sites (``resid_pre``, ``attn_out``, ``head``, ...). Backend-specific hook
 names never appear in a spec.
@@ -28,7 +30,7 @@ from logogram.fileio import JSON_LIMIT, read_limited
 
 NAME_MAX = 200
 
-SPEC_VERSION = 2
+SPEC_VERSION = 3
 
 # Seeds are drawn into 32-bit generators on some paths: keep every seed in that range.
 SEED_MAX = 2**32
@@ -385,23 +387,49 @@ class AttributionPatching(_Strict):
         return self
 
 
+class MeanDifference(_Strict):
+    """At each steered site, the mean difference between the two prompts of each training pair,
+    from the receiver toward the other prompt. A strength of 1 adds the whole mean difference."""
+
+    kind: Literal["mean_difference"] = "mean_difference"
+
+
+class FeatureDirection(_Strict):
+    """The decoder direction of one feature of the spec's SAE, added where the SAE reads."""
+
+    kind: Literal["sae_feature"] = "sae_feature"
+    feature: int = Field(ge=0)
+
+
+SteeringDirection = Annotated[MeanDifference | FeatureDirection, Field(discriminator="kind")]
+
+
+class Continuations(_Strict):
+    """Greedy continuations of the first held-out prompts, without steering and at each strength
+    (and with the control, when it runs): what the steered model says, beside what it scores."""
+
+    prompts: int = Field(ge=1, le=8)
+    tokens: int = Field(ge=1, le=64)
+
+
 class Steering(_Strict):
     """Add a direction to the residual stream at several strengths, and measure what it does.
 
-    At each steered site, the direction is the mean difference between the two prompts of each
-    pair, from the receiver (``apply_to``) toward the other prompt. It is computed on a training
-    split of the prompts and applied to the held-out rest, so no prompt receives its own
-    difference. A strength of 1 adds the whole mean difference. The effect is normalized like
-    patching: 1 means the steered prompt moves as far as switching to the other prompt. With
-    ``control``, a random direction of the same length, at the same strengths, runs alongside.
+    The direction is computed on a training split of the prompts and applied to the held-out
+    rest, so no prompt receives its own difference. The effect is normalized like patching: 1
+    means the steered prompt moves as far as switching from the receiver (``apply_to``) to the
+    other prompt. With ``control``, a random direction of the same length, at the same strengths,
+    runs alongside. With ``continuations``, the run also records what the model goes on to say.
     """
 
     kind: Literal["steering"] = "steering"
     apply_to: Literal["clean", "corrupt"]
+    direction: SteeringDirection
     coefficients: list[float] = Field(min_length=1, max_length=16)
     train_fraction: float = Field(gt=0.0, lt=1.0)
     seed: Seed
     control: bool
+    continuations: Continuations | None
 
     @model_validator(mode="after")
     def _distinct_finite(self) -> Steering:
@@ -496,21 +524,57 @@ def check_revision(value: str | None, what: str) -> str | None:
     return value
 
 
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
+DEVICE = re.compile(r"^(auto|cpu|cuda|mps|cuda:\d{1,2})$")
+
+
 class ModelRef(_Strict):
-    id: str = Field(min_length=1, description="Hugging Face model id")
+    id: str = Field(
+        min_length=1,
+        max_length=200,
+        description="The Hugging Face model id, or for a local model the name it was added under",
+    )
+    source: Literal["hub", "local"] = Field(
+        description="Where the weights come from: Hugging Face, or a folder on this machine that "
+        "was added to Logogram's local models, found by the hash of its files"
+    )
     revision: str | None = Field(
-        description="Exact commit. None resolves the current main branch at run time."
+        description="Exact commit. None resolves the current main branch at run time. Always "
+        "None for a local model."
+    )
+    sha256: str | None = Field(
+        description="For a local model, the hash of its files, which finds its folder on any "
+        "machine it was added to. None for Hugging Face, where the revision pins the files."
     )
     dtype: Literal["float32", "float16", "bfloat16"]
-    device: Literal["auto", "cpu", "cuda", "mps"]
+    device: str = Field(description="auto, cpu, cuda, cuda:N (one GPU of several) or mps")
     process_weights: bool = Field(
         description="Fold LayerNorm weights and center writing weights and the unembedding, as "
         "TransformerLens does by default. Logit differences are unchanged by this.",
     )
 
     @model_validator(mode="after")
-    def _revision(self) -> ModelRef:
+    def _source(self) -> ModelRef:
         check_revision(self.revision, "model.revision")
+        if not DEVICE.match(self.device):
+            raise ValueError("model.device must be auto, cpu, cuda, cuda:N (such as cuda:1) or mps")
+        if self.source == "local":
+            if self.sha256 is None or not SHA256.match(self.sha256):
+                raise ValueError(
+                    "a local model needs model.sha256: the hash of its files, 64 lowercase hex "
+                    "digits"
+                )
+            if self.revision is not None:
+                raise ValueError("a local model has no revisions: set model.revision to null")
+            if "/" in self.id or "\\" in self.id:
+                raise ValueError(
+                    "a local model's id is the name it was added under, without slashes; its "
+                    "folder is found by model.sha256"
+                )
+        elif self.sha256 is not None:
+            raise ValueError(
+                "model.sha256 is for local models: a Hugging Face model is pinned by its revision"
+            )
         return self
 
 
@@ -560,8 +624,41 @@ class SAERef(_Strict):
         return self
 
 
+class UserTurn(_Strict):
+    """The prompt is the person's message. The template then opens the model's reply, so the
+    answer is the first token of the reply."""
+
+    kind: Literal["user_turn"] = "user_turn"
+    system: str | None = Field(max_length=4000)
+
+
+class AssistantPrefix(_Strict):
+    """The prompt is the beginning of the model's own reply to a fixed message from the person,
+    so the model goes on with it as its reply."""
+
+    kind: Literal["assistant_prefix"] = "assistant_prefix"
+    system: str | None = Field(max_length=4000)
+    user: str = Field(min_length=1, max_length=4000)
+
+
+ChatTemplate = Annotated[UserTurn | AssistantPrefix, Field(discriminator="kind")]
+
+
 class Tokenization(_Strict):
     prepend_bos: bool
+    chat_template: ChatTemplate | None = Field(
+        description="Wrap each prompt in the model's own chat template (the one its tokenizer "
+        "ships at the model's revision), as instruct models are used; None feeds the raw text."
+    )
+
+    @model_validator(mode="after")
+    def _one_beginning(self) -> Tokenization:
+        if self.chat_template is not None and self.prepend_bos:
+            raise ValueError(
+                "with a chat template, the template writes the beginning of the text: set "
+                "tokenization.prepend_bos to false"
+            )
+        return self
 
 
 Normalization = Literal["dataset_gap", "prompt_gap"]
@@ -690,7 +787,7 @@ class PredictionSettings(_Strict):
 
 
 class Spec(_Strict):
-    logogram_spec: Literal[2]
+    logogram_spec: Literal[3]
     name: str = Field(min_length=1, max_length=NAME_MAX)
     notes: str = ""
     model: ModelRef
@@ -714,6 +811,8 @@ class Spec(_Strict):
         filled: list[str] = []
         if isinstance(data, dict) and data.get("logogram_spec", 1) == 1:
             data, filled = upgrade_v1(data)
+        if isinstance(data, dict) and data.get("logogram_spec") == 2:
+            data = upgrade_v2(data)
         spec = handler(data)
         if filled:
             spec._upgraded = filled
@@ -725,9 +824,16 @@ class Spec(_Strict):
 
     @model_validator(mode="after")
     def _features_have_an_sae(self) -> Spec:
-        uses = isinstance(self.scope, FeaturesScope) or (
-            isinstance(self.scope, SitesScope)
-            and any(s.kind == "sae_feature" for s in self.scope.sites)
+        uses = (
+            isinstance(self.scope, FeaturesScope)
+            or (
+                isinstance(self.scope, SitesScope)
+                and any(s.kind == "sae_feature" for s in self.scope.sites)
+            )
+            or (
+                isinstance(self.experiment, Steering)
+                and isinstance(self.experiment.direction, FeatureDirection)
+            )
         )
         if uses and self.sae is None:
             raise ValueError("SAE features need the spec's sae: the SAE they belong to")
@@ -827,6 +933,30 @@ def upgrade_v1(data: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     return data, filled
 
 
+# ---------------------------------------------------------------------------------------------
+# Version 2 specs
+
+
+def upgrade_v2(data: dict[str, Any]) -> dict[str, Any]:
+    """A version 2 spec as version 3. What version 3 added is off, as it was in version 2: no
+    chat template, a model from Hugging Face, steering along the mean difference without
+    continuations. These didn't exist to be chosen, so they aren't listed as filled."""
+    data = copy.deepcopy(data)
+    data["logogram_spec"] = 3
+    tokenization = data.get("tokenization")
+    if isinstance(tokenization, dict):
+        tokenization.setdefault("chat_template", None)
+    model = data.get("model")
+    if isinstance(model, dict):
+        model.setdefault("source", "hub")
+        model.setdefault("sha256", None)
+    experiment = data.get("experiment")
+    if isinstance(experiment, dict) and experiment.get("kind") == "steering":
+        experiment.setdefault("direction", {"kind": "mean_difference"})
+        experiment.setdefault("continuations", None)
+    return data
+
+
 def _show(value: Any) -> str:
     return json.dumps(value)
 
@@ -867,6 +997,11 @@ def describe_intervention(
         toward = "corrupt" if exp.apply_to == "clean" else "clean"
         strengths = ", ".join(strength_text(c) for c in exp.coefficients)
         control = ", random control" if exp.control else ""
+        if isinstance(exp.direction, FeatureDirection):
+            return (
+                f"Steer {exp.apply_to} prompts along SAE feature {exp.direction.feature} "
+                f"({strengths}{control})"
+            )
         return (
             f"Steer {exp.apply_to} prompts toward {toward} ({strengths}; "
             f"{exp.train_fraction:.0%} of pairs train the direction, seed {exp.seed}{control})"

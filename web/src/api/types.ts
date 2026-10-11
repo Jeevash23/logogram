@@ -15,9 +15,12 @@ export interface ModelInfo {
   n_ctx: number;
   n_params: number | null;
   dtype: Dtype;
-  device: "cpu" | "cuda" | "mps";
+  device: "cpu" | "cuda" | "mps" | `cuda:${number}`;
   device_name: string;
   process_weights: boolean;
+  /** Where the weights came from (Hugging Face when absent), and a local model's files' hash. */
+  source?: "hub" | "local";
+  sha256?: string | null;
   site_kinds: string[];
   backend: string;
   backend_version: string;
@@ -63,7 +66,7 @@ export interface ModelStatus {
   revision?: string;
   info?: ModelInfo;
   memory?: number | null;
-  ref?: { id: string; revision: string | null; dtype: Dtype; device: Device; process_weights: boolean };
+  ref?: ModelRef;
 }
 
 export interface Job {
@@ -202,7 +205,8 @@ export interface SystemReport {
 export type Dtype = "float32" | "float16" | "bfloat16";
 /** A robustness check reruns a sweep with one choice changed: the experiment, or the precision. */
 export type RobustnessChange = { experiment: ExperimentSpec } | { dtype: Dtype };
-export type Device = "auto" | "cpu" | "cuda" | "mps";
+/** Where the model runs: `cuda:N` is one GPU of several. */
+export type Device = "auto" | "cpu" | "cuda" | "mps" | `cuda:${number}`;
 export type StreamKind = "resid_pre" | "resid_mid" | "resid_post" | "attn_out" | "mlp_out";
 export type SiteKind = StreamKind | "head" | "sae_feature";
 
@@ -320,6 +324,16 @@ export type PathReceiverSpec = { kind: "head"; layer: number; head: number; inpu
  * averaged over `steps` runs between the two prompts (2 to 64; null for one gradient). */
 export type AttributionMethod = "gradient" | "integrated_gradients";
 
+/** What steering adds: the mean difference of the training pairs, or one SAE feature's decoder
+ * direction where the SAE reads. */
+export type SteeringDirection = { kind: "mean_difference" } | { kind: "sae_feature"; feature: number };
+
+/** Greedy continuations of the first held-out prompts, unsteered and at each strength. */
+export interface Continuations {
+  prompts: number;
+  tokens: number;
+}
+
 export type ExperimentSpec =
   | { kind: "activation_patching"; direction: Direction }
   | { kind: "ablation"; baseline: BaselineSpec }
@@ -329,10 +343,12 @@ export type ExperimentSpec =
   | {
       kind: "steering";
       apply_to: "clean" | "corrupt";
+      direction: SteeringDirection;
       coefficients: number[];
       train_fraction: number;
       seed: number;
       control: boolean;
+      continuations: Continuations | null;
     };
 
 export type ExperimentKind = ExperimentSpec["kind"];
@@ -351,20 +367,32 @@ export type MetricSpec =
   | { kind: Exclude<MetricKind, "kl">; normalization: Normalization }
   | { kind: "kl"; target: Side; normalization: Normalization };
 
-/** A version 2 spec: every choice that can change a number is stated. */
+/** The model of a spec: from Hugging Face, pinned by its revision, or a local folder found by the
+ * hash of its files (`sha256`). */
+export interface ModelRef {
+  id: string;
+  source: "hub" | "local";
+  revision: string | null;
+  sha256: string | null;
+  dtype: Dtype;
+  device: Device;
+  process_weights: boolean;
+}
+
+/** How prompts are wrapped in the model's own chat template: as the person's message, or as the
+ * start of the model's reply to a fixed message. */
+export type ChatTemplateSpec =
+  | { kind: "user_turn"; system: string | null }
+  | { kind: "assistant_prefix"; system: string | null; user: string };
+
+/** A version 3 spec: every choice that can change a number is stated. */
 export interface Spec {
-  logogram_spec: 2;
+  logogram_spec: 3;
   name: string;
   notes: string;
-  model: {
-    id: string;
-    revision: string | null;
-    dtype: Dtype;
-    device: Device;
-    process_weights: boolean;
-  };
+  model: ModelRef;
   dataset: { path: string; sha256: string | null; limit: number | null };
-  tokenization: { prepend_bos: boolean };
+  tokenization: { prepend_bos: boolean; chat_template: ChatTemplateSpec | null };
   experiment: ExperimentSpec;
   scope: ScopeSpec;
   metric: MetricSpec;

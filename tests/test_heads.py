@@ -192,7 +192,9 @@ def test_the_endpoint_and_the_python_api_agree(tmp_path, monkeypatch, tiny_backe
         **body,
         "model": {
             "id": "other",
+            "source": "hub",
             "revision": "x",
+            "sha256": None,
             "dtype": "float32",
             "device": "cpu",
             "process_weights": True,

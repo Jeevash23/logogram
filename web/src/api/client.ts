@@ -11,6 +11,7 @@ import type {
   FolderListing,
   Job,
   MetricSpec,
+  ModelRef,
   TaskDatasetCreated,
   TaskInfo,
   ModelPreset,
@@ -199,13 +200,7 @@ export const api = {
     post<EstimateResponse>("/api/models/estimate", body),
   /** What a run of this batch size would need on the loaded model, against the memory free. */
   runMemory: (body: { batch_size: number; seq_len: number; method: ExperimentKind }) => post<RunMemory>("/api/models/run-memory", body),
-  loadModel: (body: {
-    id: string;
-    revision?: string | null;
-    dtype: Dtype;
-    device: Device;
-    process_weights: boolean;
-  }) => post<Job>("/api/models/load", body),
+  loadModel: (body: ModelRef) => post<Job>("/api/models/load", body),
   unloadModel: () => post<ModelStatus>("/api/models/unload"),
 
   baseline: (dataset: string, options: AnalysisOptions, metric: MetricSpec) =>

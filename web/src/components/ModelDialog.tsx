@@ -86,7 +86,7 @@ export function ModelDialog() {
 
   const load = async () => {
     const out = await guard(() =>
-      api.loadModel({ id, revision: estimate?.revision ?? (revision.trim() || null), dtype, device, process_weights: processWeights }),
+      api.loadModel({ id, source: "hub", revision: estimate?.revision ?? (revision.trim() || null), sha256: null, dtype, device, process_weights: processWeights }),
     );
     if (out) useStore.getState().applyJob(out);
   };

@@ -107,7 +107,9 @@ def note_value():
         body="Compare across prompt templates.",
         model={
             "id": "tiny-gpt2",
+            "source": "hub",
             "revision": "test",
+            "sha256": None,
             "dtype": "float32",
             "device": "cpu",
             "process_weights": True,
@@ -131,6 +133,15 @@ def test_research_notes_round_trip_and_conflicting_edits(project):
     assert read_notebook(project).notes[0].body == "Updated evidence."
     delete_note(project, note.id, 2)
     assert read_notebook(project).notes == []
+
+
+def test_notes_saved_before_models_had_a_source_name_hugging_face_models(project):
+    note = save_note(project, note_value())
+    path = project.root / "research.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    del data["notes"][0]["model"]["source"], data["notes"][0]["model"]["sha256"]
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert read_notebook(project).notes == [note]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks")
@@ -192,7 +203,9 @@ def test_new_routes_require_session_and_preserve_prediction_context(
                     **body,
                     "model": {
                         "id": "other",
+                        "source": "hub",
                         "revision": None,
+                        "sha256": None,
                         "dtype": "float32",
                         "device": "cpu",
                         "process_weights": True,

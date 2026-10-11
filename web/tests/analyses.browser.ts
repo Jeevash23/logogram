@@ -81,7 +81,7 @@ test("choosing a metric and running names the run's values by it", async ({ page
   await metric.getByRole("radio", { name: /^Log-probability difference/ }).click();
   await page.getByRole("button", { name: "Preview spec", exact: true }).click();
   const spec = JSON.parse(await page.getByLabel("Spec JSON").innerText());
-  expect(spec).toMatchObject({ logogram_spec: 2, metric: { kind: "logprob_diff", normalization: "dataset_gap" }, statistics: { cluster: null } });
+  expect(spec).toMatchObject({ logogram_spec: 3, metric: { kind: "logprob_diff", normalization: "dataset_gap" }, statistics: { cluster: null } });
   // The baseline is measured with the form's metric.
   await page.getByRole("button", { name: "Baseline", exact: true }).click();
   const request = page.waitForRequest((r) => r.url().endsWith("/api/baseline"));
