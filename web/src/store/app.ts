@@ -45,6 +45,7 @@ import {
   type FormHistory,
   type LastEdit,
 } from "../lib/formHistory";
+import type { Route } from "../lib/route";
 import { fitSelection, isResidKind, sitesOnComponent, type Selection } from "../lib/sites";
 
 export type Screen = "loading" | "system" | "projects" | "workbench" | "error";
@@ -62,22 +63,41 @@ export type View =
   | "compare"
   | "spec";
 
-export const VIEWS: { id: View; label: string }[] = [
-  { id: "prompts", label: "Prompts" },
-  { id: "baseline", label: "Baseline" },
-  { id: "experiment", label: "Experiment" },
-  { id: "results", label: "Results" },
-  { id: "attention", label: "Attention" },
-  { id: "compare", label: "Compare" },
-  { id: "spec", label: "Spec" },
-  { id: "explore", label: "Model explorer" },
-  { id: "heads", label: "Head comparison" },
-  { id: "predictions", label: "Layer predictions" },
-  { id: "features", label: "Features" },
-  { id: "notes", label: "Research notes" },
+export type Workspace = "explore" | "experiment" | "evidence";
+
+/** Each workspace's tabs, in order: the one place their names are set, so the tabs, the command
+ * palette and the number keys agree. */
+export const WORKSPACE_VIEWS: { id: Workspace; views: { id: View; label: string }[] }[] = [
+  {
+    id: "explore",
+    views: [
+      { id: "explore", label: "Model" },
+      { id: "attention", label: "Attention" },
+      { id: "heads", label: "Head comparison" },
+      { id: "predictions", label: "Layer predictions" },
+      { id: "features", label: "Features" },
+    ],
+  },
+  {
+    id: "experiment",
+    views: [
+      { id: "prompts", label: "Prompts" },
+      { id: "baseline", label: "Baseline" },
+      { id: "experiment", label: "Configure" },
+      { id: "spec", label: "Spec" },
+    ],
+  },
+  {
+    id: "evidence",
+    views: [
+      { id: "results", label: "Results" },
+      { id: "compare", label: "Compare runs" },
+      { id: "notes", label: "Research notes" },
+    ],
+  },
 ];
 
-export type Workspace = "explore" | "experiment" | "evidence";
+export const VIEWS: { id: View; label: string }[] = WORKSPACE_VIEWS.flatMap((w) => w.views);
 
 /** A sweep over sets of sites, each intervened on at once. */
 export type SiteSetsScope = Extract<ScopeSpec, { kind: "site_sets" }>;
@@ -183,6 +203,10 @@ interface Store {
   /** What is known about newer versions; checked only as the user allows. */
   update: UpdateStatus | null;
   compareIds: [string | null, string | null];
+  /** True while a project is being opened: its several steps are one place, not many. */
+  entering: boolean;
+  /** Where the URL the page was opened with asks to be: the project opens there. */
+  pendingRoute: Route | null;
   compareMode: "side" | "diff";
   flags: Record<string, { against: string; sites: number[] }>;
   form: FormState;
@@ -334,6 +358,8 @@ export const useStore = create<Store>((set, get) => ({
   cellValues: false,
   update: null,
   compareIds: [null, null],
+  entering: false,
+  pendingRoute: null,
   compareMode: "side",
   flags: {},
   form: DEFAULT_FORM,
@@ -354,9 +380,10 @@ export const useStore = create<Store>((set, get) => ({
     try {
       const state = await api.state();
       get().applyServerState(state);
-      if (state.first_run) set({ screen: "system" });
+      // The URL's place only applies to the project open at boot.
+      if (state.first_run) set({ screen: "system", pendingRoute: null });
       else if (state.project) await get().enterProject(state.project);
-      else set({ screen: "projects" });
+      else set({ screen: "projects", pendingRoute: null });
     } catch (err) {
       set({ screen: "error", bootError: err instanceof Error ? err.message : String(err) });
     }
@@ -481,6 +508,7 @@ export const useStore = create<Store>((set, get) => ({
       live: {},
       selection: null,
       compareIds: [null, null],
+      entering: true,
       flags: {},
       form: DEFAULT_FORM,
       formHistory: EMPTY_HISTORY,
@@ -493,17 +521,29 @@ export const useStore = create<Store>((set, get) => ({
     await get().refreshRuns();
     if (seq !== projectSeq) return;
     const runs = get().runs;
-    // A run in progress (after a reload, say) comes first: its map fills in as it streams.
+    // The page's URL (after a reload, or a kept link) names the view and run to open, where they
+    // still exist. Otherwise a run in progress comes first: its map fills in as it streams.
+    const route = get().pendingRoute;
+    const wanted = route?.screen === "workbench" ? route : null;
+    const runOf = (id: string | undefined) => (id ? runs.find((r) => r.id === id) : undefined);
+    const asked = wanted && runOf(wanted.compare?.[0] ?? wanted.run);
     const running = runs.find((r) => r.status === "running");
     const finished = runs.find((r) => r.status === "finished");
     const draft = runs.find((r) => r.status === "draft");
-    if (running) {
-      set((s) => ({ live: { ...s.live, [running.id]: s.live[running.id] ?? emptyLive(running.id) } }));
-      await get().openRun(running.id, "results");
-    } else if (finished) await get().openRun(finished.id, "explore");
-    else if (draft) await get().openDraft(draft.id, { quiet: true });
-    else set({ view: project.datasets.length ? "baseline" : "prompts" });
+    if (running) set((s) => ({ live: { ...s.live, [running.id]: s.live[running.id] ?? emptyLive(running.id) } }));
+    if (wanted?.compare && runOf(wanted.compare[0]) && runOf(wanted.compare[1])) set({ compareIds: wanted.compare });
+    if (asked && asked.status !== "draft") await get().openRun(asked.id, wanted.view);
+    else if (asked) {
+      await get().openDraft(asked.id, { quiet: true });
+      set({ view: wanted.view });
+    } else if (running) await get().openRun(running.id, wanted?.view ?? "results");
+    else if (finished) await get().openRun(finished.id, wanted?.view ?? "explore");
+    else if (draft) {
+      await get().openDraft(draft.id, { quiet: true });
+      if (wanted) set({ view: wanted.view });
+    } else set({ view: wanted?.view ?? (project.datasets.length ? "baseline" : "prompts") });
     if (stored && seq === projectSeq) restoreForm(stored);
+    if (seq === projectSeq) set({ entering: false, pendingRoute: null, ...(route?.screen === "projects" ? { screen: "projects" as const } : {}) });
   },
 
   leaveProject: () => {
@@ -518,7 +558,7 @@ export const useStore = create<Store>((set, get) => ({
       tokenPosition: null, stagedSites: [], headPins: [], noteEditor: null, researchVersion: 0,
       job: get().job?.project_session ? null : get().job,
       runs: [], runDetails: {}, activeRunId: null, pendingRunId: null, live: {}, selection: null,
-      compareIds: [null, null], flags: {}, form: DEFAULT_FORM, formHistory: EMPTY_HISTORY, baselines: {}, specSource: "run",
+      compareIds: [null, null], entering: false, flags: {}, form: DEFAULT_FORM, formHistory: EMPTY_HISTORY, baselines: {}, specSource: "run",
       analysisSource: "form", view: "prompts", inspectorFocus: null, robustnessDialogOpen: false,
       cancelConfirmOpen: false, notices: [],
     });

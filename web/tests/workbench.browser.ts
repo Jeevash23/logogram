@@ -111,7 +111,7 @@ test("cancelling a run asks first, with the focus on keeping it", async ({ page 
 });
 
 test("layer selection stages exact sites and persists research notes", async ({ page }) => {
-  await page.getByRole("radio", { name: "Layer explorer", exact: true }).click();
+  await page.getByRole("radio", { name: "One layer", exact: true }).click();
   await page.getByRole("button", { name: /^L0 H0: effect/ }).click();
   await page.getByRole("button", { name: /^clean token 9:/ }).click();
   await page.getByRole("button", { name: "Save selection", exact: true }).click();
@@ -156,6 +156,8 @@ test("two heads share a query and prediction reports survive a completed run", a
   // Predictions are saved before the sweep ends; reload once the whole run has finished.
   await expect(page.locator("footer")).toContainText("Ready");
   await page.reload();
+  // A reload keeps the place it was at (the finished run's results), so go back to Explore.
+  await page.getByRole("button", { name: "Explore", exact: true }).click();
   await page.getByRole("button", { name: "Layer predictions", exact: true }).click();
   await expect(page.getByText(/Saved diagnostic from Prediction regression/)).toBeVisible();
   await expect(table).toHaveText(projection, { useInnerText: true });

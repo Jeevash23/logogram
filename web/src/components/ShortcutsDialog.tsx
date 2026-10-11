@@ -47,9 +47,9 @@ const SECTIONS: { title: string; rows: [ReactNode, string][] }[] = [
         <span className={s.keys}>
           <Kbd>1</Kbd>
           <span className={s.or}>to</span>
-          <Kbd>7</Kbd>
+          <Kbd>5</Kbd>
         </span>,
-        "Go to Prompts, Baseline, Configure, Results, Attention, Compare runs or Spec.",
+        "Go to a tab of the open workspace, counting from the left.",
       ],
       [<Either>{[<Keys key="a" keys={["["]} />, <Keys key="b" keys={["]"]} />]}</Either>, "Show the previous or next prompt."],
       [<Keys keys={["←", "→"]} />, "On the inspector's edge, make the inspector wider or narrower; with Shift, in bigger steps."],
@@ -66,7 +66,7 @@ const SECTIONS: { title: string; rows: [ReactNode, string][] }[] = [
       [<Keys keys={["A"]} />, "Open the selected head's attention."],
       [<Keys keys={["C"]} />, "Compare the component across runs."],
       [<Keys keys={[SHIFT, "F10"]} />, "On the model map, list these actions in a menu."],
-      [<Keys keys={["←", "→", "Home", "End"]} />, "In the layer explorer's diagram, go through the layer's components."],
+      [<Keys keys={["←", "→", "Home", "End"]} />, "In one layer's diagram, go through the layer's components."],
     ],
   },
   {

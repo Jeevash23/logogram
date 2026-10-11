@@ -283,7 +283,7 @@ export function ResultsView() {
         <Segmented label="Result scale" value={scaleMode} onChange={scaleMode => useStore.setState({ scaleMode })} options={[{ value: "auto", label: "Fit" }, { value: "unit", label: "±1", disabled: metric !== "effect" }]} />
         <Checkbox checked={cellValues} onChange={(v) => useStore.setState({ cellValues: v })}>Show values</Checkbox>
         <span className={r.controlsSpacer} />
-        <Button size="small" variant="ghost" icon="explore" onClick={() => { useStore.setState({ exploreMode: "atlas" }); useStore.getState().setView("explore"); }}>Open model atlas</Button>
+        <Button size="small" variant="ghost" icon="explore" onClick={() => { useStore.setState({ exploreMode: "atlas" }); useStore.getState().setView("explore"); }}>Show on the model map</Button>
         {run.detail?.predictions && <Button size="small" variant="ghost" onClick={() => useStore.getState().setView("predictions")}>Open saved predictions</Button>}
       </div>}
       {layout?.kind === "site_sets" && (

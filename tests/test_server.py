@@ -205,6 +205,7 @@ def test_every_endpoint_matches_its_schema(app, client, tiny_backend, tmp_path, 
     headers = {**AUTH, **ORIGIN}
     state = client.get("/api/state", headers=AUTH).json()
     assert state["model"]["state"] == "none" and state["first_run"] is True
+    assert state["theme"] == "system"  # until someone picks one
     assert client.post("/api/models/unload", headers=headers).json()["state"] == "none"
     assert client.get("/api/system", headers=AUTH).json()["backend"] in ("cpu", "cuda", "mps")
     assert client.get("/api/models/presets", headers=AUTH).json()["presets"]

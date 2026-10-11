@@ -19,6 +19,9 @@ export function Projects() {
   const [busy, setBusy] = useState(false);
   const guard = useStore((st) => st.guard);
   const enter = useStore((st) => st.enterProject);
+  // The project still open behind this screen: going back to it keeps your place in it.
+  const current = useStore((st) => st.project);
+  const back = () => useStore.getState().goto("workbench");
 
   useEffect(() => {
     api.recent().then(setRecent, () => setRecent([]));
@@ -29,6 +32,7 @@ export function Projects() {
   }, [parentDefault, parent]);
 
   const open = async (path: string) => {
+    if (current?.path === path) return back();
     setBusy(true);
     const project = await guard(() => api.openProject(path));
     setBusy(false);
@@ -58,6 +62,13 @@ export function Projects() {
           A project is a folder of datasets and experiments. Each experiment is a spec and its results, as
           plain files you can commit, share and rerun.
         </p>
+        {current && (
+          <div className={s.backRow}>
+            <Button variant="primary" icon="arrowLeft" onClick={back}>
+              Back to {current.name}
+            </Button>
+          </div>
+        )}
 
         <div className={s.projectGrid}>
           <section>

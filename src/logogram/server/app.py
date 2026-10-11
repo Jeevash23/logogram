@@ -429,7 +429,8 @@ def create_app(
             "model": state.model_payload(),
             "job": state.job.to_dict() if state.job else None,
             "first_run": not settings.get("system_check_seen", False),
-            "theme": settings.get("theme", "light"),
+            # Until someone picks one, the app follows the computer's light or dark setting.
+            "theme": settings.get("theme", "system"),
             "projects_parent": str(default_projects_parent()),
             "update": state.update_status(),
             "sae": state.sae_payload(),

@@ -7,6 +7,7 @@ import { Notices } from "./components/Notices";
 import { BRAND_SEED, Logogram } from "./components/Logogram";
 import { TooltipProvider } from "./components/ui";
 import { useGlobalKeys } from "./lib/keys";
+import { parseRoute, startRoutes } from "./lib/route";
 import { Projects } from "./screens/Projects";
 import { SystemCheck } from "./screens/SystemCheck";
 import { Workbench } from "./screens/Workbench";
@@ -19,14 +20,20 @@ export function App() {
 
   useEffect(() => {
     let disconnect: (() => void) | null = null;
+    let stopRoutes: (() => void) | null = null;
     let unmounted = false;
+    // The project opens where the page's URL says (after a reload, or a kept link).
+    useStore.setState({ pendingRoute: parseRoute(window.location.hash) });
     // Connect once booted: entering the project resets run state, which would otherwise wipe the
     // current run that the server replays to a new connection.
     void useStore
       .getState()
       .boot()
       .finally(() => {
-        if (!unmounted) disconnect = connectEvents();
+        if (unmounted) return;
+        disconnect = connectEvents();
+        // Once the project is open, follow the URL the page was opened with, then keep it in step.
+        stopRoutes = startRoutes();
       });
     const media = window.matchMedia("(prefers-color-scheme: dark)");
     const onChange = () => useStore.getState().resolveTheme();
@@ -34,6 +41,7 @@ export function App() {
     return () => {
       unmounted = true;
       disconnect?.();
+      stopRoutes?.();
       media.removeEventListener("change", onChange);
     };
   }, []);

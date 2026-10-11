@@ -80,7 +80,7 @@ export function HeadComparisonView() {
       {!!data.length && <ScaleBar bound={1} theme={theme} kind="ink" label="Attention weight · shared scale" />}
       <p className={s.small}>Attention weights describe which positions a head reads. The intervention effect is a separate causal measurement from the selected run, with its own position and method.</p>
       <SelectionTray />
-      <Button onClick={() => useStore.getState().setView("explore")}>Return to model explorer</Button>
+      <Button onClick={() => useStore.getState().setView("explore")}>Back to the model map</Button>
     </>}
   </div>;
 }

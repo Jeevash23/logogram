@@ -3,8 +3,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { architectureOf } from "../lib/keys";
 import { parseHeadQuery } from "../lib/sites";
-import { useStore, VIEWS } from "../store/app";
+import { useStore, workspaceFor, WORKSPACE_VIEWS } from "../store/app";
 import { MOD, SHIFT } from "./Header";
+import { WORKSPACE_ITEMS } from "./TopBar";
 import { Icon, Kbd } from "./ui";
 import s from "./CommandPalette.module.css";
 
@@ -18,14 +19,25 @@ interface Command {
   run: () => void;
 }
 
+const WORKSPACE_NAMES = Object.fromEntries(WORKSPACE_ITEMS.map((w) => [w.id, w.label])) as Record<string, string>;
+
 function useCommands(query: string): Command[] {
   const st = useStore();
   return useMemo(() => {
     const cmds: Command[] = [];
     const inWorkbench = st.screen === "workbench";
     if (inWorkbench) {
-      VIEWS.forEach((v, i) =>
-        cmds.push({ id: `view-${v.id}`, label: `Go to ${v.label.toLowerCase()}`, group: "Views", shortcut: i < 7 ? String(i + 1) : undefined, run: () => st.setView(v.id) }),
+      const open = workspaceFor(st.view);
+      WORKSPACE_VIEWS.forEach((w) =>
+        w.views.forEach((v, i) =>
+          cmds.push({
+            id: `view-${v.id}`,
+            label: `Go to ${v.label}`,
+            group: WORKSPACE_NAMES[w.id],
+            shortcut: w.id === open ? String(i + 1) : undefined,
+            run: () => st.setView(v.id),
+          }),
+        ),
       );
       cmds.push(
         { id: "model", label: "Load a model…", group: "Actions", keywords: "gpt2 hugging face download", run: () => useStore.setState({ modelDialogOpen: true }) },

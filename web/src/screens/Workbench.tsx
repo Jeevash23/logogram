@@ -13,7 +13,7 @@ import { TokenStrip } from "../components/TokenStrip";
 import { TopBar } from "../components/TopBar";
 import { Button, Dialog, Icon } from "../components/ui";
 import { useAnalysisContext } from "../lib/hooks";
-import { useStore, workspaceFor, type View, type Workspace } from "../store/app";
+import { useStore, workspaceFor, WORKSPACE_VIEWS, type View, type Workspace } from "../store/app";
 import { AttentionView } from "../views/AttentionView";
 import { BaselineView } from "../views/BaselineView";
 import { CompareView } from "../views/CompareView";
@@ -27,12 +27,6 @@ import { ResearchView, NoteEditorDialog } from "../views/ResearchView";
 import { ResultsView } from "../views/ResultsView";
 import { SpecView } from "../views/SpecView";
 import s from "./Workbench.module.css";
-
-const WORKSPACES: { id: Workspace; label: string; views: { id: View; label: string }[] }[] = [
-  { id: "explore", label: "Explore", views: [{ id: "explore", label: "Model" }, { id: "attention", label: "Attention" }, { id: "heads", label: "Head comparison" }, { id: "predictions", label: "Layer predictions" }, { id: "features", label: "Features" }] },
-  { id: "experiment", label: "Experiment", views: [{ id: "prompts", label: "Prompts" }, { id: "baseline", label: "Baseline" }, { id: "experiment", label: "Configure" }, { id: "spec", label: "Spec" }] },
-  { id: "evidence", label: "Evidence", views: [{ id: "results", label: "Results" }, { id: "compare", label: "Compare runs" }, { id: "notes", label: "Research notes" }] },
-];
 
 export function Workbench() {
   const view = useStore(st => st.view);
@@ -73,7 +67,7 @@ export function Workbench() {
   return <div className={s.workbench} style={{ ["--ws" as string]: `var(--${workspace})` }}>
     <TopBar workspace={workspace} onWorkspace={goWorkspace} onHistory={() => setDrawer("history")} runs={runs} staged={staged} />
     <div className={s.subbar}>
-      <nav className={s.tabs} aria-label={`${workspace} views`}>{WORKSPACES.find(w => w.id === workspace)?.views.map(v => <button key={v.id} type="button" className={s.tab} aria-current={view === v.id ? "page" : undefined} onClick={() => setView(v.id)}>{v.label}{v.id === "heads" && pins > 0 && <span className={s.count}>{pins}/2</span>}</button>)}</nav>
+      <nav className={s.tabs} aria-label={`${workspace} views`}>{WORKSPACE_VIEWS.find(w => w.id === workspace)?.views.map((v, i) => <button key={v.id} type="button" className={s.tab} aria-current={view === v.id ? "page" : undefined} aria-keyshortcuts={String(i + 1)} onClick={() => setView(v.id)}>{v.label}{v.id === "heads" && pins > 0 && <span className={s.count}>{pins}/2</span>}</button>)}</nav>
       <div className={s.context}>
         <NextStep />
         <ModelChip />

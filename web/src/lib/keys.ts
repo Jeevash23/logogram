@@ -3,7 +3,7 @@
 
 import { useEffect } from "react";
 
-import { useStore, VIEWS } from "../store/app";
+import { useStore, workspaceFor, WORKSPACE_VIEWS } from "../store/app";
 import { nextSelection } from "./sites";
 
 function typing(target: EventTarget | null): boolean {
@@ -124,7 +124,12 @@ export function useGlobalKeys(): void {
           if (sel) st.focusInspector("runs");
           return;
         default:
-          if (/^[1-7]$/.test(e.key)) st.setView(VIEWS[Number(e.key) - 1].id);
+          if (/^[1-9]$/.test(e.key)) {
+            // The open workspace's tabs, in the order they are shown.
+            const tabs = WORKSPACE_VIEWS.find((w) => w.id === workspaceFor(st.view))?.views ?? [];
+            const tab = tabs[Number(e.key) - 1];
+            if (tab) st.setView(tab.id);
+          }
       }
     };
     window.addEventListener("keydown", onKeyCapture, true);

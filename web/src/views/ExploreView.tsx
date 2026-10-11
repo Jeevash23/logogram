@@ -45,11 +45,11 @@ export function ExploreView() {
 
   return <div className={s.explorer}>
     <div className={s.heading}>
-      <div><p className={s.eyebrow}>Model explorer</p><h1>{arch ? modelName(arch.id) : "Look inside a model"}</h1>
+      <div><h1>{arch ? modelName(arch.id) : "Look inside a model"}</h1>
         <p className={s.description}>{arch ? `${count(arch.nLayers)} layers · ${count(arch.nLayers * arch.nHeads)} heads${arch.dModel ? ` · ${count(arch.dModel)} residual dimensions` : ""}` : "Explore its structure, choose a component, and follow the evidence."}</p>
       </div>
       <div className={s.controls}>
-        <Segmented label="Explorer view" value={mode} onChange={v => useStore.setState({ exploreMode: v })} options={[{ value: "atlas", label: "Model atlas" }, { value: "layer", label: "Layer explorer" }]} />
+        <Segmented label="Show" value={mode} onChange={v => useStore.setState({ exploreMode: v })} options={[{ value: "atlas", label: "Model map" }, { value: "layer", label: "One layer" }]} />
         <Select aria-label="Model overlay" value={overlay} onChange={e => useStore.getState().setMapOverlay(e.target.value as "data" | "structure")}><option value="data">Intervention results</option><option value="structure">Architecture</option></Select>
       </div>
     </div>

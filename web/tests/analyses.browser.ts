@@ -103,7 +103,7 @@ test("a circuit built from staged sites runs, and its faithfulness is read", asy
   await freshProject(page, "Circuit");
   await generateIOI(page, 8);
   await page.getByRole("button", { name: "Explore", exact: true }).click();
-  await page.getByRole("radio", { name: "Layer explorer", exact: true }).click();
+  await page.getByRole("radio", { name: "One layer", exact: true }).click();
   for (const name of [/^L0 H0:/, /^L0 H2:/]) {
     await page.getByRole("button", { name }).click();
     await page.getByRole("button", { name: "Add to experiment", exact: true }).click();
