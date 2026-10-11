@@ -36,6 +36,8 @@ import type {
   ResearchNote,
   PredictionReport,
   PredictionSettings,
+  QueueAdded,
+  QueuedRun,
   UpdateStatus,
 } from "./types";
 
@@ -91,6 +93,7 @@ export const PROJECT_SCOPED = [
   "/api/runs",
   "/api/drafts",
   "/api/compare",
+  "/api/queue",
   // Not on the server's list, but closing must name the project the tab means to close.
   "/api/projects/close",
 ];
@@ -215,6 +218,10 @@ export const api = {
   exportRun: (id: string) => request<Blob>("GET", `/api/runs/${encodeURIComponent(id)}/export.csv`, undefined, "blob"),
   startRun: (spec: Spec, draftId: string | null = null) =>
     post<{ run_id: string; job: Job }>("/api/runs", { spec, draft_id: draftId }),
+  /** Run the spec when the job in progress ends, or now if nothing is running. */
+  queueRun: (spec: Spec, draftId: string | null = null) =>
+    post<QueueAdded>("/api/queue", { spec, draft_id: draftId }),
+  removeQueuedRun: (id: string) => request<QueuedRun[]>("DELETE", `/api/queue/${encodeURIComponent(id)}`),
   saveDraft: (spec: Spec, draftId: string | null = null) =>
     post<{ run_id: string; path: string }>("/api/drafts", { spec, draft_id: draftId }),
   rerun: (id: string) =>

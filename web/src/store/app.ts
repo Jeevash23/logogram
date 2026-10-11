@@ -13,6 +13,7 @@ import type {
   ModelShape,
   ModelStatus,
   ProjectInfo,
+  QueuedRun,
   RobustnessChange,
   RunDetail,
   MetricKind,
@@ -166,6 +167,8 @@ interface Store {
   /** The loaded sparse autoencoder; it belongs to the loaded model. */
   sae: SAEStatus;
   job: Job | null;
+  /** Runs waiting for the job in progress to end, first in line first (the server's queue). */
+  queue: QueuedRun[];
   runs: RunListing[];
 
   view: View;
@@ -243,6 +246,10 @@ interface Store {
   pinHead: (selection: Selection) => void;
   prepareNote: (sites: SiteSpec[]) => void;
   startRun: (spec: Spec) => Promise<void>;
+  /** Run the spec when the job in progress ends: it waits in the queue until then. */
+  queueRun: (spec: Spec) => Promise<void>;
+  /** Take a run out of the queue before it starts. */
+  removeQueuedRun: (id: string) => Promise<void>;
   startRobustness: (runId: string, change: RobustnessChange) => Promise<void>;
   /** Patch, for real, the strongest sites an attribution patching run estimated. */
   startVerification: (runId: string, top: number) => Promise<void>;
@@ -319,6 +326,7 @@ export const useStore = create<Store>((set, get) => ({
   model: { state: "none" },
   sae: { state: "none" },
   job: null,
+  queue: [],
   runs: [],
 
   view: "prompts",
@@ -370,6 +378,7 @@ export const useStore = create<Store>((set, get) => ({
       themeSetting: s.theme,
       update: s.update ?? null,
       sae: s.sae ?? { state: "none" },
+      queue: s.queue ?? [],
     });
     get().handleEvent({ type: "model", ...s.model });
     if (s.job) get().applyJob(s.job);
@@ -464,6 +473,7 @@ export const useStore = create<Store>((set, get) => ({
       project,
       tokenPosition: null, stagedSites: [], headPins: [], noteEditor: null, researchVersion: 0,
       job: get().job?.project_session && get().job?.project_session !== project.session_id ? null : get().job,
+      queue: get().queue.filter((q) => q.project_session === project.session_id),
       datasetPath: null,
       dataset: null,
       promptIndex: 0,
@@ -516,7 +526,7 @@ export const useStore = create<Store>((set, get) => ({
     setProjectSession(null);
     set({ project: null, screen: "projects", datasetPath: null, dataset: null, promptIndex: 0,
       tokenPosition: null, stagedSites: [], headPins: [], noteEditor: null, researchVersion: 0,
-      job: get().job?.project_session ? null : get().job,
+      job: get().job?.project_session ? null : get().job, queue: [],
       runs: [], runDetails: {}, activeRunId: null, pendingRunId: null, live: {}, selection: null,
       compareIds: [null, null], flags: {}, form: DEFAULT_FORM, formHistory: EMPTY_HISTORY, baselines: {}, specSource: "run",
       analysisSource: "form", view: "prompts", inspectorFocus: null, robustnessDialogOpen: false,
@@ -692,28 +702,38 @@ export const useStore = create<Store>((set, get) => ({
     starting = true;
     const seq = projectSeq;
     const ran = get().form;
-    const draftId = ran.draftId;
-    const out = await get().guard(() => api.startRun(spec, draftId));
+    const out = await get().guard(() => api.startRun(spec, ran.draftId));
     starting = false;
     if (!out || seq !== projectSeq) return;
-    openSeq += 1;
-    // The run's folder keeps the spec: the form as run is saved.
-    savedForm = { ...ran, draftId: null };
-    get().applyJob(out.job);
-    set((s) => ({
-      // The draft's folder now holds this run: no form, current or in the history, fills it again.
-      form: { ...s.form, draftId: null },
-      formHistory: draftId ? forgetDraft(s.formHistory, draftId) : s.formHistory,
-      pendingRunId: out.run_id,
-      activeRunId: out.run_id,
-      analysisSource: "run",
-      view: "results",
-      // The run's first events may already have arrived over the WebSocket; keep them.
-      live: { ...s.live, [out.run_id]: s.live[out.run_id] ?? emptyLive(out.run_id) },
-    }));
-    get().fitSelection();
-    await get().refreshRuns();
-    void get().loadRun(out.run_id, true);
+    await showStartedRun(ran, out.run_id, out.job);
+  },
+
+  queueRun: async (spec) => {
+    if (starting) return; // a second press while the first request is on its way
+    starting = true;
+    const seq = projectSeq;
+    const ran = get().form;
+    const out = await get().guard(() => api.queueRun(spec, ran.draftId));
+    starting = false;
+    if (!out || seq !== projectSeq) return;
+    // Nothing was running or waiting any more: it started at once, as Run would have.
+    if (out.run_id && out.job) return showStartedRun(ran, out.run_id, out.job);
+    formSent(ran);
+    // The queue event shows it waiting; the notice says what it waits for.
+    const place = out.queue.findIndex((q) => q.id === out.queued?.id);
+    const job = get().job;
+    const ahead = place > 0 ? out.queue[place - 1].title : place === 0 && job?.status === "running" ? job.title : null;
+    get().notify(ahead ? `Queued “${spec.name}”. It starts after “${ahead}”.` : `Queued “${spec.name}”.`);
+  },
+
+  removeQueuedRun: async (id) => {
+    const seq = projectSeq;
+    const run = get().queue.find((q) => q.id === id);
+    const left = await get().guard(() => api.removeQueuedRun(id));
+    if (!left || seq !== projectSeq) return;
+    // The queue event says so too; take it out now, so it can't be removed twice.
+    set((s) => ({ queue: s.queue.filter((q) => q.id !== id) }));
+    get().notify(run ? `Removed “${run.title}” from the queue.` : "Removed the run from the queue.");
   },
 
   startRobustness: async (runId, change) => {
@@ -949,6 +969,12 @@ export const useStore = create<Store>((set, get) => ({
         if (status === "cancelled" && !data.replay) get().notify("Run cancelled. The spec and any dataset snapshot remain; partial results were discarded.", "info", { persist: true });
         break;
       }
+      case "queue":
+        set({ queue: (data.runs as QueuedRun[] | undefined) ?? [] });
+        break;
+      case "queue.skipped":
+        get().notify(`“${String(data.title)}” couldn't start and was taken out of the queue. ${String(data.error)}`, "error");
+        break;
       case "sae": {
         const { type: _type, ...rest } = event;
         set({ sae: rest as unknown as SAEStatus });
@@ -1018,6 +1044,39 @@ function swapForm(next: FormState, options: ReplaceFormOptions = {}): boolean {
     });
   }
   return true;
+}
+
+/**
+ * The form `ran` went to the server to run, now or from the queue. The run's folder or the queue
+ * keeps its spec, so the form as sent is saved. A draft's folder belongs to that run now: no form,
+ * current or in the history, fills it again.
+ */
+function formSent(ran: FormState): void {
+  savedForm = { ...ran, draftId: null };
+  const draftId = ran.draftId;
+  useStore.setState((s) => ({
+    form: { ...s.form, draftId: null },
+    formHistory: draftId ? forgetDraft(s.formHistory, draftId) : s.formHistory,
+  }));
+}
+
+/** Show a run of the form `ran` that has just started, its results filling in as they stream. */
+async function showStartedRun(ran: FormState, runId: string, job: Job): Promise<void> {
+  const st = useStore.getState();
+  openSeq += 1;
+  formSent(ran);
+  st.applyJob(job);
+  useStore.setState((s) => ({
+    pendingRunId: runId,
+    activeRunId: runId,
+    analysisSource: "run",
+    view: "results",
+    // The run's first events may already have arrived over the WebSocket; keep them.
+    live: { ...s.live, [runId]: s.live[runId] ?? emptyLive(runId) },
+  }));
+  st.fitSelection();
+  await st.refreshRuns();
+  void st.loadRun(runId, true);
 }
 
 /** Undo or redo one step of the form's history. */

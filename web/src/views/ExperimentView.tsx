@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { BaselineSpec, ExperimentKind, PathReceiverSpec, PositionSpec, SAEInfo, ScopeSpec, StreamKind } from "../api/types";
 import { Button, Callout, Checkbox, Choices, Field, Input, Kbd, Segmented, Select, TextArea } from "../components/ui";
 import { MOD } from "../components/Header";
+import { RunButton } from "../components/RunButton";
 import { plural, shortRevision } from "../lib/format";
 import { modelName } from "../lib/hooks";
 import { EVERYTHING, SET_SITE_KINDS } from "../lib/circuits";
@@ -52,6 +53,7 @@ export function ExperimentView() {
   const datasetPath = useStore((st) => st.datasetPath);
   const job = useStore((st) => st.job);
   const startRun = useStore((st) => st.startRun);
+  const queueRun = useStore((st) => st.queueRun);
 
   const labels = useMemo(() => {
     if (!dataset) return [];
@@ -91,21 +93,6 @@ export function ExperimentView() {
       ? workload(spec, n, arch.n_layers, arch.n_heads, uniformLength && lengths ? lengths[0] : null, labels.length)
       : null;
 
-  const run = () => {
-    if (spec && !busy) void startRun(spec);
-  };
-
-  useEffect(() => {
-    const onKey = (ev: KeyboardEvent) => {
-      if ((ev.metaKey || ev.ctrlKey) && ev.key === "Enter") {
-        ev.preventDefault();
-        run();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  });
-
   return (
     <div className={s.view}>
       <div className={s.head}>
@@ -136,9 +123,7 @@ export function ExperimentView() {
           >
             Preview spec
           </Button>
-          <Button variant="primary" icon="play" onClick={run} disabled={!spec || busy} title={`Run (${MOD}+Enter)`}>
-            Run
-          </Button>
+          <RunButton spec={spec} reason={"error" in built ? built.error : null} onRun={startRun} onQueue={queueRun} />
         </div>
       </div>
 

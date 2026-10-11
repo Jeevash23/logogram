@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 import type { RunListing } from "../api/types";
 import { ago, pct, plural } from "../lib/format";
@@ -77,6 +77,7 @@ export function History({ onOpen }: { onOpen?: () => void } = {}) {
           </Button>
         )}
       </div>
+      <QueuedRuns />
       {runs.length === 0 ? (
         <p className={s.empty}>Runs appear here as you start them. Each one is a folder in experiments/.</p>
       ) : (
@@ -130,6 +131,59 @@ export function History({ onOpen }: { onOpen?: () => void } = {}) {
           })}
         </ul>
       )}
+    </div>
+  );
+}
+
+/** The runs waiting for the job in progress to end, first in line first. Each can be taken out
+ * of the queue until it starts. */
+function QueuedRuns() {
+  const queue = useStore((st) => st.queue);
+  const remove = useStore((st) => st.removeQueuedRun);
+  const list = useRef<HTMLOListElement>(null);
+  const label = useId();
+  if (queue.length === 0) return null;
+
+  const removeAt = async (index: number, id: string) => {
+    const focused = list.current?.contains(document.activeElement) ?? false;
+    await remove(id);
+    // Keep the keyboard in the list: on the run that took this one's place, or the one before it.
+    if (focused) {
+      requestAnimationFrame(() => {
+        const buttons = list.current?.querySelectorAll("button");
+        if (buttons?.length) buttons[Math.min(index, buttons.length - 1)].focus();
+      });
+    }
+  };
+
+  return (
+    <div className={s.queued}>
+      <div className={s.groupHeader}>
+        <span className={s.groupTitle} id={label}>
+          Queued
+        </span>
+        <span className={s.count}>{queue.length}</span>
+      </div>
+      <ol className={s.queuedList} aria-labelledby={label} ref={list}>
+        {queue.map((q, i) => (
+          <li key={q.id} className={s.queuedRow}>
+            <span className={s.name}>{q.title}</span>
+            <span className={s.state}>{i === 0 ? "next" : ""}</span>
+            <span className={s.meta}>
+              {experimentShort(q.spec.experiment)} · {scopeShort(q.spec.scope)}
+            </span>
+            <Button
+              size="small"
+              variant="ghost"
+              icon="close"
+              className={s.remove}
+              aria-label={`Remove “${q.title}” from the queue`}
+              title="Remove from the queue"
+              onClick={() => void removeAt(i, q.id)}
+            />
+          </li>
+        ))}
+      </ol>
     </div>
   );
 }

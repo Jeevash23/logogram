@@ -34,6 +34,12 @@
   text-overflow: ellipsis;
 }
 
+/* How many runs wait for the one in progress. */
+.queued {
+  flex: none;
+  white-space: nowrap;
+}
+
 .bar {
   width: 140px;
   flex: none;

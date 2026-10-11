@@ -81,6 +81,28 @@ export interface Job {
   cancelling?: boolean;
 }
 
+/** A run waiting for the job in progress to end, in the open project's queue. */
+export interface QueuedRun {
+  id: string;
+  /** The spec's name. */
+  title: string;
+  spec: Spec;
+  draft_id: string | null;
+  derived_from: DerivedFrom | null;
+  project_session: string;
+  /** Seconds since the epoch, like a job's start. */
+  queued_at: number;
+}
+
+/** A run sent to the queue: started at once when nothing was running (run_id and job), or
+ * waiting its turn (queued). */
+export interface QueueAdded {
+  run_id: string | null;
+  job: Job | null;
+  queued: QueuedRun | null;
+  queue: QueuedRun[];
+}
+
 export interface DatasetListing {
   name: string;
   path: string;
@@ -125,6 +147,8 @@ export interface ServerState {
   projects_parent: string;
   update: UpdateStatus;
   sae?: SAEStatus;
+  /** The runs waiting for the job in progress, first in line first. */
+  queue?: QueuedRun[];
 }
 
 export interface RecentProject {

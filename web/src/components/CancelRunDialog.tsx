@@ -11,6 +11,7 @@ export function CancelRunDialog() {
   const asked = useStore((st) => st.cancelConfirmOpen);
   const job = useStore((st) => st.job);
   const progress = useStore((st) => (st.cancelConfirmOpen && st.job?.run_id ? st.live[st.job.run_id]?.progress ?? null : null));
+  const queued = useStore((st) => st.queue.length);
   const running = job?.status === "running" && job.kind === "run" && !job.cancelling;
 
   // The run may end while the question is open: there is nothing left to cancel.
@@ -36,6 +37,8 @@ export function CancelRunDialog() {
       {job && <>“{job.title}” {done === null ? "has started" : `is ${pct(done)} done`}. </>}
       The results it has measured so far are discarded, and none of them are saved. Its spec and any dataset snapshot
       stay in its folder, so you can run it again.
+      {queued === 1 && " The run waiting in the queue starts next."}
+      {queued > 1 && ` The ${queued} runs waiting in the queue start next, one at a time.`}
     </ConfirmDialog>
   );
 }
