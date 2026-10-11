@@ -115,6 +115,8 @@ function useCommands(query: string): Command[] {
       { id: "system", label: "System check", group: "Project", keywords: "gpu cuda doctor hardware", run: () => st.goto("system") },
       { id: "updates", label: "Check for updates", group: "Project", keywords: "version upgrade new release pypi", run: () => void st.checkUpdates() },
       { id: "shortcuts", label: "Show keyboard shortcuts", group: "Help", keywords: "keys hotkeys keyboard help", shortcut: key("?"), run: () => useStore.setState({ shortcutsOpen: true }) },
+      { id: "report", label: "Report a problem…", group: "Help", keywords: "bug issue error support github", run: () => useStore.setState({ helpDialog: "report" }) },
+      { id: "about", label: "About Logogram", group: "Help", keywords: "version license source", run: () => useStore.setState({ helpDialog: "about" }) },
       st.singleKeys
         ? { id: "single-keys", label: "Turn off single-key shortcuts", group: "Help", keywords: "keys hotkeys keyboard speech accessibility", run: () => st.setSingleKeys(false) }
         : { id: "single-keys", label: "Turn on single-key shortcuts", group: "Help", keywords: "keys hotkeys keyboard speech accessibility", run: () => st.setSingleKeys(true) },

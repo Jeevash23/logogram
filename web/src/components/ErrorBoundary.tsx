@@ -33,8 +33,11 @@ export class ErrorBoundary extends Component<Props, State> {
     return { error: error instanceof Error ? error : new Error(String(error)), copied: false };
   }
 
-  componentDidCatch(_error: unknown, info: ErrorInfo): void {
+  componentDidCatch(error: unknown, info: ErrorInfo): void {
     this.setState({ componentStack: info.componentStack ?? "" });
+    // Shown on the page, so a problem report quotes it.
+    const message = error instanceof Error ? error.message || error.name : String(error);
+    useStore.setState({ lastError: `${this.props.name} stopped with an error: ${message}` });
   }
 
   componentDidUpdate(prev: Props, prevState: State): void {

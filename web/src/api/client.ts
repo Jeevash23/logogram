@@ -22,6 +22,7 @@ import type {
   FeatureReport,
   ProjectInfo,
   PromptRecord,
+  ProblemReport,
   RecentProject,
   RobustnessChange,
   RunAnnotationsChange,
@@ -164,6 +165,9 @@ export const api = {
   system: () => get<SystemReport>("/api/system"),
   /** The versions and devices a rerun here would use, to compare with a run's manifest. */
   environment: () => get<Environment>("/api/environment"),
+  /** A problem report, built by the server (which scrubs paths and names from the error) and
+   * sent nowhere. */
+  report: (body: { include_hardware: boolean; last_error: string | null }) => post<ProblemReport>("/api/report", body),
 
   folders: (path?: string) =>
     get<FolderListing>(`/api/fs${path ? `?path=${encodeURIComponent(path)}` : ""}`),

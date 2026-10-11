@@ -107,6 +107,17 @@ def _configure_logging(verbose: bool, log_file: Path | None) -> None:
     logging.getLogger("logogram").setLevel(logging.DEBUG if verbose else logging.WARNING)
 
 
+def _forwarded_ports(given: list[int] | None) -> list[int]:
+    """The ports from --forwarded-port and LOGOGRAM_FORWARDED_PORTS, each once."""
+    from logogram.server.security import FORWARDED_PORTS_ENV, parse_ports
+
+    try:
+        listed = parse_ports(os.environ.get(FORWARDED_PORTS_ENV))
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
+    return list(dict.fromkeys([*(given or []), *listed]))
+
+
 def _serve(
     *,
     port: int,
@@ -115,10 +126,12 @@ def _serve(
     dev: bool = False,
     verbose: bool = False,
     log_file: Path | None = None,
+    forwarded_ports: list[int] | None = None,
 ) -> None:
     from logogram.server.security import SecurityConfig, new_token
 
     _configure_logging(verbose, log_file)
+    forwarded = _forwarded_ports(forwarded_ports)
     sock = _bind(port)
     port = int(sock.getsockname()[1])
     token = os.environ.get("LOGOGRAM_TOKEN") if dev else None
@@ -128,10 +141,19 @@ def _serve(
         if dev
         else []
     )
-    security = SecurityConfig(token=token or new_token(), port=port, dev_origins=dev_list)
+    security = SecurityConfig(
+        token=token or new_token(), port=port, dev_origins=dev_list, forwarded_ports=forwarded
+    )
     url = f"http://127.0.0.1:{port}/?token={security.token}"
     # Print the address first: loading PyTorch takes a few seconds.
     typer.echo(f"Logogram {__version__} is running at:\n\n  {url}\n")
+    others = [p for p in forwarded if p != port]
+    if others:
+        where = "the forwarded port" if len(others) == 1 else "the forwarded ports"
+        typer.echo(f"Through {where}, open:\n")
+        for other in others:
+            typer.echo(f"  http://127.0.0.1:{other}/?token={security.token}")
+        typer.echo("")
     if dev:
         typer.echo(
             f"Development UI (npm run dev):\n\n  {dev_list[0]}/api/session?token={security.token}\n"
@@ -179,6 +201,14 @@ LogFileOption = typer.Option(
     dir_okay=False,
     help="Also append the log to this file.",
 )
+ForwardedPortOption = typer.Option(
+    "--forwarded-port",
+    min=1,
+    max=65535,
+    help="A port on the browser's computer that forwards to this server, such as an SSH "
+    "tunnel's local end (ssh -L 9000:127.0.0.1:8765 HOST): addresses on it are accepted too. "
+    "Repeat it for several, or list them in LOGOGRAM_FORWARDED_PORTS.",
+)
 
 
 def _update_notice() -> None:
@@ -225,11 +255,18 @@ def main_callback(
     no_browser: Annotated[bool, typer.Option("--no-browser", help="Don't open a browser.")] = False,
     verbose: Annotated[bool, VerboseOption] = False,
     log_file: Annotated[Path | None, LogFileOption] = None,
+    forwarded_port: Annotated[list[int] | None, ForwardedPortOption] = None,
 ) -> None:
     """Start Logogram and open it in your browser."""
     _quiet_environment()
     if ctx.invoked_subcommand is None:
-        _serve(port=port, open_browser=not no_browser, verbose=verbose, log_file=log_file)
+        _serve(
+            port=port,
+            open_browser=not no_browser,
+            verbose=verbose,
+            log_file=log_file,
+            forwarded_ports=forwarded_port,
+        )
 
 
 @app.command("open")
@@ -239,6 +276,7 @@ def open_cmd(
     no_browser: Annotated[bool, typer.Option("--no-browser")] = False,
     verbose: Annotated[bool, VerboseOption] = False,
     log_file: Annotated[Path | None, LogFileOption] = None,
+    forwarded_port: Annotated[list[int] | None, ForwardedPortOption] = None,
 ) -> None:
     """Start Logogram with a project open."""
     from logogram.project import Project, ProjectError
@@ -254,6 +292,7 @@ def open_cmd(
         project=project.root,
         verbose=verbose,
         log_file=log_file,
+        forwarded_ports=forwarded_port,
     )
 
 
@@ -267,6 +306,7 @@ def serve(
     project: Annotated[Path | None, typer.Option(help="Open this project.")] = None,
     verbose: Annotated[bool, VerboseOption] = False,
     log_file: Annotated[Path | None, LogFileOption] = None,
+    forwarded_port: Annotated[list[int] | None, ForwardedPortOption] = None,
 ) -> None:
     """Run the server (use --dev with `npm run dev` when working on the web app)."""
     _serve(
@@ -276,6 +316,7 @@ def serve(
         dev=dev,
         verbose=verbose,
         log_file=log_file,
+        forwarded_ports=forwarded_port,
     )
 
 
@@ -301,11 +342,39 @@ def check_updates_cmd() -> None:
 
 
 @app.command()
-def doctor() -> None:
+def doctor(
+    report_only: Annotated[
+        bool,
+        typer.Option(
+            "--report",
+            help="Print only a short report to paste into an issue: versions, the operating "
+            "system's family and the device, without names, paths or hardware models.",
+        ),
+    ] = False,
+    hardware: Annotated[
+        bool,
+        typer.Option(
+            "--hardware", help="With --report, add the processor, GPUs, memory and OS version."
+        ),
+    ] = False,
+) -> None:
     """Report the environment and hardware, with fixes for common problems."""
     from logogram.system import format_bytes, system_report
 
+    if hardware and not report_only:
+        raise _fail("--hardware adds to the report: use it with --report.")
     report = system_report()
+    if report_only:
+        from logogram.support import NEW_ISSUE_URL, build_report
+
+        # The report alone on stdout, so it can be piped to the clipboard; the advice on stderr.
+        typer.echo(build_report(include_hardware=hardware, system=report).text, nl=False)
+        typer.echo(
+            "\nNothing was sent. To report a problem, paste this into a new issue:\n"
+            f"  {NEW_ISSUE_URL}",
+            err=True,
+        )
+        return
     rows = [
         ("Logogram", __version__),
         ("Operating system", f"{report.os} ({report.machine})"),

@@ -610,7 +610,11 @@ def test_the_server_log_is_quiet_unless_verbose(tmp_path):
 
     log_file = tmp_path / "server.log"
     root = logging.getLogger()
-    saved = (root.handlers[:], root.level, logging.getLogger("logogram").level)
+    uvicorn_log = logging.getLogger("uvicorn.error")
+    saved = (root.handlers[:], root.level, logging.getLogger("logogram").level, uvicorn_log.level)
+    # Uvicorn sets its own logger's level when a server is configured (as the security tests
+    # do, in this process); here it takes the level the server would give it.
+    uvicorn_log.setLevel(logging.NOTSET)
     try:
         cli_module._configure_logging(False, log_file)
         logging.getLogger("logogram.server.state").info("what the server does")
@@ -634,3 +638,4 @@ def test_the_server_log_is_quiet_unless_verbose(tmp_path):
             root.addHandler(handler)
         root.setLevel(saved[1])
         logging.getLogger("logogram").setLevel(saved[2])
+        uvicorn_log.setLevel(saved[3])
