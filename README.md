@@ -687,6 +687,7 @@ treating them as equivalent.
 * A problem report (**Help → Report a problem**, or `logogram doctor --report`) is built on your
   machine and sent nowhere. It never names users, hosts or paths (they are taken out of the error
   it quotes), and names hardware models only if you tick **Include hardware details**.
+  To report a security problem, see [SECURITY.md](SECURITY.md).
 * Projects are often shared, so Logogram treats their contents with care: it writes only into
   folders that are really inside the project (never through a symlink that leads out of it), and
   a damaged, oversized or unexpected file shows up as an error on that file rather than breaking
@@ -878,6 +879,9 @@ the terminal where it runs.
 
 ## Development
 
+[CONTRIBUTING.md](CONTRIBUTING.md) lists the checks to run before a pull request, the rules in
+[AGENTS.md](AGENTS.md) in short, and how to add a method.
+
 ```bash
 uv sync                       # Python environment with dev tools
 uv run pytest                 # tests use a tiny random model and never use the network
@@ -953,4 +957,5 @@ remote compute, a native desktop wrapper, plugins and assistants.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). To cite Logogram, see [CITATION.cff](CITATION.cff), which GitHub's
+**Cite this repository** reads.

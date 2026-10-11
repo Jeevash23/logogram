@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use Logogram in your research, please cite it as below, with the version you used (logogram --version)."
+title: "Logogram"
+abstract: >-
+  A local-first workbench for causal experiments inside language models: activation patching,
+  ablation, attribution patching, direct logit attribution, path patching, steering, sets of
+  sites and SAE features, with per-prompt statistics and experiment specs that reproduce every
+  result.
+type: software
+authors:
+  - name: "The Logogram contributors"
+repository-code: "https://github.com/Jeevash23/logogram"
+url: "https://github.com/Jeevash23/logogram"
+license: MIT
+keywords:
+  - interpretability
+  - mechanistic interpretability
+  - activation patching
+  - causal intervention
+  - language models
+  - transformers
