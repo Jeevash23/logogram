@@ -175,6 +175,20 @@ class OkOut(_Out):
     ok: bool
 
 
+class ReportRow(_Out):
+    label: str
+    value: str
+
+
+class ProblemReport(_Out):
+    """A problem report (logogram.support): its rows, and the same as text to paste."""
+
+    rows: list[ReportRow]
+    hardware: bool
+    text: str
+    new_issue_url: str
+
+
 # -- datasets and prompts ----------------------------------------------------------------------
 
 

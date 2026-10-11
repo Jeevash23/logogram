@@ -1,0 +1,43 @@
+name: Suggest an improvement
+description: A method, a view or a change that would help your experiments.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Logogram is a research instrument: correctness and traceability come before features. Ideas that make results easier to trust, check or reproduce are especially welcome.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you're trying to do
+      description: The experiment or question, and where Logogram gets in the way or falls short.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would help
+      description: The change you have in mind. For a new method, a paper or a reference implementation, and how its results could be checked, such as an identity it must satisfy.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you do now instead
+      description: Workarounds, or other tools you use for this.
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - Explore (the model map, attention, layer predictions, features)
+        - Experiment (prompts, the baseline, the experiment form, the spec)
+        - Evidence (results, comparisons, research notes)
+        - A new method or metric
+        - The command line or the Python API
+        - Installing, hardware, or running on another machine
+    validations:
+      required: false

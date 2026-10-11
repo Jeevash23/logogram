@@ -389,6 +389,14 @@ class SettingsRequest(BaseModel):
     single_key_shortcuts: bool | None = None
 
 
+class ReportRequest(BaseModel):
+    """A problem report: with the hardware's details or without, and the last error the app
+    showed, as it showed it (paths and names are scrubbed from it here)."""
+
+    include_hardware: bool = False
+    last_error: str | None = Field(default=None, max_length=20_000)
+
+
 # -- app factory -------------------------------------------------------------------------------
 
 
@@ -500,6 +508,21 @@ def create_app(
         from logogram.system import system_report
 
         return system_report().to_dict()
+
+    @app.post("/api/report", response_model=M.ProblemReport)
+    def problem_report(body: ReportRequest) -> dict[str, Any]:
+        """A report to paste into an issue, built from what this server knows. Nothing is sent:
+        the app shows it to copy."""
+        from logogram.support import build_report
+
+        project = state.project
+        return build_report(
+            model=state.model_payload(),
+            last_error=body.last_error,
+            include_hardware=body.include_hardware,
+            roots=[project.root] if project else [],
+            secrets=[security.token],
+        ).to_dict()
 
     # -- files and projects -----------------------------------------------------------------
 

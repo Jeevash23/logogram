@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security problem privately
+    url: https://github.com/Jeevash23/logogram/security/advisories/new
+    about: The session token, the Host and Origin checks, writes into project folders, or loading files. Please don't open a public issue for these.
+  - name: Troubleshooting
+    url: https://github.com/Jeevash23/logogram#troubleshooting
+    about: What the messages people see most often mean, and how to fix them.
+  - name: Running on a remote GPU
+    url: https://github.com/Jeevash23/logogram#running-on-a-remote-gpu
+    about: Start Logogram on the remote machine, forward its port over SSH, and open it in your own browser.

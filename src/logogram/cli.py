@@ -282,11 +282,39 @@ def check_updates_cmd() -> None:
 
 
 @app.command()
-def doctor() -> None:
+def doctor(
+    report_only: Annotated[
+        bool,
+        typer.Option(
+            "--report",
+            help="Print only a short report to paste into an issue: versions, the operating "
+            "system's family and the device, without names, paths or hardware models.",
+        ),
+    ] = False,
+    hardware: Annotated[
+        bool,
+        typer.Option(
+            "--hardware", help="With --report, add the processor, GPUs, memory and OS version."
+        ),
+    ] = False,
+) -> None:
     """Report the environment and hardware, with fixes for common problems."""
     from logogram.system import format_bytes, system_report
 
+    if hardware and not report_only:
+        raise _fail("--hardware adds to the report: use it with --report.")
     report = system_report()
+    if report_only:
+        from logogram.support import NEW_ISSUE_URL, build_report
+
+        # The report alone on stdout, so it can be piped to the clipboard; the advice on stderr.
+        typer.echo(build_report(include_hardware=hardware, system=report).text, nl=False)
+        typer.echo(
+            "\nNothing was sent. To report a problem, paste this into a new issue:\n"
+            f"  {NEW_ISSUE_URL}",
+            err=True,
+        )
+        return
     rows = [
         ("Logogram", __version__),
         ("Operating system", f"{report.os} ({report.machine})"),
