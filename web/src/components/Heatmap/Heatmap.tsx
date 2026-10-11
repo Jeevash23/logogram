@@ -226,7 +226,7 @@ export const Heatmap = memo(function Heatmap({
         ctx.fillRect(x, y, w, h);
         ctx.globalAlpha = 1;
         if (showValues && cell >= 34 && cellH >= 18) {
-          ctx.fillStyle = textOn(fill, theme);
+          ctx.fillStyle = textOn(fill);
           ctx.font = font(colors, 9.5, 540);
           ctx.textAlign = "center";
           ctx.fillText(format(v), x + w / 2, y + h / 2 + 0.5);
