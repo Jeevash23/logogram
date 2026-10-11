@@ -752,7 +752,7 @@ def mark_interrupted_runs(project: Project) -> None:
         log.info("The run %s was interrupted: %s", listing.id, data["error"])
         with contextlib.suppress(OSError):  # read-only projects remain inspectable
             write_json(project.writable(path), data)
-            remove_owner(folder)
+            remove_owner(project, folder)
 
 
 def _reason(exc: Exception) -> str:

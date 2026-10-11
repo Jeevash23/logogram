@@ -22,6 +22,7 @@ from typer.testing import CliRunner
 import logogram as lg
 from logogram import owner as owners
 from logogram.cli import app as cli
+from logogram.project import ProjectError
 from logogram.runner import INTERRUPTED, run_spec, scrub_paths, write_json, write_manifest
 from logogram.schema import RunOwner
 from logogram.server.app import create_app
@@ -297,8 +298,20 @@ def test_an_owner_record_outside_the_project_or_not_a_file_is_ignored(
     (folder / owners.OWNER_FILE).unlink()
     os.mkfifo(folder / owners.OWNER_FILE)
     assert owners.read_owner(project, folder) is None  # a pipe never blocks the listing
-    owners.remove_owner(folder)
+    owners.remove_owner(project, folder)
     assert not os.path.lexists(folder / owners.OWNER_FILE)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks")
+def test_an_owner_record_is_never_removed_outside_the_project(project, tmp_path):
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / owners.OWNER_FILE).write_text("{}", encoding="utf-8")
+    project.experiments_dir.mkdir(exist_ok=True)
+    (project.experiments_dir / "linked").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ProjectError, match="outside the project"):
+        owners.remove_owner(project, project.run_dir("linked"))
+    assert (outside / owners.OWNER_FILE).exists()
 
 
 def test_releasing_leaves_another_process_record(project, spec_factory):

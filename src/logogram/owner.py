@@ -74,15 +74,16 @@ def release_run(project: Project, folder: Path, owner: RunOwner) -> None:
     current = read_owner(project, folder)
     if current is not None and current.token != owner.token:
         return
-    remove_owner(folder)
+    remove_owner(project, folder)
 
 
-def remove_owner(folder: Path) -> None:
-    """Remove the owner record in ``folder``, if there is one (a link is removed, never followed).
+def remove_owner(project: Project, folder: Path) -> None:
+    """Remove the owner record in ``folder``, if there is one (a link is removed, never followed,
+    and only in a folder that really is part of the project).
 
     On Windows a file can't be removed while another process reads it (the app listing the
     run), so try again briefly, as ``fileio.replace_file`` does."""
-    path = folder / OWNER_FILE
+    path = project.writable(folder / OWNER_FILE)
     for _ in range(50):
         try:
             path.unlink()
