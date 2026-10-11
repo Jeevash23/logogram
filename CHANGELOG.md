@@ -2,7 +2,7 @@
 
 What changed in each version of Logogram.
 
-## 0.2.0 (unreleased)
+## 0.2.0 (2026-10-11)
 
 Specs that state every choice, more metrics, circuits, five more tasks, statistics that hold across
 many sites, a Python API and more commands, Gemma Scope 2 and transcoders, and integrated
