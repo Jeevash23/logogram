@@ -63,7 +63,8 @@ export type View =
   | "results"
   | "attention"
   | "compare"
-  | "spec";
+  | "spec"
+  | "text";
 
 export type Workspace = "explore" | "experiment" | "evidence";
 
@@ -78,6 +79,7 @@ export const WORKSPACE_VIEWS: { id: Workspace; views: { id: View; label: string 
       { id: "heads", label: "Head comparison" },
       { id: "predictions", label: "Layer predictions" },
       { id: "features", label: "Features" },
+      { id: "text", label: "Your text" },
     ],
   },
   {
@@ -104,7 +106,7 @@ export const VIEWS: { id: View; label: string }[] = WORKSPACE_VIEWS.flatMap((w) 
 /** A sweep over sets of sites, each intervened on at once. */
 export type SiteSetsScope = Extract<ScopeSpec, { kind: "site_sets" }>;
 export function workspaceFor(view: View): Workspace {
-  if (["explore", "attention", "heads", "predictions", "features"].includes(view)) return "explore";
+  if (["explore", "attention", "heads", "predictions", "features", "text"].includes(view)) return "explore";
   if (["prompts", "baseline", "experiment", "spec"].includes(view)) return "experiment";
   return "evidence";
 }

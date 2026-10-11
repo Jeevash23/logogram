@@ -838,6 +838,40 @@ export interface BaselineReport {
   } | null;
 }
 
+export interface LookToken {
+  id: number;
+  token: string;
+  prob: number;
+}
+
+/** Any text read without a dataset (POST /api/look). */
+export interface LookReport {
+  tokens: string[];
+  ids: number[];
+  prepend_bos: boolean;
+  top_k: number;
+  position: number;
+  /** After each token: the model's most likely next tokens. */
+  predictions: LookToken[][];
+  /** At `position`: what each layer would predict, when the logit lens holds for this model. */
+  lens: { layer: number; top: LookToken[] }[] | null;
+  lens_note: string | null;
+}
+
+export interface LookAttention {
+  tokens: string[];
+  layer: number;
+  head: number;
+  pattern: number[][];
+}
+
+export interface LookFeatures {
+  tokens: string[];
+  features: { feature: number; activation: number }[][];
+  active: number[];
+  first_real_token: number;
+}
+
 export type HeadKindName = "previous_token" | "duplicate_token" | "induction";
 
 export interface HeadKindScores {

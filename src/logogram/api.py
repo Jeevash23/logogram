@@ -41,6 +41,7 @@ __all__ = [
     "load_model",
     "load_run",
     "load_spec",
+    "look",
     "open_project",
     "run",
     "verify_run",
@@ -146,6 +147,23 @@ def head_kinds(
     )
     with model.lock:
         return head_kind_scores(model, settings)
+
+
+def look(
+    model: Any,
+    text: str,
+    *,
+    prepend_bos: bool = True,
+    top_k: int = 5,
+    position: int | None = None,
+) -> dict[str, Any]:
+    """Read any text with ``model`` (from :func:`load_model`), without making a dataset: its
+    tokens, the ``top_k`` most likely next tokens after each, and at ``position`` (the last token
+    by default) what each layer would predict, as the app's Your text view shows."""
+    from logogram.inside import look_report
+
+    with model.lock:
+        return look_report(model, text, prepend_bos=prepend_bos, top_k=top_k, position=position)
 
 
 def list_runs(project: Project) -> list[dict[str, Any]]:

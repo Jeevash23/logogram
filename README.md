@@ -82,7 +82,7 @@ This starts a local server on 127.0.0.1, prints its address and opens your brows
    and flags them on the map.
 
 Keyboard: arrow keys move across the map, **Ctrl/⌘ K** opens the command palette (type `L9H9` to
-jump to a head), **1–5** go to the open workspace's tabs, **[** and **]** step through prompts,
+jump to a head), **1–6** go to the open workspace's tabs, **[** and **]** step through prompts,
 **P**, **B**, **A** and **C** patch, ablate, show attention or compare the selected component, and
 **Ctrl/⌘ Enter** runs the experiment form (or queues it while another job runs). **Ctrl/⌘ Z** and
 **Ctrl/⌘ Shift Z** undo and redo changes to the form, and **?** lists every shortcut. The keys
@@ -152,6 +152,19 @@ bootstrap resamples prompts or clusters of them, from the fields the prompts' `m
 says before a run what the prompts allow: answers of several tokens need a metric that reads
 them, and splits and donors need enough prompts. **Prompts → Generate a task** writes any of the
 six tasks' datasets and offers to switch the form to the metric that reads their answers.
+
+**Your text** reads any text without making a dataset: its tokens, the model's most likely next
+tokens after each, what each layer would predict at a chosen token (the logit lens, when it holds
+for the model), where a head attends, and, with an SAE loaded, the features that fire. Nothing is
+saved. From Python, `lg.look(model, "some text")` returns the same.
+
+**Attention** also finds heads by what they attend to, on seeded sequences of random tokens
+repeated twice (as in Olsson et al., 2022): previous-token heads attend to the token just before,
+duplicate-token heads to the earlier copy of the current token, and induction heads to the token
+that followed that copy. Each head's score is the attention it pays there, averaged over the second
+copy, with a bootstrap interval over sequences; the number of sequences, their length and the seed
+are shown and can be changed. Choosing a head shows its attention on the prompts. From Python,
+`lg.head_kinds(model)` returns the same scores, per sequence too.
 
 Pin up to two heads for **Head comparison**. Both attention maps use the same prompt variant,
 analysis context, and 0–1 ink scale. Selecting a query token in either map or the token ribbon

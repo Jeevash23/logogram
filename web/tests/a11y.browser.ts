@@ -78,6 +78,11 @@ test("every view has no accessibility violations", async ({ page }) => {
   await page.getByLabel("Features on each token").locator("button[aria-pressed]").first().click();
   await expect(page.getByText("Where it fires most")).toBeVisible();
   await expectAccessible(page, "Explore, a feature");
+  await open(page, "Your text");
+  await page.getByRole("button", { name: "Read", exact: true }).click();
+  await expect(page.getByRole("group", { name: /^Tokens of the text/ })).toBeVisible();
+  await expect(page.getByRole("group", { name: /^Attention of L0 H0 in your text/ })).toBeVisible();
+  await expectAccessible(page, "Explore, your text");
   await page.getByRole("button", { name: "Experiment", exact: true }).click();
   for (const view of ["Prompts", "Baseline", "Configure", "Spec"]) {
     await open(page, view);

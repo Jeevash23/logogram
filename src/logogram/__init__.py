@@ -23,6 +23,7 @@ _API = (
     "load_model",
     "load_run",
     "load_spec",
+    "look",
     "open_project",
     "run",
     "verify_run",

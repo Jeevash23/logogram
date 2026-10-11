@@ -361,6 +361,49 @@ class HeadKinds(_Out):
     top: dict[Literal["previous_token", "duplicate_token", "induction"], list[TopHead]]
 
 
+class LookToken(_Out):
+    id: int
+    token: str
+    prob: float
+
+
+class LookLayer(_Out):
+    layer: int
+    top: list[LookToken]
+
+
+class LookReport(_Out):
+    tokens: list[str]
+    ids: list[int]
+    prepend_bos: bool
+    top_k: int
+    position: int
+    # After each token: the model's most likely next tokens.
+    predictions: list[list[LookToken]]
+    # At ``position``: what each layer's residual stream would predict, when the lens holds.
+    lens: list[LookLayer] | None
+    lens_note: str | None
+
+
+class LookAttention(_Out):
+    tokens: list[str]
+    layer: int
+    head: int
+    pattern: list[list[float]]
+
+
+class LookFeature(_Out):
+    feature: int
+    activation: float
+
+
+class LookFeatures(_Out):
+    tokens: list[str]
+    features: list[list[LookFeature]]
+    active: list[int]
+    first_real_token: int
+
+
 class PredictionLayer(_Out):
     layer: int
     top: list[TopToken]

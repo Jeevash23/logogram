@@ -136,13 +136,13 @@ export function HeadKinds() {
         </div>
       </div>
       <div className={k.controls}>
-        <Field label="Sequences">
+        <Field label="Sequences" className={k.number}>
           <Input type="number" min={2} max={512} value={sequences} onChange={(e) => setSequences(Number(e.target.value))} />
         </Field>
-        <Field label="Tokens in each copy">
+        <Field label="Tokens in each copy" className={k.number}>
           <Input type="number" min={2} max={longest} value={length} onChange={(e) => setLength(Number(e.target.value))} />
         </Field>
-        <Field label="Seed">
+        <Field label="Seed" className={k.number}>
           <Input type="number" min={0} value={seed} onChange={(e) => setSeed(Number(e.target.value))} />
         </Field>
         <Button onClick={() => void find()} disabled={busy || !!problem || !info} tip={problem ?? (info ? undefined : "Load a model first")}>

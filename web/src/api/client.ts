@@ -38,6 +38,9 @@ import type {
   PredictionReport,
   PredictionSettings,
   HeadKindsReport,
+  LookAttention,
+  LookFeatures,
+  LookReport,
   QueueAdded,
   QueuedRun,
   RunMemory,
@@ -215,6 +218,10 @@ export const api = {
     which: "clean" | "corrupt";
   } & AnalysisOptions) => post<AttentionData>("/api/attention", body),
   predictions: (body: { dataset: string; index: number; settings: PredictionSettings } & AnalysisOptions) => post<PredictionReport>("/api/predictions", body),
+  look: (body: { text: string; top_k: number; position: number | null } & AnalysisOptions) => post<LookReport>("/api/look", body),
+  lookAttention: (body: { text: string; layer: number; head: number } & AnalysisOptions) =>
+    post<LookAttention>("/api/look/attention", body),
+  lookFeatures: (body: { text: string; top_k: number } & AnalysisOptions) => post<LookFeatures>("/api/look/features", body),
   headKinds: (body: { seed: number; sequences: number; length: number; bootstrap: number; ci: number } & AnalysisOptions) =>
     post<HeadKindsReport>("/api/heads/kinds", body),
   research: () => get<{ logogram_research: 1; notes: ResearchNote[] }>("/api/research"),

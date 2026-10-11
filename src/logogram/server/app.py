@@ -336,6 +336,27 @@ class HeadKindsRequest(AnalysisRequest):
     ci: float = Field(gt=0.5, lt=1.0)
 
 
+class LookRequest(AnalysisRequest):
+    """Any text, read without making a dataset."""
+
+    text: str = Field(min_length=1, max_length=4000)
+
+
+class LookPredictionsRequest(LookRequest):
+    top_k: int = Field(ge=1, le=20)
+    # The token whose layer-by-layer predictions to read; the last one when absent.
+    position: int | None = Field(default=None, ge=0)
+
+
+class LookAttentionRequest(LookRequest):
+    layer: int = Field(ge=0)
+    head: int = Field(ge=0)
+
+
+class LookFeaturesRequest(LookRequest):
+    top_k: int = Field(ge=1, le=20)
+
+
 class PredictionRequest(AnalysisRequest):
     dataset: str
     index: int = Field(ge=0)
@@ -934,6 +955,38 @@ def create_app(
         )
         with backend.lock:
             return head_kind_scores(backend, settings)
+
+    @app.post("/api/look", response_model=M.LookReport)
+    def look(body: LookPredictionsRequest) -> dict[str, Any]:
+        from logogram.inside import look_report
+
+        backend = _analysis_backend(body)
+        with backend.lock:
+            return look_report(
+                backend,
+                body.text,
+                prepend_bos=body.prepend_bos,
+                top_k=body.top_k,
+                position=body.position,
+            )
+
+    @app.post("/api/look/attention", response_model=M.LookAttention)
+    def look_attention(body: LookAttentionRequest) -> dict[str, Any]:
+        from logogram.inside import look_attention as attention
+
+        backend = _analysis_backend(body)
+        with backend.lock:
+            return attention(
+                backend, body.text, prepend_bos=body.prepend_bos, layer=body.layer, head=body.head
+            )
+
+    @app.post("/api/look/features", response_model=M.LookFeatures)
+    def look_features(body: LookFeaturesRequest) -> dict[str, Any]:
+        from logogram.inside import look_features as features
+
+        backend, sae = _analysis_backend(body), _sae()
+        with backend.lock:
+            return features(backend, sae, body.text, prepend_bos=body.prepend_bos, top_k=body.top_k)
 
     @app.post("/api/predictions", response_model=M.PredictionReport)
     def predictions(body: PredictionRequest) -> dict[str, Any]:

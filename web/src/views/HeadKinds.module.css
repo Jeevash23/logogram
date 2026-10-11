@@ -18,13 +18,8 @@
   gap: 12px 16px;
 }
 
-.controls > label,
-.controls > div {
+.number {
   width: 150px;
-}
-
-.controls > button {
-  width: auto;
 }
 
 .result {
