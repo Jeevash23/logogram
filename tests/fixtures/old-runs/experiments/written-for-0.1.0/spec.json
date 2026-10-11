@@ -1,0 +1,8 @@
+{
+  "name": "A version 1 spec, written by hand",
+  "model": {"id": "tiny-gpt2", "device": "cpu"},
+  "dataset": {"path": "datasets/ioi.jsonl"},
+  "experiment": {"kind": "activation_patching", "direction": "clean_to_corrupt"},
+  "scope": {"kind": "heads", "position": {"kind": "all"}},
+  "statistics": {"bootstrap": 200}
+}
