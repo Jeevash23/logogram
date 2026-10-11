@@ -167,6 +167,15 @@ export interface FolderListing {
   entries: { name: string; path: string; is_project: boolean }[];
 }
 
+/** A problem report to paste into an issue (logogram.support): its rows, and the same as text. */
+export interface ProblemReport {
+  rows: { label: string; value: string }[];
+  /** Whether the processor, GPUs, memory and operating system's version are in it. */
+  hardware: boolean;
+  text: string;
+  new_issue_url: string;
+}
+
 export interface SystemIssue {
   severity: "error" | "warning" | "info";
   title: string;

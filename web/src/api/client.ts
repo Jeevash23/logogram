@@ -21,6 +21,7 @@ import type {
   FeatureReport,
   ProjectInfo,
   PromptRecord,
+  ProblemReport,
   RecentProject,
   RobustnessChange,
   RunDetail,
@@ -160,6 +161,9 @@ export const api = {
   settings: (values: { system_check_seen?: boolean; theme?: ThemeSetting; update_check?: boolean; single_key_shortcuts?: boolean }) =>
     post<Record<string, unknown>>("/api/settings", values),
   system: () => get<SystemReport>("/api/system"),
+  /** A problem report, built by the server (which scrubs paths and names from the error) and
+   * sent nowhere. */
+  report: (body: { include_hardware: boolean; last_error: string | null }) => post<ProblemReport>("/api/report", body),
 
   folders: (path?: string) =>
     get<FolderListing>(`/api/fs${path ? `?path=${encodeURIComponent(path)}` : ""}`),

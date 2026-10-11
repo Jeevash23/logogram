@@ -233,6 +233,11 @@ interface Store {
   cancelConfirmOpen: boolean;
   /** The sheet of keyboard shortcuts (? or the command palette). */
   shortcutsOpen: boolean;
+  /** A dialog from the Help menu or the palette: the problem report, or About. */
+  helpDialog: "report" | "about" | null;
+  /** The last error the app showed (a notice, a view that stopped, or a failed start), for the
+   * problem report. */
+  lastError: string | null;
   notices: Notice[];
 
   // actions
@@ -393,6 +398,8 @@ export const useStore = create<Store>((set, get) => ({
   robustnessDialogOpen: false,
   cancelConfirmOpen: false,
   shortcutsOpen: false,
+  helpDialog: null,
+  lastError: null,
   notices: [],
 
   boot: async () => {
@@ -404,7 +411,8 @@ export const useStore = create<Store>((set, get) => ({
       else if (state.project) await get().enterProject(state.project);
       else set({ screen: "projects", pendingRoute: null });
     } catch (err) {
-      set({ screen: "error", bootError: err instanceof Error ? err.message : String(err) });
+      const message = err instanceof Error ? err.message : String(err);
+      set({ screen: "error", bootError: message, lastError: message });
     }
   },
 
@@ -484,7 +492,7 @@ export const useStore = create<Store>((set, get) => ({
     const notice: Notice = { id, tone, text, ...options };
     set((s) => {
       const others = notice.key ? s.notices.filter((n) => n.key !== notice.key) : s.notices;
-      return { notices: [...others.slice(-3), notice] };
+      return { notices: [...others.slice(-3), notice], ...(tone === "error" ? { lastError: text } : {}) };
     });
     // Errors, notices with an action and important ones stay until dismissed (WCAG 2.2.1).
     if (tone === "info" && !notice.action && !notice.persist) globalThis.setTimeout(() => get().dismiss(id), NOTICE_MS);

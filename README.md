@@ -89,6 +89,12 @@ jump to a head), **1–5** go to the open workspace's tabs, **[** and **]** step
 without Ctrl or ⌘ can be turned off there, or from the command palette, for speech input or keys
 pressed by accident.
 
+**Help**, in the top bar, lists the keyboard shortcuts, links to the sections of this guide,
+opens the system check, and shows the version and license with a way to check for updates.
+**Report a problem** builds a short report to paste into an issue: versions, the operating
+system's family, the device, the loaded model and the last error the app showed, with paths and
+names taken out. Nothing is sent; you copy it.
+
 The address keeps your place: the view, and the run it shows or the two it compares. Back and
 Forward move between views, a reload comes back to the same place, and **All projects** leads back
 to the open project as you left it.
@@ -215,14 +221,17 @@ logogram export RUN           a run's per-prompt values as CSV (-o FILE)
 logogram tasks                the tasks Logogram writes prompts for, with their options
 logogram generate TASK        a seeded dataset for a task (-n N --seed S, --option NAME=VALUE)
 logogram doctor               environment and hardware report, with fixes
+logogram doctor --report      a short report to paste into an issue (--hardware adds the hardware)
 logogram check-updates        ask PyPI whether a newer Logogram is out
 logogram serve --dev          API only, for working on the web app
 logogram --version
 ```
 
 The app listens on port 8765, or the next free one; `--port N` picks another (`--port 0` takes
-any free port) and `--no-browser` skips opening the browser. Commands that read runs use the
-project in the current folder or above it, or `--project PATH`; a run is its id or its folder.
+any free port) and `--no-browser` skips opening the browser. `--forwarded-port N` accepts the
+address of a port that forwards to the app, such as an SSH tunnel's (see
+[Running on a remote GPU](#running-on-a-remote-gpu)). Commands that read runs use the project in
+the current folder or above it, or `--project PATH`; a run is its id or its folder.
 
 `logogram run` writes a new experiment folder next to the original. When the spec came from a
 finished run, it also checks the new results against the old ones:
@@ -269,6 +278,92 @@ lg.write_dataset(project, "greater-than", records)
 Tables come back as pandas DataFrames when pandas is installed, and as pyarrow Tables otherwise.
 `lg.list_runs(project)` and `lg.load_run(project, run_id)` read runs made anywhere. A run that
 fails raises `lg.api.LogogramError` with the reason.
+
+## Running on a remote GPU
+
+Logogram can run on a machine you reach over SSH, such as a rented GPU, while you use it in the
+browser on your own computer. Everything still runs on the remote machine, which still listens on
+127.0.0.1 only: SSH carries the page to you.
+
+1. **Install it on the remote machine** and check that PyTorch sees the GPU:
+
+   ```bash
+   uv tool install logogram
+   logogram doctor
+   ```
+
+   The default Linux wheels include CUDA. If the GPU isn't used, `logogram doctor` says why and
+   gives the command that fixes it.
+
+2. **Start it there without a browser.** Run it inside `tmux` or `screen`, so that it keeps
+   running when the SSH connection drops:
+
+   ```bash
+   logogram --no-browser
+   ```
+
+   With a project open, that is `logogram open PATH --no-browser`. Logogram prints its address,
+   with a new session token:
+
+   ```text
+   Logogram 0.3.0 is running at:
+
+     http://127.0.0.1:8765/?token=…
+   ```
+
+   The port is 8765, or the next free one if something else has it: read it in that line.
+
+3. **Forward the port** from your own computer, in a terminal of its own, with the port from the
+   address (`gpu-box` is the remote machine, as you name it to `ssh`):
+
+   ```bash
+   ssh -N -L 8765:127.0.0.1:8765 gpu-box
+   ```
+
+4. **Open the printed address** in the browser on your own computer. Copy it from the terminal
+   rather than putting the token in a command. It works until Logogram stops; each start makes a
+   new token.
+
+If port 8765 is taken on your own computer (by a Logogram of its own, say), forward another
+local port, and start the remote Logogram with that port allowed:
+
+```bash
+ssh -N -L 9000:127.0.0.1:8765 gpu-box
+```
+
+```bash
+logogram --no-browser --forwarded-port 9000
+```
+
+It then prints the address on port 9000 too. `logogram open` and `logogram serve` take the same
+option; it can be repeated, or given as `LOGOGRAM_FORWARDED_PORTS=9000,9001`. Without it, the
+page says that Logogram didn't answer (status 421) and which option to add. Only the loopback
+names 127.0.0.1, localhost and [::1] are accepted, and the session token is needed as always: a
+tunnel or service that puts Logogram on another address is refused by design.
+
+**Where things live.** Everything is on the remote machine:
+
+* Projects are in its documents folder, `~/Documents/Logogram` on Linux (the example is copied to
+  `~/Documents/Logogram/ioi-example`). The app's folder browser shows the remote machine's
+  folders.
+* Models download into its Hugging Face cache, `~/.cache/huggingface/hub` unless `HF_HOME` or
+  `HF_HUB_CACHE` says otherwise; point `HF_HOME` at a larger disk if the home folder is small
+  (`logogram doctor` warns when the cache's disk is nearly full). For gated models, run
+  `hf auth login` on the remote machine.
+* Settings and the list of recent projects are in `~/.config/logogram`.
+
+**Copying runs back.** A project is a folder: copy it with `rsync` or `scp`, from your own
+computer.
+
+```bash
+rsync -a gpu-box:Documents/Logogram/my-project/ my-project/
+```
+
+Each run is a folder in `experiments/`, and the prompts it ran on are in `datasets/` (with the
+exact bytes in `datasets/snapshots/`), so copy the whole project, or both of those folders. Inside
+the copy, `logogram list` and `logogram show RUN` read its runs, and `logogram open my-project`
+shows them in the app. The manifests record the remote device and GPU: a rerun on another device
+can differ in the last digits, so compare per-prompt values before treating the two as the same.
 
 ## Prompts
 
@@ -586,8 +681,12 @@ treating them as equivalent.
 * The server listens on 127.0.0.1 only. Every request needs the random session token from the
   address printed in the terminal (exchanged for a same-site cookie when the page opens). The
   browser is opened with a single-use code instead, because other users of a shared machine can
-  read a program's command line. The server checks the Host and Origin headers, sends no CORS
+  read a program's command line. The server checks the Host and Origin headers (loopback names
+  on its own port, and on the forwarded ports you name with `--forwarded-port`), sends no CORS
   headers, and refuses cross-site requests.
+* A problem report (**Help → Report a problem**, or `logogram doctor --report`) is built on your
+  machine and sent nowhere. It never names users, hosts or paths (they are taken out of the error
+  it quotes), and names hardware models only if you tick **Include hardware details**.
 * Projects are often shared, so Logogram treats their contents with care: it writes only into
   folders that are really inside the project (never through a symlink that leads out of it), and
   a damaged, oversized or unexpected file shows up as an error on that file rather than breaking
@@ -672,6 +771,110 @@ so an experiment can be rerun at several points of training.
 
 Some tokenizers, such as Qwen's, have no beginning-of-sequence token. Logogram then runs prompts
 without one, and the spec records it.
+
+## Troubleshooting
+
+The messages people see most often, as Logogram shows them, and what to do. If yours isn't here,
+**Help → Report a problem** (or `logogram doctor --report`) builds a report to paste into a
+[new issue](https://github.com/Jeevash23/logogram/issues/new/choose); it sends nothing.
+
+**The page**
+
+* *Logogram needs its session token.* (status 401): the page was opened without the session
+  token, or with an old one. Open the address printed in the terminal where Logogram runs, the one
+  ending in `?token=…`. Each start makes a new token, and the address the browser was first
+  opened with works only once.
+* *This page's session has ended. Open the link printed in the terminal where Logogram is
+  running.* Logogram was restarted, so the tab's token is no longer valid: open the new address.
+* *Can't reach the Logogram server. Check that `logogram` is still running in your terminal.*
+  The server stopped, or the SSH tunnel to it closed. Start it, or the tunnel, again.
+* *Logogram didn't answer this request: it was sent to 127.0.0.1:9000, and this Logogram listens
+  on port 8765.* (status 421): the browser reached Logogram through a port it wasn't told about,
+  usually an SSH tunnel's local end. Start Logogram with `--forwarded-port 9000` (see
+  [Running on a remote GPU](#running-on-a-remote-gpu)). An address with another name, such as
+  the machine's own, is refused on any port: open it at 127.0.0.1 instead. Logogram answers only
+  to 127.0.0.1, localhost and [::1], so that other websites can't reach it.
+
+**A model that won't load**
+
+* *… is gated. Accept its license on huggingface.co, then log in on this machine with
+  `hf auth login` and try again.* Do both on the machine where Logogram runs.
+* *No model called … was found on Hugging Face.* Check the id, which looks like `owner/name`.
+  Private models need `hf auth login` first.
+* *Couldn't reach Hugging Face, and … isn't in your local cache.* A model downloads once, the first
+  time it loads: connect to the internet for that.
+* *This model only publishes pickle weights (.bin).* Logogram loads safetensors weights only,
+  because pickle files can run code when opened. Choose a model that publishes
+  `model.safetensors`.
+* *TransformerLens … can't load … models, so Logogram can't either.* The model dialog says so
+  before downloading anything: choose a model of a supported family, such as GPT-2, Llama, Qwen,
+  Gemma, Pythia or OLMo.
+* *Processing the weights of … changed its predictions …* Load it with weight processing off:
+  untick **Process weights** in the model dialog, or set `"process_weights": false` in the spec.
+* *In float16, …'s own forward pass gives values that aren't finite numbers (it overflows), so its
+  predictions can't be checked. Load it in bfloat16 or float32, which have a wider range than
+  float16.* Pythia is one such model.
+* *The spec asks for CUDA, but PyTorch can't see a CUDA GPU here.* `logogram doctor` names the
+  cause, usually a CPU-only PyTorch, and the command that fixes it. Or set `model.device` to
+  `auto` or `cpu` in the spec.
+
+**A model or a run that doesn't fit.** The model dialog estimates, before downloading, the memory
+a model needs against what is free, and the experiment form's summary says whether a batch fits.
+
+* *The model doesn't fit in GPU memory while its weights are processed …* Processing works on
+  float32 copies of the weights, several times their size, for a moment: load it with weight
+  processing off, or choose a 16-bit dtype, a smaller model or another device.
+* *The model doesn't fit in GPU memory. Choose a smaller model, a 16-bit dtype or another device.*
+* *The run ran out of GPU memory at a batch of 64 rows. Lower execution.batch_size in the spec …*
+  Attribution patching, direct logit attribution and path patching hold every layer's activations
+  at once, so they need smaller batches than patching does.
+
+**Prompts and answers.** The app shows both prompts of each pair token by token, and says which
+pairs can't be used, and why:
+
+* *the answer ' Mary Mary' is several tokens (' Mary' + ' Mary'). The logit difference reads one
+  token …* Use a single-token answer, usually with a leading space (`" Mary"`, not `"Mary"`), or a
+  log-probability or probability metric, which read answers of several tokens. Prompts generated
+  in the app with the model loaded use only words that are single tokens for it.
+* *clean has 15 tokens and corrupt has 16, so positions can't be aligned.* Change what differs
+  between the two prompts to words with the same number of tokens.
+* *position 'S2' (characters 38–42) doesn't cover any token.* The span's character offsets don't
+  reach a token of the clean prompt: correct them.
+* *This model's tokenizer has no beginning-of-sequence token. Set tokenization.prepend_bos to
+  false in the spec.* The app does this by itself when such a model loads; a spec written by hand
+  must say so.
+
+**Apple Silicon (MPS)**
+
+* **Automatic** runs on the CPU: TransformerLens reports that Apple's MPS can give silently wrong
+  results, and Logogram hasn't been checked on it, so MPS is used only when you choose it under
+  **Device**. Check results that matter by rerunning on the CPU and comparing the two runs.
+* *The spec asks for Apple's MPS, which isn't available here. Set model.device to auto or cpu.*
+  The spec was made on a Mac: change its `model.device`.
+* `logogram doctor` says *Python is running under Rosetta*: an Intel Python can't use the Apple
+  GPU. Install a native arm64 Python and reinstall Logogram with it, as it says.
+* `logogram doctor` says *Apple GPU (MPS) unavailable*: MPS needs macOS 12.3 or later.
+
+**Windows**
+
+* *dataset.path must be a path inside the project, written with forward slashes and without '..',
+  such as datasets/ioi.jsonl*: specs travel between machines, so their paths are relative to the
+  project and use forward slashes, on Windows too.
+* A path with spaces needs quotes, in PowerShell and the Command Prompt alike:
+  `logogram open "D:\Research projects\ioi"`. A project's path may start with `~` for your home
+  folder: `logogram open ~/Documents/Logogram/ioi-example`.
+* `logogram doctor` says *Your NVIDIA GPU isn't being used*: this PyTorch is CPU-only. Reinstall
+  with the command it gives, which picks the CUDA build that matches your driver.
+* A warning that the Hugging Face cache uses symlinks, but your machine doesn't support them, is
+  harmless: downloads take more disk space. Windows' Developer Mode lets the cache use symlinks.
+
+**A run that failed.** The results page says **This run failed**, with the reason, and
+**Edit and rerun** puts its spec back in the form. The same reason is saved in the run's folder,
+in `experiments/<id>/manifest.json` under `"error"`, without this machine's paths; `logogram list`
+shows the run as failed. *The server stopped before this run finished. Rerun its saved spec.*
+means Logogram stopped while the run was going (an SSH session that closed without `tmux`, for
+example): the spec is saved, so run it again. Warnings from Logogram and its libraries appear in
+the terminal where it runs.
 
 ## Development
 

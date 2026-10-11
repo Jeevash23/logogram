@@ -100,4 +100,23 @@ test("every view has no accessibility violations", async ({ page }) => {
     await open(page, view);
     await expectAccessible(page, `Evidence, ${view}`);
   }
+  // Help: its menu, the problem report (with and without the hardware) and About.
+  const help = page.getByRole("banner").getByRole("button", { name: "Help", exact: true });
+  await help.click();
+  await expect(page.getByRole("menu")).toBeVisible();
+  await expectAccessible(page, "The Help menu");
+  await page.getByRole("menuitem", { name: "Report a problem…" }).click();
+  const report = page.getByRole("dialog", { name: "Report a problem" });
+  await expect(report.getByRole("region", { name: "The report" })).toBeVisible();
+  await expectAccessible(page, "Report a problem");
+  await report.getByRole("checkbox", { name: "Include hardware details" }).check();
+  await expect(report.getByText("Processor", { exact: true })).toBeVisible();
+  await expectAccessible(page, "Report a problem, with hardware details");
+  await page.keyboard.press("Escape");
+  await expect(report).toBeHidden();
+  await help.click();
+  await page.getByRole("menuitem", { name: "About Logogram" }).click();
+  await expect(page.getByRole("dialog", { name: "About Logogram" }).getByRole("heading", { name: "Updates" })).toBeVisible();
+  await expectAccessible(page, "About Logogram");
+  await page.keyboard.press("Escape");
 });
