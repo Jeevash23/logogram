@@ -140,6 +140,18 @@ class ModelBackend(ABC):
     def attention_pattern(self, tokens: torch.Tensor, layer: int) -> torch.Tensor:
         """Attention probabilities ``[B, H, query, key]`` in float32."""
 
+    def attention_patterns(
+        self, tokens: torch.Tensor, layers: list[int]
+    ) -> dict[int, torch.Tensor]:
+        """Attention probabilities ``[B, H, query, key]`` in float32 for each of ``layers``: one
+        forward pass where the backend can (this default runs one per layer)."""
+        return {layer: self.attention_pattern(tokens, layer) for layer in layers}
+
+    def token_space(self) -> tuple[int, frozenset[int]]:
+        """How many token ids the tokenizer has, and which of them are special (beginning or end
+        of sequence, padding): what random token sequences may be drawn from."""
+        return self.info.d_vocab, frozenset()
+
     def edit_logits(
         self,
         tokens: torch.Tensor,

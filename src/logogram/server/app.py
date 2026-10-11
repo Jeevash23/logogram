@@ -325,6 +325,17 @@ class AttentionRequest(AnalysisRequest):
     which: Literal["clean", "corrupt"] = "clean"
 
 
+class HeadKindsRequest(AnalysisRequest):
+    """Score every head as a previous-token, duplicate-token and induction head on seeded random
+    sequences repeated twice. Every choice that changes the scores is stated."""
+
+    seed: int = Field(ge=0, lt=2**32)
+    sequences: int = Field(ge=2, le=512)
+    length: int = Field(ge=2, le=4096)
+    bootstrap: int = Field(ge=100, le=100_000)
+    ci: float = Field(gt=0.5, lt=1.0)
+
+
 class PredictionRequest(AnalysisRequest):
     dataset: str
     index: int = Field(ge=0)
@@ -906,6 +917,23 @@ def create_app(
                 prepend_bos=body.prepend_bos,
                 batch_size=body.batch_size,
             )
+
+    @app.post("/api/heads/kinds", response_model=M.HeadKinds)
+    def head_kinds(body: HeadKindsRequest) -> dict[str, Any]:
+        from logogram.heads import HeadKindSettings, head_kind_scores
+
+        backend = _analysis_backend(body)
+        settings = HeadKindSettings(
+            seed=body.seed,
+            sequences=body.sequences,
+            length=body.length,
+            prepend_bos=body.prepend_bos,
+            batch_size=body.batch_size,
+            bootstrap=body.bootstrap,
+            ci=body.ci,
+        )
+        with backend.lock:
+            return head_kind_scores(backend, settings)
 
     @app.post("/api/predictions", response_model=M.PredictionReport)
     def predictions(body: PredictionRequest) -> dict[str, Any]:

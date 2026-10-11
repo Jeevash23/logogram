@@ -36,6 +36,7 @@ __all__ = [
     "compare_runs",
     "create_project",
     "generate",
+    "head_kinds",
     "list_runs",
     "load_model",
     "load_run",
@@ -114,6 +115,37 @@ def run(
     if outcome.status != "finished":
         raise LogogramError(f"The run {outcome.status}: {outcome.manifest.get('error')}")
     return load_run(project, outcome.run_id, model=outcome.backend)
+
+
+def head_kinds(
+    model: Any,
+    *,
+    seed: int = 0,
+    sequences: int = 32,
+    length: int = 32,
+    prepend_bos: bool = True,
+    batch_size: int = 16,
+    bootstrap: int = 1000,
+    ci: float = 0.95,
+) -> dict[str, Any]:
+    """Score every head of ``model`` (from :func:`load_model`) as a previous-token,
+    duplicate-token and induction head, on ``sequences`` seeded random sequences of ``length``
+    tokens repeated twice. Returns, per kind, each head's mean score with its bootstrap interval
+    over sequences, the per-sequence values, and the strongest heads; the app shows the same in
+    the Attention view."""
+    from logogram.heads import HeadKindSettings, head_kind_scores
+
+    settings = HeadKindSettings(
+        seed=seed,
+        sequences=sequences,
+        length=length,
+        prepend_bos=prepend_bos,
+        batch_size=batch_size,
+        bootstrap=bootstrap,
+        ci=ci,
+    )
+    with model.lock:
+        return head_kind_scores(model, settings)
 
 
 def list_runs(project: Project) -> list[dict[str, Any]]:

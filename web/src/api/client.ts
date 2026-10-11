@@ -37,6 +37,7 @@ import type {
   ResearchNote,
   PredictionReport,
   PredictionSettings,
+  HeadKindsReport,
   QueueAdded,
   QueuedRun,
   RunMemory,
@@ -214,6 +215,8 @@ export const api = {
     which: "clean" | "corrupt";
   } & AnalysisOptions) => post<AttentionData>("/api/attention", body),
   predictions: (body: { dataset: string; index: number; settings: PredictionSettings } & AnalysisOptions) => post<PredictionReport>("/api/predictions", body),
+  headKinds: (body: { seed: number; sequences: number; length: number; bootstrap: number; ci: number } & AnalysisOptions) =>
+    post<HeadKindsReport>("/api/heads/kinds", body),
   research: () => get<{ logogram_research: 1; notes: ResearchNote[] }>("/api/research"),
   saveNote: (value: NoteInput, edit?: { id: string; revision: number }) => edit
     ? request<ResearchNote>("PUT", `/api/research/${encodeURIComponent(edit.id)}`, { ...value, revision: edit.revision })

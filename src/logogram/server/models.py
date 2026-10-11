@@ -335,6 +335,32 @@ class AttentionData(_Out):
     length: int
 
 
+class HeadKindScores(_Out):
+    description: str
+    # [layer][head]: the mean over sequences and its bootstrap interval.
+    mean: list[list[float]]
+    lo: list[list[float]]
+    hi: list[list[float]]
+    # [sequence][layer][head]: the values the statistics come from.
+    per_sequence: list[list[list[float]]]
+
+
+class TopHead(_Out):
+    layer: int
+    head: int
+    mean: float
+    lo: float
+    hi: float
+
+
+class HeadKinds(_Out):
+    settings: dict[str, Any]
+    n_layers: int
+    n_heads: int
+    kinds: dict[Literal["previous_token", "duplicate_token", "induction"], HeadKindScores]
+    top: dict[Literal["previous_token", "duplicate_token", "induction"], list[TopHead]]
+
+
 class PredictionLayer(_Out):
     layer: int
     top: list[TopToken]

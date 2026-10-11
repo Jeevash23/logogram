@@ -9,6 +9,7 @@ import { useAnalysisContext } from "../lib/hooks";
 import { inkScale } from "../lib/color";
 import { visibleToken } from "../lib/format";
 import { useStore } from "../store/app";
+import { HeadKinds } from "./HeadKinds";
 import s from "./views.module.css";
 import a from "./AttentionView.module.css";
 
@@ -100,15 +101,6 @@ export function AttentionView() {
   const selectedCol = Math.min(keyPosition, last);
   const selectedCell = useMemo(() => (selectedRow === null ? null : { r: selectedRow, c: selectedCol }), [selectedRow, selectedCol]);
 
-  if (!head) {
-    return (
-      <div className={s.view}>
-        <Empty title="Select an attention head" action={<Button onClick={() => useStore.getState().setView("explore")}>Explore the model</Button>}>
-          Click a head on the model map, or move to one with the arrow keys, to see where it attends.
-        </Empty>
-      </div>
-    );
-  }
   if (model.state !== "ready") {
     return (
       <div className={s.view}>
@@ -118,6 +110,25 @@ export function AttentionView() {
         >
           Attention patterns are computed live from the loaded model.
         </Empty>
+      </div>
+    );
+  }
+  if (!head) {
+    return (
+      <div className={s.view}>
+        <div className={s.head}>
+          <div className={s.titleBlock}>
+            <h1 className={s.title}>Choose a head to see where it attends</h1>
+            <p className={s.subtitle}>
+              Choose a head on the model map, or move to one with the arrow keys. Or find heads by what they do, below, and
+              choose one there.
+            </p>
+          </div>
+          <div className={s.headActions}>
+            <Button onClick={() => useStore.getState().setView("explore")}>Open the model map</Button>
+          </div>
+        </div>
+        <HeadKinds />
       </div>
     );
   }
@@ -233,6 +244,7 @@ export function AttentionView() {
           </p>
         </>
       )}
+      <HeadKinds />
     </div>
   );
 }

@@ -66,6 +66,14 @@ test("every view has no accessibility violations", async ({ page }) => {
   for (const view of ["Attention", "Head comparison", "Layer predictions", "Features"]) {
     await open(page, view);
     await expectAccessible(page, `Explore, ${view}`);
+    if (view === "Attention") {
+      const finder = page.getByRole("region", { name: "Find heads by what they attend to" });
+      await finder.getByLabel("Tokens in each copy").fill("8");
+      await finder.getByLabel("Sequences").fill("4");
+      await finder.getByRole("button", { name: "Find heads", exact: true }).click();
+      await expect(finder.getByRole("group", { name: "Induction scores of every head" })).toBeVisible();
+      await expectAccessible(page, "Explore, heads found by what they attend to");
+    }
   }
   await page.getByLabel("Features on each token").locator("button[aria-pressed]").first().click();
   await expect(page.getByText("Where it fires most")).toBeVisible();

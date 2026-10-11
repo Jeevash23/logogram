@@ -18,6 +18,7 @@ _API = (
     "compare_runs",
     "create_project",
     "generate",
+    "head_kinds",
     "list_runs",
     "load_model",
     "load_run",

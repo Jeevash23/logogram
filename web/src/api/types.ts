@@ -838,6 +838,35 @@ export interface BaselineReport {
   } | null;
 }
 
+export type HeadKindName = "previous_token" | "duplicate_token" | "induction";
+
+export interface HeadKindScores {
+  description: string;
+  /** [layer][head]: the mean over sequences and its bootstrap interval. */
+  mean: number[][];
+  lo: number[][];
+  hi: number[][];
+  /** [sequence][layer][head]: the values the statistics come from. */
+  per_sequence: number[][][];
+}
+
+export interface TopHead {
+  layer: number;
+  head: number;
+  mean: number;
+  lo: number;
+  hi: number;
+}
+
+/** Every head scored by what it attends to on random tokens repeated twice (POST /api/heads/kinds). */
+export interface HeadKindsReport {
+  settings: { seed: number; sequences: number; length: number; prepend_bos: boolean; batch_size: number; bootstrap: number; ci: number };
+  n_layers: number;
+  n_heads: number;
+  kinds: Record<HeadKindName, HeadKindScores>;
+  top: Record<HeadKindName, TopHead[]>;
+}
+
 export interface AttentionData {
   layer: number;
   head: number;
