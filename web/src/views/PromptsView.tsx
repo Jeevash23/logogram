@@ -414,12 +414,14 @@ function DatasetPrompts({ path, dataset, onSaved }: { path: string; dataset: Dat
   const [name, setName] = useState<string | null>(null);
   const newName = name ?? suggestion;
   const problem = nameProblem(newName, taken);
+  // A dataset needs at least one prompt pair; the server says so too.
+  const emptied = edits !== undefined && edits.removed.length >= dataset.n;
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const editsTitle = useId();
 
   const save = async () => {
-    if (!edits || problem) return;
+    if (!edits || problem || emptied) return;
     setSaving(true);
     setSaveError(null);
     try {
@@ -483,7 +485,13 @@ function DatasetPrompts({ path, dataset, onSaved }: { path: string; dataset: Dat
               <Button onClick={() => setConfirmDiscard(true)}>Discard edits</Button>
             </div>
           ) : (
-            <div className={p.saveRow}>
+            <form
+              className={p.saveRow}
+              onSubmit={(e) => {
+                e.preventDefault();
+                void save();
+              }}
+            >
               <Field label="New dataset name" help={problem ? <span className={p.problem}>{problem}</span> : undefined}>
                 <Input
                   value={newName}
@@ -494,14 +502,15 @@ function DatasetPrompts({ path, dataset, onSaved }: { path: string; dataset: Dat
                   }}
                 />
               </Field>
-              <Button variant="primary" disabled={!!problem || saving} onClick={() => void save()}>
+              <Button variant="primary" type="submit" disabled={!!problem || emptied || saving}>
                 {saving ? "Saving…" : "Save as a new dataset"}
               </Button>
               <Button disabled={saving} onClick={() => setConfirmDiscard(true)}>
                 Discard edits
               </Button>
-            </div>
+            </form>
           )}
+          {emptied && <p className={p.blocked}>Every prompt pair is removed. Restore at least one to save a new dataset.</p>}
           {saveError && <Callout tone="error">{saveError}</Callout>}
         </section>
       )}

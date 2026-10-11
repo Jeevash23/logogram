@@ -42,6 +42,12 @@
   color: var(--alert);
 }
 
+/* Why the edits can't be saved yet. */
+.blocked {
+  font-size: var(--text-xs);
+  color: var(--alert);
+}
+
 .toolbar {
   display: flex;
   flex-wrap: wrap;

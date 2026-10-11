@@ -218,7 +218,13 @@ test("prompts the model can't use are removed in one step, and the rest saved as
   await expect(unusable.getByRole("button", { name: "Remove this prompt", exact: true })).toBeDisabled();
   const bar = page.getByRole("region", { name: "Unsaved edits" });
   await expect(bar).toContainText("1 prompt pair removed. mixed.jsonl stays as it is");
-  await bar.getByRole("button", { name: "Save as a new dataset", exact: true }).click();
+  // A dataset keeps at least one pair.
+  for (const i of [0, 1]) await page.getByRole("button", { name: `Remove prompt ${i}`, exact: true }).click();
+  await expect(bar).toContainText("Every prompt pair is removed. Restore at least one to save a new dataset.");
+  await expect(bar.getByRole("button", { name: "Save as a new dataset", exact: true })).toBeDisabled();
+  for (const i of [0, 1]) await page.getByRole("button", { name: `Restore prompt ${i}`, exact: true }).click();
+  // Enter in the name saves, as the button does.
+  await bar.getByRole("textbox", { name: "New dataset name" }).press("Enter");
   await expect(page.getByRole("heading", { level: 1, name: "2 prompt pairs in mixed-edited.jsonl" })).toBeVisible();
   await expect(page.getByText("can't be used with this model")).toHaveCount(0);
   expect(errors).toEqual([]);
