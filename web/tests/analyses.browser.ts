@@ -5,7 +5,7 @@ import { test, expect, type Page } from "@playwright/test";
 
 test.describe.configure({ mode: "serial" });
 
-const ORIGIN = { origin: "http://127.0.0.1:8877" };
+const ORIGIN = { origin: `http://127.0.0.1:${process.env.LOGOGRAM_BROWSER_PORT ?? "8877"}` };
 let previous: string | null = null;
 
 test.beforeEach(async ({ page }) => {
