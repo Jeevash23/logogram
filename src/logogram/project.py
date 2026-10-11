@@ -31,12 +31,16 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from logogram.datasets import DatasetError, file_sha256, load_dataset
 from logogram.fileio import JSON_LIMIT, read_limited, write_text_atomic
+from logogram.owner import OWNER_STOPPED, SERVER_STOPPED, owner_state, read_owner
 from logogram.schema import Manifest, RunListing, Summary
 from logogram.spec import Spec, describe_experiment
 
 PROJECT_FILE = "project.json"
 GITIGNORE = "# Logogram caches\n.logogram/\n__pycache__/\n"
 APP_NAME = "logogram"
+# What a failed run kept of the error that stopped it, with this machine's paths scrubbed.
+TRACEBACK_FILE = "traceback.txt"
+TRACEBACK_LIMIT = 1024**2
 
 
 class ProjectError(ValueError):
@@ -291,9 +295,16 @@ class Project:
             manifest, summary_meta = {}, {}
             error = "Run metadata is unreadable or invalid. Restore its manifest and summary from a backup, or rerun the spec."
         status = manifest.get("status") or "draft"
+        elsewhere = False
         if run_id in self.interrupted_runs:
             status = "failed"
-            error = "The server stopped before this run finished. Rerun its saved spec."
+            error = SERVER_STOPPED
+        elif status == "running":
+            # Still going here or in another process, or interrupted (see logogram.owner).
+            state = owner_state(read_owner(self, folder))
+            if state == "gone":
+                status, error = "failed", OWNER_STOPPED
+            elsewhere = state == "elsewhere"
         if error or (
             status == "finished"
             and (
@@ -320,7 +331,18 @@ class Project:
             derived_from=manifest.get("derived_from"),
             error=error or manifest.get("error"),
             profile=layer_profile(summary_meta) if status == "finished" else None,
+            elsewhere=elsewhere and status == "running",
         )
+
+    def run_traceback(self, run_id: str) -> str | None:
+        """The traceback a failed run kept (with this machine's paths scrubbed), if it has one."""
+        path = self.run_dir(run_id) / TRACEBACK_FILE
+        if not os.path.lexists(path):
+            return None
+        raw = read_limited(
+            self.readable(path), TRACEBACK_LIMIT, "Logogram never writes one that large."
+        )
+        return raw.decode("utf-8", errors="replace")
 
     def last_modified(self) -> str:
         latest = (self.root / PROJECT_FILE).stat().st_mtime
