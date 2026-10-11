@@ -66,7 +66,7 @@ export function HeadComparisonView() {
           {pin ? <>
             <div className={h.heading}><div><p className={s.faint}>Head {slot + 1}</p><h2>{componentLabel(pin)}</h2></div><div className={s.headActions}><Button size="small" onClick={() => { useStore.setState({ selection: pin, exploreMode: "layer" }); useStore.getState().setView("explore"); }}>Open layer</Button><Button size="small" variant="ghost" onClick={() => useStore.getState().pinHead(pin)}>Remove</Button></div></div>
             <div className={h.evidence}>
-              <span className={s.small}>Intervention evidence · {run.detail?.spec.name ?? "No selected run"}</span>
+              <span className={s.small}>Intervention evidence · {(run.detail && run.title) || "No selected run"}</span>
               {evidence ? <><strong>{signed(evidence.effect.mean, 3)}<span> normalized effect</span></strong><span className={s.small}>{run.ciLevel}% CI {ci(evidence.effect.lo, evidence.effect.hi, 3)} · n = {evidence.n} · {site?.position_key === "all" ? "all positions" : `position ${site?.position_key}`}</span></> : <p className={s.small}>No single measured intervention at this selection. Choose a position in Evidence if this head has several measurements.</p>}
             </div>
             {d && <>

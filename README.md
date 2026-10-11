@@ -106,6 +106,15 @@ When an action elsewhere replaces the experiment form (**Patch here**, **Edit an
 sites), a notice offers to undo it. An unsaved form is kept in this browser for each project and
 restored when the project opens again; saving, running or queueing it clears that copy.
 
+**History** finds runs by title, name, id, method, model or dataset, and shows every run, the
+starred ones, or the archive. A run's menu renames it (or F2 on it), stars it, archives it or
+deletes it. Its title, star and archive mark live in the run's `annotations.json`, never in its
+spec, which records what ran. Archiving keeps a run, out of the history's way; deleting asks
+first, then removes the run's folder for good. There is no trash: a deleted run kept out of sight
+in the project would still travel with it, manifest and all, when the project is shared. Runs
+derived from a deleted run stay, and say so. A run whose spec can't be read is listed as
+unreadable, with what is wrong and how to fix it, and can be deleted.
+
 Use **History** to reopen experiments or compare two runs. On **Compare runs**, choose a cell (or a
 row of the table) to see that site in both runs: each run's effect and interval, the difference
 (paired prompt by prompt when the runs share prompts), its flags, and a way into each run at that
@@ -205,7 +214,11 @@ logogram                      start the app and open the browser
 logogram open PATH            start with a project open
 logogram run SPEC.json        run an experiment headlessly and print a summary
 logogram validate SPEC.json   check a spec without running it, and say what it left out
-logogram list                 the project's runs and drafts, newest first
+logogram list                 the project's runs and drafts, newest first (--archived for all)
+logogram rename RUN TITLE     show a title instead of the spec's name ("" clears it)
+logogram star RUN             star a run (--remove takes the star off)
+logogram archive RUN          keep a run out of the list (--restore brings it back)
+logogram delete RUN           delete a run's folder for good, after asking (--yes doesn't ask)
 logogram show RUN             a finished run's method, baseline and strongest sites, or why it failed
 logogram compare RUN RUN      how two runs agree, with paired differences where they can be paired
 logogram diff A B             every choice that differs between two runs or spec files
@@ -277,6 +290,9 @@ Tables come back as pandas DataFrames when pandas is installed, and as pyarrow T
 `lg.list_runs(project)` and `lg.load_run(project, run_id)` read runs made anywhere. A run that
 fails raises `lg.api.LogogramError` with the reason, and `lg.load_run(project, run_id).traceback`
 reads the traceback it kept. Interrupting the kernel records the run as cancelled.
+`run.rename("Name movers")`, `run.star()` and `run.archive()` change what the history shows
+(`run.title`, `run.starred`, `run.archived`), and `lg.delete_run(project, run)` deletes a run's
+folder for good.
 
 ## Prompts
 

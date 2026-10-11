@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 
 import { api } from "../api/client";
-import type { NoteInput, ResearchNote, SiteSpec } from "../api/types";
+import type { NoteInput, ResearchNote, RunListing, SiteSpec } from "../api/types";
 import { Button, Callout, Dialog, Empty, Field, Input, Spinner, TextArea } from "../components/ui";
 import { ago, shortRevision } from "../lib/format";
 import { modelName } from "../lib/hooks";
+import { runTitle } from "../lib/runs";
 import { isResidKind, partOfKind, type Selection } from "../lib/sites";
 import { positionKey, positionText, siteText } from "../lib/spec";
 import { useStore } from "../store/app";
@@ -20,6 +21,7 @@ export function selectionFromNote(site: SiteSpec): Selection {
 export function ResearchView() {
   const project = useStore(st => st.project?.session_id);
   const version = useStore(st => st.researchVersion);
+  const runs = useStore(st => st.runs);
   const [notes, setNotes] = useState<ResearchNote[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -38,7 +40,10 @@ export function ResearchView() {
     setError(null); setBusy(true);
     try {
       const before = useStore.getState().project?.session_id;
-      if (note.run_id) {
+      // A note whose run was deleted keeps its sites: they open on the model map, as a note saved
+      // while exploring does.
+      const listed = note.run_id ? useStore.getState().runs.find((x) => x.id === note.run_id && !x.damaged) : undefined;
+      if (note.run_id && listed) {
         await useStore.getState().openRun(note.run_id);
         if (before !== useStore.getState().project?.session_id) return;
         if (!useStore.getState().runDetails[note.run_id]) throw new Error("This selection’s run is unavailable. Restore its run folder to this project to open it.");
@@ -46,7 +51,9 @@ export function ResearchView() {
         const info = useStore.getState().model.info;
         const m = note.model;
         if (!info || info.id !== m.id || (m.revision && m.revision !== info.revision) || info.dtype !== m.dtype || info.process_weights !== m.process_weights || (m.device !== "auto" && m.device !== info.device)) {
-          throw new Error("Load this note’s model with the recorded revision, dtype, device and weight processing, then open the selection again.");
+          throw new Error(note.run_id
+            ? "This note’s run is no longer in the project. Load the note’s model with the recorded revision, dtype, device and weight processing to open its selection on the model map."
+            : "Load this note’s model with the recorded revision, dtype, device and weight processing, then open the selection again.");
         }
         await useStore.getState().openRun(null);
         useStore.setState({ analysisSource: "form" });
@@ -79,10 +86,18 @@ export function ResearchView() {
       <div className={r.noteHeading}><div><h2>{note.title}</h2><p className={s.small}>{modelName(note.model.id)} · revision {shortRevision(note.model.revision)} · {note.model.dtype} · {note.model.device} · weights {note.model.process_weights ? "processed" : "original"}</p></div><time className={s.faint} dateTime={note.updated} title={note.updated}>{ago(note.updated)}</time></div>
       {note.body ? <p className={r.body}>{note.body}</p> : <p className={s.faint}>No written observation yet.</p>}
       <div className={r.sites}>{note.sites.map((site, i) => <span key={i}>{siteText(site)} · {positionText(site.position)}</span>)}</div>
-      <div className={r.footer}><span className={s.faint}>{note.run_id ? `Source run · ${note.run_id}` : "Saved from model exploration"}</span><div className={s.headActions}><Button size="small" variant="ghost" disabled={busy} onClick={() => setRemoving(note)}>Delete</Button><Button size="small" disabled={busy} onClick={() => useStore.setState({ noteEditor: { value: inputOf(note), edit: { id: note.id, revision: note.revision } } })}>Edit note</Button><Button size="small" disabled={busy} onClick={() => void restore(note)}>Open selection</Button></div></div>
+      <div className={r.footer}><span className={s.faint}>{sourceText(note, runs)}</span><div className={s.headActions}><Button size="small" variant="ghost" disabled={busy} onClick={() => setRemoving(note)}>Delete</Button><Button size="small" disabled={busy} onClick={() => useStore.setState({ noteEditor: { value: inputOf(note), edit: { id: note.id, revision: note.revision } } })}>Edit note</Button><Button size="small" disabled={busy} onClick={() => void restore(note)}>Open selection</Button></div></div>
     </article>)}</div>
     <Dialog open={!!removing} onOpenChange={open => { if (!open && !busy) setRemoving(null); }} title="Delete this research note?" description={removing?.title} footer={<><Button disabled={busy} onClick={() => setRemoving(null)}>Keep note</Button><Button variant="primary" disabled={busy} onClick={() => void remove()}>Delete note</Button></>}><p>The saved selection and written observation will be removed from this project. Its experiment run will remain available.</p></Dialog>
   </div>;
+}
+
+/** Where a note came from: its run by title (and id), a run since deleted, or exploring. */
+function sourceText(note: ResearchNote, runs: RunListing[]): string {
+  if (!note.run_id) return "Saved from model exploration";
+  const run = runs.find((x) => x.id === note.run_id);
+  if (!run) return `Source run · ${note.run_id}, no longer in this project`;
+  return run.damaged ? `Source run · ${note.run_id}` : `Source run · ${runTitle(run)} · ${note.run_id}`;
 }
 
 function inputOf(note: ResearchNote): NoteInput {

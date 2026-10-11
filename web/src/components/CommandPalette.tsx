@@ -2,6 +2,7 @@ import * as RadixDialog from "@radix-ui/react-dialog";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { architectureOf } from "../lib/keys";
+import { paletteRuns, runTitle, searchText } from "../lib/runs";
 import { parseHeadQuery } from "../lib/sites";
 import { useStore, workspaceFor, WORKSPACE_VIEWS } from "../store/app";
 import { MOD, SHIFT } from "./Header";
@@ -97,13 +98,15 @@ function useCommands(query: string): Command[] {
           { id: "across", label: "Compare across runs", group: "Selected component", shortcut: key("C"), run: () => st.focusInspector("runs") },
         );
       }
-      for (const r of st.runs.slice(0, 12)) {
+      // With nothing typed, the starred runs and the newest others; once something is typed,
+      // every run, archived ones too, found by title, name, id, method, model or dataset.
+      for (const r of paletteRuns(st.runs, query)) {
         cmds.push({
           id: `run-${r.id}`,
-          label: `Open run: ${r.name}`,
-          group: "Runs",
-          keywords: r.id,
-          run: () => void st.openRun(r.id, r.status === "finished" ? "results" : undefined),
+          label: `Open ${r.status === "draft" ? "draft" : "run"}: ${runTitle(r)}${r.archived ? " (archived)" : ""}`,
+          group: r.starred && !r.archived ? "Starred runs" : "Runs",
+          keywords: searchText(r),
+          run: () => void (r.status === "draft" ? st.openDraft(r.id) : st.openRun(r.id, r.status === "finished" ? "results" : undefined)),
         });
       }
     }

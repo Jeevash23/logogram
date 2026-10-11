@@ -17,6 +17,7 @@ _API = (
     "check_robustness",
     "compare_runs",
     "create_project",
+    "delete_run",
     "generate",
     "list_runs",
     "load_model",

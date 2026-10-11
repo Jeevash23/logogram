@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class _Model(BaseModel):
@@ -342,6 +342,31 @@ class RunOwner(_Model):
     token: str = Field(pattern=r"^[0-9a-f]{32}$")
 
 
+# -- annotations.json --------------------------------------------------------------------------
+
+
+class RunAnnotations(_Model):
+    """What a person says about a run, kept beside its spec, which records what ran and never
+    changes once it has run (see logogram.history)."""
+
+    # Strict: a hand-edited "starred": "yes" is a mistake to point out, not a yes.
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    logogram_annotations: Literal[1] = 1
+    # Shown instead of the spec's name; None shows the spec's name.
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    starred: bool = False
+    # Kept out of the history unless it is asked to show archived runs.
+    archived: bool = False
+
+    @field_validator("title")
+    @classmethod
+    def _one_line(cls, title: str | None) -> str | None:
+        if title is not None and any(ord(c) < 32 or ord(c) == 127 for c in title):
+            raise ValueError("a title is one line of text, without control characters")
+        return title
+
+
 # -- live events (WebSocket) -------------------------------------------------------------------
 
 
@@ -403,6 +428,15 @@ class QueueSkipped(_Model):
     error: str
 
 
+class RunsChanged(_Model):
+    """A run renamed, starred, archived or deleted: tabs showing its project read the history
+    again (not a "run." event: those are replayed to tabs that connect mid-run)."""
+
+    project_session: str
+    run_id: str
+    deleted: bool = False
+
+
 EVENT_SCHEMAS: dict[str, type[BaseModel]] = {
     "run.started": RunStarted,
     "run.layer": RunLayer,
@@ -412,6 +446,7 @@ EVENT_SCHEMAS: dict[str, type[BaseModel]] = {
     "run.cancelled": RunEnded,
     "queue": QueueChanged,
     "queue.skipped": QueueSkipped,
+    "runs.changed": RunsChanged,
 }
 
 
@@ -447,6 +482,16 @@ class RunListing(_Model):
     # A running run whose process is another one (logogram run, a notebook, another server): its
     # progress isn't streamed here, so the app reads the listing again to see it end.
     elsewhere: bool = False
+    # The dataset the run read, as it was named when it ran (``dataset`` is then its snapshot).
+    dataset_source: str | None = None
+    # What a person says about the run (its annotations.json): a title shown instead of the spec's
+    # name, a star, archived; and why the file was ignored, if it can't be read.
+    title: str | None = None
+    starred: bool = False
+    archived: bool = False
+    annotations_error: str | None = None
+    # The run's spec can't be read: error says what is wrong and how to fix it. It can be deleted.
+    damaged: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json")

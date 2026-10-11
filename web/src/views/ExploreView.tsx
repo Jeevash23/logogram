@@ -57,7 +57,7 @@ export function ExploreView() {
       <div className={s.contextLine}>
         <span className={s.contextRun}>
           {run.id && <Logogram seed={run.id} profile={profile} size={30} />}
-          <span>{run.detail?.spec.name ?? (run.running ? "Experiment running" : "No experiment selected")}</span>
+          <span>{(run.detail && run.title) || (run.running ? "Experiment running" : "No experiment selected")}</span>
         </span>
         <span>{run.running ? "Results arrive layer by layer" : strongest.length ? <>Strongest: {strongest.map((x, i) => <span key={x.index}>{i > 0 && " · "}<button type="button" className={s.reading} onClick={() => select(selectionOfSite(x))}>{x.label} <strong>{signed(x.effect.mean, 2)}</strong></button></span>)}</> : run.id ? `${count(Object.keys(run.results).length)} measured sites` : "Run an experiment to color the model"}</span>
       </div>
