@@ -102,7 +102,7 @@ def resolve(model_id: str, revision: str | None) -> RepoFiles:
 
     try:
         info = HfApi().model_info(model_id, revision=revision, files_metadata=True)
-    except Exception as exc:  # noqa: BLE001 - classified below
+    except Exception as exc:
         if _is_offline_error(exc):
             cached = cached_snapshot(model_id, revision)
             if cached is not None:
@@ -124,8 +124,14 @@ def resolve(model_id: str, revision: str | None) -> RepoFiles:
         raise _friendly_hub_error(model_id, exc) from exc
     siblings = [(s.rfilename, int(s.size or 0)) for s in (info.siblings or [])]
     n_params = None
-    if getattr(info, "safetensors", None) is not None:
-        n_params = int(info.safetensors.total)
+    stored = getattr(info, "safetensors", None)
+    if stored is not None:
+        n_params = int(stored.total)
+    if not info.sha:
+        raise BackendError(
+            f"Hugging Face didn't say which commit of {model_id} it describes. Try again, or give "
+            "the revision in the model dialog."
+        )
     return RepoFiles(
         revision=info.sha,
         files=_select_files(siblings),
@@ -315,7 +321,7 @@ def download(
             path = _cancellable(fetch, cancel)
         except Cancelled:
             raise
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise _friendly_hub_error(model_id, exc) from exc
         finished += size
         folder = Path(path).parent
@@ -367,7 +373,7 @@ def _abort_xet() -> None:
         from huggingface_hub.utils._xet import abort_xet_session
 
         abort_xet_session()
-    except Exception:  # noqa: BLE001
+    except Exception:
         log.debug("couldn't abort Xet transfers", exc_info=True)
 
 
@@ -417,6 +423,6 @@ def fetch_config(model_id: str, revision: str) -> dict[str, Any]:
 
     try:
         path = hf_hub_download(model_id, "config.json", revision=revision)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise _friendly_hub_error(model_id, exc) from exc
     return json.loads(Path(path).read_text(encoding="utf-8"))

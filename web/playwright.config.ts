@@ -8,7 +8,12 @@ export default defineConfig({
   retries: 0,
   reporter: "list",
   outputDir: process.env.LOGOGRAM_TEST_OUTPUT ?? "test-results",
-  use: { baseURL: "http://127.0.0.1:8877", viewport: { width: 1440, height: 900 } },
+  // LOGOGRAM_COLOR_SCHEME=dark runs every browser check in the dark theme (CI does both).
+  use: {
+    baseURL: "http://127.0.0.1:8877",
+    viewport: { width: 1440, height: 900 },
+    colorScheme: process.env.LOGOGRAM_COLOR_SCHEME === "dark" ? "dark" : "light",
+  },
   projects: [
     { name: "logic", testMatch: "**/*.unit.ts" },
     { name: "chromium", testMatch: "**/*.browser.ts", use: { browserName: "chromium" } },

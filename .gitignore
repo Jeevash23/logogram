@@ -5,6 +5,11 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+# Coverage output (its reports name absolute paths).
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
 dist/
 build/
 *.egg-info/

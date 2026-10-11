@@ -70,7 +70,13 @@ def test_the_gradients_match_finite_differences(tiny_backend, smooth_backend, pr
     sites = [("resid_pre", 1), ("head", 1), ("mlp_out", 0), ("resid_post", 0)]
     if "resid_mid" in backend.info.site_kinds:
         sites.append(("resid_mid", 1))
-    acts, grads = backend.gradients(tokens, answers, distractors, sites)
+    rows = torch.arange(tokens.shape[0])
+
+    def logit_diff(logits):
+        last = logits[:, -1].float()
+        return last[rows, answers] - last[rows, distractors]
+
+    acts, grads = backend.gradients(tokens, sites, logit_diff)
     generator = torch.Generator().manual_seed(0)
     # Tiny random models are strongly curved; a five-point stencil with a small step measures the
     # slope rather than the curvature.
@@ -142,7 +148,7 @@ def test_estimates_track_real_patching(tiny_backend, project, spec_factory):
         prompts,
     )
     a = estimated.delta.mean(1)
-    b = (patched.patched_ld - patched.receiver_ld[None, :]).mean(1)
+    b = (patched.patched - patched.receiver_metric[None, :]).mean(1)
     assert spearman(a, b) > 0.5
 
 

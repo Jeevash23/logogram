@@ -6,6 +6,7 @@ from typing import Any
 
 import numpy as np
 
+from logogram.analysis import answer_text
 from logogram.datasets import DatasetError, file_sha256, load_dataset
 from logogram.project import Project
 from logogram.results import read_site_rows
@@ -58,16 +59,19 @@ def site_detail(
                 "index": prompt_index,
                 "clean": record.clean if record else None,
                 "corrupt": record.corrupt if record else None,
-                "answer": record.answer if record else None,
-                "distractor": record.distractor if record else None,
+                "answer": answer_text(record.answer) if record else None,
+                "distractor": answer_text(record.distractor) if record else None,
                 "effect": _f(rows["effect"][i]),
                 "delta": _f(rows["delta"][i]),
+                "patched_metric": _f(rows["patched_metric"][i]),
+                "receiver_metric": _f(rows["receiver_metric"][i]),
+                "reference_metric": _f(rows["reference_metric"][i]),
                 "patched_logit_diff": _f(patched),
                 "receiver_logit_diff": _f(receiver),
                 "reference_logit_diff": _f(rows["reference_logit_diff"][i]),
                 "patched_answer_prob": _f(rows["patched_answer_prob"][i]),
                 "receiver_answer_prob": _f(rows["receiver_answer_prob"][i]),
-                "flipped": bool((receiver > 0 > patched) or (receiver < 0 < patched)),
+                "flipped": _flipped(receiver, patched),
             }
         )
     mean = site["effect"]["mean"] or 0.0
@@ -88,6 +92,14 @@ def site_detail(
         "dataset_changed": dataset_changed,
         "dataset_available": records is not None,
     }
+
+
+def _flipped(receiver: Any, patched: Any) -> bool:
+    """Whether the preference changed sign (never, where it wasn't measured)."""
+    r, p = _f(receiver), _f(patched)
+    if r is None or p is None:
+        return False
+    return (r > 0 > p) or (r < 0 < p)
 
 
 def _f(x: Any) -> float | None:

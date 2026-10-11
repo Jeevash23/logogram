@@ -177,6 +177,9 @@ class DatasetDetail(_Out):
     records: list[dict[str, Any]]
     issues: list[PromptIssue] | None = None
     lengths: list[int] | None = None
+    # With a model loaded: the prompts whose answer or distractor it reads as a continuation of
+    # several tokens (dataset indices), which the logit difference can't score.
+    continuations: list[int] | None = None
 
 
 class DatasetCreated(_Out):
@@ -191,6 +194,38 @@ class IOITemplateOut(_Out):
     default: bool
 
 
+class TaskOptionOut(_Out):
+    name: str
+    type: Literal["bool", "choice", "choices"]
+    default: Any
+    description: str
+    allowed: list[str]
+
+
+class TaskMetricWhen(_Out):
+    option: str
+    value: Any
+    metric: str
+
+
+class TaskOut(_Out):
+    """A task Logogram generates prompts for (logogram.tasks)."""
+
+    id: str
+    name: str
+    description: str
+    # The metric that reads its answers, and the options that change it.
+    metric: str
+    metric_when: list[TaskMetricWhen]
+    options: list[TaskOptionOut]
+    templates: list[IOITemplateOut]
+
+
+class TaskDatasetCreated(DatasetCreated):
+    # The metric that reads the dataset's answers.
+    metric: str
+
+
 class TokenRow(_Out):
     tokens: list[str]
     ids: list[int]
@@ -200,6 +235,8 @@ class AnswerTokens(_Out):
     text: str
     tokens: list[str]
     id: int | None
+    # A set of single tokens, any of which counts (its tokens are the members).
+    alternatives: bool = False
 
 
 class TokenStrip(_Out):
@@ -228,12 +265,25 @@ class BaselinePrompt(_Out):
     corrupt: str
     answer: str
     distractor: str
+    # log P(answer) - log P(distractor): the logit difference for single tokens.
     clean_logit_diff: float | None
     corrupt_logit_diff: float | None
     clean_answer_prob: float | None
     corrupt_answer_prob: float | None
+    clean_metric: float | None = None
+    corrupt_metric: float | None = None
     clean_top: list[TopToken]
     corrupt_top: list[TopToken]
+
+
+class BaselineMetric(_Out):
+    kind: str
+    target: Literal["clean", "corrupt"] | None
+    label: str
+    description: str
+    clean: float | None
+    corrupt: float | None
+    gap: float | None
 
 
 class BaselineSummaryOut(_Out):
@@ -244,6 +294,7 @@ class BaselineSummaryOut(_Out):
     corrupt_prefers_answer: int
     clean_answer_prob: float | None
     corrupt_answer_prob: float | None
+    metric: BaselineMetric | None = None
 
 
 class BaselineReport(_Out):
@@ -286,6 +337,8 @@ class PredictionReport(_Out):
     batch_members: list[int]
     answer: str
     distractor: str
+    # How the lens reads the answer: one token, a set (summed), or a continuation's first token.
+    answer_reading: Literal["token", "set", "first_token"] = "token"
     issues: list[PromptIssue]
 
 
@@ -316,6 +369,9 @@ class MemoryEstimateOut(_Out):
     available: int
     verdict: Literal["fits", "tight", "wont_fit"]
     explanation: str
+    # What gradient methods and path patching hold: every layer's activations at once.
+    all_layers: int = 0
+    all_layers_verdict: Literal["fits", "tight", "wont_fit"] = "fits"
 
 
 class EstimateOut(_Out):
@@ -354,6 +410,9 @@ class PromptEvidence(_Out):
     distractor: str | None
     effect: float | None
     delta: float | None
+    patched_metric: float | None = None
+    receiver_metric: float | None = None
+    reference_metric: float | None = None
     patched_logit_diff: float | None
     receiver_logit_diff: float | None
     reference_logit_diff: float | None
@@ -392,7 +451,9 @@ class ComparisonChange(_Out):
     effect_b: dict[str, float | None]
     rank_a: int
     rank_b: int
-    flags: list[Literal["sign", "left_top", "entered_top"]]
+    flags: list[Literal["sign", "left_top", "entered_top", "differs"]]
+    # b - a in per-prompt effects, when both runs measured the same prompts.
+    difference: dict[str, float] | None = None
 
 
 class DiffCell(_Out):
@@ -425,3 +486,5 @@ class Comparison(_Out):
     diff: list[DiffCell]
     same_layout: bool
     spec_differences: list[SpecDifference]
+    paired: bool = False
+    n_differs: int = 0

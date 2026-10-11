@@ -12,6 +12,24 @@ function typing(target: EventTarget | null): boolean {
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable;
 }
 
+const NOT_TEXT = new Set(["checkbox", "radio", "button", "submit", "reset", "range", "color", "file", "image", "hidden"]);
+
+/** Whether the target edits text, which has its own undo. */
+function editsText(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable || target.tagName === "TEXTAREA") return true;
+  return target instanceof HTMLInputElement && !NOT_TEXT.has(target.type);
+}
+
+/** Ctrl/⌘ Z undoes; Ctrl/⌘ Shift Z and Ctrl Y redo. */
+function historyKey(e: KeyboardEvent): "undo" | "redo" | null {
+  if (e.altKey) return null;
+  const key = e.key.toLowerCase();
+  if ((e.metaKey || e.ctrlKey) && key === "z") return e.shiftKey ? "redo" : "undo";
+  if (e.ctrlKey && !e.metaKey && !e.shiftKey && key === "y") return "redo";
+  return null;
+}
+
 // Controls that use arrow keys themselves.
 const ARROW_WIDGETS = "[role=menu], [role=menubar], [role=listbox], [role=separator], [role=slider], [role=radiogroup], [role=tablist], [role=grid]";
 const OVERLAYS = "[role=dialog], [role=alertdialog], [role=menu], [role=listbox]";
@@ -51,7 +69,22 @@ export function useGlobalKeys(): void {
         useStore.setState({ paletteOpen: !st.paletteOpen });
         return;
       }
-      if (st.screen !== "workbench" || st.paletteOpen || st.modelDialogOpen || st.robustnessDialogOpen) return;
+      // The list of shortcuts, from anywhere but a text field or an open dialog.
+      if (e.key === "?" && !mod && !e.altKey && !e.defaultPrevented && !overlayOpen && !typing(e.target) && !st.paletteOpen) {
+        e.preventDefault();
+        useStore.setState({ shortcutsOpen: true });
+        return;
+      }
+      if (st.screen !== "workbench" || st.paletteOpen || st.modelDialogOpen || st.robustnessDialogOpen || st.cancelConfirmOpen || st.shortcutsOpen) return;
+      // Undo and redo the experiment form while it is open, except in a text field, whose own
+      // undo goes first.
+      const step = historyKey(e);
+      if (step && st.view === "experiment" && !e.defaultPrevented && !overlayOpen && !editsText(e.target)) {
+        e.preventDefault();
+        if (step === "undo") st.undoForm();
+        else st.redoForm();
+        return;
+      }
       if (e.defaultPrevented || overlayOpen || typing(e.target) || mod || e.altKey) return;
       const target = e.target instanceof HTMLElement ? e.target : null;
 

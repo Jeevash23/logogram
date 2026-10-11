@@ -13,7 +13,7 @@ export function Legend({ bound, hasFlags, flagCount }: { bound: number; hasFlags
   const run = useActiveRun();
   const stops = legendStops(theme);
   const gradient = `linear-gradient(to right, ${stops.join(", ")})`;
-  const words = measureWords(run.detail?.spec.experiment);
+  const words = measureWords(run.detail?.spec.experiment, run.detail?.summary?.metric ?? run.detail?.spec.metric);
 
   return (
     <div className={s.legend}>

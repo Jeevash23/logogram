@@ -1,4 +1,5 @@
-"""Sparse autoencoders on a model's activations: encode, decode, edit one feature, and check fit.
+"""Sparse autoencoders (and transcoders) on a model's activations: encode, decode, edit one
+feature, and check fit.
 
 An SAE writes an activation x as a sparse sum of decoder directions: x = f · W_dec + b_dec + e,
 where f are the feature activations and e is what the SAE misses (its error). Editing a feature
@@ -15,10 +16,14 @@ from typing import Any
 
 import torch
 
+from logogram.backends.base import float64
 from logogram.backends.saes import SAEParams
 from logogram.spec import SAERef
 
 LN_EPS = 1e-5
+# Tokens encoded at once while measuring a fit, so the features of every token (an SAE has tens
+# of thousands per token) are never held at once.
+FIT_CHUNK = 4096
 
 
 @dataclass
@@ -34,7 +39,25 @@ class SAE:
 
     @property
     def site(self) -> str:
+        """The site it writes (and, for an SAE, reads)."""
         return self.params.site
+
+    @property
+    def site_in(self) -> str:
+        """The site it reads: the MLP's input for a transcoder."""
+        return self.params.site_in or self.params.site
+
+    @property
+    def transcoder(self) -> bool:
+        return self.params.transcoder
+
+    @staticmethod
+    def flat(x: torch.Tensor) -> torch.Tensor:
+        """Activations as the SAE reads them: heads' outputs ``[..., H, d_head]`` side by side."""
+        return x.reshape(*x.shape[:-2], -1) if x.dim() >= 4 else x
+
+    def reads(self, x: torch.Tensor) -> torch.Tensor:
+        return self.flat(x) if self.site_in == "head" else x
 
     @property
     def layer(self) -> int:
@@ -68,6 +91,8 @@ class SAE:
             "normalize": p.normalize,
             "format": p.format,
             "note": p.note,
+            "site_in": self.site_in,
+            "transcoder": self.transcoder,
             "fit": self.fit or None,
         }
 
@@ -123,18 +148,31 @@ class SAE:
     # -- fit ------------------------------------------------------------------------------------
 
 
-def fit_on(sae: SAE, activations: torch.Tensor) -> dict[str, float]:
-    """How well the SAE reconstructs ``activations`` ``[N, d_in]``: the fraction of variance it
+def fit_on(
+    sae: SAE, activations: torch.Tensor, targets: torch.Tensor | None = None
+) -> dict[str, Any]:
+    """How well the SAE reconstructs ``activations`` ``[N, d_in]`` (a transcoder: predicts
+    ``targets`` ``[N, d_out]``, its MLP's outputs, from its inputs): the fraction of variance it
     explains (1 is perfect, 0 is no better than the mean), and how many features fire per token."""
-    x = activations.float()
-    f, stats = sae.encode(x)
-    x_hat = sae.decode(f, stats)
-    residual = ((x - x_hat) ** 2).sum()
-    total = ((x - x.mean(dim=0, keepdim=True)) ** 2).sum().clamp_min(1e-12)
+    n = int(activations.shape[0])
+    wanted = activations if targets is None else targets
+    residual, active = 0.0, 0
+    for start in range(0, n, FIT_CHUNK):
+        x = activations[start : start + FIT_CHUNK].to(sae.device).float()
+        y = x if targets is None else targets[start : start + FIT_CHUNK].to(sae.device).float()
+        f, stats = sae.encode(x)
+        residual += float(float64((y - sae.decode(f, stats)) ** 2).sum())
+        active += int((f > 0).sum())
+    # The variance of what the SAE should give, around its mean, in two passes over the chunks.
+    mean = sum(float64(wanted[s : s + FIT_CHUNK]).sum(0) for s in range(0, n, FIT_CHUNK)) / n
+    total = sum(
+        float(((float64(wanted[s : s + FIT_CHUNK]) - mean) ** 2).sum())
+        for s in range(0, n, FIT_CHUNK)
+    )
     return {
-        "variance_explained": float(1.0 - residual / total),
-        "l0": float((f > 0).float().sum(-1).mean()),
-        "tokens": int(x.shape[0]),
+        "variance_explained": 1.0 - residual / max(total, 1e-12),
+        "l0": active / n if n else 0.0,
+        "tokens": n,
     }
 
 

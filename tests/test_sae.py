@@ -188,9 +188,11 @@ def test_formats_logogram_cant_reproduce_are_refused(tmp_path):
     ):
         with pytest.raises(BackendError, match=message):
             read_sae(_saelens(tmp_path / message.replace(" ", "-").replace("'", ""), cfg, weights))
-    trans = tmp_path / "layers.1.mlp"
-    trans.mkdir()
-    (trans / "cfg.json").write_text(json.dumps({"k": 2, "transcode": True}), encoding="utf-8")
+    skip = tmp_path / "layers.1.mlp"
+    skip.mkdir()
+    (skip / "cfg.json").write_text(
+        json.dumps({"k": 2, "transcode": True, "skip_connection": True}), encoding="utf-8"
+    )
     save_file(
         {
             "encoder.weight": torch.zeros(f, d),
@@ -198,10 +200,10 @@ def test_formats_logogram_cant_reproduce_are_refused(tmp_path):
             "W_dec": torch.zeros(f, d),
             "b_dec": torch.zeros(d),
         },
-        str(trans / "sae.safetensors"),
+        str(skip / "sae.safetensors"),
     )
-    with pytest.raises(BackendError, match="Transcoders"):
-        read_sae(trans)
+    with pytest.raises(BackendError, match="skip connection"):
+        read_sae(skip)
 
 
 def test_an_exact_sae_explains_all_the_variance(tiny_backend, project, exact):
@@ -242,7 +244,7 @@ def test_patching_a_feature_moves_the_activation_along_its_decoder_row(
     answers = torch.tensor([prompts[i].answer_id for i in group.members])
     distractors = torch.tensor([prompts[i].distractor_id for i in group.members])
     expected = (logits[rows, answers] - logits[rows, distractors]).double().numpy()
-    np.testing.assert_allclose(result.patched_ld[0, group.members], expected, atol=1e-4)
+    np.testing.assert_allclose(result.patched[0, group.members], expected, atol=1e-4)
     assert result.extra["features"]["fit"]["variance_explained"] == pytest.approx(1.0, abs=1e-5)
 
     same = run_experiment(
@@ -253,7 +255,7 @@ def test_patching_a_feature_moves_the_activation_along_its_decoder_row(
         receiver_override="corrupt",
         source_override="corrupt",
     )
-    np.testing.assert_allclose(same.patched_ld, same.receiver_ld[None, :], atol=1e-4)
+    np.testing.assert_allclose(same.patched, same.receiver_metric[None, :], atol=1e-4)
 
 
 def test_with_an_exact_sae_the_feature_estimates_add_up_to_the_site(
@@ -290,6 +292,54 @@ def test_with_an_exact_sae_the_feature_estimates_add_up_to_the_site(
         sae=exact,
     )
     np.testing.assert_allclose(again.delta, result.delta, rtol=1e-5, atol=1e-8)
+
+
+def test_features_can_be_chosen_on_some_prompts_and_reported_on_the_others(
+    tiny_backend, project, spec_factory, exact
+):
+    """Choosing the strongest features on the prompts that report them biases their effects
+    away from zero; a held-out split chooses on some prompts and reports on the rest."""
+    prompts = _prompts(tiny_backend, project)
+    experiment = {"kind": "attribution_patching", "direction": "clean_to_corrupt"}
+    every = {"kind": "features", "position": {"kind": "all"}, "top": 4}
+    full = run_experiment(
+        spec_factory(sae=SAE_REF, experiment=experiment, scope={**every, "top": 500}),
+        tiny_backend,
+        prompts,
+        sae=exact,
+    )
+    held = {**every, "choose_on": 0.5, "seed": 3}
+    result = run_experiment(
+        spec_factory(sae=SAE_REF, experiment=experiment, scope=held),
+        tiny_backend,
+        prompts,
+        sae=exact,
+    )
+    info = result.extra["features"]
+    chosen, reported = info["chosen_on"], info["reported_on"]
+    assert len(chosen) == 6 and len(reported) == 6
+    assert sorted(chosen + reported) == list(range(12))
+    assert [p.index for p in result.prompts] == reported
+    assert result.delta.shape == (4, 6) and result.baselines.clean.shape == (6,)
+    # The features are the strongest on the choosing prompts, and their values on the reported
+    # prompts are exactly those of the run that estimated every prompt.
+    by_feature = {rs.site.feature: full.delta[rs.index] for rs in full.sites}
+    features = sorted(by_feature)
+    assert len(features) == exact.d_sae
+    choosing = np.array([by_feature[f][chosen].mean() for f in features])
+    strongest = [features[i] for i in np.argsort(-np.abs(choosing), kind="stable")[:4]]
+    assert [rs.site.feature for rs in result.sites] == strongest
+    for rs in result.sites:
+        np.testing.assert_allclose(result.delta[rs.index], by_feature[rs.site.feature][reported])
+    with pytest.raises(ValueError, match="both choose_on"):
+        spec_factory(sae=SAE_REF, experiment=experiment, scope={**every, "choose_on": 0.5})
+    with pytest.raises(ScopeError, match="at least one and two"):
+        run_experiment(
+            spec_factory(sae=SAE_REF, experiment=experiment, scope={**held, "choose_on": 0.95}),
+            tiny_backend,
+            prompts,
+            sae=exact,
+        )
 
 
 def test_feature_runs_are_checked_against_the_sae(
@@ -384,7 +434,7 @@ def test_the_server_loads_fits_and_explores_an_sae(tiny_backend, tmp_path, monke
     sae = client.get("/api/state", headers=headers).json()["sae"]
     assert sae["state"] == "ready" and sae["info"]["d_sae"] == 2 * tiny_backend.info.d_model
 
-    body = {"dataset": "datasets/ioi.jsonl"}
+    body = {"dataset": "datasets/ioi.jsonl", "prepend_bos": True, "batch_size": 64}
     fit = client.post("/api/sae/fit", json=body, headers=headers).json()
     assert fit["variance_explained"] == pytest.approx(1.0, abs=1e-5)
     # An exact SAE spliced in changes nothing.

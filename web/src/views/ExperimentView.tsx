@@ -1,13 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
 
-import type { BaselineSpec, ExperimentKind, PathReceiverSpec, PositionSpec, SAEInfo, ScopeSpec, Spec, StreamKind } from "../api/types";
+import type { BaselineSpec, ExperimentKind, PathReceiverSpec, PositionSpec, SAEInfo, ScopeSpec, StreamKind } from "../api/types";
 import { Button, Callout, Checkbox, Choices, Field, Input, Kbd, Segmented, Select, TextArea } from "../components/ui";
 import { MOD } from "../components/Header";
 import { plural, shortRevision } from "../lib/format";
 import { modelName } from "../lib/hooks";
+import { EVERYTHING, SET_SITE_KINDS } from "../lib/circuits";
 import { KIND_SHORT, parseHeadQuery } from "../lib/sites";
+import { buildSpec, datasetFacts, parseStrengths, savedDifferences, usesFeatures } from "../lib/buildSpec";
 import { experimentText, receiverLabel, scopeFor, scopeShort, scopeText, siteText, suggestName, workload, workloadText } from "../lib/spec";
 import { useStore, type FormState } from "../store/app";
+import { metricWords } from "../lib/metrics";
+import { MetricSettings } from "./MetricSettings";
+import { ClusterChooser } from "./StatisticsSettings";
+import { SiteSetsEditor } from "./SiteSetsEditor";
 import s from "./views.module.css";
 import e from "./ExperimentView.module.css";
 
@@ -19,7 +25,7 @@ const METHODS: { value: ExperimentKind; title: string; detail: string }[] = [
   {
     value: "attribution_patching",
     title: "Attribution patching",
-    detail: "Estimate patching at every site from one gradient, then verify the strongest.",
+    detail: "Estimate patching at every site from gradients, then verify the strongest.",
   },
   {
     value: "direct_logit_attribution",
@@ -37,142 +43,6 @@ const METHODS: { value: ExperimentKind; title: string; detail: string }[] = [
     detail: "Add the mean clean–corrupt difference at several strengths, against a random control.",
   },
 ];
-
-/** Strengths as typed: numbers separated by commas or spaces (a typographic minus is fine). */
-export function parseStrengths(text: string): { values: number[] } | { error: string } {
-  const parts = text.replace(/−/g, "-").split(/[\s,;]+/).filter(Boolean);
-  if (parts.length === 0) return { error: "Give at least one steering strength, such as 1." };
-  const values = parts.map(Number);
-  const bad = parts.find((_, i) => !Number.isFinite(values[i]));
-  if (bad !== undefined) return { error: `“${bad}” isn't a number. Separate strengths with commas, like -1, 1, 2.` };
-  if (new Set(values).size !== values.length) return { error: "Each steering strength appears once." };
-  if (values.length > 16) return { error: "Use at most 16 steering strengths." };
-  return { values };
-}
-
-/** Build a spec from the form, or explain what's missing. */
-export function buildSpec(
-  form: FormState,
-  ctx: {
-    model: ReturnType<typeof useStore.getState>["model"];
-    datasetPath: string | null;
-    datasetSha: string | null;
-    sae?: ReturnType<typeof useStore.getState>["sae"];
-  },
-): { spec: Spec } | { error: string } {
-  if (!ctx.datasetPath) return { error: "Choose prompts first (Prompts view)." };
-  let experiment: Spec["experiment"];
-  if (form.kind === "activation_patching") {
-    experiment = { kind: "activation_patching", direction: form.direction };
-  } else if (form.kind === "attribution_patching") {
-    experiment = { kind: "attribution_patching", direction: form.direction };
-  } else if (form.kind === "path_patching") {
-    if (form.pathReceivers.length === 0) return { error: "Add at least one receiver: a later head's query, key or value, or the logits." };
-    experiment = { kind: "path_patching", direction: form.direction, receivers: form.pathReceivers, freeze_mlps: form.pathFreezeMlps };
-  } else if (form.kind === "steering") {
-    if (!form.steerApplyTo) return { error: "Choose which prompts to steer." };
-    const strengths = parseStrengths(form.steerStrengths);
-    if ("error" in strengths) return strengths;
-    experiment = {
-      kind: "steering",
-      apply_to: form.steerApplyTo,
-      coefficients: strengths.values,
-      train_fraction: form.steerTrain,
-      seed: form.steerSeed,
-      control: form.steerControl,
-    };
-  } else if (form.kind === "direct_logit_attribution") {
-    if (!form.dlaPrompts) return { error: "Choose which prompts' logit difference to split." };
-    experiment = { kind: "direct_logit_attribution", prompts: form.dlaPrompts };
-  } else {
-    if (!form.baseline) return { error: "Choose a baseline for the ablation. Logogram never assumes one." };
-    experiment = { kind: "ablation", baseline: form.baseline };
-  }
-  const scope = form.scope;
-  const positionError = (p: PositionSpec) =>
-    p.kind === "label" && !p.label ? "Choose which named position to use." : null;
-  if (scope.kind === "heads" || scope.kind === "layer_components") {
-    const err = positionError(scope.position);
-    if (err) return { error: err };
-  }
-  if (scope.kind === "layer_components" && scope.components.length === 0) {
-    return { error: "Choose at least one component." };
-  }
-  if (scope.kind === "sites" && scope.sites.some((x) => positionError(x.position))) {
-    return { error: "Choose which named position to use." };
-  }
-  const info = ctx.model.info;
-  const ref = ctx.model.ref;
-  const model: Spec["model"] = info
-    ? {
-        id: info.id,
-        revision: info.revision,
-        dtype: info.dtype,
-        device: ref?.device ?? info.device,
-        process_weights: info.process_weights,
-      }
-    : (form.modelRef ?? {
-        id: "openai-community/gpt2",
-        revision: null,
-        dtype: "float32",
-        device: "auto",
-        process_weights: true,
-      });
-  // SAE features belong to an SAE: the loaded one, or the one a saved spec names.
-  const usesFeatures = scope.kind === "features" || (scope.kind === "sites" && scope.sites.some((x) => x.kind === "sae_feature"));
-  const loaded = ctx.sae?.state === "ready" && ctx.sae.info ? { repo: ctx.sae.info.repo, path: ctx.sae.info.path, revision: ctx.sae.info.revision } : null;
-  const sae = usesFeatures ? (loaded ?? form.saeRef) : null;
-  if (usesFeatures && !sae) return { error: "Load the SAE these features belong to (Explore → Features)." };
-  if (scope.kind === "features" && experiment.kind !== "attribution_patching") {
-    return { error: "Only attribution patching estimates every SAE feature. Choose it, or patch chosen features." };
-  }
-  const spec: Spec = {
-    logogram_spec: 1,
-    name: form.name.trim() || suggestName({ experiment, scope }),
-    notes: form.notes,
-    model,
-    dataset: { path: ctx.datasetPath, sha256: ctx.datasetSha, limit: form.limit },
-    tokenization: { prepend_bos: form.prependBos },
-    experiment,
-    scope,
-    metric: { kind: "logit_diff", normalization: form.normalization },
-    statistics: { bootstrap: form.bootstrap, ci: form.ci, seed: form.statSeed },
-    execution: { batch_size: form.batchSize },
-    predictions: form.predictions,
-    ...(sae ? { sae } : {}),
-  };
-  return { spec };
-}
-
-/** How what will run differs from the saved spec the form was opened from. */
-export function savedDifferences(
-  form: FormState,
-  model: ReturnType<typeof useStore.getState>["model"],
-  datasetPath: string | null,
-  datasetSha: string | null,
-): string[] {
-  const out: string[] = [];
-  const ref = form.modelRef;
-  const info = model.info;
-  if (ref && info) {
-    if (ref.id !== info.id) {
-      out.push(`It was written for ${modelName(ref.id)}; the loaded model is ${modelName(info.id)}.`);
-    } else {
-      if (ref.revision && ref.revision !== info.revision) {
-        out.push(`It was written for revision ${shortRevision(ref.revision)}; the loaded model is ${shortRevision(info.revision)}.`);
-      }
-      if (ref.dtype !== info.dtype) out.push(`It was written for ${ref.dtype}; the model is loaded in ${info.dtype}.`);
-      if (ref.process_weights !== info.process_weights) out.push("Weight processing differs from the saved spec.");
-      if (ref.device !== "auto" && ref.device !== info.device) out.push(`It was written for ${ref.device}; the model is loaded on ${info.device}.`);
-    }
-  }
-  const saved = form.savedDataset;
-  if (saved && datasetPath) {
-    if (saved.path !== datasetPath) out.push(`It used ${saved.path}; the prompts chosen now are ${datasetPath}.`);
-    else if (saved.sha256 && datasetSha && saved.sha256 !== datasetSha) out.push(`${saved.path} has changed since it was saved.`);
-  }
-  return out;
-}
 
 export function ExperimentView() {
   const form = useStore((st) => st.form);
@@ -193,8 +63,9 @@ export function ExperimentView() {
   const uniformLength = lengths ? lengths.length === 1 : null;
 
   const sae = useStore((st) => st.sae);
-  const built = buildSpec(form, { model, datasetPath, datasetSha: dataset?.sha256 ?? null, sae });
-  const differences = savedDifferences(form, model, datasetPath, dataset?.sha256 ?? null);
+  const facts = useMemo(() => datasetFacts(dataset, form.limit), [dataset, form.limit]);
+  const built = buildSpec(form, { model, datasetPath, datasetSha: dataset?.sha256 ?? null, sae, facts });
+  const differences = savedDifferences(form, model, datasetPath, dataset?.sha256 ?? null, modelName);
   const spec = "spec" in built ? built.spec : null;
   const busy = job?.status === "running";
 
@@ -208,7 +79,8 @@ export function ExperimentView() {
           ? `Steering · ${scopeShort(form.scope).toLowerCase()}`
           : "";
   useEffect(() => {
-    if (!form.nameEdited && suggested && form.name !== suggested) setForm({ name: suggested });
+    // The suggested name follows the rest of the form: not a change of its own to undo.
+    if (!form.nameEdited && suggested && form.name !== suggested) setForm({ name: suggested }, { record: false });
   }, [suggested, form.nameEdited, form.name, setForm]);
 
   const n = dataset ? Math.min(dataset.n, form.limit ?? dataset.n) : 0;
@@ -253,9 +125,13 @@ export function ExperimentView() {
           </p>
         </div>
         <div className={s.headActions}>
+          <FormHistoryButtons />
           <Button
             variant="ghost"
-            onClick={() => useStore.setState({ view: "spec", specSource: "draft" })}
+            onClick={() => {
+              useStore.setState({ specSource: "draft" });
+              useStore.getState().setView("spec");
+            }}
             disabled={!spec}
           >
             Preview spec
@@ -340,14 +216,7 @@ export function ExperimentView() {
                   },
                 ]}
               />
-              {form.kind === "attribution_patching" && (
-                <p className={s.small}>
-                  Estimates what patching each site would do, to first order: (source activation − receiver activation) · the
-                  gradient of the logit difference at the receiver run. One gradient covers every site, so large sweeps take
-                  seconds. It misses saturation and can miss or even invert an effect: verify the strongest sites by patching
-                  from the results.
-                </p>
-              )}
+              {form.kind === "attribution_patching" && <AttributionSettings form={form} onChange={setForm} features={usesFeatures(form.scope)} />}
             </div>
           ) : (
             <BaselineChooser baseline={form.baseline} onChange={(baseline) => setForm({ baseline })} />
@@ -369,48 +238,7 @@ export function ExperimentView() {
 
         <section className={e.section}>
           <h3 className={e.sectionTitle}>Metric</h3>
-          <p className={e.text}>
-            Logit difference at the last token: logit(answer) − logit(distractor). Per-prompt values are always kept.
-          </p>
-          {form.kind === "direct_logit_attribution" ? (
-            <Field
-              label="Express each direct effect as a share of"
-              help={
-                form.normalization === "dataset_gap"
-                  ? "Each prompt's term divided by the mean logit difference of the chosen prompts. With the embeddings and biases, the shares add up to one."
-                  : "Each prompt's term divided by its own logit difference. Unstable when a prompt's logit difference is near zero."
-              }
-            >
-              <Segmented
-                label="Normalization"
-                value={form.normalization}
-                onChange={(normalization) => setForm({ normalization })}
-                options={[
-                  { value: "dataset_gap", label: "Mean logit difference" },
-                  { value: "prompt_gap", label: "Each prompt's" },
-                ]}
-              />
-            </Field>
-          ) : (
-            <Field
-              label="Normalize the effect by"
-              help={
-                form.normalization === "dataset_gap"
-                  ? "Each prompt's change divided by the dataset's mean clean–corrupt gap. Stable, and its mean is the usual normalized metric."
-                  : "Each prompt's change divided by its own clean–corrupt gap. Exactly 0 to 1 per prompt, but unstable when a gap is small."
-              }
-            >
-              <Segmented
-                label="Normalization"
-                value={form.normalization}
-                onChange={(normalization) => setForm({ normalization })}
-                options={[
-                  { value: "dataset_gap", label: "Dataset mean gap" },
-                  { value: "prompt_gap", label: "Each prompt's gap" },
-                ]}
-              />
-            </Field>
-          )}
+          <MetricSettings form={form} onChange={setForm} facts={facts} />
         </section>
 
         <section className={e.section}>
@@ -433,6 +261,7 @@ export function ExperimentView() {
               <Input type="number" min={1} max={4096} value={form.batchSize} onChange={(ev) => setForm({ batchSize: Number(ev.target.value) })} />
             </Field>
           </div>
+          <ClusterChooser cluster={form.cluster} facts={facts} onChange={(cluster) => setForm({ cluster })} />
         </section>
 
         <section className={e.section}>
@@ -497,7 +326,8 @@ export function ExperimentView() {
           ) : (
             spec && (
               <p className={e.summaryText}>
-                <strong>{experimentText(spec.experiment)}</strong> at {scopeText(spec.scope)}, over {plural(n, "prompt")}.
+                <strong>{experimentText(spec.experiment)}</strong> at {scopeText(spec.scope)}, over {plural(n, "prompt")},
+                measured by the {metricWords(spec.metric).label}.
                 {rows !== null && <> {workloadText(spec, rows)}</>}{" "}
                 <span className="faint">
                   Press <Kbd>{MOD}</Kbd> <Kbd>Enter</Kbd> to run.
@@ -509,6 +339,24 @@ export function ExperimentView() {
         </div>
 
       </div>
+    </div>
+  );
+}
+
+/** Undo and redo for the whole form, beside its title. Text fields keep their own undo. */
+function FormHistoryButtons() {
+  const canUndo = useStore((st) => st.formHistory.past.length > 0);
+  const canRedo = useStore((st) => st.formHistory.future.length > 0);
+  const undo = useStore((st) => st.undoForm);
+  const redo = useStore((st) => st.redoForm);
+  return (
+    <div className={e.history} role="group" aria-label="Form history">
+      <Button size="small" variant="ghost" icon="undo" disabled={!canUndo} onClick={undo} title={`Undo the last change to the form (${MOD}+Z)`} aria-keyshortcuts="Control+Z Meta+Z">
+        Undo
+      </Button>
+      <Button size="small" variant="ghost" icon="redo" disabled={!canRedo} onClick={redo} title={`Redo (${MOD}+Shift+Z)`} aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z Control+Y">
+        Redo
+      </Button>
     </div>
   );
 }
@@ -573,6 +421,57 @@ function PathSettings({ form, onChange }: { form: FormState; onChange: (patch: P
         into an unchanged run. Senders in or after the last receiver's layer have no path and are left out.
       </p>
     </div>
+  );
+}
+
+/** How attribution patching estimates: one gradient, or integrated gradients over some steps. */
+function AttributionSettings({ form, onChange, features }: { form: FormState; onChange: (patch: Partial<FormState>) => void; features: boolean }) {
+  const steps = form.atpSteps;
+  const valid = Number.isInteger(steps) && steps >= 2 && steps <= 64;
+  return (
+    <>
+      <Choices
+        label="Estimate with"
+        value={form.atpMethod}
+        onChange={(atpMethod) => onChange({ atpMethod })}
+        columns={2}
+        options={[
+          {
+            value: "gradient",
+            title: "One gradient",
+            detail: "The gradient at the receiver run: one forward and backward pass per batch. Misses saturation, where the metric stops changing in step with the activation.",
+          },
+          {
+            value: "integrated_gradients",
+            title: "Integrated gradients",
+            detail: features
+              ? "SAE features are estimated from one gradient only. Estimate the model's components to use integrated gradients."
+              : "The gradient averaged over runs between the two prompts, which corrects much of that saturation. Each step costs another forward and backward pass.",
+            disabled: features,
+          },
+        ]}
+      />
+      {features && form.atpMethod === "integrated_gradients" && (
+        <p className={e.required}>Required: SAE features are estimated from one gradient. Choose it above.</p>
+      )}
+      {form.atpMethod === "integrated_gradients" && (
+        <div className={s.grid3}>
+          <Field
+            label="Steps"
+            help={valid ? `${steps} forward and backward passes per batch: ${steps} times the cost of one gradient.` : "A whole number from 2 to 64."}
+          >
+            <Input type="number" min={2} max={64} step={1} value={steps} onChange={(ev) => onChange({ atpSteps: Number(ev.target.value) })} aria-invalid={!valid} />
+          </Field>
+        </div>
+      )}
+      <p className={s.small}>
+        Estimates what patching each site would do, to first order: (source activation − receiver activation) · the gradient
+        of the metric{form.atpMethod === "integrated_gradients" ? ", averaged over runs whose inputs lie evenly between the receiver's and the source's" : " at the receiver run"}.
+        One estimate covers every site, so large sweeps take seconds. Saturation (in attention, normalization and the softmax)
+        can make one gradient miss or even invert an effect; integrated gradients correct much of it. Either way, verify the
+        strongest sites by patching from the results.
+      </p>
+    </>
   );
 }
 
@@ -727,6 +626,59 @@ function PositionPicker({
 
 const LAST_TOKEN_NOTE = "Read at the last token, where the logit difference is measured.";
 
+type FeaturesScope = Extract<ScopeSpec, { kind: "features" }>;
+
+/** Sets of sites to start from: the chosen sites as one set, or one set that replaces every head
+ * (what a circuit is read against) to add sets beside. */
+function firstSets(scope: ScopeSpec): ScopeSpec {
+  if (scope.kind === "sites") {
+    const sites = scope.sites.filter((x) => SET_SITE_KINDS.includes(x.kind));
+    if (sites.length) return { kind: "site_sets", universe: null, sets: [{ label: sites.length === 1 ? siteText(sites[0]) : "Chosen sites", sites, complement: false }] };
+  }
+  return { kind: "site_sets", universe: ["head"], sets: [{ label: EVERYTHING, sites: [], complement: true }] };
+}
+
+/** Which prompts choose the strongest features, and which report them: the same prompts, or a
+ * seeded split, so the reported effects aren't the ones that happened to look strongest. */
+function HeldOutChoice({ scope, onChange }: { scope: FeaturesScope; onChange: (s: ScopeSpec) => void }) {
+  const shares = [0.25, 0.5, 0.75];
+  const share = scope.choose_on;
+  return (
+    <div className={e.stack}>
+      <Choices
+        label="Prompts that choose the features"
+        value={share === null ? "every" : "split"}
+        onChange={(v) => onChange(v === "every" ? { ...scope, choose_on: null, seed: null } : { ...scope, choose_on: 0.5, seed: scope.seed ?? 0 })}
+        columns={2}
+        options={[
+          { value: "every", title: "Every prompt chooses and reports", detail: "The strongest features are reported on the same prompts that chose them." },
+          { value: "split", title: "Some choose, the rest report", detail: "A seeded share of the prompts chooses the features; only the others report their effects." },
+        ]}
+      />
+      {share !== null && (
+        <div className={s.grid3}>
+          <Field label="Share that chooses">
+            <Select value={String(share)} onChange={(ev) => onChange({ ...scope, choose_on: Number(ev.target.value) })}>
+              {(shares.includes(share) ? shares : [...shares, share].sort((a, b) => a - b)).map((v) => (
+                <option key={v} value={String(v)}>
+                  {Math.round(v * 100)}% of the prompts
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Split seed">
+            <Input type="number" min={0} step={1} value={scope.seed ?? 0} onChange={(ev) => onChange({ ...scope, seed: Number(ev.target.value) })} />
+          </Field>
+        </div>
+      )}
+      <p className={s.small}>
+        Features that look strongest on some prompts are partly lucky there, so reporting them on the same prompts overstates
+        their effects (the winner's curse). Reporting them on prompts that didn't choose them doesn't.
+      </p>
+    </div>
+  );
+}
+
 function ScopeEditor({
   method,
   saeLoaded,
@@ -753,6 +705,8 @@ function ScopeEditor({
   // Paths start at heads, attention outputs or MLP outputs.
   const paths = method === "path_patching";
   const verb = method === "ablation" ? "Ablate" : "Patch";
+  // Sets of sites are intervened on together, which patching and ablation do.
+  const setsAllowed = method === "activation_patching" || method === "ablation";
   const position = (p: PositionSpec) => (direct ? { kind: "last" } as PositionSpec : p);
   return (
     <div className={e.stack}>
@@ -760,12 +714,13 @@ function ScopeEditor({
         label="Sweep"
         value={kind}
         onChange={(k) => {
-          if (k === "features") onChange({ kind: "features", position: { kind: "last" }, top: 50 });
+          if (k === "features") onChange({ kind: "features", position: { kind: "last" }, top: 50, choose_on: null, seed: null });
           else if (k === "layer_components" && steering) onChange({ kind: "layer_components", components: ["resid_pre"], position: { kind: "last" } });
           else if (k === "heads") onChange({ kind: "heads", position: position({ kind: "all" }) });
           else if (k === "layer_position")
             onChange({ kind: "layer_position", site: "resid_pre", positions: uniformLength === false && labels.length ? "labels" : "each" });
           else if (k === "layer_components") onChange({ kind: "layer_components", components: ["attn_out", "mlp_out"], position: position({ kind: "all" }) });
+          else if (k === "site_sets") onChange(firstSets(scope));
         }}
         options={[
           { value: "heads", label: "Layer × head", disabled: steering, title: steering ? "Steering adds to the residual stream" : undefined },
@@ -786,19 +741,38 @@ function ScopeEditor({
             ? [{ value: "features" as const, label: "Every SAE feature" }]
             : []),
           ...(kind === "sites" ? [{ value: "sites" as const, label: scope.sites.length === 1 ? "Single site" : "Chosen sites" }] : []),
+          {
+            value: "site_sets" as const,
+            label: "Sets of sites",
+            disabled: !setsAllowed,
+            title: setsAllowed ? "Sites intervened on together, one result per set" : "Sets are intervened on by activation patching or ablation",
+          },
         ]}
       />
+      {scope.kind === "site_sets" && (
+        <>
+          <p className={s.small}>
+            Each set's sites are {method === "ablation" ? "ablated" : "patched"} together in one forward pass, and each set is one
+            result. A set can replace its sites, or keep them and replace the rest of the model: keeping a circuit alone shows how
+            much of the behavior it carries.
+          </p>
+          <SiteSetsEditor scope={scope} onChange={onChange} labels={labels} />
+        </>
+      )}
       {scope.kind === "features" && (
-        <div className={s.grid2}>
-          <Field label="Estimate each feature at">
-            <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} />
-          </Field>
-          <Field
-            label="Keep the strongest"
-            help={saeLoaded ? `Of the ${saeLoaded.d_sae.toLocaleString("en-US")} features of the SAE on layer ${saeLoaded.layer}, by the size of their estimated effect.` : "By the size of their estimated effect."}
-          >
-            <Input type="number" min={1} max={500} value={scope.top} onChange={(ev) => onChange({ ...scope, top: Math.max(1, Math.min(500, Number(ev.target.value) || 1)) })} aria-label="Number of features to keep" />
-          </Field>
+        <div className={e.stack}>
+          <div className={s.grid2}>
+            <Field label="Estimate each feature at">
+              <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} />
+            </Field>
+            <Field
+              label="Keep the strongest"
+              help={saeLoaded ? `Of the ${saeLoaded.d_sae.toLocaleString("en-US")} features of the SAE on layer ${saeLoaded.layer}, by the size of their estimated effect.` : "By the size of their estimated effect."}
+            >
+              <Input type="number" min={1} max={500} value={scope.top} onChange={(ev) => onChange({ ...scope, top: Math.max(1, Math.min(500, Number(ev.target.value) || 1)) })} aria-label="Number of features to keep" />
+            </Field>
+          </div>
+          <HeldOutChoice scope={scope} onChange={onChange} />
         </div>
       )}
       {scope.kind === "heads" &&

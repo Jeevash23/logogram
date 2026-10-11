@@ -128,3 +128,27 @@
   font-size: var(--text-xs);
   color: var(--muted);
 }
+
+/* Each answer's log-probability, beside the tokens that count for it. */
+.answers {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 12px;
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.answers dt {
+  color: var(--muted);
+}
+
+.answers dd {
+  margin: 0;
+  min-width: 0;
+}
+
+.answerText {
+  color: var(--faint);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

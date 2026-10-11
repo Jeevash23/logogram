@@ -359,10 +359,13 @@ class AppState:
         return backend
 
     def unload_model(self) -> None:
-        if self.job is not None and self.job.status == "running":
-            raise Conflict("Wait for the running job to finish, or cancel it, before unloading.")
-        backend, self.backend = self.backend, None
-        self.model_ref = None
+        with self._job_lock:  # a job can't start with the model while it is being unloaded
+            if self.job is not None and self.job.status == "running":
+                raise Conflict(
+                    "Wait for the running job to finish, or cancel it, before unloading."
+                )
+            backend, self.backend = self.backend, None
+            self.model_ref = None
         if backend is not None:
             backend.close()  # waits for an analysis that is using it
         self._set_model_status(state="none")
@@ -412,14 +415,18 @@ class AppState:
         try:
             sae = load_sae(ref, backend.info.device, progress, cancel)
             info = backend.info
-            if sae.params.d_in != info.d_model:
+            from logogram.features import check_dimensions
+
+            check_dimensions(sae, info)
+            readable = set(info.site_kinds) | set(info.extra.get("sae_sites") or [])
+            if (
+                sae.layer >= info.n_layers
+                or sae.site not in info.site_kinds
+                or sae.site_in not in readable
+            ):
                 raise ValueError(
-                    f"This SAE reads {sae.params.d_in}-dimensional activations, but "
-                    f"{info.id}'s are {info.d_model}-dimensional: it was made for another model."
-                )
-            if sae.layer >= info.n_layers or sae.site not in info.site_kinds:
-                raise ValueError(
-                    f"This SAE reads {sae.site} in layer {sae.layer}, which {info.id} doesn't have."
+                    f"This SAE reads {sae.site_in} in layer {sae.layer}, which {info.id} doesn't "
+                    "have."
                 )
         except Cancelled:
             self._set_sae_status(state="none")
@@ -438,9 +445,12 @@ class AppState:
         return self.start_job("load_sae", f"Load the SAE {ref.repo}", work)
 
     def unload_sae(self) -> None:
-        if self.job is not None and self.job.status == "running":
-            raise Conflict("Wait for the running job to finish, or cancel it, before unloading.")
-        self._drop_sae()
+        with self._job_lock:
+            if self.job is not None and self.job.status == "running":
+                raise Conflict(
+                    "Wait for the running job to finish, or cancel it, before unloading."
+                )
+            self._drop_sae()
 
     # -- jobs --------------------------------------------------------------------------------
 
@@ -479,7 +489,7 @@ class AppState:
                     job.update(status="finished")
             except Cancelled:
                 job.update(status="cancelled")
-            except Exception as exc:  # noqa: BLE001 - reported to the UI
+            except Exception as exc:
                 log.exception("job failed")
                 job.update(status="failed", error=str(exc) or type(exc).__name__)
             self.hub.publish("job", job.to_dict())
@@ -561,8 +571,9 @@ class AppState:
             else:
                 folder = project.run_dir(draft_id)
                 project.readable(folder / "spec.json")
-                running = self.job is not None and self.job.status == "running"
-                if (folder / "manifest.json").exists() or (running and self.job.run_id == draft_id):
+                job = self.job
+                running = job is not None and job.status == "running" and job.run_id == draft_id
+                if (folder / "manifest.json").exists() or running:
                     raise Conflict(
                         f"{draft_id} has run, so its spec stays as it ran. Save a new draft instead."
                     )

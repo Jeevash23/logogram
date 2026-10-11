@@ -1,4 +1,4 @@
-import { Fragment, useState, type ReactNode } from "react";
+import { Fragment, useMemo, useState, type ReactNode } from "react";
 
 import { api } from "../api/client";
 import type { Spec } from "../api/types";
@@ -7,7 +7,7 @@ import { Button, Empty, Segmented } from "../components/ui";
 import { duration } from "../lib/format";
 import { useActiveRun } from "../lib/hooks";
 import { useStore } from "../store/app";
-import { buildSpec } from "./ExperimentView";
+import { buildSpec, datasetFacts } from "../lib/buildSpec";
 import s from "./views.module.css";
 import v from "./SpecView.module.css";
 
@@ -52,7 +52,9 @@ export function SpecView() {
   const [copied, setCopied] = useState(false);
   const guard = useStore((st) => st.guard);
 
-  const draft = buildSpec(form, { model, datasetPath, datasetSha: dataset?.sha256 ?? null, sae });
+  // Facts read every prompt of the dataset: once per dataset and limit, not on every render.
+  const facts = useMemo(() => datasetFacts(dataset, form.limit), [dataset, form.limit]);
+  const draft = buildSpec(form, { model, datasetPath, datasetSha: dataset?.sha256 ?? null, sae, facts });
   const runSpec: Spec | undefined = run.detail?.spec;
   const showing: "run" | "draft" = source === "run" && runSpec ? "run" : "draft";
   const spec = showing === "run" ? runSpec : "spec" in draft ? draft.spec : undefined;
@@ -102,7 +104,7 @@ export function SpecView() {
                       const out = await guard(() => api.saveDraft(spec, st.form.draftId));
                       if (out && useStore.getState().project?.session_id === st.project?.session_id) {
                         // Running the form now fills this draft's folder.
-                        st.setForm({ draftId: out.run_id });
+                        st.markFormSaved(out.run_id);
                         st.notify(`Saved ${out.path}`);
                         await st.refreshRuns();
                       }

@@ -31,12 +31,15 @@ traceability come before features.
 
 ## Science rules
 
-* The experiment spec (`src/logogram/spec.py`) is the single source of truth. The app and
-  `logogram run` execute the same spec through `logogram.runner.run_spec`; never add a code path
-  that only one of them uses.
+* The experiment spec (`src/logogram/spec.py`) is the single source of truth. The app,
+  `logogram run` and the Python API execute the same spec through `logogram.runner.run_spec`;
+  never add a code path that only one of them uses.
 * Every choice that can change a number lives in the spec and is shown in the UI: direction,
-  baseline, site, position, metric, normalization, seeds, batch size, dtype, model revision.
-  Nothing methodological is silently defaulted. Ablation has no default baseline.
+  baseline, site, position, metric, normalization, seeds, clustering, batch size, dtype, model
+  revision. Nothing methodological is silently defaulted: a version 2 spec states every such
+  field, and a new one is required (with the value that reproduces earlier behavior filled in
+  for version 1 specs by `upgrade_v1`, listed when it was a choice). Ablation has no default
+  baseline.
 * Specs use abstract sites (`resid_pre`, `resid_mid`, `resid_post`, `attn_out`, `mlp_out`,
   `head`). Library hook names appear only inside a backend (`src/logogram/backends/`).
 * Keep per-prompt values. Statistics come from them: n, mean, SD, a seeded percentile bootstrap
@@ -92,11 +95,14 @@ traceability come before features.
 
 ```text
 src/logogram/
-  spec.py              experiment spec (pydantic)
+  spec.py              experiment spec (pydantic); version 1 specs are upgraded here
   datasets.py, ioi.py  JSONL datasets and the IOI generator
-  prompts.py           tokenization, alignment checks, length groups
+  tasks.py             seeded datasets for the other tasks (greater-than, docstring, ...)
+  prompts.py           tokenization, alignment checks, length groups, seeded splits
+  metrics.py           the metrics: answers, answer sets and continuations, scored per prompt
   sites.py             scope expansion and result layouts
   engine.py            the sweep: captures, patches, streams per layer, cancels; routes methods
+  circuits.py          sets of sites intervened on at once, faithfulness and minimality
   direct.py            direct logit attribution
   atp.py               attribution patching (first-order estimates of patching)
   verify.py            the spec that verifies an estimate by patching its strongest sites
@@ -104,12 +110,14 @@ src/logogram/
   paths.py             path patching
   features.py          SAE features: patching and attribution patching
   sae.py               SAE encode, decode and fit
-  stats.py             bootstrap and summary statistics
+  stats.py             bootstrap (over prompts or clusters), bands, q-values, paired differences
   results.py           summary.json and results.parquet
   schema.py            schemas for run files, history listings and live events
   fileio.py            atomic writes that never follow symlinks
-  runner.py            run a spec end to end (used by the app and the CLI)
-  compare.py           robustness checks and run comparisons
+  runner.py            run a spec end to end (used by the app, the CLI and the Python API)
+  robustness.py        the spec that reruns a run with one choice changed
+  compare.py           run comparisons, paired prompt by prompt where they can be
+  api.py               the Python API for notebooks (imported lazily by logogram/__init__.py)
   analysis.py          token strip, baseline check, attention patterns
   backends/            ModelBackend interface, TransformerLens backend, Hugging Face access,
                        published SAE formats

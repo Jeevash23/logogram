@@ -37,7 +37,7 @@ export function SystemCheck() {
     if (project) await st.enterProject(project);
   };
 
-  const gpu = report?.gpus[0];
+  const gpu = report?.gpus?.[0];
   const backendName = report
     ? { cuda: "CUDA", mps: "Apple Metal (MPS)", cpu: "CPU" }[report.backend]
     : "";

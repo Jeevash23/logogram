@@ -53,8 +53,8 @@ def test_from_the_last_layer_to_the_logits_a_path_is_the_whole_effect(
         backend,
         prompts,
     )
-    np.testing.assert_allclose(paths.patched_ld, patched.patched_ld, atol=TOL)
-    assert np.abs(paths.patched_ld - paths.receiver_ld[None, :]).max() > 1e-3
+    np.testing.assert_allclose(paths.patched, patched.patched, atol=TOL)
+    assert np.abs(paths.patched - paths.receiver_metric[None, :]).max() > 1e-3
 
 
 def test_holding_the_mlps_leaves_only_the_direct_path(tiny_backend, project, spec_factory):
@@ -70,7 +70,7 @@ def test_holding_the_mlps_leaves_only_the_direct_path(tiny_backend, project, spe
     direct = run_experiment(
         spec_factory(experiment=path(LOGITS, freeze_mlps=True), scope=scope), tiny_backend, prompts
     )
-    assert np.abs(through.patched_ld - direct.patched_ld).max() > 1e-4
+    assert np.abs(through.patched - direct.patched).max() > 1e-4
 
 
 def test_only_senders_before_a_receiver_are_swept(tiny_backend, project, spec_factory):
@@ -82,7 +82,7 @@ def test_only_senders_before_a_receiver_are_swept(tiny_backend, project, spec_fa
     assert {rs.layer for rs in result.sites} == {0}
     assert len(result.layout["rows"]) == 1 and len(result.sites) == tiny_backend.info.n_heads
     assert [rs.index for rs in result.sites] == list(range(len(result.sites)))
-    assert np.isfinite(result.patched_ld).all()
+    assert np.isfinite(result.patched).all()
     with pytest.raises(ScopeError, match="No sender comes before"):
         late = {
             "kind": "sites",
@@ -115,8 +115,8 @@ def test_a_head_receiver_changes_only_through_its_input(tiny_backend, project, s
         tiny_backend,
         prompts,
     )
-    assert np.abs(every.patched_ld - every.receiver_ld).max() > 1e-4
-    assert not np.allclose(every.patched_ld, one.patched_ld)
+    assert np.abs(every.patched - every.receiver_metric).max() > 1e-4
+    assert not np.allclose(every.patched, one.patched)
 
 
 def test_shared_keys_and_values_are_refused(arch_backend, project, spec_factory):
@@ -139,7 +139,7 @@ def test_shared_keys_and_values_are_refused(arch_backend, project, spec_factory)
         backend,
         prompts,
     )
-    assert np.isfinite(result.patched_ld).all()
+    assert np.isfinite(result.patched).all()
 
 
 def test_receivers_must_be_distinct_and_senders_components(tiny_backend, project, spec_factory):
@@ -167,3 +167,28 @@ def test_a_run_is_stored_like_patching(tiny_backend, project, spec_factory):
     assert (
         len(summary["layout"]["rows"]) == tiny_backend.info.n_layers
     )  # the logits come after every layer
+
+
+def test_heads_and_logits_together_keep_both_paths(tiny_backend, project, spec_factory):
+    """With heads and the logits as receivers, each sender's effect goes through both: the
+    logits path no longer overwrites what the head receivers changed. Senders after the last head
+    receiver reach only the logits, exactly as with the logits alone."""
+    heads = [{"kind": "head", "layer": 1, "head": h, "input": x} for h in range(4) for x in "qkv"]
+    scope = {"kind": "heads", "position": {"kind": "all"}}
+    prompts = _prompts(tiny_backend, project)
+
+    def change(receivers):
+        result = run_experiment(
+            spec_factory(experiment=path(receivers), scope=scope), tiny_backend, prompts
+        )
+        return (result.patched - result.receiver_metric).mean(1)
+
+    through_heads = change(heads)
+    through_logits = change(LOGITS)
+    both = change(heads + LOGITS)
+    n_heads = tiny_backend.info.n_heads
+    np.testing.assert_allclose(both[n_heads:], through_logits[n_heads:], atol=1e-6)
+    first = slice(0, n_heads)
+    assert np.abs(both[first] - through_logits[first]).max() > 1e-2
+    # Close to the sum of the two paths (not exactly: the logits read them through a nonlinearity).
+    np.testing.assert_allclose(both[first], (through_heads + through_logits[first]), atol=0.05)

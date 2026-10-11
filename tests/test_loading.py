@@ -233,3 +233,14 @@ def test_the_memory_estimate_counts_weight_processing(monkeypatch):
     gpt2 = estimate_memory(**GPT2_SMALL, dtype="float32", device="cuda", process_weights=True)
     assert gpt2.verdict == "fits"
     assert gpt2.total >= gpt2.weights + gpt2.processing + gpt2.margin
+
+
+def test_the_memory_estimate_counts_every_layer_for_gradient_methods(monkeypatch):
+    """A backward pass keeps every layer's activations: a batch that fits one forward pass can
+    be too large for attribution patching, and the estimate says so."""
+    monkeypatch.setattr("logogram.system.available_memory", lambda device: 6 * 1024**3)
+    small = estimate_memory(**GPT2_SMALL, dtype="float32", device="cuda", seq_len=32)
+    assert small.all_layers > 4 * small.activations and small.all_layers_verdict == "fits"
+    long = estimate_memory(**GPT2_SMALL, dtype="float32", device="cuda", seq_len=256)
+    assert long.verdict == "fits" and long.all_layers_verdict == "wont_fit"
+    assert "smaller execution.batch_size" in long.explanation

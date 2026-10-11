@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "../api/client";
-import type { RunDetail, SiteDetail, SiteKind, SiteResult, Spec, Summary } from "../api/types";
-import { ci, count, num, plural, prob, signed } from "../lib/format";
+import type { ResultKind, RunDetail, SiteDetail, SiteResult, Spec, Summary } from "../api/types";
+import { capitalize, ci, count, num, plural, prob, qText, signed } from "../lib/format";
 import { siteValue, useActiveRun, useArchitecture } from "../lib/hooks";
 import {
   componentLabel,
@@ -14,6 +14,9 @@ import {
   type ResidKind,
   type Selection,
 } from "../lib/sites";
+import { setWhat, universeText } from "../lib/circuits";
+import { metricWords } from "../lib/metrics";
+import { siteText } from "../lib/spec";
 import { baselineText, experimentText, measureOf, measureWords, positionText } from "../lib/spec";
 import { useStore } from "../store/app";
 import { Distribution } from "./Distribution";
@@ -41,7 +44,11 @@ export function Inspector() {
         ) : (
           <>
             <ComponentHeader selection={selection} />
-            {run.detail?.spec && pendingBase && <p className={s.note}>{experimentText(run.detail.spec.experiment)} · {positionText(pendingBase.position)}</p>}
+            {run.detail?.spec && pendingBase && (
+              <p className={s.note}>
+                {experimentText(run.detail.spec.experiment)} · {pendingBase.kind === "site_set" ? "every site of the set at once" : positionText(pendingBase.position)}
+              </p>
+            )}
             {site && run.detail ? (
               <Evidence site={site} runId={run.id as string} summary={run.detail.summary} finished={!!run.detail.summary} />
             ) : pendingBase && run.running ? (
@@ -57,9 +64,11 @@ export function Inspector() {
             ) : (
               <p className={s.note}>Run an experiment to measure this component.</p>
             )}
+            {site && selection.part === "set" && run.detail?.summary?.circuit && <SetReading site={site} summary={run.detail.summary} />}
             {run.detail?.spec && (site || pendingBase) && <Method spec={run.detail.spec} summary={run.detail.summary} selection={selection} />}
-            <Actions selection={selection} />
-            <AcrossRuns selection={selection} />
+            {selection.part !== "set" && <Actions selection={selection} />}
+            {/* A set's label names different sites in different runs: no comparison across runs. */}
+            {selection.part !== "set" && <AcrossRuns selection={selection} />}
           </>
         )}
       </div>
@@ -75,8 +84,16 @@ function ComponentHeader({ selection }: { selection: Selection }) {
   else if (selection.part === "attn") kind = `The attention output of layer ${selection.layer}: all heads, after the output projection.`;
   else if (selection.part === "mlp") kind = `The MLP output of layer ${selection.layer}.`;
   else if (selection.part === "feature") kind = `Feature ${selection.feature} of the SAE on layer ${selection.layer}: a direction in the model the SAE finds active on some tokens.`;
+  else if (selection.part === "set") {
+    const set = findSite(run.sites, selection);
+    const members = set?.members ?? [];
+    const universe = run.detail?.summary?.circuit?.universe ?? run.layout?.universe;
+    const what = set ? setWhat(!!set.variant?.complement, set.variant?.size ?? members.length, universe) : "intervenes on a set of sites";
+    kind = `A set of sites, intervened on together in one forward pass: it ${what}${members.length ? `. Its sites: ${members.map(siteText).join(", ")}.` : "."}`;
+  }
   else {
-    const resid = selection.kind ?? sitesOnComponent(run.sites, selection)[0]?.kind;
+    const found = sitesOnComponent(run.sites, selection)[0]?.kind;
+    const resid = selection.kind ?? (found && isResidKind(found) ? found : undefined);
     kind = resid ? `The ${KIND_NAMES[resid]} (layer ${selection.layer}).` : `The residual stream at layer ${selection.layer}.`;
   }
   const label = componentLabel(
@@ -88,16 +105,76 @@ function ComponentHeader({ selection }: { selection: Selection }) {
     <div className={s.component}>
       <h2 className={s.componentTitle}>{label}</h2>
       <p className={s.componentText}>{kind}</p>
-      {arch && selection.layer >= arch.nLayers && <p className={s.note}>This model has only {arch.nLayers} layers.</p>}
+      {arch && selection.part !== "set" && selection.layer >= arch.nLayers && <p className={s.note}>This model has only {arch.nLayers} layers.</p>}
     </div>
+  );
+}
+
+/** A set against replacing everything: its share, its faithfulness, what a site adds to it, and
+ * how its two sites interact. */
+function SetReading({ site, summary }: { site: SiteResult; summary: Summary }) {
+  const row = summary.circuit?.rows.find((r) => r.index === site.index);
+  if (!row) return null;
+  const everything = summary.circuit?.everything === site.index;
+  return (
+    <section className={s.section}>
+      <h4 className={s.sectionTitle}>Against replacing everything</h4>
+      <dl className={s.stats}>
+        {everything ? (
+          <>
+            <dt>Share</dt>
+            <dd>
+              1 <span className={s.muted}>this set replaces everything; the others are read against it</span>
+            </dd>
+          </>
+        ) : (
+          <>
+            <dt>Share</dt>
+            <dd>
+              {num(row.share?.mean, 3)} <span className={s.muted}>({ci(row.share?.lo, row.share?.hi)})</span>
+            </dd>
+          </>
+        )}
+        {row.faithfulness && (
+          <>
+            <dt>Faithfulness</dt>
+            <dd>
+              {num(row.faithfulness.mean, 3)} <span className={s.muted}>({ci(row.faithfulness.lo, row.faithfulness.hi)})</span>
+            </dd>
+          </>
+        )}
+        {row.without && (
+          <>
+            <dt>Without {row.without.site}</dt>
+            <dd>
+              −{num(row.without.drop.mean, 3)} <span className={s.muted}>faithfulness of {row.without.of} ({ci(row.without.drop.lo, row.without.drop.hi)})</span>
+            </dd>
+          </>
+        )}
+        {row.interaction && (
+          <>
+            <dt>Beyond the sum</dt>
+            <dd>
+              {signed(row.interaction.effect.mean, 3)} <span className={s.muted}>{row.interaction.a} and {row.interaction.b} together ({ci(row.interaction.effect.lo, row.interaction.effect.hi)})</span>
+            </dd>
+          </>
+        )}
+      </dl>
+      <p className={s.fine}>
+        Share: this set's change in the metric as a share of replacing everything. Faithfulness: 1 − share, for a set that keeps
+        its sites; 1 means they carry the behavior alone.
+      </p>
+    </section>
   );
 }
 
 function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | null; selection: Selection }) {
   const exp = spec.experiment;
+  const measured = metricWords(summary?.metric ?? spec.metric);
   const base = summary ? findSite(summary.sites, selection) : null;
   const position = base ? positionText(base.position) : selection.positionKey ? `position ${selection.positionKey}` : "the positions in the spec";
-  const resid = base?.kind ?? selection.kind;
+  const kind = base?.kind ?? selection.kind;
+  const resid = kind && isResidKind(kind) ? kind : undefined;
   const what =
     selection.part === "head"
       ? "this head's output"
@@ -111,7 +188,16 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
             ? `the ${KIND_NAMES[resid]}`
             : "the residual stream";
   let how: string;
-  if (exp.kind === "direct_logit_attribution") {
+  if (selection.part === "set" && (exp.kind === "activation_patching" || exp.kind === "ablation")) {
+    const set = base ?? null;
+    const keeps = !!set?.variant?.complement;
+    const universe = universeText(summary?.circuit?.universe ?? summary?.layout.universe);
+    const [receiver, source] = exp.kind === "activation_patching" && exp.direction === "clean_to_corrupt" ? ["corrupt", "clean"] : ["clean", "corrupt"];
+    const value = exp.kind === "ablation" ? baselineText(exp.baseline) : `its value from the paired ${source} prompt`;
+    how = keeps
+      ? `Runs each ${receiver} prompt and replaces ${universe} except the set's sites, all at once, with ${value}. A site at one position keeps only that position. What changes is what the rest of the model carried.`
+      : `Runs each ${receiver} prompt and replaces every site of the set, all at once, with ${value}.`;
+  } else if (exp.kind === "direct_logit_attribution") {
     const written = selection.part === "head" ? "this head's output, through its share of the output projection," : `${what}`;
     return (
       <section className={s.section}>
@@ -148,14 +234,14 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
     const [receiver, source] = exp.direction === "clean_to_corrupt" ? ["corrupt", "clean"] : ["clean", "corrupt"];
     how =
       `Estimates, to first order, what changing ${what} at ${position} in each ${receiver} prompt to its value in the paired ${source} ` +
-      `prompt would do: (${source} − ${receiver} feature activation) × the gradient of the logit difference along the feature's ` +
+      `prompt would do: (${source} − ${receiver} feature activation) × ${gradient(exp, receiver, measured.label)} along the feature's ` +
       "decoder direction. Nothing is changed; verify the strongest by patching.";
   } else if (exp.kind === "attribution_patching") {
     const [receiver, source] = exp.direction === "clean_to_corrupt" ? ["corrupt", "clean"] : ["clean", "corrupt"];
     how =
       `Estimates, to first order, what replacing ${what} at ${position} in each ${receiver} prompt with its value from the paired ` +
-      `${source} prompt would do: (${source} activation − ${receiver} activation) · the gradient of the logit difference at the ` +
-      `${receiver} run. Nothing is replaced. The estimate misses saturation and can miss or even invert an effect; verify it by patching.`;
+      `${source} prompt would do: (${source} activation − ${receiver} activation) · ${gradient(exp, receiver, measured.label)}. ` +
+      `Nothing is replaced. ${exp.method === "integrated_gradients" ? "Averaging the gradient along the way corrects much of the saturation one gradient misses, but it is still an estimate" : "The estimate misses saturation and can miss or even invert an effect"}; verify it by patching.`;
   } else if (exp.kind === "path_patching") {
     const [receiver, source] = exp.direction === "clean_to_corrupt" ? ["corrupt", "clean"] : ["clean", "corrupt"];
     const into = exp.receivers.map((r) => (r.kind === "logits" ? "the logits" : `L${r.layer} H${r.head}'s ${{ q: "query", k: "key", v: "value" }[r.input]}`)).join(", ");
@@ -186,6 +272,7 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
     how = `Runs each clean prompt and replaces ${what} at ${position} with ${source}.`;
   }
   const receiver = summary?.receiver ?? ((exp.kind === "activation_patching" || exp.kind === "attribution_patching" || exp.kind === "path_patching") && exp.direction === "clean_to_corrupt" ? "corrupt" : "clean");
+  const metricText = `${measured.formula}${(summary?.metric ?? spec.metric).kind === "logit_diff" ? " at the last token" : ""}`;
   const reference = summary?.reference ?? (receiver === "corrupt" ? "clean" : "corrupt");
   const gap = summary?.metric.denominator;
   return (
@@ -198,7 +285,7 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
       <p className={s.text}>{how}</p>
       <h4 className={s.sectionTitle}>Metric</h4>
       <p className={s.text}>
-        Logit difference at the last token: logit(answer) − logit(distractor).
+        {capitalize(measured.label)}: {metricText}.
       </p>
       <p className={s.text}>
         {exp.kind === "attribution_patching" ? "Estimated effect = (estimated patched" : exp.kind === "steering" ? "Normalized effect = (steered" : "Normalized effect = (patched"} − {receiver}) ÷{" "}
@@ -246,11 +333,19 @@ function Evidence({
 
   const stats = summary?.statistics;
   const ciLevel = stats ? Math.round(stats.ci * 100) : 95;
-  const exp = useActiveRun().detail?.spec.experiment;
-  const words = measureWords(exp);
+  const active = useActiveRun().detail;
+  const exp = active?.spec.experiment;
+  const measuredBy = summary?.metric ?? active?.spec.metric;
+  const words = measureWords(exp, measuredBy);
+  const short = metricWords(measuredBy).short;
   const intervention = measureOf(exp) === "intervention";
   const noInterval = site.effect.lo === null || site.effect.hi === null;
   const byIndex = useMemo(() => new Map(detail?.prompts.map((p) => [p.index, p]) ?? []), [detail]);
+  const values = useMemo(() => detail?.prompts.map((p) => ({ index: p.index, value: p.effect })) ?? [], [detail]);
+  // A steered site and strength against its random control, paired over the same resamples.
+  const control = summary?.steering?.control?.find((c) => c.index === site.index || c.control_index === site.index);
+  const nSites = summary?.sites.length ?? 0;
+  const unit = summary?.layout.kind === "site_sets" ? "sets" : "sites";
 
   return (
     <section className={s.section}>
@@ -281,7 +376,7 @@ function Evidence({
             <dt>Sign flips</dt>
             <dd>
               {count(site.sign_flips)} of {count(site.n)}{" "}
-              <span className={s.muted}>prompts changed which name the model prefers</span>
+              <span className={s.muted}>prompts changed whether the model prefers the answer</span>
             </dd>
           </>
         )}
@@ -290,10 +385,42 @@ function Evidence({
           {count(site.opposite_sign)} of {count(site.n)}{" "}
           <span className={s.muted}>{intervention ? "prompts moved the other way" : "prompts point the other way"}</span>
         </dd>
+        {site.band && (
+          <>
+            <dt>Band, all {count(nSites)} {unit}</dt>
+            <dd>
+              {ci(site.band.lo, site.band.hi, 3)}{" "}
+              <span className={s.muted}>{site.band.lo > 0 || site.band.hi < 0 ? "excludes zero" : "includes zero"}</span>
+            </dd>
+          </>
+        )}
+        {site.q !== null && site.q !== undefined && (
+          <>
+            <dt>q-value</dt>
+            <dd>
+              {qText(site.q)} <span className={s.muted}>the share of false findings expected among {unit} this strong</span>
+            </dd>
+          </>
+        )}
+        {control && (
+          <>
+            <dt>Against the random control</dt>
+            <dd>
+              {signed(control.difference, 3)} <span className={s.muted}>({ci(control.lo, control.hi)}) {control.beats_control ? "beats it" : "doesn't beat it"}</span>
+            </dd>
+          </>
+        )}
       </dl>
       {stats && (
         <p className={s.fine}>
-          {stats.method[0].toUpperCase() + stats.method.slice(1)}, {count(stats.bootstrap)} resamples, seed {stats.seed}.
+          {[
+            capitalize(stats.method),
+            stats.cluster && stats.clusters ? `${count(stats.clusters)} clusters` : null,
+            `${count(stats.bootstrap)} resamples`,
+            `seed ${stats.seed}`,
+          ].filter(Boolean).join(", ")}.
+          {site.band && ` The band holds for all ${count(nSites)} ${unit} at once, with ${ciLevel}% confidence; the q-value is Benjamini–Hochberg's.`}
+          {control && ` Against the control: |effect| along the direction − |effect| along a random direction of the same length, at the same strength.`}
         </p>
       )}
 
@@ -306,17 +433,17 @@ function Evidence({
               <Icon name="alert" size={13} /> The dataset file changed after this run. Prompt texts may not match.
             </p>
           )}
-          {site.variant && <DoseResponse site={site} ciLevel={ciLevel} />}
+          {site.variant?.coefficient !== undefined && <DoseResponse site={site} ciLevel={ciLevel} />}
           <Distribution
             label={`Per-prompt ${words.effect.toLowerCase()}`}
-            values={detail.prompts.map((p) => ({ index: p.index, value: p.effect }))}
+            values={values}
             mean={site.effect.mean}
             lo={site.effect.lo}
             hi={site.effect.hi}
             onPick={(i) => setPromptIndex(i)}
           />
-          <PromptList title="Strongest" indices={detail.strongest} byIndex={byIndex} onPick={setPromptIndex} intervention={intervention} />
-          <PromptList title="Weakest" indices={detail.weakest} byIndex={byIndex} onPick={setPromptIndex} intervention={intervention} />
+          <PromptList title="Strongest" indices={detail.strongest} byIndex={byIndex} onPick={setPromptIndex} intervention={intervention} short={short} />
+          <PromptList title="Weakest" indices={detail.weakest} byIndex={byIndex} onPick={setPromptIndex} intervention={intervention} short={short} />
         </>
       )}
     </section>
@@ -387,12 +514,15 @@ function PromptList({
   byIndex,
   onPick,
   intervention,
+  short,
 }: {
   title: string;
   indices: number[];
   byIndex: Map<number, SiteDetail["prompts"][number]>;
   onPick: (i: number) => void;
   intervention: boolean;
+  /** The run's metric, as a label. */
+  short: string;
 }) {
   return (
     <div className={s.promptList}>
@@ -409,7 +539,11 @@ function PromptList({
               {p.answer && p.distractor ? `${p.answer.trim()} vs ${p.distractor.trim()} · ` : ""}
               {intervention ? (
                 <>
-                  logit diff {signed(p.receiver_logit_diff, 2)} → {signed(p.patched_logit_diff, 2)}
+                  {p.receiver_metric !== undefined && p.receiver_metric !== null ? (
+                    <>{short} {signed(p.receiver_metric, 2)} → {signed(p.patched_metric, 2)}</>
+                  ) : (
+                    <>logit diff {signed(p.receiver_logit_diff, 2)} → {signed(p.patched_logit_diff, 2)}</>
+                  )}
                   {p.flipped ? " · flipped" : ""}
                 </>
               ) : (
@@ -440,7 +574,7 @@ function NotMeasured({ selection }: { selection: Selection }) {
 }
 
 /** The residual kind of these sites, if they all share one. */
-function residKindOnly(sites: { kind: SiteKind }[]): ResidKind | undefined {
+function residKindOnly(sites: { kind: ResultKind }[]): ResidKind | undefined {
   const kinds = new Set(sites.map((x) => x.kind));
   const [only] = kinds;
   return kinds.size === 1 && isResidKind(only) ? only : undefined;
@@ -552,6 +686,7 @@ function RunOverview() {
   const run = useActiveRun();
   const select = useStore((st) => st.select);
   const summary = run.detail?.summary;
+  const short = metricWords(summary?.metric ?? run.detail?.spec.metric).short;
   const top = useMemo(() => {
     const list = Object.values(run.results).filter((x) => x.effect.mean !== null);
     return list.sort((a, b) => Math.abs(b.effect.mean ?? 0) - Math.abs(a.effect.mean ?? 0)).slice(0, 5);
@@ -578,12 +713,12 @@ function RunOverview() {
           <dd>{count(summary.n_prompts)}</dd>
           <dt>Clean</dt>
           <dd>
-            logit diff {signed(summary.baseline.clean.logit_diff.mean)}{" "}
+            {short} {signed((summary.baseline.clean.metric ?? summary.baseline.clean.logit_diff).mean)}{" "}
             <span className={s.muted}>· prefers answer in {summary.baseline.clean.prefers_answer}</span>
           </dd>
           <dt>Corrupt</dt>
           <dd>
-            logit diff {signed(summary.baseline.corrupt.logit_diff.mean)}{" "}
+            {short} {signed((summary.baseline.corrupt.metric ?? summary.baseline.corrupt.logit_diff).mean)}{" "}
             <span className={s.muted}>· prefers answer in {summary.baseline.corrupt.prefers_answer}</span>
           </dd>
         </dl>
@@ -613,4 +748,11 @@ function RunOverview() {
       <p className={s.fine}>Select a cell on the map or in the results for its evidence.</p>
     </div>
   );
+}
+
+/** The gradient an estimate multiplies by: at the receiver run, or averaged along the way. */
+function gradient(exp: { method?: string; steps?: number | null }, receiver: string, metric: string): string {
+  return exp.method === "integrated_gradients"
+    ? `the gradient of the ${metric}, averaged over ${exp.steps} runs between the ${receiver} prompt and the other (integrated gradients)`
+    : `the gradient of the ${metric} at the ${receiver} run`;
 }

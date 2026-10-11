@@ -9,6 +9,11 @@ Each line is one JSON object::
 
 ``positions`` is optional. It names character spans in the clean prompt; a label points to the
 last token that overlaps its span. ``id`` and ``meta`` are optional and carried through.
+
+``answer`` and ``distractor`` are usually single tokens. Either can also be a continuation of
+several tokens (``" Buenos Aires"``), read by the log-probability metrics, or a list of single
+tokens that all count (``["33", "34", ...]``, as in the greater-than task), read through the sum of
+their probabilities.
 """
 
 from __future__ import annotations
@@ -17,11 +22,11 @@ import hashlib
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from logogram.fileio import write_text_atomic
+from logogram.fileio import DATASET_LIMIT, read_limited, write_text_atomic
 
 DATASET_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 
@@ -30,16 +35,29 @@ class DatasetError(ValueError):
     """A dataset file can't be read. The message says where and how to fix it."""
 
 
+AnswerText = Annotated[str, Field(min_length=1)]
+# An answer or distractor: one string (a token, or a continuation of several), or a set of single
+# tokens any of which counts.
+Answer = AnswerText | Annotated[list[AnswerText], Field(min_length=1, max_length=1000)]
+
+
 class PromptRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     clean: str = Field(min_length=1)
     corrupt: str = Field(min_length=1)
-    answer: str = Field(min_length=1)
-    distractor: str = Field(min_length=1)
+    answer: Answer
+    distractor: Answer
     positions: dict[str, tuple[int, int]] | None = None
     id: str | None = None
     meta: dict[str, Any] | None = None
+
+    @field_validator("answer", "distractor")
+    @classmethod
+    def _distinct_alternatives(cls, value: str | list[str]) -> str | list[str]:
+        if isinstance(value, list) and len(set(value)) != len(value):
+            raise ValueError("a set of answers must not repeat a token")
+        return value
 
     @field_validator("positions")
     @classmethod
@@ -109,19 +127,31 @@ def _check_spans(record: PromptRecord, line_no: int, source: str) -> None:
             )
 
 
-def load_dataset(path: Path) -> list[PromptRecord]:
+def read_dataset_bytes(path: Path) -> bytes:
+    """A dataset file's bytes, refusing a file that isn't regular or is too large to read."""
     if not path.exists():
         raise DatasetError(f"Dataset not found: {path.name}. Check the path in the spec.")
     if not path.is_file():  # a folder, device or pipe could fail, block or never end
         raise DatasetError(f"{path.name} isn't a regular file.")
     try:
-        text = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError as exc:
-        raise DatasetError(
-            f"{path.name} isn't UTF-8 text (byte {exc.start} can't be decoded). Save it as UTF-8."
-        ) from exc
+        return read_limited(path, DATASET_LIMIT, "Split the prompts into smaller files.")
     except OSError as exc:
         raise DatasetError(f"{path.name} can't be read: {exc.strerror or exc}.") from exc
+    except ValueError as exc:  # too large, or no longer a regular file
+        raise DatasetError(str(exc)) from exc
+
+
+def decode_dataset(content: bytes, name: str) -> str:
+    try:
+        return content.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise DatasetError(
+            f"{name} isn't UTF-8 text (byte {exc.start} can't be decoded). Save it as UTF-8."
+        ) from exc
+
+
+def load_dataset(path: Path) -> list[PromptRecord]:
+    text = decode_dataset(read_dataset_bytes(path), path.name)
     return parse_jsonl(text, source=path.name)
 
 

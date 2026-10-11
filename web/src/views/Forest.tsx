@@ -29,7 +29,16 @@ export function Forest({
     [results, limit],
   );
   if (top.length === 0) return null;
-  const ext = top.flatMap((x) => [x.effect.lo ?? x.effect.mean ?? 0, x.effect.hi ?? x.effect.mean ?? 0, 0]);
+  // A finished run also has each site's simultaneous band: the interval that holds for all its
+  // sites together, wider than the site's own.
+  const banded = top.some((x) => x.band);
+  const ext = top.flatMap((x) => [
+    x.effect.lo ?? x.effect.mean ?? 0,
+    x.effect.hi ?? x.effect.mean ?? 0,
+    x.band?.lo ?? 0,
+    x.band?.hi ?? 0,
+    0,
+  ]);
   const lo = Math.min(...ext);
   const hi = Math.max(...ext);
   const span = hi - lo || 1;
@@ -40,7 +49,7 @@ export function Forest({
     <div className={f.forest} style={{ ["--label-width" as string]: labelWidth }}>
       <div className={f.head}>
         <span>Largest effects</span>
-        <span className={f.headNote}>mean · {ciLevel}% CI</span>
+        <span className={f.headNote}>mean · {ciLevel}% CI{banded ? " · band for all sites" : ""}</span>
       </div>
       {top.map((site) => (
         <button
@@ -56,6 +65,9 @@ export function Forest({
           </span>
           <span className={f.track} aria-hidden="true">
             <span className={f.zero} style={{ left: `${x(0)}%` }} />
+            {site.band && (
+              <span className={f.band} style={{ left: `${x(site.band.lo)}%`, width: `${Math.max(0.5, x(site.band.hi) - x(site.band.lo))}%` }} />
+            )}
             {site.effect.lo !== null && site.effect.hi !== null && (
               <span
                 className={f.ci}

@@ -179,3 +179,15 @@
   margin-top: 2px;
   flex: none;
 }
+
+/* An answer read as a set of tokens, or as several tokens in order. */
+.reading {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0;
+}
+
+.readingNote {
+  margin-left: 6px;
+  color: var(--faint);
+}

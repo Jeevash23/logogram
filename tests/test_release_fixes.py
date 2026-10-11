@@ -259,6 +259,7 @@ def test_analysis_uses_the_executed_context(ready, project, tiny_backend, spec_f
         "prepend_bos": False,
         "limit": 5,
         "batch_size": 2,
+        "metric": {"kind": "logit_diff", "normalization": "dataset_gap"},
     }
     report = client.post("/api/baseline", json=body)
     assert report.status_code == 200, report.text

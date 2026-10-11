@@ -1,5 +1,6 @@
 import type { RunDetail } from "../api/types";
 import { divergingScale, niceBound, SCALE_FLOOR, textOn } from "./color";
+import { describeMetric } from "./metrics";
 import { experimentText, measureWords, scopeText } from "./spec";
 
 export function downloadBlob(blob: Blob, filename: string) {
@@ -18,8 +19,8 @@ export function methodsText(run: RunDetail): string {
     `${experimentText(s.experiment)} at ${scopeText(s.scope)}.`,
     `Model: ${s.model.id}, revision ${s.model.revision ?? "unpinned"}, ${s.model.dtype}, device ${manifest?.device?.type ?? s.model.device}; weight processing ${s.model.process_weights ? "enabled" : "disabled"}.`,
     `Dataset: ${s.dataset.path}; SHA-256 ${s.dataset.sha256 ?? "unpinned"}; n = ${summary?.n_prompts ?? "unknown"}; limit ${s.dataset.limit ?? "none"}; prepend BOS ${s.tokenization.prepend_bos}.`,
-    `Metric: logit(answer) − logit(distractor) at the last token; normalization ${s.metric.normalization}. ${summary?.metric.normalized_effect ?? ""}.`,
-    `Execution batch size ${s.execution.batch_size}. Percentile bootstrap over prompts: ${s.statistics.bootstrap} resamples, ${s.statistics.ci * 100}% confidence interval, seed ${s.statistics.seed}.`,
+    `Metric: ${describeMetric(s.metric)}; normalization ${s.metric.normalization}. ${summary?.metric.normalized_effect ?? ""}.`,
+    `Execution batch size ${s.execution.batch_size}. ${statisticsText(run)}`,
     s.experiment.kind === "ablation"
       ? `Ablation baseline: ${JSON.stringify(s.experiment.baseline)}.`
       : s.experiment.kind === "direct_logit_attribution"
@@ -29,11 +30,26 @@ export function methodsText(run: RunDetail): string {
           : s.experiment.kind === "steering"
           ? `Steering: a direction added to the ${s.experiment.apply_to} prompts, the mean of (${s.experiment.apply_to === "clean" ? "corrupt" : "clean"} − ${s.experiment.apply_to}) at each site over a training split of ${Math.round(s.experiment.train_fraction * 100)}% of the pairs (split seed ${s.experiment.seed}); strengths ${s.experiment.coefficients.join(", ")}; random control of the same length ${s.experiment.control ? "included" : "not run"}.${summary?.steering ? ` Directions from dataset prompts ${summary.steering.train.join(", ")}; measured on the ${summary.steering.test.length} held-out prompts.` : ""}`
           : s.experiment.kind === "attribution_patching"
-          ? `Attribution patching (direction ${s.experiment.direction}): a first-order estimate of each site's patching effect, (source − receiver activation) · the gradient of the logit difference at the receiver run, not a patched forward pass.`
+          ? `Attribution patching (direction ${s.experiment.direction}): a first-order estimate of each site's patching effect, (source − receiver activation) · ${
+              s.experiment.method === "integrated_gradients"
+                ? `the gradient of the metric averaged over ${s.experiment.steps} runs whose input embeddings lie evenly between the receiver's and the source's (integrated gradients)`
+                : "the gradient of the metric at the receiver run"
+            }, not a patched forward pass.`
           : `Direction: ${s.experiment.direction}.`,
     `Run: ${run.id}. ${manifest?.versions ? `Software: ${Object.entries(manifest.versions).filter(([, v]) => v).map(([k, v]) => `${k} ${v}`).join(", ")}.` : ""}`,
     ...(summary?.warnings.map((warning) => `Run note: ${warning}`) ?? []),
   ].join("\n\n");
+}
+
+/** The bootstrap as run: over prompts or clusters of them, with the corrections for many sites. */
+function statisticsText(run: RunDetail): string {
+  const st = run.spec.statistics;
+  const summary = run.summary?.statistics;
+  const over = st.cluster
+    ? `over clusters of prompts with the same ${st.cluster}${summary?.clusters ? ` (${summary.clusters} clusters)` : ""}`
+    : "over prompts";
+  const corrected = summary?.multiple_comparisons ? ` ${summary.multiple_comparisons}` : "";
+  return `Percentile bootstrap ${over}: ${st.bootstrap} resamples, ${st.ci * 100}% confidence interval, seed ${st.seed}.${corrected}`;
 }
 
 /** Render an export with a fixed light background, full axis labels and a symmetric legend. */
@@ -66,7 +82,7 @@ export async function exportFigure(run: RunDetail, metric: "effect" | "delta", u
   ctx.font = `14px ${font}`;
   ctx.fillText(`${experimentText(run.spec.experiment)} · ${scopeText(run.spec.scope)}`, 28, 66, width - 56);
   ctx.fillText(`${run.spec.model.id} @ ${run.spec.model.revision ?? "unpinned"} · ${run.spec.model.dtype} · n = ${summary.n_prompts}`, 28, 88, width - 56);
-  const words = measureWords(run.spec.experiment);
+  const words = measureWords(run.spec.experiment, summary.metric);
   ctx.fillText(`${layout.row_title} × ${layout.col_title} · ${metric === "effect" ? words.effect : words.delta} · mean over prompts`, 28, 110, width - 56);
   const bound = unit && metric === "effect" ? 1 : niceBound(sites.map((s) => s[metric].mean), SCALE_FLOOR[metric]);
   const color = divergingScale(bound, "light");

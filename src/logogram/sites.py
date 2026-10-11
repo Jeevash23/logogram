@@ -21,6 +21,8 @@ from logogram.spec import (
     LayerComponentsScope,
     LayerPositionScope,
     Site,
+    SiteSet,
+    SiteSetsScope,
     SitesScope,
     Spec,
 )
@@ -49,29 +51,35 @@ class ResolvedSite:
     # strength, or its random control). ``variant_key`` names it, for example "×2".
     variant: dict[str, Any] | None = None
     variant_key: str | None = None
+    # A set of sites intervened on together (a row of a site_sets scope); ``site`` is then its
+    # first site, and the row reads as the whole set.
+    site_set: SiteSet | None = None
 
     @property
     def kind(self) -> str:
-        return self.site.kind
+        return "site_set" if self.site_set is not None else self.site.kind
 
     @property
     def layer(self) -> int:
-        return self.site.layer
+        return -1 if self.site_set is not None else self.site.layer
 
     @property
     def head(self) -> int | None:
-        return self.site.head
+        return None if self.site_set is not None else self.site.head
 
     def position_key(self) -> str:
-        return position_key(self.site.position)
+        return "set" if self.site_set is not None else position_key(self.site.position)
 
     def to_dict(self) -> dict[str, Any]:
+        members = None
+        if self.site_set is not None:
+            members = [s.model_dump(mode="json") for s in self.site_set.sites]
         return {
             "index": self.index,
             "kind": self.kind,
             "layer": self.layer,
             "head": self.head,
-            "feature": self.site.feature,
+            "feature": None if self.site_set is not None else self.site.feature,
             "position": self.site.position.model_dump(),
             "position_key": self.position_key(),
             "row": self.row,
@@ -79,6 +87,7 @@ class ResolvedSite:
             "label": self.label,
             "variant": self.variant,
             "variant_key": self.variant_key,
+            "members": members,
         }
 
 
@@ -189,8 +198,8 @@ def expand_scope(
             labels = common_labels(prompts)
             if not labels:
                 raise ScopeError(
-                    "The dataset has no named positions shared by every prompt. Generate an "
-                    "IOI dataset, or add positions to your JSONL."
+                    "The dataset has no named positions shared by every prompt. Generate a "
+                    "task's dataset (they name their positions), or add positions to your JSONL."
                 )
             for label in labels:
                 positions.append(LabelPosition(label=label))
@@ -230,6 +239,11 @@ def expand_scope(
             "rows": [{"key": str(i), "label": site_label(s)} for i, s in enumerate(scope.sites)],
             "cols": [{"key": "effect", "label": "effect"}],
         }
+    elif isinstance(scope, SiteSetsScope):
+        raise ScopeError(
+            "Sets of sites are intervened on together, which activation patching and ablation do. "
+            "Choose one of those."
+        )
     elif isinstance(scope, FeaturesScope):
         raise ScopeError(
             "Sweeping every SAE feature needs attribution patching, which estimates them all at "

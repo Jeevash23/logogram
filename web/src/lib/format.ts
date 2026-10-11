@@ -25,6 +25,12 @@ export function pct(x: number | null | undefined, digits = 0): string {
   return `${(x * 100).toFixed(digits)}%`;
 }
 
+/** A q-value or p-value as read: small ones in scientific notation. */
+export function qText(q: number | null | undefined): string {
+  if (q === null || q === undefined || !Number.isFinite(q)) return "—";
+  return q > 0 && q < 0.001 ? q.toExponential(1).replace("-", "−") : num(q, 3);
+}
+
 export function prob(x: number | null | undefined): string {
   if (x === null || x === undefined || !Number.isFinite(x)) return "—";
   if (x < 0.001) return "<0.001";
@@ -38,7 +44,8 @@ export function bytes(n: number | null | undefined): string {
   return `${Math.max(1, Math.round(n / 1024 ** 2))} MB`;
 }
 
-export function count(n: number): string {
+export function count(n: number | null | undefined): string {
+  if (n === null || n === undefined || !Number.isFinite(n)) return "—";
   return n.toLocaleString("en-US");
 }
 
@@ -82,9 +89,26 @@ export function clock(iso: string | null | undefined): string {
   });
 }
 
-/** Show token whitespace explicitly: a leading space as a middle dot, newlines as ⏎. */
-export function visibleToken(token: string): string {
+/** Show token whitespace explicitly: a leading space as a middle dot, newlines as ⏎. A missing
+ * token shows as nothing. */
+export function visibleToken(token: string | null | undefined): string {
+  if (!token) return "";
   return token.replace(/\n/g, "⏎").replace(/\t/g, "⇥").replace(/^ /, "·").replace(/ /g, "·");
+}
+
+/** An answer or distractor for display: a token or a continuation as written, or the members of a
+ * set (any of which counts), the first few of them. */
+export function answerText(answer: string | string[] | null | undefined, max = 4): string {
+  if (answer === null || answer === undefined) return "";
+  if (typeof answer === "string") return visibleToken(answer);
+  const shown = answer.slice(0, max).map(visibleToken).join(" ");
+  return answer.length > max ? `${shown} …` : shown;
+}
+
+/** Text with its first letter capitalized, for messages that start a sentence. Empty stays empty. */
+export function capitalize(text: string | null | undefined): string {
+  if (!text) return "";
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 export function shortRevision(rev: string | null | undefined): string {

@@ -2,6 +2,7 @@ import { useEffect } from "react";
 
 import { connectEvents } from "./api/events";
 import { CommandPalette } from "./components/CommandPalette";
+import { ShortcutsDialog } from "./components/ShortcutsDialog";
 import { Notices } from "./components/Notices";
 import { BRAND_SEED, Logogram } from "./components/Logogram";
 import { TooltipProvider } from "./components/ui";
@@ -59,6 +60,7 @@ export function App() {
       {screen === "projects" && <Projects />}
       {screen === "workbench" && <Workbench />}
       <CommandPalette />
+      <ShortcutsDialog />
       <Notices />
     </TooltipProvider>
   );

@@ -14,8 +14,10 @@ export function useAnalysisContext() {
   const analysisSource = useStore((s) => s.analysisSource);
   const activeRunId = useStore((s) => s.activeRunId);
   const runDetails = useStore((s) => s.runDetails);
-  return useMemo(() => analysisContext({ form, model, datasetPath, dataset, project, analysisSource, activeRunId, runDetails }),
-    [form, model, datasetPath, dataset, project, analysisSource, activeRunId, runDetails]);
+  const view = useStore((s) => s.view);
+  const mapOverlay = useStore((s) => s.mapOverlay);
+  return useMemo(() => analysisContext({ form, model, datasetPath, dataset, project, analysisSource, activeRunId, runDetails, view, mapOverlay }),
+    [form, model, datasetPath, dataset, project, analysisSource, activeRunId, runDetails, view, mapOverlay]);
 }
 
 const MODEL_NAMES: Record<string, string> = {
@@ -101,8 +103,10 @@ export function siteValue(site: SiteResult | undefined, metric: "effect" | "delt
  */
 export function useRunProfile(run: ReturnType<typeof useActiveRun>): number[] | null {
   return useMemo(() => {
+    // Sets of sites belong to no one layer: their glyph marks the run's identity only.
+    if (run.layout?.kind === "site_sets" || run.sites.some((x) => x.kind === "site_set")) return null;
     const layers = run.model?.n_layers ?? (run.sites.length ? Math.max(...run.sites.map((x) => x.layer)) + 1 : 0);
     if (!layers || Object.keys(run.results).length === 0) return null;
     return layerProfile(run.sites, (i) => siteValue(run.results[i], "effect"), layers);
-  }, [run.model, run.sites, run.results]);
+  }, [run.model, run.sites, run.results, run.layout]);
 }

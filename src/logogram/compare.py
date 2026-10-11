@@ -4,6 +4,11 @@ Sites are matched by (kind, layer, head, position). The comparison reports Spear
 correlation of mean effects, the overlap of the top-k components (ranked by |effect|), and the
 components whose conclusion changed: their sign reversed (both confidence intervals exclude zero,
 on opposite sides) or they entered or left the top k.
+
+When both runs measured the same prompts, each common site's effects are also compared prompt by
+prompt: the mean difference (b - a) gets a percentile interval from resamples shared by every
+site, which is far narrower than two separate intervals, and a site whose difference excludes
+zero is flagged.
 """
 
 from __future__ import annotations
@@ -14,7 +19,7 @@ from typing import Any
 import numpy as np
 
 from logogram.spec import Spec
-from logogram.stats import spearman
+from logogram.stats import paired_difference, resample_counts, spearman
 
 
 class CompareError(ValueError):
@@ -68,12 +73,66 @@ def spec_differences(
     return out
 
 
+def paired_differences(
+    table_a: Any,
+    table_b: Any,
+    summary_a: dict[str, Any],
+    summary_b: dict[str, Any],
+    spec_a: Spec,
+    spec_b: Spec,
+) -> dict[tuple[Any, ...], dict[str, float]] | None:
+    """For sites both runs measured on the same prompts, the mean of b - a in per-prompt effects
+    and its interval (resamples drawn with run a's bootstrap settings). None when the runs
+    measured different prompts, so their effects can't be paired."""
+    if (
+        spec_a.dataset.sha256 is None
+        or spec_a.dataset.sha256 != spec_b.dataset.sha256
+        or spec_a.dataset.limit != spec_b.dataset.limit
+    ):
+        return None
+    index_a = {s["index"]: site_key(s) for s in summary_a["sites"]}
+    index_b = {s["index"]: site_key(s) for s in summary_b["sites"]}
+
+    def effects(table: Any, index: dict[int, tuple[Any, ...]]) -> dict[tuple[Any, ...], Any]:
+        out: dict[tuple[Any, ...], dict[int, float]] = {}
+        sites = table.column("site").to_numpy()
+        prompts = table.column("prompt").to_numpy()
+        values = table.column("effect").to_numpy(zero_copy_only=False)
+        for site, prompt, value in zip(sites, prompts, values, strict=True):
+            key = index.get(int(site))
+            if key is not None:
+                out.setdefault(key, {})[int(prompt)] = float(value)
+        return out
+
+    a, b = effects(table_a, index_a), effects(table_b, index_b)
+    common = [k for k in a if k in b and a[k].keys() == b[k].keys()]
+    if not common:
+        return None
+    prompts = sorted(a[common[0]])
+    if any(sorted(a[k]) != prompts for k in common):
+        return None
+    ea = np.array([[a[k][p] for p in prompts] for k in common])
+    eb = np.array([[b[k][p] for p in prompts] for k in common])
+    finite = np.isfinite(ea).all(1) & np.isfinite(eb).all(1)
+    if len(prompts) < 2 or not finite.any():
+        return None
+    stats = spec_a.statistics
+    counts = resample_counts(len(prompts), stats.bootstrap, stats.seed)
+    mean, lo, hi = paired_difference(ea[finite], eb[finite], counts, stats.ci)
+    keys = [k for k, ok in zip(common, finite, strict=True) if ok]
+    return {
+        k: {"mean": float(m), "lo": float(lw), "hi": float(h)}
+        for k, m, lw, h in zip(keys, mean, lo, hi, strict=True)
+    }
+
+
 def compare_summaries(
     summary_a: dict[str, Any],
     summary_b: dict[str, Any],
     spec_a: Spec | None = None,
     spec_b: Spec | None = None,
     top_k: int | None = None,
+    paired: dict[tuple[Any, ...], dict[str, float]] | None = None,
 ) -> dict[str, Any]:
     sites_a = {site_key(s): s for s in summary_a["sites"]}
     sites_b = {site_key(s): s for s in summary_b["sites"]}
@@ -113,6 +172,9 @@ def compare_summaries(
             flags.append("left_top")
         if i in top_b and i not in top_a:
             flags.append("entered_top")
+        difference = (paired or {}).get(key)
+        if difference is not None and (difference["lo"] > 0 or difference["hi"] < 0):
+            flags.append("differs")
         entry = {
             "label": sa["label"],
             "kind": sa["kind"],
@@ -130,6 +192,7 @@ def compare_summaries(
             "rank_a": int(rank_a[i]),
             "rank_b": int(rank_b[i]),
             "flags": flags,
+            "difference": difference,
         }
         if flags or i in top_a or i in top_b:
             changes.append(entry)
@@ -171,7 +234,29 @@ def compare_summaries(
         "changes": changes,
         "flagged": flagged,
         "n_sign_changes": sum(1 for c in changes if "sign" in c["flags"]),
+        "paired": paired is not None,
+        "n_differs": sum(1 for c in changes if "differs" in c["flags"]),
         "diff": diff,
         "same_layout": same_layout,
         "spec_differences": differences,
     }
+
+
+def compare_runs(project: Any, run_a: str, run_b: str) -> dict[str, Any]:
+    """Compare two finished runs of a project, paired prompt by prompt where they can be."""
+    import pyarrow.parquet as pq
+
+    from logogram.runs import load_summary
+
+    summaries, specs, tables = [], [], []
+    for run_id in (run_a, run_b):
+        folder = project.run_dir(run_id)
+        try:
+            summary = load_summary(project, run_id)
+        except ValueError as exc:
+            raise CompareError("Both runs need to have finished.") from exc
+        summaries.append(summary)
+        specs.append(Spec.from_path(project.readable(folder / "spec.json")))
+        tables.append(pq.read_table(project.readable(folder / "results.parquet")))
+    paired = paired_differences(tables[0], tables[1], *summaries, *specs)
+    return compare_summaries(summaries[0], summaries[1], specs[0], specs[1], paired=paired)

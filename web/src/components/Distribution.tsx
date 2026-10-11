@@ -14,7 +14,8 @@ interface Point {
 
 const R = 3;
 
-/** Per-prompt values as a beeswarm (or a histogram for large n), with the mean and its CI. */
+/** Per-prompt values as a beeswarm (or a histogram for large n), with the mean and its CI. Pass
+ * values that keep their identity between renders (useMemo), or the layout is computed again. */
 export function Distribution({
   values,
   mean,
@@ -36,7 +37,11 @@ export function Distribution({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const { width } = useElementSize(ref);
-  const finite = values.filter((v): v is { index: number; value: number } => v.value !== null && Number.isFinite(v.value));
+  // Kept while values keep their identity: the beeswarm below is quadratic in their number.
+  const finite = useMemo(
+    () => values.filter((v): v is { index: number; value: number } => v.value !== null && Number.isFinite(v.value)),
+    [values],
+  );
   const theme = useStore((st) => st.theme);
   const signScale = useMemo(
     () => divergingScale(niceBound(finite.map((v) => v.value), 0.1), theme),

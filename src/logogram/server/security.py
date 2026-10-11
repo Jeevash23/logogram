@@ -187,7 +187,17 @@ class SecurityMiddleware:
         self, scope: Scope, receive: Receive, send: Send, status: int, text: str
     ) -> None:
         if scope["type"] == "websocket":
-            await send({"type": "websocket.close", "code": 4401 if status == 401 else 4403})
+            if status == 401:
+                # Same host and origin, but no valid token: a tab whose session ended (the server
+                # restarted). Browsers report a refused handshake only as "abnormal closure", so
+                # accept and close at once with 4401, which the tab can read and explain. Nothing
+                # is sent before the close.
+                message = await receive()
+                if message.get("type") == "websocket.connect":
+                    await send({"type": "websocket.accept"})
+                    await send({"type": "websocket.close", "code": 4401})
+                return
+            await send({"type": "websocket.close", "code": 4403})
             return
         body = text.encode("utf-8")
         await send(

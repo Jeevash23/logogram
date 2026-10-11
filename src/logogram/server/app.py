@@ -8,6 +8,7 @@ import hashlib
 import logging
 import os
 import threading
+from collections.abc import Callable
 from importlib import resources
 from pathlib import Path
 from typing import Any, Literal
@@ -23,9 +24,11 @@ from logogram.datasets import (
     DatasetError,
     PromptRecord,
     check_dataset_name,
+    decode_dataset,
     file_sha256,
     load_dataset,
     parse_jsonl,
+    read_dataset_bytes,
     write_dataset,
 )
 from logogram.project import (
@@ -48,7 +51,13 @@ from logogram.schema import Manifest, RunListing, Summary
 from logogram.server import models as M
 from logogram.server.security import SecurityConfig, SecurityMiddleware
 from logogram.server.state import AppState, Conflict, EventHub, Missing, request_project
-from logogram.spec import NAME_MAX, ModelRef, PredictionSettings, Spec, describe_intervention
+from logogram.spec import (
+    SINGLE_POSITION_METRICS,
+    Metric,
+    ModelRef,
+    PredictionSettings,
+    Spec,
+)
 from logogram.system import SystemReport
 
 log = logging.getLogger(__name__)
@@ -128,6 +137,7 @@ MODEL_SUGGESTIONS = [
     "HuggingFaceTB/SmolLM2-360M",
     "Qwen/Qwen3-0.6B-Base",
     "google/gemma-3-270m",
+    "google/gemma-3-1b-pt",
     "microsoft/phi-1_5",
 ]
 
@@ -166,6 +176,34 @@ SAE_SUGGESTIONS: dict[str, list[dict[str, str]]] = {
             "detail": "TopK SAEs · MLP outputs · 131,072 features",
         }
     ],
+    "google/gemma-3-270m": [
+        {
+            "repo": "google/gemma-scope-2-270m-pt",
+            "detail": "Gemma Scope 2 · SAEs on each layer's output, attention heads and MLP, and "
+            "transcoders · 16k to 262k features · load the model with weight processing off",
+        }
+    ],
+    "google/gemma-3-270m-it": [
+        {
+            "repo": "google/gemma-scope-2-270m-it",
+            "detail": "Gemma Scope 2 · SAEs and transcoders · load the model with weight "
+            "processing off",
+        }
+    ],
+    "google/gemma-3-1b-pt": [
+        {
+            "repo": "google/gemma-scope-2-1b-pt",
+            "detail": "Gemma Scope 2 · SAEs on each layer's output, attention heads and MLP, and "
+            "transcoders · 16k to 262k features · load the model with weight processing off",
+        }
+    ],
+    "google/gemma-3-1b-it": [
+        {
+            "repo": "google/gemma-scope-2-1b-it",
+            "detail": "Gemma Scope 2 · SAEs and transcoders · load the model with weight "
+            "processing off",
+        }
+    ],
 }
 
 
@@ -188,10 +226,19 @@ class OpenProject(BaseModel):
 class IOIRequest(BaseModel):
     name: str = "ioi"
     n: int = Field(default=32, ge=1, le=100_000)
-    seed: int = 0
+    seed: int = Field(default=0, ge=0, lt=2**32)
     templates: list[str] | None = None
     patterns: list[Literal["ABBA", "BABA"]] = ["ABBA", "BABA"]
     corruption: Literal["flip", "abc"] = "flip"
+    overwrite: bool = False
+
+
+class TaskRequest(BaseModel):
+    task: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=120)
+    n: int = Field(ge=1, le=100_000)
+    seed: int = Field(ge=0, lt=2**32)
+    options: dict[str, Any] = {}
     overwrite: bool = False
 
 
@@ -211,17 +258,21 @@ class PairRequest(BaseModel):
 
 
 class AnalysisRequest(BaseModel):
+    """An interactive analysis. The choices that change its numbers are stated, as in a spec."""
+
     model: ModelRef | None = None
     dataset_sha256: str | None = None
-    prepend_bos: bool = True
-    limit: int | None = Field(default=None, ge=1)
-    batch_size: int = Field(default=64, ge=1)
+    prepend_bos: bool
+    limit: int | None = Field(default=None, ge=1, le=1_000_000)
+    batch_size: int = Field(ge=1, le=4096)
 
 
 class TokenizeRequest(AnalysisRequest):
     dataset: str | None = None
     index: int = 0
     record: PromptRecord | None = None
+    # The metric the prompts are for: it decides whether answers of several tokens can be read.
+    metric: Metric
 
 
 class EstimateRequest(BaseModel):
@@ -234,6 +285,7 @@ class EstimateRequest(BaseModel):
 
 class BaselineRequest(AnalysisRequest):
     dataset: str
+    metric: Metric
 
 
 class AttentionRequest(AnalysisRequest):
@@ -529,12 +581,12 @@ def create_app(
     ) -> list[PromptRecord]:
         project = state.require_project()
         path = project.resolve_dataset(dataset)
-        content = path.read_bytes()
+        content = read_dataset_bytes(path)
         if sha256 is not None and hashlib.sha256(content).hexdigest() != sha256:
             raise Conflict(
                 "The dataset changed since these settings were saved. Restore the original dataset or choose the updated dataset for a new experiment."
             )
-        records = parse_jsonl(content.decode("utf-8"), source=dataset)
+        records = parse_jsonl(decode_dataset(content, dataset), source=dataset)
         return records[:limit] if limit else records
 
     @app.get("/api/datasets/{name}", response_model=M.DatasetDetail)
@@ -562,6 +614,11 @@ def create_app(
             prepared, issues = prepare_with_issues(state.backend, records, prepend_bos)
             out["issues"] = [i.to_dict() for i in issues]
             out["lengths"] = sorted({p.length for p in prepared})
+            # Answers this model reads as continuations of several tokens: only the metrics that
+            # read continuations can score them, which the app says before a run is started.
+            out["continuations"] = [
+                p.index for p in prepared if p.answer.positions > 1 or p.distractor.positions > 1
+            ]
         return out
 
     @app.get("/api/ioi/templates", response_model=list[M.IOITemplateOut])
@@ -586,6 +643,37 @@ def create_app(
             single_token=single,
         )
         return _write_new(_new_dataset_path(project, body.name), records, body.overwrite)
+
+    @app.get("/api/tasks", response_model=list[M.TaskOut])
+    def tasks() -> list[dict[str, Any]]:
+        from logogram.tasks import TASKS
+
+        return [t.to_dict() for t in TASKS.values()]
+
+    @app.post("/api/datasets/generate", response_model=M.TaskDatasetCreated)
+    def generate_dataset(body: TaskRequest) -> dict[str, Any]:
+        from logogram.tasks import generate_task, get_task
+
+        project = state.require_project()
+        backend = state.backend
+        single: Callable[[str], bool] | None = None
+        count: Callable[[str], int] | None = None
+        if backend is not None:  # words this model splits are left out, and pairs keep one length
+            model = backend
+
+            def single_token(text: str) -> bool:
+                return model.single_token_id(text) is not None
+
+            def token_count(text: str) -> int:
+                return len(model.tokenize(text, prepend_bos=False).ids)
+
+            single, count = single_token, token_count
+
+        records = generate_task(
+            body.task, body.n, body.seed, body.options, single_token=single, token_count=count
+        )
+        created = _write_new(_new_dataset_path(project, body.name), records, body.overwrite)
+        return {**created, "metric": get_task(body.task).recommended_metric(body.options)}
 
     @app.post("/api/datasets/import", response_model=M.DatasetCreated)
     def import_dataset(body: ImportRequest) -> dict[str, Any]:
@@ -616,7 +704,12 @@ def create_app(
             record = records[body.index]
         else:
             raise ValueError("Send a dataset and index, or a prompt pair.")
-        return tokenize_pair(backend, record, body.prepend_bos)
+        return tokenize_pair(
+            backend,
+            record,
+            body.prepend_bos,
+            continuations=body.metric.kind not in SINGLE_POSITION_METRICS,
+        )
 
     # -- models ------------------------------------------------------------------------------
 
@@ -703,7 +796,11 @@ def create_app(
         records = _records(body.dataset, body.limit, body.dataset_sha256)
         with backend.lock:  # unloading waits until the analysis is done
             return baseline_report(
-                backend, records, prepend_bos=body.prepend_bos, batch_size=body.batch_size
+                backend,
+                records,
+                prepend_bos=body.prepend_bos,
+                batch_size=body.batch_size,
+                metric=body.metric,
             )
 
     @app.post("/api/attention", response_model=M.AttentionData)
@@ -916,24 +1013,11 @@ def create_app(
 
     @app.post("/api/runs/{run_id}/robustness", response_model=M.StartedRun)
     def robustness(run_id: str, body: RobustnessRequest) -> dict[str, Any]:
+        from logogram.robustness import robustness_spec
+
         project = state.require_project()
         original = Spec.from_path(project.readable(project.run_dir(run_id) / "spec.json"))
-        data = original.model_dump(mode="json")
-        if body.dtype is not None:
-            if body.dtype == original.model.dtype:
-                raise ValueError(f"This run already ran in {body.dtype}.")
-            # The same run in another precision: what rounding changed.
-            data["model"]["dtype"] = body.dtype
-        else:
-            data["experiment"] = body.experiment
-        suffix = " · robustness"
-        data["name"] = original.name[: NAME_MAX - len(suffix)].rstrip() + suffix
-        variant = Spec.model_validate(data)
-        change = (
-            f"In {body.dtype} instead of {original.model.dtype}"
-            if body.dtype is not None
-            else describe_intervention(variant.experiment)
-        )
+        variant, change = robustness_spec(original, experiment=body.experiment, dtype=body.dtype)
         job = state.run_spec_job(
             variant, derived_from={"run": run_id, "kind": "robustness", "change": change}
         )
@@ -977,21 +1061,13 @@ def create_app(
 
     @app.get("/api/compare", response_model=M.Comparison)
     def compare(a: str, b: str) -> dict[str, Any]:
-        from logogram.compare import compare_summaries
+        from logogram.compare import compare_runs
 
-        project = state.require_project()
-        ra, rb = _read_run(project, a), _read_run(project, b)
-        if not ra["summary"] or not rb["summary"]:
-            raise ValueError("Both runs need to have finished.")
-        return compare_summaries(
-            ra["summary"],
-            rb["summary"],
-            Spec.model_validate(ra["spec"]),
-            Spec.model_validate(rb["spec"]),
-        )
+        return compare_runs(state.require_project(), a, b)
 
     @app.post("/api/jobs/cancel", response_model=M.CancelOut)
-    def cancel() -> dict[str, Any]:
+    async def cancel() -> dict[str, Any]:
+        # On the event loop, not the thread pool: queued analyses can't hold up a cancel.
         job = state.cancel_job()
         return {"job": job.to_dict() if job else None}
 
@@ -1063,6 +1139,17 @@ def create_app(
     async def headers(request: Request, call_next):  # type: ignore[no-untyped-def]
         project = state.project
         expected = request.headers.get("x-logogram-project")
+        if (
+            expected is None
+            and _project_scoped(request.url.path)
+            and "authorization" not in request.headers
+        ):
+            # A browser tab (authenticated by its cookie) must say which project it is showing,
+            # so a stale tab can't read or change the project another tab opened since.
+            return JSONResponse(
+                {"error": "This request didn't say which project it is for. Reload the page."},
+                status_code=409,
+            )
         # Browser requests carry an ephemeral project identity. Capture the object as well:
         # an open/close concurrent with dispatch must never retarget a pending operation.
         if expected is not None and expected != (project.session_id if project else "none"):
@@ -1090,6 +1177,36 @@ def create_app(
         return response
 
     return SecuredApp(app, security)  # type: ignore[return-value]
+
+
+# Routes that read or change the open project. A browser tab sends the project it shows with each
+# of them (``x-logogram-project``); scripts using the bearer token address the open project.
+PROJECT_SCOPED = (
+    "/api/project",
+    "/api/research",
+    "/api/dataset",
+    "/api/datasets/",
+    "/api/tokenize",
+    "/api/baseline",
+    "/api/attention",
+    "/api/predictions",
+    "/api/sae/fit",
+    "/api/sae/tokens",
+    "/api/sae/feature",
+    "/api/runs",
+    "/api/drafts",
+    "/api/compare",
+)
+
+
+def _project_scoped(path: str) -> bool:
+    for prefix in PROJECT_SCOPED:
+        if prefix.endswith("/"):
+            if path.startswith(prefix):
+                return True
+        elif path == prefix or path.startswith(prefix + "/"):
+            return True
+    return False
 
 
 class SecuredApp:

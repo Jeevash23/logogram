@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -63,8 +64,10 @@ def test_websocket_needs_origin_and_token(client):
     with pytest.raises(WebSocketDisconnect), no_origin as ws:
         ws.receive_json()
     no_token = client.websocket_connect(WS_URL, headers=ORIGIN)
-    with pytest.raises(WebSocketDisconnect), no_token as ws:
+    with pytest.raises(WebSocketDisconnect) as closed, no_token as ws:
         ws.receive_json()
+    # A tab whose session ended learns why: the close code says the token isn't valid.
+    assert closed.value.code == 4401
     with client.websocket_connect(WS_URL, headers={**AUTH, **ORIGIN}) as ws:
         assert ws.receive_json()["type"] == "hello"
 
@@ -96,8 +99,12 @@ def test_gui_flow_end_to_end(app, client, tiny_backend, tmp_path: Path, spec_fac
         client.post("/api/datasets/ioi", json={"name": "ioi"}, headers=headers).status_code == 400
     )
 
+    logit_diff = {"kind": "logit_diff", "normalization": "dataset_gap"}
+    context = {"prepend_bos": True, "batch_size": 64}
     strip = client.post(
-        "/api/tokenize", json={"dataset": "datasets/ioi.jsonl", "index": 0}, headers=headers
+        "/api/tokenize",
+        json={"dataset": "datasets/ioi.jsonl", "index": 0, "metric": logit_diff, **context},
+        headers=headers,
     ).json()
     assert strip["aligned"] and strip["differs"] and not strip["issues"]
     assert strip["answer"]["id"] is not None
@@ -108,16 +115,27 @@ def test_gui_flow_end_to_end(app, client, tiny_backend, tmp_path: Path, spec_fac
         "answer": " Mary Mary",
         "distractor": " John",
     }
-    strip = client.post("/api/tokenize", json={"record": bad}, headers=headers).json()
+    strip = client.post(
+        "/api/tokenize", json={"record": bad, "metric": logit_diff, **context}, headers=headers
+    ).json()
     assert not strip["aligned"] and {i["kind"] for i in strip["issues"]} == {
         "length_mismatch",
         "answer_tokens",
     }
+    # A log-probability reads an answer of several tokens as a continuation.
+    logprob = {"kind": "logprob_diff", "normalization": "dataset_gap"}
+    strip = client.post(
+        "/api/tokenize", json={"record": bad, "metric": logprob, **context}, headers=headers
+    ).json()
+    assert {i["kind"] for i in strip["issues"]} == {"length_mismatch"}
 
     base = client.post(
-        "/api/baseline", json={"dataset": "datasets/ioi.jsonl"}, headers=headers
+        "/api/baseline",
+        json={"dataset": "datasets/ioi.jsonl", "metric": logit_diff, **context},
+        headers=headers,
     ).json()
     assert base["n"] == 10 and len(base["prompts"][0]["clean_top"]) == 5
+    assert base["summary"]["metric"]["clean"] == pytest.approx(base["summary"]["clean_logit_diff"])
 
     spec = spec_factory(dataset={"path": "datasets/ioi.jsonl"}).model_dump(mode="json")
     started = client.post("/api/runs", json={"spec": spec}, headers=headers).json()
@@ -133,7 +151,7 @@ def test_gui_flow_end_to_end(app, client, tiny_backend, tmp_path: Path, spec_fac
 
     attention = client.post(
         "/api/attention",
-        json={"dataset": "datasets/ioi.jsonl", "index": 2, "layer": 1, "head": 0},
+        json={"dataset": "datasets/ioi.jsonl", "index": 2, "layer": 1, "head": 0, **context},
         headers=headers,
     ).json()
     n_tok = len(attention["tokens"])
@@ -151,6 +169,32 @@ def test_gui_flow_end_to_end(app, client, tiny_backend, tmp_path: Path, spec_fac
     assert derived[0]["derived_from"]["kind"] == "robustness"
     comparison = client.get(f"/api/compare?a={run_id}&b={robust['run_id']}", headers=AUTH).json()
     assert comparison["same_layout"] and comparison["spec_differences"]
+
+
+def test_dataset_detail_names_answers_read_as_continuations(app, client, tiny_backend, tmp_path):
+    """The app says before a run which answers only a metric that reads continuations can score."""
+    headers = {**AUTH, **ORIGIN}
+    client.post("/api/projects", json={"name": "Answers", "parent": str(tmp_path)}, headers=headers)
+    clean = "When Mary and John went to the store, John gave a drink to"
+    corrupt = "When Mary and John went to the store, Mary gave a drink to"
+    lines = [
+        {"clean": clean, "corrupt": corrupt, "answer": " Mary", "distractor": " John"},
+        {"clean": clean, "corrupt": corrupt, "answer": " Mary Mary", "distractor": " John"},
+        # A set of single tokens is read at one position, like a single token.
+        {"clean": clean, "corrupt": corrupt, "answer": [" Mary", " John"], "distractor": " to"},
+    ]
+    text = "\n".join(json.dumps(line) for line in lines)
+    created = client.post(
+        "/api/datasets/import", json={"name": "answers", "text": text}, headers=headers
+    )
+    assert created.status_code == 200, created.text
+    params = {"path": "datasets/answers.jsonl"}
+    # Without a model there are no tokens to count.
+    assert client.get("/api/dataset", params=params, headers=AUTH).json()["continuations"] is None
+    app.state.logogram.backend = tiny_backend
+    app.state.logogram.model_status = {"state": "ready"}
+    detail = client.get("/api/dataset", params=params, headers=AUTH).json()
+    assert detail["issues"] == [] and detail["continuations"] == [1]
 
 
 def test_every_endpoint_matches_its_schema(app, client, tiny_backend, tmp_path, spec_factory):
@@ -175,6 +219,19 @@ def test_every_endpoint_matches_its_schema(app, client, tiny_backend, tmp_path, 
     client.post("/api/datasets/ioi", json={"name": "ioi", "n": 6}, headers=headers)
     detail = client.get("/api/datasets/ioi.jsonl", headers=AUTH).json()
     assert detail["n"] == 6 and detail["issues"] == [] and len(detail["lengths"]) >= 1
+    tasks = {t["id"]: t for t in client.get("/api/tasks", headers=AUTH).json()}
+    assert {"ioi", "greater_than", "docstring", "factual_recall"} <= set(tasks)
+    assert tasks["greater_than"]["metric"] == "prob_diff"
+    body = {"task": "ioi", "name": "ioi-task", "n": 4, "seed": 2, "options": {}}
+    created = client.post("/api/datasets/generate", json=body, headers=headers).json()
+    assert created == {"name": "ioi-task.jsonl", "path": "datasets/ioi-task.jsonl", "n": 4,
+                       "metric": "logit_diff"}  # fmt: skip
+    again = client.post("/api/datasets/generate", json=body, headers=headers)
+    assert again.status_code == 400 and "already exists" in again.json()["error"]
+    bad = client.post(
+        "/api/datasets/generate", json={**body, "task": "no_such_task"}, headers=headers
+    )
+    assert bad.status_code == 400 and "ioi" in bad.json()["error"]
     spec = spec_factory(scope={"kind": "layer_components", "position": {"kind": "last"}})
     draft = client.post("/api/drafts", json={"spec": spec.model_dump(mode="json")}, headers=headers)
     draft_id = draft.json()["run_id"]

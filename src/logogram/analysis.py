@@ -9,9 +9,17 @@ import torch
 
 from logogram.backends.base import ModelBackend, float64
 from logogram.datasets import PromptRecord
-from logogram.engine import compute_baselines
+from logogram.engine import compute_baselines, patched_forward
+from logogram.metrics import Scorer
 from logogram.prompts import PreparedPrompt, PromptIssue, group_by_length, prepare_prompt
-from logogram.spec import IndexPosition, PredictionSettings
+from logogram.spec import (
+    METRIC_LABELS,
+    SINGLE_POSITION_METRICS,
+    IndexPosition,
+    LogProbDiffMetric,
+    PredictionSettings,
+    describe_metric,
+)
 
 
 def _f(x: float) -> float | None:
@@ -19,19 +27,43 @@ def _f(x: float) -> float | None:
     return x if np.isfinite(x) else None
 
 
-def tokenize_pair(backend: ModelBackend, record: PromptRecord, prepend_bos: bool) -> dict[str, Any]:
+def answer_text(value: str | list[str]) -> str:
+    """An answer or distractor for display: a set reads as its members."""
+    if isinstance(value, list):
+        shown = ", ".join(repr(v) for v in value[:6])
+        return f"any of {shown}{f' and {len(value) - 6} more' if len(value) > 6 else ''}"
+    return value
+
+
+def tokenize_pair(
+    backend: ModelBackend, record: PromptRecord, prepend_bos: bool, continuations: bool = True
+) -> dict[str, Any]:
     """Everything the token strip shows for one prompt pair, including what's wrong with it."""
-    prepared, issues, clean, corrupt = prepare_prompt(backend, record, 0, prepend_bos)
+    prepared, issues, clean, corrupt = prepare_prompt(
+        backend, record, 0, prepend_bos, continuations
+    )
     n = min(len(clean.ids), len(corrupt.ids))
     differs = [i for i in range(n) if clean.ids[i] != corrupt.ids[i]]
     differs += list(range(n, max(len(clean.ids), len(corrupt.ids))))
 
-    def answer_info(text: str) -> dict[str, Any]:
-        pieces = backend.tokenize(text, prepend_bos=False)
+    def answer_info(value: str | list[str]) -> dict[str, Any]:
+        if isinstance(value, list):
+            ids = [backend.single_token_id(v) for v in value]
+            return {
+                "text": answer_text(value),
+                "tokens": [
+                    backend.token_str(i) if i is not None else v
+                    for v, i in zip(value, ids, strict=True)
+                ],
+                "id": None,
+                "alternatives": True,
+            }
+        pieces = backend.tokenize(value, prepend_bos=False)
         return {
-            "text": text,
+            "text": value,
             "tokens": pieces.tokens,
             "id": pieces.ids[0] if len(pieces.ids) == 1 else None,
+            "alternatives": False,
         }
 
     return {
@@ -47,11 +79,14 @@ def tokenize_pair(backend: ModelBackend, record: PromptRecord, prepend_bos: bool
 
 
 def prepare_with_issues(
-    backend: ModelBackend, records: list[PromptRecord], prepend_bos: bool
+    backend: ModelBackend,
+    records: list[PromptRecord],
+    prepend_bos: bool,
+    continuations: bool = True,
 ) -> tuple[list[PreparedPrompt], list[PromptIssue]]:
     prepared, issues = [], []
     for i, record in enumerate(records):
-        p, prompt_issues, _, _ = prepare_prompt(backend, record, i, prepend_bos)
+        p, prompt_issues, _, _ = prepare_prompt(backend, record, i, prepend_bos, continuations)
         issues.extend(prompt_issues)
         if p is not None:
             prepared.append(p)
@@ -62,16 +97,21 @@ def baseline_report(
     backend: ModelBackend,
     records: list[PromptRecord],
     *,
-    prepend_bos: bool = True,
-    batch_size: int = 64,
+    prepend_bos: bool,
+    batch_size: int,
+    metric: Any = None,
     top_k: int = 5,
 ) -> dict[str, Any]:
-    """Run clean and corrupt prompts unpatched: logit differences, probabilities, top tokens."""
-    prepared, issues = prepare_with_issues(backend, records, prepend_bos)
+    """Run clean and corrupt prompts unpatched: the metric, the preference (log P(answer) −
+    log P(distractor), the logit difference for single tokens), probabilities and top tokens."""
+    metric = metric or LogProbDiffMetric(kind="logprob_diff", normalization="dataset_gap")
+    continuations = metric.kind not in SINGLE_POSITION_METRICS
+    prepared, issues = prepare_with_issues(backend, records, prepend_bos, continuations)
     if not prepared:
         return {"n": 0, "prompts": [], "issues": [i.to_dict() for i in issues], "summary": None}
     groups = group_by_length(prepared)
-    base = compute_baselines(backend, prepared, groups, batch_size)
+    scorer = Scorer(metric, prepared)
+    base = compute_baselines(backend, prepared, groups, batch_size, scorer=scorer)
     top: dict[str, list[list[dict[str, Any]]]] = {
         "clean": [[] for _ in prepared],
         "corrupt": [[] for _ in prepared],
@@ -96,25 +136,36 @@ def baseline_report(
                 "index": p.index,
                 "clean": p.record.clean,
                 "corrupt": p.record.corrupt,
-                "answer": p.record.answer,
-                "distractor": p.record.distractor,
-                "clean_logit_diff": _f(base.clean_ld[i]),
-                "corrupt_logit_diff": _f(base.corrupt_ld[i]),
+                "answer": answer_text(p.record.answer),
+                "distractor": answer_text(p.record.distractor),
+                "clean_logit_diff": _f(base.clean_pref[i]),
+                "corrupt_logit_diff": _f(base.corrupt_pref[i]),
                 "clean_answer_prob": _f(base.clean_prob[i]),
                 "corrupt_answer_prob": _f(base.corrupt_prob[i]),
+                "clean_metric": _f(base.clean[i]),
+                "corrupt_metric": _f(base.corrupt[i]),
                 "clean_top": top["clean"][i],
                 "corrupt_top": top["corrupt"][i],
             }
         )
-    gap = base.clean_ld - base.corrupt_ld
+    gap = base.clean_pref - base.corrupt_pref
     summary = {
-        "clean_logit_diff": _f(base.clean_ld.mean()),
-        "corrupt_logit_diff": _f(base.corrupt_ld.mean()),
+        "clean_logit_diff": _f(base.clean_pref.mean()),
+        "corrupt_logit_diff": _f(base.corrupt_pref.mean()),
         "gap": _f(gap.mean()),
-        "clean_prefers_answer": int((base.clean_ld > 0).sum()),
-        "corrupt_prefers_answer": int((base.corrupt_ld > 0).sum()),
+        "clean_prefers_answer": int((base.clean_pref > 0).sum()),
+        "corrupt_prefers_answer": int((base.corrupt_pref > 0).sum()),
         "clean_answer_prob": _f(base.clean_prob.mean()),
         "corrupt_answer_prob": _f(base.corrupt_prob.mean()),
+        "metric": {
+            "kind": metric.kind,
+            "target": getattr(metric, "target", None),
+            "label": METRIC_LABELS[metric.kind],
+            "description": describe_metric(metric),
+            "clean": _f(base.clean.mean()),
+            "corrupt": _f(base.corrupt.mean()),
+            "gap": _f((base.clean - base.corrupt).mean()),
+        },
     }
     return {
         "n": len(prepared),
@@ -221,10 +272,16 @@ def prediction_report(
     probs = torch.softmax(logits, dim=-1)
     # Stable ordering makes ties deterministic, including toy or degenerate models.
     top = torch.argsort(logits, dim=-1, descending=True, stable=True)[:, : settings.top_k]
-    answer = target.answer_id
-    distractor = target.distractor_id
+    # The lens predicts one token: a set reads as the sum over its members, a continuation as
+    # its first token.
+    answer = list(target.answer.ids if target.answer.alternatives else target.answer.ids[:1])
+    distractor = list(
+        target.distractor.ids if target.distractor.alternatives else target.distractor.ids[:1]
+    )
     rows = []
     for layer in range(backend.info.n_layers):
+        answer_logit = torch.logsumexp(logits[layer, answer], dim=-1)
+        distractor_logit = torch.logsumexp(logits[layer, distractor], dim=-1)
         rows.append(
             {
                 "layer": layer,
@@ -236,9 +293,9 @@ def prediction_report(
                     }
                     for t in top[layer]
                 ],
-                "answer_prob": float(probs[layer, answer]),
-                "distractor_prob": float(probs[layer, distractor]),
-                "logit_diff": float(logits[layer, answer] - logits[layer, distractor]),
+                "answer_prob": float(probs[layer, answer].sum()),
+                "distractor_prob": float(probs[layer, distractor].sum()),
+                "logit_diff": float(answer_logit - distractor_logit),
             }
         )
     return {
@@ -248,10 +305,17 @@ def prediction_report(
         "settings": settings.model_dump(mode="json"),
         "layers": rows,
         "batch_members": [prepared[i].index for i in group.members[start : start + batch_size]],
-        "answer": target.record.answer,
-        "distractor": target.record.distractor,
+        "answer": answer_text(target.record.answer),
+        "distractor": answer_text(target.record.distractor),
+        "answer_reading": _reading(target.answer),
         "issues": [issue.to_dict() for issue in issues],
     }
+
+
+def _reading(target: Any) -> str:
+    if target.alternatives:
+        return "set"
+    return "token" if target.single else "first_token"
 
 
 # -- sparse autoencoder features -------------------------------------------------------------
@@ -280,30 +344,45 @@ def sae_fit_report(
     if not prepared:
         raise ValueError("None of these prompts can be used with the loaded model.")
     start = _first_real_token(prepend_bos)
-    key = (sae.site, sae.layer)
-    acts, clean, spliced = [], [], []
+    key = (sae.site_in, sae.layer)
+    out_key = (sae.site, sae.layer)
+    acts, outs, clean, spliced = [], [], [], []
+    scorer = Scorer(LogProbDiffMetric(kind="logprob_diff", normalization="dataset_gap"), prepared)
 
-    def splice(x: torch.Tensor) -> torch.Tensor:
-        out = x.float().clone()
-        f, stats = sae.encode(out[:, start:])
-        out[:, start:] = sae.decode(f, stats)
-        return out
+    def written(x: torch.Tensor) -> torch.Tensor:
+        return sae.flat(x) if sae.site == "head" else x
 
     for group in group_by_length(prepared):
+        length = group.length
+
+        def splice(
+            x: torch.Tensor, read: torch.Tensor | None = None, length: int = length
+        ) -> torch.Tensor:
+            # The prompt's real tokens only: not the beginning-of-sequence token, nor tokens
+            # appended to read a continuation. A transcoder's prediction replaces its MLP's output.
+            out = x.float().clone()
+            source = out if read is None else read.float()
+            f, stats = sae.encode(sae.reads(source[:, start:length]))
+            out[:, start:length] = sae.decode(f, stats).reshape(out[:, start:length].shape)
+            return out
+
+        def edited(toks: torch.Tensor, keep: int, splice: Any = splice) -> torch.Tensor:
+            read = sae.site_in if sae.transcoder else None
+            return backend.edit_logits(toks, sae.site, sae.layer, splice, keep, read)
+
         for begin in range(0, len(group.members), batch_size):
             idx = group.members[begin : begin + batch_size]
             tokens = group.clean[begin : begin + batch_size]
-            acts.append(backend.capture(tokens, [key])[key][:, start:].float())
-            answers = torch.tensor([prepared[i].answer_id for i in idx])
-            distractors = torch.tensor([prepared[i].distractor_id for i in idx])
-            rows = torch.arange(len(idx))
-            plain = backend.final_logits(tokens)
-            edited = backend.edit_logits(tokens, sae.site, sae.layer, splice)
-            clean.append(float64(plain[rows, answers] - plain[rows, distractors]))
-            spliced.append(float64(edited[rows, answers] - edited[rows, distractors]))
+            captured = backend.capture(tokens, list(dict.fromkeys([key, out_key])))
+            # Kept in CPU memory until the fit, which encodes them a chunk at a time.
+            acts.append(sae.reads(captured[key][:, start:].float()).cpu())
+            outs.append(written(captured[out_key][:, start:].float()).cpu())
+            clean.append(scorer.score(patched_forward(backend, None), tokens, idx).pref)
+            spliced.append(scorer.score(edited, tokens, idx).pref)
     flat = torch.cat([a.reshape(-1, a.shape[-1]) for a in acts])
-    fit = fit_on(sae, flat)
-    ld, ld_spliced = torch.cat(clean), torch.cat(spliced)
+    targets = torch.cat([a.reshape(-1, a.shape[-1]) for a in outs]) if sae.transcoder else None
+    fit = fit_on(sae, flat, targets)
+    ld, ld_spliced = np.concatenate(clean), np.concatenate(spliced)
     fit.update(
         {
             "logit_diff": _f(ld.mean()),
@@ -338,8 +417,8 @@ def token_features_report(
     _, target = _single(backend, records, index, prepend_bos)
     tokenized = target.clean if which == "clean" else target.corrupt
     tokens = torch.tensor([tokenized.ids], dtype=torch.long)
-    key = (sae.site, sae.layer)
-    f, _ = sae.encode(backend.capture(tokens, [key])[key][0].float())
+    key = (sae.site_in, sae.layer)
+    f, _ = sae.encode(sae.reads(backend.capture(tokens, [key])[key][0].float()))
     values, ids = f.topk(min(top_k, f.shape[-1]), dim=-1)
     per_token = [
         [
@@ -377,7 +456,7 @@ def feature_report(
     if not 0 <= feature < sae.d_sae:
         raise ValueError(f"The SAE has {sae.d_sae} features; there is no feature {feature}.")
     prepared, target = _single(backend, records, index, prepend_bos)
-    key = (sae.site, sae.layer)
+    key = (sae.site_in, sae.layer)
     start = _first_real_token(prepend_bos)
     strongest: list[dict[str, Any]] = []
     along: list[float] = []
@@ -386,7 +465,7 @@ def feature_report(
         for begin in range(0, len(group.members), batch_size):
             idx = group.members[begin : begin + batch_size]
             f, _ = sae.encode(
-                backend.capture(tokens[begin : begin + batch_size], [key])[key].float()
+                sae.reads(backend.capture(tokens[begin : begin + batch_size], [key])[key].float())
             )
             column = float64(f[..., feature]).cpu()  # [B, pos]
             for row, p in enumerate(idx):

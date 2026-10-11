@@ -4,10 +4,21 @@
 Checks every tracked file (``git ls-files``; outside a git checkout, every file that isn't in a
 build or cache folder) for:
 
-* home-directory paths (``/home/<name>``, ``/Users/<name>``, ``C:\\Users\\<name>``),
+* home-directory paths: ``/home/<name>`` (and ``/var/home/<name>`` and ``/usr/home/<name>``,
+  where Fedora's atomic editions and FreeBSD keep homes), ``/root/<path>``, ``/Users/<name>``, and
+  Windows' ``C:\\Users\\<name>`` with either slash, also as WSL (``/mnt/c/Users/<name>``) and Git
+  Bash (``/c/Users/<name>``) show it,
 * the current username, hostname and CPU model, read at runtime,
 * email addresses,
 * Hugging Face access tokens.
+
+Binary files are searched too (a stray ``.coverage`` database or parquet table holds absolute
+paths): their bytes read as Latin-1, and the UTF-16 strings in them. Text saved as UTF-16 (as
+Windows PowerShell writes it) is read as text.
+
+Usernames and hostnames shorter than four characters aren't searched as words: "max", "li" or
+"dev" would match ordinary words and code. A short username is still found in a home path (by
+the path patterns above) and in ``name@host``, as a shell prompt or an ssh target shows it.
 
 Usage: ``python scripts/check_privacy.py [ROOT]``. Exits with status 1 and lists each finding.
 Standard library only, so it runs before any dependency is installed.
@@ -15,6 +26,7 @@ Standard library only, so it runs before any dependency is installed.
 
 from __future__ import annotations
 
+import codecs
 import getpass
 import os
 import platform
@@ -67,9 +79,16 @@ GENERIC_NAMES = {
     "runneradmin",
 }
 
+# Home folders that belong to nobody: CI runners', and shared or template ones.
+_NOBODY = r"(?!(?:runner|runneradmin|Shared|Public|Default)\b)"
 HOME_PATH = re.compile(
-    r"(?<![A-Za-z0-9_])(?:/home/(?!runner\b)[A-Za-z0-9._-]+|/Users/(?!Shared\b)[A-Za-z0-9._-]+"
-    r"|[A-Za-z]:\\\\?Users\\\\?(?!Public\b)[A-Za-z0-9._ -]+)"
+    r"(?<![A-Za-z0-9_])(?:"
+    rf"(?:/var|/usr)?/home/{_NOBODY}[\w.-]+"
+    r"|/root/[\w.-]+"
+    rf"|(?:/mnt/[A-Za-z]/[Uu]sers|/[A-Za-z]/Users|/Users)/{_NOBODY}[\w.-]+"
+    # Backslashes single or escaped (as in JSON), or forward slashes.
+    rf"|[A-Za-z]:(?:\\\\?|/)[Uu]sers(?:\\\\?|/){_NOBODY}[\w. -]+"
+    r")"
 )
 EMAIL = re.compile(
     r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b"
@@ -77,17 +96,21 @@ EMAIL = re.compile(
 HF_TOKEN = re.compile(r"\bhf_[A-Za-z0-9]{30,}\b")
 # Placeholder addresses that are fine in docs and tests.
 ALLOWED_EMAIL_DOMAINS = ("example.com", "example.org", "example.net")
+# Runs of at least four printable ASCII characters stored as UTF-16, little- or big-endian.
+UTF16_RUN = re.compile(rb"((?:[\x20-\x7e]\x00){4,})|((?:\x00[\x20-\x7e]){4,})")
 
 
 @dataclass
 class Finding:
     path: str
-    line: int
+    line: int  # 0 for a file name or binary data
     kind: str
     text: str
+    offset: int | None = None  # the byte, in binary data
 
     def __str__(self) -> str:
-        return f"{self.path}:{self.line}: {self.kind}: {self.text}"
+        where = f"byte {self.offset}" if self.offset is not None else str(self.line)
+        return f"{self.path}:{where}: {self.kind}: {self.text}"
 
 
 def tracked_files(root: Path) -> list[Path]:
@@ -127,7 +150,7 @@ def cpu_model() -> str | None:
 
 
 def identity_patterns() -> list[tuple[str, re.Pattern[str]]]:
-    """Names of this person and machine, as whole words."""
+    """Names of this person and machine: as whole words, or a short username as ``name@host``."""
     patterns: list[tuple[str, re.Pattern[str]]] = []
     candidates = {
         "username": {getpass.getuser(), Path.home().name},
@@ -135,42 +158,57 @@ def identity_patterns() -> list[tuple[str, re.Pattern[str]]]:
     }
     for kind, names in candidates.items():
         for name in sorted(n for n in names if n):
-            if len(name) < 4 or name.lower() in GENERIC_NAMES:
+            if name.lower() in GENERIC_NAMES:
                 continue
-            patterns.append(
-                (kind, re.compile(rf"(?<![A-Za-z0-9]){re.escape(name)}(?![A-Za-z0-9])", re.I))
-            )
+            if len(name) >= 4:
+                word = rf"(?<![A-Za-z0-9]){re.escape(name)}(?![A-Za-z0-9])"
+                patterns.append((kind, re.compile(word, re.I)))
+            elif kind == "username" and len(name) >= 2:
+                # A host with no dot after it, so an email address doesn't count.
+                prompt = rf"(?<![\w.%+-]){re.escape(name)}@[A-Za-z0-9-]+(?![\w.@-])"
+                patterns.append((kind, re.compile(prompt)))
     cpu = cpu_model()
     if cpu and len(cpu) >= 8:
         patterns.append(("CPU model", re.compile(re.escape(cpu))))
     return patterns
 
 
-def read_text(path: Path) -> str | None:
-    try:
-        data = path.read_bytes()
-    except OSError:
-        return None
-    if b"\0" in data[:8192]:
-        return None  # binary (fonts, images, parquet)
-    return data.decode("utf-8", "replace")
+def matches(
+    text: str, identities: list[tuple[str, re.Pattern[str]]]
+) -> Iterator[tuple[int, str, str]]:
+    """(index, kind, what to show) for everything in ``text`` that identifies someone."""
+    for m in HOME_PATH.finditer(text):
+        yield m.start(), "home directory path", m.group(0)
+    for m in EMAIL.finditer(text):
+        domain = m.group(0).rsplit("@", 1)[1].lower()
+        if not domain.endswith(ALLOWED_EMAIL_DOMAINS):
+            yield m.start(), "email address", m.group(0)
+    for m in HF_TOKEN.finditer(text):
+        yield m.start(), "Hugging Face token", m.group(0)[:6] + "…"
+    for kind, pattern in identities:
+        for m in pattern.finditer(text):
+            yield m.start(), kind, "(this machine's " + kind + ")"
 
 
 def scan_text(
     rel: str, text: str, identities: list[tuple[str, re.Pattern[str]]]
 ) -> Iterator[Finding]:
     for i, line in enumerate(text.splitlines(), start=1):
-        for m in HOME_PATH.finditer(line):
-            yield Finding(rel, i, "home directory path", m.group(0))
-        for m in EMAIL.finditer(line):
-            domain = m.group(0).rsplit("@", 1)[1].lower()
-            if not domain.endswith(ALLOWED_EMAIL_DOMAINS):
-                yield Finding(rel, i, "email address", m.group(0))
-        for m in HF_TOKEN.finditer(line):
-            yield Finding(rel, i, "Hugging Face token", m.group(0)[:6] + "…")
-        for kind, pattern in identities:
-            if pattern.search(line):
-                yield Finding(rel, i, kind, "(this machine's " + kind + ")")
+        for kind, shown in dict.fromkeys((k, s) for _, k, s in matches(line, identities)):
+            yield Finding(rel, i, kind, shown)
+
+
+def scan_binary(
+    rel: str, data: bytes, identities: list[tuple[str, re.Pattern[str]]]
+) -> Iterator[Finding]:
+    """Each byte as one character, so ASCII and UTF-8 text show through; then each UTF-16
+    string (Windows stores text that way)."""
+    for start, kind, shown in matches(data.decode("latin-1"), identities):
+        yield Finding(rel, 0, kind, shown, offset=start)
+    for run in UTF16_RUN.finditer(data):
+        text = run.group(0).decode("utf-16-le" if run.group(1) else "utf-16-be")
+        for start, kind, shown in matches(text, identities):
+            yield Finding(rel, 0, kind, shown, offset=run.start() + 2 * start)
 
 
 def check(root: Path) -> list[Finding]:
@@ -182,9 +220,16 @@ def check(root: Path) -> list[Finding]:
         rel = path.relative_to(root).as_posix()
         if identities and any(p.search(rel) for _, p in identities):
             findings.append(Finding(rel, 0, "file name", "contains this machine's name"))
-        text = read_text(path)
-        if text is not None:
-            findings.extend(scan_text(rel, text, identities))
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        if data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+            findings.extend(scan_text(rel, data.decode("utf-16", "replace"), identities))
+        elif b"\0" in data[:8192]:
+            findings.extend(scan_binary(rel, data, identities))
+        else:
+            findings.extend(scan_text(rel, data.decode("utf-8", "replace"), identities))
     return findings
 
 

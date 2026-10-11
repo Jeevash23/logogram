@@ -1,17 +1,18 @@
 import * as ContextMenu from "@radix-ui/react-context-menu";
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 
 import type { SiteBase, SiteResult } from "../../api/types";
 import { cornerFlag, font, inkRing, prepareCanvas, useChromeColors, useElementSize } from "../../lib/canvas";
 import { divergingScale, niceBound, SCALE_FLOOR } from "../../lib/color";
 import { ci, signed } from "../../lib/format";
 import { siteValue, useActiveRun, useArchitecture, modelName } from "../../lib/hooks";
+import { measureWords } from "../../lib/spec";
+import { usePrefersReducedMotion } from "../../lib/motion";
 import {
   componentLabel,
   isResidKind,
   nextSelection,
   partOfKind,
-  sameSelection,
   type MapPart,
   type Selection,
 } from "../../lib/sites";
@@ -106,6 +107,11 @@ export function ModelMap({ prominent = false, structureOnly = false }: { promine
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  // Hover and selection are drawn on a second canvas above the cells, so moving the pointer or
+  // the selection never redraws the whole map.
+  const overlayRef = useRef<HTMLCanvasElement>(null);
+  const reduceMotion = usePrefersReducedMotion();
+  const helpId = useId();
   const { width } = useElementSize(scrollRef);
   const [hover, setHover] = useState<{ sel: Selection; x: number; y: number } | null>(null);
   const [menuSel, setMenuSel] = useState<Selection | null>(null);
@@ -177,8 +183,9 @@ export function ModelMap({ prominent = false, structureOnly = false }: { promine
   const flagged = useMemo(() => {
     const set = new Set<string>();
     if (!flags) return set;
+    const byIndex = new Map(run.sites.map((x) => [x.index, x]));
     for (const idx of flags.sites) {
-      const base = run.sites.find((x) => x.index === idx);
+      const base = byIndex.get(idx);
       if (base) set.add(siteCellKey(base));
     }
     return set;
@@ -195,9 +202,10 @@ export function ModelMap({ prominent = false, structureOnly = false }: { promine
     const now = performance.now();
     for (const k of Object.keys(run.results)) {
       const idx = Number(k);
-      if (!arrivals.current.has(idx)) arrivals.current.set(idx, run.running ? now : 0);
+      // With reduced motion a new cell shows at once instead of fading in.
+      if (!arrivals.current.has(idx)) arrivals.current.set(idx, run.running && !reduceMotion ? now : 0);
     }
-  }, [run.id, run.results, run.running]);
+  }, [run.id, run.results, run.running, reduceMotion]);
 
   const runningLayer = run.live?.status === "running" ? run.live.progress?.layer ?? null : null;
 
@@ -247,7 +255,7 @@ export function ModelMap({ prominent = false, structureOnly = false }: { promine
         else ctx.fillStyle = colors.surface2;
         ctx.fillRect(col.x, y, cell, cell);
         if (!structureOnly && data && data.value !== null) {
-          const arrived = data.site ? arrivals.current.get(data.site.index) ?? 0 : 0;
+          const arrived = data.site && !reduceMotion ? arrivals.current.get(data.site.index) ?? 0 : 0;
           const alpha = arrived === 0 ? 1 : Math.min(1, (now - arrived) / 320);
           if (alpha < 1) fading = true;
           ctx.globalAlpha = alpha;
@@ -263,27 +271,40 @@ export function ModelMap({ prominent = false, structureOnly = false }: { promine
       }
     }
 
-    const draw = (sel: Selection, kind: "selected" | "hover") => {
-      const col = columns.find((c) => c.part === sel.part && (sel.part !== "head" || c.head === sel.head));
-      if (!col || sel.layer >= arch.nLayers) return;
-      const y = top + headerH + sel.layer * pitch;
-      if (kind === "selected") inkRing(ctx, col.x, y, cell, cell, colors.text, colors.surface);
-      else {
-        ctx.strokeStyle = colors.muted;
-        ctx.lineWidth = 1;
-        ctx.strokeRect(col.x - 1.5, y - 1.5, cell + 3, cell + 3);
-      }
-    };
-    if (hover && !sameSelection(hover.sel, selection ? { ...selection, positionKey: undefined, kind: undefined } : null)) {
-      draw(hover.sel, "hover");
-    }
-    if (selection) draw(selection, "selected");
     // Keep drawing until every newly arrived cell has fully faded in.
     if (fading) {
       const frame = requestAnimationFrame(() => setTick((t) => t + 1));
       return () => cancelAnimationFrame(frame);
     }
-  }, [geo, arch, cells, color, colors, selection, hover, flagged, runningLayer, tick, structureOnly]);
+  }, [geo, arch, cells, color, colors, flagged, runningLayer, tick, structureOnly, reduceMotion]);
+
+  // Hover and selection, above the cells. Only the component counts, not a position on it, so
+  // the overlay is drawn again only when the pointer or the selection moves to another cell.
+  const hoverLayer = hover?.sel.layer ?? -1;
+  const hoverPart = hover?.sel.part ?? null;
+  const hoverHead = hover?.sel.head ?? -1;
+  const selectedLayer = selection?.layer ?? -1;
+  const selectedPart = selection?.part ?? null;
+  const selectedHead = selection?.head ?? -1;
+  useEffect(() => {
+    const canvas = overlayRef.current;
+    if (!canvas || !geo || !arch) return;
+    const ctx = prepareCanvas(canvas, geo.width, geo.height);
+    if (!ctx) return;
+    const { cell, pitch, columns, top, headerH } = geo;
+    const place = (layer: number, part: MapPart | null, head: number) => {
+      const col = part === null ? undefined : columns.find((c) => c.part === part && (part !== "head" || c.head === head));
+      return col && layer >= 0 && layer < arch.nLayers ? { x: col.x, y: top + headerH + layer * pitch } : null;
+    };
+    const hovered = place(hoverLayer, hoverPart, hoverHead);
+    const chosen = place(selectedLayer, selectedPart, selectedHead);
+    if (hovered && (hovered.x !== chosen?.x || hovered.y !== chosen?.y)) {
+      ctx.strokeStyle = colors.muted;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(hovered.x - 1.5, hovered.y - 1.5, cell + 3, cell + 3);
+    }
+    if (chosen) inkRing(ctx, chosen.x, chosen.y, cell, cell, colors.text, colors.surface);
+  }, [geo, arch, colors, hoverLayer, hoverPart, hoverHead, selectedLayer, selectedPart, selectedHead]);
 
   const hit = useCallback(
     (clientX: number, clientY: number): Selection | null => {
@@ -333,8 +354,14 @@ export function ModelMap({ prominent = false, structureOnly = false }: { promine
 
   const onContextMenu = (e: MouseEvent) => {
     const sel = hit(e.clientX, e.clientY);
-    setMenuSel(sel ? withContext(sel) : null);
-    if (sel) select(withContext(sel));
+    if (sel) {
+      setMenuSel(withContext(sel));
+      select(withContext(sel));
+      return;
+    }
+    // Opened from the keyboard (Shift+F10 or the menu key), the pointer is elsewhere: the menu
+    // acts on the selected component.
+    setMenuSel(document.activeElement === canvasRef.current ? selection : null);
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
@@ -352,10 +379,11 @@ export function ModelMap({ prominent = false, structureOnly = false }: { promine
   const hoverData = hover ? cells.get(cellKey(hover.sel.layer, hover.sel.part, hover.sel.head)) : undefined;
   // Screen readers can't see the canvas: announce the selected cell and its value.
   const selectedData = selection ? cells.get(cellKey(selection.layer, selection.part, selection.head)) : undefined;
+  const words = measureWords(run.detail?.spec.experiment, run.detail?.summary?.metric ?? run.detail?.spec.metric);
   const announcement = selection
     ? `${readoutLabel(selection, selectedData)}: ${
         selectedData?.site
-          ? `${metric === "effect" ? "normalized effect" : "change in logit difference"} ${signed(siteValue(selectedData.site, metric), 3)}, confidence interval ${
+          ? `${(metric === "effect" ? words.effect : words.delta).toLowerCase()} ${signed(siteValue(selectedData.site, metric), 3)}, confidence interval ${
               metric === "effect"
                 ? ci(selectedData.site.effect.lo, selectedData.site.effect.hi)
                 : ci(selectedData.site.delta.lo, selectedData.site.delta.hi)
@@ -365,7 +393,7 @@ export function ModelMap({ prominent = false, structureOnly = false }: { promine
             : "not measured in this run"
       }`
     : "";
-  const statsTitle = metric === "effect" ? "effect" : "Δ logit diff";
+  const statsTitle = metric === "effect" ? "effect" : words.delta;
 
   return (
     <div className={`${s.map} ${prominent ? s.prominent : ""}`}>
@@ -394,30 +422,38 @@ export function ModelMap({ prominent = false, structureOnly = false }: { promine
             )}
           </div>
         ) : (
-          <ContextMenu.Root
-            onOpenChange={(open) => {
-              if (!open) setMenuSel(null);
-            }}
-          >
-            <ContextMenu.Trigger asChild>
-              <canvas
-                ref={canvasRef}
-                className={s.canvas}
-                tabIndex={0}
-                role="grid"
-                aria-label="Model map: layers as rows; residual stream, attention heads, attention and MLP outputs as cells. Use the arrow keys to move."
-                onMouseMove={onMove}
-                onMouseLeave={() => setHover(null)}
-                onClick={onClick}
-                onDoubleClick={() => useStore.setState({ exploreMode: "layer", view: "explore" })}
-                onContextMenu={onContextMenu}
-                onKeyDown={onKeyDown}
-              />
-            </ContextMenu.Trigger>
-            <ContextMenu.Portal>
-              <MapMenu sel={menuSel} />
-            </ContextMenu.Portal>
-          </ContextMenu.Root>
+          <div className={s.stage}>
+            <ContextMenu.Root
+              onOpenChange={(open) => {
+                if (!open) setMenuSel(null);
+              }}
+            >
+              <ContextMenu.Trigger asChild>
+                <canvas
+                  ref={canvasRef}
+                  className={s.canvas}
+                  tabIndex={0}
+                  role="group"
+                  aria-roledescription="interactive model map"
+                  aria-label="Model map"
+                  aria-describedby={helpId}
+                  onMouseMove={onMove}
+                  onMouseLeave={() => setHover(null)}
+                  onClick={onClick}
+                  onDoubleClick={() => {
+                    useStore.setState({ exploreMode: "layer" });
+                    useStore.getState().setView("explore");
+                  }}
+                  onContextMenu={onContextMenu}
+                  onKeyDown={onKeyDown}
+                />
+              </ContextMenu.Trigger>
+              <ContextMenu.Portal>
+                <MapMenu sel={menuSel} />
+              </ContextMenu.Portal>
+            </ContextMenu.Root>
+            <canvas ref={overlayRef} className={s.overlay} aria-hidden="true" />
+          </div>
         )}
       </div>
       {hover && (
@@ -444,6 +480,12 @@ export function ModelMap({ prominent = false, structureOnly = false }: { promine
           )}
         </div>
       )}
+      <p id={helpId} className="visually-hidden">
+        Layers are rows; the residual stream, each attention head, and the attention and MLP outputs are cells. Arrow keys
+        move between components and layers, Home and End go to the start and end of a layer, and Escape clears the
+        selection. P patches the selected component, B ablates it, A opens a head's attention, and Shift+F10 lists these
+        actions.
+      </p>
       <div className="visually-hidden" aria-live="polite">
         {announcement}
       </div>

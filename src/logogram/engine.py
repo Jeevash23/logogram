@@ -15,16 +15,18 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass, field, fields
+from typing import Any, cast
 
 import numpy as np
 import torch
 
-from logogram.backends.base import Cancelled, ModelBackend, Patch, float64
+from logogram.backends.base import Cancelled, ModelBackend, Patch, Patches
+from logogram.metrics import Scorer
 from logogram.prompts import LengthGroup, PreparedPrompt, group_by_length
 from logogram.sites import ResolvedSite, expand_scope, resolve_position
 from logogram.spec import (
+    METRIC_LABELS,
     Ablation,
     ActivationPatching,
     AllPositions,
@@ -34,6 +36,7 @@ from logogram.spec import (
     MeanBaseline,
     PathPatching,
     ResampleBaseline,
+    SiteSetsScope,
     SitesScope,
     Spec,
     Steering,
@@ -47,16 +50,28 @@ class EngineError(ValueError):
 
 @dataclass
 class Baselines:
-    clean_ld: np.ndarray
-    corrupt_ld: np.ndarray
+    """The unpatched clean and corrupt runs: the metric, P(answer) and the preference
+    log P(answer) − log P(distractor) (the logit difference for single tokens), per prompt."""
+
+    clean: np.ndarray
+    corrupt: np.ndarray
     clean_prob: np.ndarray
     corrupt_prob: np.ndarray
+    clean_pref: np.ndarray
+    corrupt_pref: np.ndarray
 
-    def ld(self, which: str) -> np.ndarray:
-        return self.clean_ld if which == "clean" else self.corrupt_ld
+    def metric(self, which: str) -> np.ndarray:
+        return self.clean if which == "clean" else self.corrupt
 
     def prob(self, which: str) -> np.ndarray:
         return self.clean_prob if which == "clean" else self.corrupt_prob
+
+    def pref(self, which: str) -> np.ndarray:
+        return self.clean_pref if which == "clean" else self.corrupt_pref
+
+    def subset(self, at: list[int]) -> Baselines:
+        """The baselines of the prompts at these positions, in that order."""
+        return Baselines(*(getattr(self, f.name)[at] for f in fields(self)))
 
 
 @dataclass
@@ -67,8 +82,9 @@ class EngineResult:
     baselines: Baselines
     receiver: str
     reference: str
-    patched_ld: np.ndarray  # [S, n]; NaN where nothing was run patched
+    patched: np.ndarray  # [S, n] the metric; NaN where nothing was run patched
     patched_prob: np.ndarray  # [S, n]; NaN where not measured
+    patched_pref: np.ndarray  # [S, n]; NaN where not measured
     donors: list[list[int]] | None = None
     warnings: list[str] = field(default_factory=list)
     # What the per-prompt values are: "intervention" (a patched forward pass), "estimate" (a
@@ -82,16 +98,29 @@ class EngineResult:
     extra: dict[str, Any] = field(default_factory=dict)
 
     @property
-    def receiver_ld(self) -> np.ndarray:
-        return self.baselines.ld(self.receiver)
+    def receiver_metric(self) -> np.ndarray:
+        return self.baselines.metric(self.receiver)
 
     @property
-    def reference_ld(self) -> np.ndarray:
-        return self.baselines.ld(self.reference)
+    def reference_metric(self) -> np.ndarray:
+        return self.baselines.metric(self.reference)
 
     @property
     def receiver_prob(self) -> np.ndarray:
         return self.baselines.prob(self.receiver)
+
+    @property
+    def receiver_pref(self) -> np.ndarray:
+        return self.baselines.pref(self.receiver)
+
+    @property
+    def reference_pref(self) -> np.ndarray:
+        return self.baselines.pref(self.reference)
+
+
+def empty_values(n_sites: int, n: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Zeroed arrays for the metric, P(answer) and the preference of S sites over n prompts."""
+    return np.zeros((n_sites, n)), np.zeros((n_sites, n)), np.zeros((n_sites, n))
 
 
 ProgressFn = Callable[[int, int, int], None]  # (rows done, rows total, current layer)
@@ -103,22 +132,71 @@ def _chunks(n: int, size: int) -> Iterator[slice]:
         yield slice(start, min(start + size, n))
 
 
-def _metric(
-    logits: torch.Tensor, answers: torch.Tensor, distractors: torch.Tensor
-) -> tuple[np.ndarray, np.ndarray]:
-    rows = torch.arange(logits.shape[0], device=logits.device)
-    answers = answers.to(logits.device)
-    distractors = distractors.to(logits.device)
-    ld = logits[rows, answers] - logits[rows, distractors]
-    prob = torch.log_softmax(logits, dim=-1)[rows, answers].exp()
-    return float64(ld).cpu().numpy(), float64(prob).cpu().numpy()
-
-
-def _answer_tensors(prompts: list[PreparedPrompt], idx: list[int]) -> tuple[torch.Tensor, ...]:
+def answer_tensors(
+    prompts: list[PreparedPrompt], idx: list[int]
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """The answer and distractor tokens of single-token prompts, for methods that read one."""
     return (
         torch.tensor([prompts[i].answer_id for i in idx], dtype=torch.long),
         torch.tensor([prompts[i].distractor_id for i in idx], dtype=torch.long),
     )
+
+
+def make_scorer(spec: Spec, prompts: list[PreparedPrompt]) -> Scorer:
+    return Scorer(spec.metric, prompts)
+
+
+def patched_forward(
+    backend: ModelBackend, patch: Patches
+) -> Callable[[torch.Tensor, int], torch.Tensor]:
+    """A forward pass with ``patch`` applied, as the scorer calls it."""
+
+    def forward(tokens: torch.Tensor, keep: int) -> torch.Tensor:
+        return backend.logits(tokens, patch, keep)
+
+    return forward
+
+
+def continued_forward(
+    backend: ModelBackend, patch: Patch, source: torch.Tensor | None
+) -> Callable[[torch.Tensor, int], torch.Tensor]:
+    """A forward pass with ``patch``, where a patch of every position also covers tokens appended
+    to read a continuation: their positions take the source prompt's own values with the same
+    continuation appended (zeros for zero ablation), so patching every position of a layer still
+    reproduces the source run. ``source``: each row's source prompt ``[B, L]``, or None for zeros.
+    """
+
+    def forward(tokens: torch.Tensor, keep: int) -> torch.Tensor:
+        length = patch.values.shape[1]
+        if patch.positions is not None or tokens.shape[1] == length:
+            return backend.logits(tokens, patch, keep)
+        tail = tokens[:, length:]
+        if source is None:
+            shape = (patch.values.shape[0], tail.shape[1], *patch.values.shape[2:])
+            extra = torch.zeros(shape, dtype=patch.values.dtype, device=patch.values.device)
+        else:
+            key = (patch.kind, patch.layer)
+            full = backend.capture(torch.cat([source, tail.to(source.device)], dim=1), [key])[key]
+            if patch.kind == "head":
+                assert patch.heads is not None
+                rows = torch.arange(full.shape[0], device=full.device)
+                full = full[rows, :, patch.heads.to(full.device)]
+            extra = full[:, length:].to(dtype=patch.values.dtype, device=patch.values.device)
+        values = torch.cat([patch.values, extra], dim=1)
+        whole = Patch(kind=patch.kind, layer=patch.layer, values=values, heads=patch.heads)
+        return backend.logits(tokens, whole, keep)
+
+    return forward
+
+
+def check_mean_continuations(scorer: Scorer, every_position: bool) -> None:
+    if every_position and not scorer.single_position():
+        raise EngineError(
+            "Mean ablation at every position replaces each position with its mean over prompts "
+            "of the same length, and the tokens appended to read answers of several tokens have "
+            "no such mean. Ablate at one position, use zero or resample ablation, or use "
+            "single-token answers."
+        )
 
 
 def compute_baselines(
@@ -127,9 +205,32 @@ def compute_baselines(
     groups: list[LengthGroup],
     batch_size: int,
     cancel: threading.Event | None = None,
+    scorer: Scorer | None = None,
 ) -> Baselines:
+    """Run every clean and corrupt prompt unpatched. For the KL divergence, the target prompts'
+    own predictions are recorded first, in the same batches, so a target's divergence from itself
+    is exactly zero."""
+    from logogram.spec import LogitDiffMetric
+
+    scorer = scorer or Scorer(
+        LogitDiffMetric(kind="logit_diff", normalization="dataset_gap"), prompts
+    )
     n = len(prompts)
-    out = {k: np.zeros(n) for k in ("clean_ld", "corrupt_ld", "clean_prob", "corrupt_prob")}
+    if scorer.kind == "kl" and len(scorer.target_logits) < n:
+        target = scorer.target
+        for group in groups:
+            tokens = group.clean if target == "clean" else group.corrupt
+            for sl in _chunks(len(group.members), batch_size):
+                if cancel is not None and cancel.is_set():
+                    raise Cancelled()
+                logits = backend.logits(tokens[sl], None, 1)[:, 0].float().cpu()
+                for row, p in enumerate(group.members[sl]):
+                    scorer.target_logits[p] = logits[row]
+    out = {
+        k: np.zeros(n)
+        for k in ("clean", "corrupt", "clean_prob", "corrupt_prob", "clean_pref", "corrupt_pref")
+    }
+    plain = patched_forward(backend, None)
     for which in ("clean", "corrupt"):
         for group in groups:
             tokens = group.clean if which == "clean" else group.corrupt
@@ -137,10 +238,10 @@ def compute_baselines(
                 if cancel is not None and cancel.is_set():
                     raise Cancelled()
                 idx = group.members[sl]
-                logits = backend.final_logits(tokens[sl])
-                ld, prob = _metric(logits, *_answer_tensors(prompts, idx))
-                out[f"{which}_ld"][idx] = ld
-                out[f"{which}_prob"][idx] = prob
+                scores = scorer.score(plain, tokens[sl], idx)
+                out[which][idx] = scores.metric
+                out[f"{which}_prob"][idx] = scores.prob
+                out[f"{which}_pref"][idx] = scores.pref
     return Baselines(**out)
 
 
@@ -148,14 +249,45 @@ def behavior_warnings(baselines: Baselines) -> list[str]:
     """Warn when the model doesn't do the task: the answer is defined by the clean prompt, so a
     model that prefers the distractor there doesn't show the behavior the prompts test, and every
     effect describes something else."""
-    clean = baselines.clean_ld
-    if not len(clean) or float(clean.mean()) >= 0:
+    clean = baselines.clean_pref
+    if not len(clean) or not np.isfinite(clean).all() or float(clean.mean()) >= 0:
         return []
     return [
-        f"On the clean prompts the model prefers the distractor (mean logit difference "
-        f"{float(clean.mean()):.3f}; {int((clean > 0).sum())} of {len(clean)} prefer the answer), "
-        "so it doesn't show the behavior these prompts test. Check the baseline, or use prompts "
-        "this model solves."
+        f"On the clean prompts the model prefers the distractor (mean log P(answer) − "
+        f"log P(distractor) {float(clean.mean()):.3f}; {int((clean > 0).sum())} of {len(clean)} "
+        "prefer the answer), so it doesn't show the behavior these prompts test. Check the "
+        "baseline, or use prompts this model solves."
+    ]
+
+
+def check_finite(baselines: Baselines, dtype: str) -> None:
+    """Refuse a run whose unpatched prompts already give values that aren't finite numbers: every
+    effect would be undefined. This happens when a 16-bit dtype overflows on these prompts."""
+    for which in ("clean", "corrupt"):
+        values = np.concatenate([baselines.metric(which), baselines.pref(which)])
+        bad = int((~np.isfinite(values)).sum())
+        if bad:
+            fix = (
+                "Run it in float32, which has a far wider range."
+                if dtype != "float32"
+                else "Check the model's weights: delete it from the Hugging Face cache and load it again."
+            )
+            raise EngineError(
+                f"The unpatched {which} prompts give values that aren't finite numbers in "
+                f"{dtype} ({bad} of them), so no effect can be measured. {fix}"
+            )
+
+
+def check_values(values: np.ndarray, what: str, dtype: str) -> list[str]:
+    """Warn when patched or estimated values aren't finite numbers (their statistics are left
+    out)."""
+    bad = int((~np.isfinite(values)).sum())
+    if not bad:
+        return []
+    fix = "Run it in float32." if dtype != "float32" else "Check the model and the prompts."
+    return [
+        f"{bad} {what} aren't finite numbers (an overflow in {dtype}); the sites they belong to "
+        f"have no statistics. {fix}"
     ]
 
 
@@ -169,12 +301,18 @@ def check_gap(
     """Refuse a normalization the gap can't support, and warn when it is unreliable."""
     warnings: list[str] = behavior_warnings(baselines)
     n = len(prompts)
-    gap = baselines.ld(reference) - baselines.ld(receiver)
+    what = METRIC_LABELS[spec.metric.kind]
+    gap = baselines.metric(reference) - baselines.metric(receiver)
     mean_gap = float(gap.mean())
+    if not np.isfinite(mean_gap):
+        raise EngineError(
+            f"The clean–corrupt gap in the {what} isn't a finite number, so effects can't be "
+            "normalized. Run the baseline check, and use float32 if the model overflows."
+        )
     if spec.metric.normalization == "dataset_gap":
         if abs(mean_gap) < 1e-3:
             raise EngineError(
-                "The clean and corrupt prompts give almost the same logit difference "
+                f"The clean and corrupt prompts give almost the same {what} "
                 f"(mean gap {mean_gap:.4f}), so a normalized effect is undefined. Run the "
                 "baseline check: the model may not show the behavior on these prompts."
             )
@@ -244,7 +382,13 @@ class _Row:
 
 
 class _LayerSources:
-    """Activations captured for one layer: per length group, and at resolved positions."""
+    """Activations captured for one layer: per length group, and at resolved positions.
+
+    A layer's activations for every prompt can be far larger than a batch. On a CUDA device they
+    are kept in CPU memory when they would take more than a quarter of its free memory, and each
+    batch's rows are moved back as they are used. Copies are exact, so where they are kept never
+    changes a number.
+    """
 
     def __init__(
         self,
@@ -259,7 +403,10 @@ class _LayerSources:
     ) -> None:
         self.prompts = prompts
         self.groups = groups
+        self.device = backend.device
+        self.offloaded: bool | None = None  # decided from the first batch's size
         self.by_group: dict[str, list[torch.Tensor]] = {k: [] for k in kinds}
+        tokens_total = sum(len(g.members) * g.length for g in groups)
         for group in groups:
             tokens = group.clean if which == "clean" else group.corrupt
             # Capture in batches, so a forward pass never holds more than batch_size prompts.
@@ -268,14 +415,36 @@ class _LayerSources:
                 if cancel is not None and cancel.is_set():
                     raise Cancelled()
                 acts = backend.capture(tokens[sl], [(k, layer) for k in kinds])
+                if self.offloaded is None:
+                    per_token = sum(
+                        acts[(k, layer)][0, 0].numel() * acts[(k, layer)].element_size()
+                        for k in kinds
+                    )
+                    self.offloaded = _keep_on_cpu(self.device, per_token * tokens_total)
                 for k in kinds:
-                    parts[k].append(acts[(k, layer)])
+                    part = acts[(k, layer)]
+                    parts[k].append(part.to("cpu") if self.offloaded else part)
             for k in kinds:
                 self.by_group[k].append(torch.cat(parts[k], dim=0))
         self._tables: dict[tuple[str, str], torch.Tensor] = {}
+        self._means: dict[tuple[str, int], torch.Tensor] = {}
 
-    def group_tensor(self, kind: str, group_index: int) -> torch.Tensor:
-        return self.by_group[kind][group_index]
+    def group_rows(
+        self, kind: str, group_index: int, local: list[int], heads: torch.Tensor | None
+    ) -> torch.Tensor:
+        """``[B, L, ...]``: these prompts' activations at every position (of these heads)."""
+        acts = self.by_group[kind][group_index]
+        idx = torch.tensor(local, dtype=torch.long, device=acts.device)
+        rows = acts[idx, :, heads.to(acts.device)] if heads is not None else acts[idx]
+        return rows.to(self.device)
+
+    def group_mean(self, kind: str, group_index: int) -> torch.Tensor:
+        """``[L, ...]``: the mean over a length group's prompts, at each position, in float32."""
+        key = (kind, group_index)
+        if key not in self._means:
+            acts = self.by_group[kind][group_index].to(self.device)
+            self._means[key] = acts.float().mean(dim=0)
+        return self._means[key]
 
     def table(self, kind: str, site: ResolvedSite) -> torch.Tensor:
         """``[n, ...]``: each prompt's activation at its own resolved position for this site."""
@@ -288,8 +457,18 @@ class _LayerSources:
                     pos = resolve_position(site.site.position, self.prompts[p])
                     rows.append((p, acts[local, pos]))
             rows.sort(key=lambda r: r[0])
-            self._tables[key] = torch.stack([r[1] for r in rows])
+            self._tables[key] = torch.stack([r[1] for r in rows]).to(self.device)
         return self._tables[key]
+
+
+def _keep_on_cpu(device: torch.device, size: int) -> bool:
+    """Whether captured activations of ``size`` bytes are kept in CPU memory: on a CUDA device,
+    when they would take more than a quarter of its free memory. (On Apple's unified memory,
+    moving them would free nothing.)"""
+    if device.type != "cuda":
+        return False
+    free, _total = torch.cuda.mem_get_info(device)
+    return size > free // 4
 
 
 def run_experiment(
@@ -325,6 +504,10 @@ def run_experiment(
         from logogram.paths import run_path_patching
 
         return run_path_patching(spec, backend, prompts, **kwargs)
+    if isinstance(spec.scope, SiteSetsScope):
+        from logogram.circuits import run_site_sets
+
+        return run_site_sets(spec, backend, prompts, **kwargs)
     return run_engine(spec, backend, prompts, **kwargs)
 
 
@@ -356,7 +539,9 @@ def run_engine(
     n = len(prompts)
     warnings: list[str] = []
 
-    baselines = compute_baselines(backend, prompts, groups, batch_size, cancel)
+    scorer = make_scorer(spec, prompts)
+    baselines = compute_baselines(backend, prompts, groups, batch_size, cancel, scorer)
+    check_finite(baselines, info.dtype)
 
     exp = spec.experiment
     baseline_kind: str
@@ -390,6 +575,10 @@ def run_engine(
         k = exp.baseline.donors
         same_length = any(isinstance(s.site.position, AllPositions) for s in sites)
         donors = draw_donors(prompts, groups, k, exp.baseline.seed, same_length)
+    if baseline_kind == "mean":
+        check_mean_continuations(
+            scorer, any(isinstance(s.site.position, AllPositions) for s in sites)
+        )
     if baseline_kind == "mean" and any(isinstance(s.site.position, AllPositions) for s in sites):
         alone = sum(1 for g in groups if len(g.members) == 1)
         if alone:
@@ -398,8 +587,7 @@ def run_engine(
                 "mean is their own activation."
             )
 
-    patched_ld = np.zeros((len(sites), n))
-    patched_prob = np.zeros((len(sites), n))
+    patched, patched_prob, patched_pref = empty_values(len(sites), n)
     # Shares the arrays being filled, so per-layer callbacks can summarize finished sites.
     partial = EngineResult(
         sites=sites,
@@ -408,8 +596,9 @@ def run_engine(
         baselines=baselines,
         receiver=receiver,
         reference=reference,
-        patched_ld=patched_ld,
+        patched=patched,
         patched_prob=patched_prob,
+        patched_pref=patched_pref,
         donors=donors,
         warnings=warnings,
     )
@@ -430,6 +619,7 @@ def run_engine(
         )
         for gi, group in enumerate(groups):
             receiver_tokens = group.clean if receiver == "clean" else group.corrupt
+            source_tokens = group.clean if source == "clean" else group.corrupt
             # Rows are grouped by (kind, all-positions?) so one hook serves the whole batch.
             buckets: dict[tuple[str, bool], list[_Row]] = {}
             for site in layer_sites:
@@ -464,17 +654,30 @@ def run_engine(
                         backend.device,
                     )
                     local_idx = torch.tensor([r.local for r in chunk], dtype=torch.long)
-                    logits = backend.final_logits(receiver_tokens[local_idx], patch)
-                    ld, prob = _metric(logits, *_answer_tensors(prompts, [r.prompt for r in chunk]))
-                    for r, v_ld, v_prob in zip(chunk, ld, prob, strict=True):
-                        patched_ld[r.site.index, r.prompt] += v_ld / k
-                        patched_prob[r.site.index, r.prompt] += v_prob / k
+                    if baseline_kind in ("patch", "resample") and all_pos:
+                        donor = [r.prompt if r.donor is None else r.donor for r in chunk]
+                        own = source_tokens[torch.tensor([local_of[p] for p in donor])]
+                        forward = continued_forward(backend, patch, own)
+                    elif baseline_kind == "zero" and all_pos:
+                        forward = continued_forward(backend, patch, None)
+                    else:
+                        forward = patched_forward(backend, patch)
+                    scores = scorer.score(
+                        forward, receiver_tokens[local_idx], [r.prompt for r in chunk]
+                    )
+                    for r, value, prob, pref in zip(
+                        chunk, scores.metric, scores.prob, scores.pref, strict=True
+                    ):
+                        patched[r.site.index, r.prompt] += value / k
+                        patched_prob[r.site.index, r.prompt] += prob / k
+                        patched_pref[r.site.index, r.prompt] += pref / k
                     done_rows += len(chunk)
                     if on_progress is not None:
                         on_progress(done_rows, total_rows, layer)
         if on_layer is not None:
             on_layer(layer, [s.index for s in layer_sites], partial)
 
+    warnings.extend(check_values(patched, "patched values", info.dtype))
     return partial
 
 
@@ -518,13 +721,13 @@ def _build_patch(
         if baseline_kind == "patch":
             src_prompts = [r.prompt for r in rows]
         else:
-            src_prompts = [r.donor for r in rows]  # type: ignore[misc]
+            src_prompts = cast(list[int], [r.donor for r in rows])
         if all_pos:
             # Patch pairs share a length; resample donors are drawn from the same length group.
             assert all(group_of[p] == group_index for p in src_prompts)
-            acts = sources.group_tensor(kind, group_index)
-            idx = torch.tensor([local_of[p] for p in src_prompts], dtype=torch.long, device=device)
-            values = acts[idx, :, dev_heads] if is_head else acts[idx]
+            values = sources.group_rows(
+                kind, group_index, [local_of[p] for p in src_prompts], dev_heads
+            )
         else:
             table = sources.table(kind, rows[0].site)
             if any(r.site.site.position != rows[0].site.site.position for r in rows):
@@ -542,7 +745,7 @@ def _build_patch(
 
     # Mean ablation.
     if all_pos:
-        mean = sources.group_tensor(kind, group_index).float().mean(dim=0)  # [L, ...]
+        mean = sources.group_mean(kind, group_index)  # [L, ...]
         if is_head:
             values = mean[:, dev_heads].permute(1, 0, 2)  # [B, L, d_head]
         else:

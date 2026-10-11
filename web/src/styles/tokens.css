@@ -11,6 +11,9 @@
   --raised: #ffffff;
   --line: #e3e3e8;
   --line-soft: #efeff3;
+  /* The edge of a form control: the lightest hairline with 3:1 contrast against the page and the
+     control's own fill (WCAG 1.4.11). */
+  --control-line: #8a8a94;
   --text: #0a0a0b;
   --muted: #5d5d66;
   --faint: #6f6f78;
@@ -45,6 +48,7 @@
   --raised: #141417;
   --line: #26262c;
   --line-soft: #1a1a1f;
+  --control-line: #64646c;
   --text: #f5f5f7;
   --muted: #a3a3ad;
   --faint: #8e8e98;
@@ -68,6 +72,44 @@
   --accent-soft: rgba(255, 106, 51, 0.16);
 
   color-scheme: dark;
+}
+
+/* Until the saved appearance arrives (or if it never does), follow the system, so someone who
+   works in black sees no white flash. The app then sets data-theme, which always wins. Keep these
+   values the same as the black theme's above. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --bg: #000000;
+    --surface: #000000;
+    --surface-2: #121215;
+    --raised: #141417;
+    --line: #26262c;
+    --line-soft: #1a1a1f;
+    --control-line: #64646c;
+    --text: #f5f5f7;
+    --muted: #a3a3ad;
+    --faint: #8e8e98;
+    --hover: rgba(245, 245, 247, 0.06);
+    --press: rgba(245, 245, 247, 0.11);
+    --mark: rgba(255, 46, 126, 0.32);
+    --scrim: rgba(0, 0, 0, 0.62);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 18px 44px rgba(0, 0, 0, 0.7);
+    --sheet-shadow: none;
+    --alert: #ff6b6b;
+    --on-ink: #000000;
+
+    --explore: #19e0a3;
+    --experiment: #ff6a33;
+    --evidence: #ff4d93;
+    --live: #19e0a3;
+    --accent: #ff6a33;
+    --accent-hover: #ff8256;
+    --on-accent: #000000;
+    --accent-text: #ff8f63;
+    --accent-soft: rgba(255, 106, 51, 0.16);
+
+    color-scheme: dark;
+  }
 }
 
 :root {
