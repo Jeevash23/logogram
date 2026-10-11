@@ -91,13 +91,14 @@ def _tiny_bpe_tokenizer() -> Any:
 
 
 def build_tiny_architecture(folder: Path, arch: str, initializer_range: float = 0.3) -> None:
-    """A tiny random model of ``arch``. The large default weights give clear effects; smaller ones
-    give a smoother function, for checks that need small changes to behave linearly."""
+    """A tiny random model of ``arch``, one of TINY_ARCHITECTURES or "gpt2" (the usual test model's
+    family). The large default weights give clear effects; smaller ones give a smoother function,
+    for checks that need small changes to behave linearly."""
     import torch
     from transformers import AutoConfig, AutoModelForCausalLM
 
     tokenizer = _tiny_bpe_tokenizer()
-    options = dict(TINY_ARCHITECTURES[arch])
+    options = {"model_type": "gpt2"} if arch == "gpt2" else dict(TINY_ARCHITECTURES[arch])
     model_type = options.pop("model_type")
     config = AutoConfig.for_model(
         model_type,

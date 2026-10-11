@@ -73,11 +73,14 @@ def test_websocket_needs_origin_and_token(client):
 
 
 def _wait_for_run(client, run_id, timeout=120):
+    # A run is listed as ended once its manifest is written, a moment before its job lets go of
+    # the server; until then another job can't start, so wait for both.
     deadline = time.time() + timeout
     while time.time() < deadline:
         runs = client.get("/api/runs", headers=AUTH).json()
         status = next(r["status"] for r in runs if r["id"] == run_id)
-        if status not in ("running", "draft"):
+        job = client.get("/api/state", headers=AUTH).json()["job"]
+        if status not in ("running", "draft") and (job is None or job["status"] != "running"):
             return status
         time.sleep(0.05)
     raise AssertionError("run did not finish")

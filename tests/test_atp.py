@@ -62,10 +62,10 @@ def smooth_backend(tmp_path_factory):
 
 
 @pytest.mark.parametrize("arch", ["gpt2", "llama", "gpt_neox"])
-def test_the_gradients_match_finite_differences(tiny_backend, smooth_backend, project, arch):
+def test_the_gradients_match_finite_differences(smooth_backend, project, arch):
     """Nudge each site along a fixed direction: the logit difference changes by the gradient's
     projection on it. For resid_mid the nudge goes into the residual stream (through attn_out)."""
-    backend = tiny_backend if arch == "gpt2" else smooth_backend(arch)
+    backend = smooth_backend(arch)
     tokens, answers, distractors = _batch(backend, project)
     sites = [("resid_pre", 1), ("head", 1), ("mlp_out", 0), ("resid_post", 0)]
     if "resid_mid" in backend.info.site_kinds:

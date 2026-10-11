@@ -80,6 +80,9 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    # uv run asks for this Python rather than .python-version's, which the venv may not match.
+    env:
+      UV_PYTHON: ${{ matrix.python }}
     strategy:
       fail-fast: false
       matrix:
@@ -112,6 +115,8 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      UV_PYTHON: "3.11"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -121,10 +126,7 @@ jobs:
       # dependencies at the highest that fit), on the oldest supported Python.
       - run: uv venv --python 3.11
       - run: uv pip install --resolution lowest-direct --torch-backend=cpu -e . --group dev
-      # The finite-difference check on the tiny random GPT-2 is skipped: transformers before 5.15
-      # initializes that model differently, and on that model float32 differences stray past the
-      # test's tolerance (the gradients match float64 differences there to 1e-6).
-      - run: uv run --no-sync pytest -q --deselect "tests/test_atp.py::test_the_gradients_match_finite_differences[gpt2]"
+      - run: uv run --no-sync pytest -q
 
   audit:
     name: Known vulnerabilities in dependencies

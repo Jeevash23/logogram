@@ -51,7 +51,7 @@ export function App() {
         <div className={s.center}>
           <div className={s.error}>
             <Logogram seed={BRAND_SEED} size={36} detail={0.85} weight={1.2} />
-            <h2>Logogram can't start</h2>
+            <h1>Logogram can't start</h1>
             <p className="muted">{bootError}</p>
           </div>
         </div>

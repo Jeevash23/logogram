@@ -127,7 +127,7 @@ export function CircuitResults({
       </div>
       {without.length > 0 && (
         <section className={c.notes} aria-label="What each site adds">
-          <h3 className={s.panelTitle}>What each site adds</h3>
+          <h2 className={s.panelTitle}>What each site adds</h2>
           {without.map(({ site, row }) => {
             const w = row?.without;
             if (!w) return null;
@@ -143,7 +143,7 @@ export function CircuitResults({
       )}
       {interactions.length > 0 && (
         <section className={c.notes} aria-label="How sites interact">
-          <h3 className={s.panelTitle}>How sites interact</h3>
+          <h2 className={s.panelTitle}>How sites interact</h2>
           {interactions.map(({ site, row }) => {
             const it = row?.interaction;
             if (!it) return null;

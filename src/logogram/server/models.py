@@ -11,7 +11,8 @@ from logogram.spec import ModelRef, PredictionSettings
 
 
 class _Out(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    # protected_namespaces: pydantic before 2.10 warns about a field named model_id otherwise.
+    model_config = ConfigDict(extra="forbid", protected_namespaces=())
 
 
 # -- models and jobs ---------------------------------------------------------------------------

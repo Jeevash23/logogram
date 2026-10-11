@@ -136,9 +136,9 @@ export function AttentionView() {
     <div className={s.view}>
       <div className={s.head}>
         <div className={s.titleBlock}>
-          <h2 className={s.title}>
+          <h1 className={s.title}>
             Attention · L{head.layer} H{head.head}
-          </h2>
+          </h1>
           <p className={s.subtitle}>
             Each row is a query position and each column a key position: how much the head at that row reads from
             that column. Rows sum to 1. Later positions are masked.

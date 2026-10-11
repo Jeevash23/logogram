@@ -118,7 +118,7 @@ function SetReading({ site, summary }: { site: SiteResult; summary: Summary }) {
   const everything = summary.circuit?.everything === site.index;
   return (
     <section className={s.section}>
-      <h4 className={s.sectionTitle}>Against replacing everything</h4>
+      <h3 className={s.sectionTitle}>Against replacing everything</h3>
       <dl className={s.stats}>
         {everything ? (
           <>
@@ -201,14 +201,14 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
     const written = selection.part === "head" ? "this head's output, through its share of the output projection," : `${what}`;
     return (
       <section className={s.section}>
-        <h4 className={s.sectionTitle}>Method</h4>
+        <h3 className={s.sectionTitle}>Method</h3>
         <p className={s.strong}>{experimentText(exp)}</p>
         <p className={s.text}>
           Runs each {exp.prompts} prompt once and reads {written} at the last token through the final normalization, with its
           scale held at its value in the run. This is the component's direct effect: it leaves out what the component does
           through later components, which patching measures. Nothing is replaced.
         </p>
-        <h4 className={s.sectionTitle}>Metric</h4>
+        <h3 className={s.sectionTitle}>Metric</h3>
         <p className={s.text}>Logit difference at the last token: logit(answer) − logit(distractor).</p>
         <p className={s.text}>
           Share = direct effect ÷{" "}
@@ -277,13 +277,13 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
   const gap = summary?.metric.denominator;
   return (
     <section className={s.section}>
-      <h4 className={s.sectionTitle}>{exp.kind === "attribution_patching" ? "Estimate" : "Intervention"}</h4>
+      <h3 className={s.sectionTitle}>{exp.kind === "attribution_patching" ? "Estimate" : "Intervention"}</h3>
       <p className={s.strong}>
         {experimentText(exp)}
         {exp.kind === "ablation" && <span className={s.muted}> · baseline: {baselineText(exp.baseline)}</span>}
       </p>
       <p className={s.text}>{how}</p>
-      <h4 className={s.sectionTitle}>Metric</h4>
+      <h3 className={s.sectionTitle}>Metric</h3>
       <p className={s.text}>
         {capitalize(measured.label)}: {metricText}.
       </p>
@@ -349,7 +349,7 @@ function Evidence({
 
   return (
     <section className={s.section}>
-      <h4 className={s.sectionTitle}>Evidence</h4>
+      <h3 className={s.sectionTitle}>Evidence</h3>
       <div className={s.headline}>
         <span className={s.big}>{signed(site.effect.mean, 3)}</span>
         <span className={s.bigLabel}>{words.mean}</span>
@@ -470,7 +470,7 @@ function DoseResponse({ site, ciLevel }: { site: SiteResult; ciLevel: number }) 
   const description = series[0].map((p) => `${p.variant_key}: ${signed(p.effect.mean, 2)}`).join(", ");
   return (
     <div className={s.dose}>
-      <h4 className={s.sectionTitle}>Effect at each strength</h4>
+      <h3 className={s.sectionTitle}>Effect at each strength</h3>
       <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label={`Mean normalized effect at each strength, with ${ciLevel}% intervals. ${description}.`}>
         <line x1={L} x2={W - R} y1={y(0)} y2={y(0)} className={s.doseZero} />
         <line x1={L} x2={W - R} y1={y(1)} y2={y(1)} className={s.doseOne} />
@@ -526,7 +526,7 @@ function PromptList({
 }) {
   return (
     <div className={s.promptList}>
-      <h4 className={s.sectionTitle}>{title}</h4>
+      <h3 className={s.sectionTitle}>{title}</h3>
       {indices.map((i) => {
         const p = byIndex.get(i);
         if (!p) return null;
@@ -705,7 +705,7 @@ function RunOverview() {
   return (
     <div className={s.overview}>
       <span className="eyebrow">Selected run</span>
-      <h3 className={s.overviewTitle}>{run.detail?.spec.name ?? "Run"}</h3>
+      <h2 className={s.overviewTitle}>{run.detail?.spec.name ?? "Run"}</h2>
       {run.detail?.spec && <p className={s.componentText}>{experimentText(run.detail.spec.experiment)}</p>}
       {summary && (
         <dl className={s.stats}>
@@ -725,7 +725,7 @@ function RunOverview() {
       )}
       {top.length > 0 && (
         <section className={s.section}>
-          <h4 className={s.sectionTitle}>Largest effects</h4>
+          <h3 className={s.sectionTitle}>Largest effects</h3>
           {top.map((site) => (
             <button
               key={site.index}

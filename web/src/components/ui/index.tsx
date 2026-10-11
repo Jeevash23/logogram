@@ -61,19 +61,6 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
   );
 });
 
-export function IconButton({
-  icon,
-  label,
-  size = "medium",
-  ...rest
-}: Omit<ButtonProps, "children" | "icon"> & { icon: IconName; label: string }) {
-  return (
-    <Tip text={label}>
-      <Button variant="ghost" size={size} icon={icon} aria-label={label} {...rest} />
-    </Tip>
-  );
-}
-
 // -- form controls -----------------------------------------------------------------------------
 
 // A Field's label is tied to the first text control inside it through this id.
@@ -282,15 +269,6 @@ export function Kbd({ children }: { children: ReactNode }) {
   return <kbd className={s.kbd}>{children}</kbd>;
 }
 
-export function Chip({ k, children, title }: { k?: ReactNode; children: ReactNode; title?: string }) {
-  return (
-    <span className={s.chip} title={title}>
-      {k && <span className={s.chipKey}>{k}</span>}
-      <span>{children}</span>
-    </span>
-  );
-}
-
 export function Progress({ value }: { value: number | null }) {
   return (
     <div
@@ -362,26 +340,6 @@ export function Callout({
         {children && <div className={s.calloutBody}>{children}</div>}
       </div>
     </div>
-  );
-}
-
-export function Section({
-  title,
-  aside,
-  children,
-}: {
-  title: ReactNode;
-  aside?: ReactNode;
-  children: ReactNode;
-}) {
-  return (
-    <section className={s.section}>
-      <div className={s.sectionHeader}>
-        <h4 className={s.sectionTitle}>{title}</h4>
-        {aside}
-      </div>
-      {children}
-    </section>
   );
 }
 
