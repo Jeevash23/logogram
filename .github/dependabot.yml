@@ -1,13 +1,14 @@
 version: 2
 
-# Weekly version updates, minor and patch releases grouped into one pull request per ecosystem.
-# Majors come one by one. A cooldown lets a new release settle before it is proposed; security
-# updates skip it.
+# Monthly version updates, minor and patch releases grouped into one pull request per ecosystem.
+# Majors come one by one. A cooldown lets a new release settle before it is proposed. Security
+# updates skip both: with Dependabot security updates on in the repository's settings, a fix for
+# a known vulnerability is proposed as soon as there is one.
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
     cooldown:
       default-days: 7
     groups:
@@ -19,7 +20,7 @@ updates:
   - package-ecosystem: npm
     directory: /web
     schedule:
-      interval: weekly
+      interval: monthly
     cooldown:
       default-days: 7
     groups:
@@ -30,7 +31,7 @@ updates:
   - package-ecosystem: uv
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
     cooldown:
       default-days: 7
     groups:
