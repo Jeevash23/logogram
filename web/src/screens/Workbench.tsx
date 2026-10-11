@@ -65,6 +65,9 @@ export function Workbench() {
     w === "experiment" && staged > 0 ? useStore.getState().configureStaged() : setView(lastView.current[w]);
 
   return <div className={s.workbench} style={{ ["--ws" as string]: `var(--${workspace})` }}>
+    {/* Past the top bar and the tabs, straight to the view. It moves focus without touching the
+        URL, whose fragment holds the route. */}
+    <a href="#main" className={s.skip} onClick={(e) => { e.preventDefault(); document.getElementById("main")?.focus(); }}>Skip to the view</a>
     <TopBar workspace={workspace} onWorkspace={goWorkspace} onHistory={() => setDrawer("history")} runs={runs} staged={staged} />
     <div className={s.subbar}>
       <nav className={s.tabs} aria-label={`${workspace} views`}>{WORKSPACE_VIEWS.find(w => w.id === workspace)?.views.map((v, i) => <button key={v.id} type="button" className={s.tab} aria-current={view === v.id ? "page" : undefined} aria-keyshortcuts={String(i + 1)} onClick={() => setView(v.id)}>{v.label}{v.id === "heads" && pins > 0 && <span className={s.count}>{pins}/2</span>}</button>)}</nav>
@@ -76,9 +79,9 @@ export function Workbench() {
       </div>
     </div>
     <div className={s.body}>
-      <main className={s.center}>
+      <main className={s.center} id="main" tabIndex={-1}>
         <div className={s.view} ref={viewPane}><ErrorBoundary key={view} name="This view"><ActiveView view={view} /></ErrorBoundary></div>
-        {!["notes", "compare", "spec"].includes(view) && <ErrorBoundary name="The token strip" resetKey={view}><TokenStrip /></ErrorBoundary>}
+        {!["notes", "compare", "spec", "features"].includes(view) && <ErrorBoundary name="The token strip" resetKey={view}><TokenStrip /></ErrorBoundary>}
       </main>
       {showInspector && <aside className={s.inspectorPane} aria-label="Inspector"><Splitter orientation="vertical" label="Resize the inspector" value={inspectorWidth} min={280} max={480} onReset={() => setInspectorWidth(320)} onResize={(delta, phase) => {
         if (phase === "start") { startWidth.current = inspectorWidth; return; }

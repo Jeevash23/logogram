@@ -275,8 +275,6 @@ export function ResultsView() {
           )}
         </dl>
       )}
-      {summary && <Corrections summary={summary} />}
-
       {run.id && ranked.length > 0 && <CircuitDialog open={circuitOpen} onOpenChange={setCircuitOpen} ranked={ranked} runId={run.id} />}
       {layout && layout.kind !== "site_sets" && <div className={r.controls}>
         <Segmented label="Result values" value={metric} onChange={mapMetric => useStore.setState({ mapMetric })} options={[{ value: "effect", label: words.effect }, { value: "delta", label: words.delta }]} />
@@ -329,6 +327,7 @@ export function ResultsView() {
       {layout?.kind === "sites" && (
         <Forest ciLevel={run.ciLevel} results={resultList} selectedIndex={selectedSite?.index ?? null} onSelect={(site) => select(selectionOfSite(site))} flagged={flagged} limit={50} />
       )}
+      {summary && <Corrections summary={summary} />}
 
       {summary?.warnings.map((w) => (
         <Callout key={w} title="Note">
@@ -364,11 +363,14 @@ function Corrections({ summary }: { summary: Summary }) {
         bands and <strong>{count(discoveries)}</strong> have q below {alpha}, where {count(single)} intervals exclude zero one
         {" "}{unit} at a time.
       </p>
-      <p className={s.small}>
-        With many sites, some intervals exclude zero by chance alone. A simultaneous band holds for every site at once, so a
-        site whose band excludes zero still stands out after the number of sites is counted; a q-value is the share of
-        false findings expected among the sites at least as strong.{st.multiple_comparisons ? ` ${st.multiple_comparisons}` : ""}
-      </p>
+      <details className={r.correctionsMore}>
+        <summary>What the corrections mean</summary>
+        <p className={s.small}>
+          With many sites, some intervals exclude zero by chance alone. A simultaneous band holds for every site at once, so a
+          site whose band excludes zero still stands out after the number of sites is counted; a q-value is the share of
+          false findings expected among the sites at least as strong.{st.multiple_comparisons ? ` ${st.multiple_comparisons}` : ""}
+        </p>
+      </details>
     </section>
   );
 }

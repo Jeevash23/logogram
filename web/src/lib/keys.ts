@@ -31,7 +31,7 @@ function historyKey(e: KeyboardEvent): "undo" | "redo" | null {
 }
 
 // Controls that use arrow keys themselves.
-const ARROW_WIDGETS = "[role=menu], [role=menubar], [role=listbox], [role=separator], [role=slider], [role=radiogroup], [role=tablist], [role=grid]";
+const ARROW_WIDGETS = "[role=menu], [role=menubar], [role=listbox], [role=separator], [role=slider], [role=radiogroup], [role=tablist], [role=grid], [data-arrow-keys]";
 const OVERLAYS = "[role=dialog], [role=alertdialog], [role=menu], [role=listbox]";
 
 /** Whether the arrow keys would scroll something around the focused element. */
