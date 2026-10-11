@@ -94,8 +94,11 @@ test("single-key shortcuts can be turned off, and on again from the command pale
   // On again: the palette has the switch.
   await page.keyboard.press("ControlOrMeta+k");
   await page.getByLabel("Command", { exact: true }).fill("single-key");
+  await expect(page.getByRole("option", { name: /^Turn on single-key shortcuts/ })).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("Enter");
   await expect(page.locator("[role=dialog]")).toHaveCount(0);
+  // The palette runs its command once it has closed: the hints come back with the keys.
+  await expect(attention).toHaveAttribute("aria-keyshortcuts", "2");
   await page.keyboard.press("2");
   await expect(attention).toHaveAttribute("aria-current", "page");
 });

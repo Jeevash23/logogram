@@ -119,8 +119,7 @@
 }
 
 .table tbody tr[aria-selected="true"] th {
-  background: var(--surface-2);
-  box-shadow: inset 2px 0 0 var(--text);
+  box-shadow: inset 3px 0 0 var(--text);
 }
 
 /* A row's number selects it. */

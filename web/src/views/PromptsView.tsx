@@ -3,7 +3,7 @@ import { Fragment, useDeferredValue, useEffect, useId, useMemo, useRef, useState
 import { api } from "../api/client";
 import type { Answer, DatasetDetail, PromptRecord, RunDetail, TaskDatasetCreated, TokenStripData } from "../api/types";
 import { TokenGrid } from "../components/TokenStrip";
-import { Button, Callout, ConfirmDialog, Dialog, Field, Icon, Input, Segmented, TextArea } from "../components/ui";
+import { Button, Callout, ConfirmDialog, Dialog, Field, Icon, Input, Segmented, TextArea, Tip } from "../components/ui";
 import { answerText, count, plural, visibleToken } from "../lib/format";
 import { modelName, useAnalysisContext } from "../lib/hooks";
 import {
@@ -101,14 +101,14 @@ export function PromptsView() {
 
       <div className={s.row} style={{ alignItems: "center" }}>
         <div className={s.tabsInline} role="group" aria-label="Datasets">
-          {datasets.map((d) => (
+          {datasets.map((d) => {
+            const button = (
             <button
               key={d.path}
               type="button"
               className={s.datasetButton}
               aria-pressed={d.path === datasetPath}
               onClick={() => void selectDataset(d.path)}
-              title={d.error}
             >
               {d.name}
               <span>
@@ -116,7 +116,10 @@ export function PromptsView() {
                 {hasEdits(datasetEdits[d.path]) && " · unsaved edits"}
               </span>
             </button>
-          ))}
+            );
+            // Why a file can't be read, on hover and on keyboard focus.
+            return d.error ? <Tip key={d.path} text={d.error}>{button}</Tip> : button;
+          })}
         </div>
         <div style={{ flex: 1 }} />
         <Segmented<Mode>
