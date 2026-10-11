@@ -25,6 +25,9 @@
 .sectionTitle {
   font-size: var(--text-sm);
   font-weight: 600;
+  font-stretch: inherit;
+  letter-spacing: inherit;
+  line-height: inherit;
 }
 
 .text {

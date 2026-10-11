@@ -110,7 +110,7 @@ export function ExperimentView() {
     <div className={s.view}>
       <div className={s.head}>
         <div className={s.titleBlock}>
-          <h2 className={s.title}>{form.draftId ? "Experiment" : "New experiment"}</h2>
+          <h1 className={s.title}>{form.draftId ? "Experiment" : "New experiment"}</h1>
           <p className={s.subtitle}>
             {form.draftId ? (
               <>
@@ -144,7 +144,7 @@ export function ExperimentView() {
 
       <div className={e.form}>
         {form.predictions && <section className={e.section} aria-label="Included prediction diagnostic">
-          <h3 className={e.sectionTitle}>Layer prediction diagnostic</h3>
+          <h2 className={e.sectionTitle}>Layer prediction diagnostic</h2>
           <p className={s.small}>Final-norm logit lens · {form.predictions.which} prompt {form.predictions.prompt_index} · {form.predictions.position.kind === "last" ? "last token" : `token index ${form.predictions.position.index}`} · top {form.predictions.top_k} tokens. Saved as predictions.json beside this run’s intervention results.</p>
           <div className={s.headActions}><Button size="small" onClick={() => useStore.getState().setView("predictions")}>Inspect predictions</Button><Button size="small" onClick={() => setForm({ predictions: null })}>Remove diagnostic</Button></div>
         </section>}
@@ -165,7 +165,7 @@ export function ExperimentView() {
         </Field>
 
         <section className={e.section}>
-          <h3 className={e.sectionTitle}>Method</h3>
+          <h2 className={e.sectionTitle}>Method</h2>
           <Choices
             label="Method"
             value={form.kind}
@@ -224,7 +224,7 @@ export function ExperimentView() {
         </section>
 
         <section className={e.section}>
-          <h3 className={e.sectionTitle}>What to sweep</h3>
+          <h2 className={e.sectionTitle}>What to sweep</h2>
           <ScopeEditor
             method={form.kind}
             saeLoaded={sae.state === "ready" ? sae.info ?? null : null}
@@ -237,12 +237,12 @@ export function ExperimentView() {
         </section>
 
         <section className={e.section}>
-          <h3 className={e.sectionTitle}>Metric</h3>
+          <h2 className={e.sectionTitle}>Metric</h2>
           <MetricSettings form={form} onChange={setForm} facts={facts} />
         </section>
 
         <section className={e.section}>
-          <h3 className={e.sectionTitle}>Statistics and execution</h3>
+          <h2 className={e.sectionTitle}>Statistics and execution</h2>
           <div className={s.grid4}>
             <Field label="Bootstrap resamples">
               <Input type="number" min={100} max={100000} step={100} value={form.bootstrap} onChange={(ev) => setForm({ bootstrap: Number(ev.target.value) })} />
@@ -265,7 +265,7 @@ export function ExperimentView() {
         </section>
 
         <section className={e.section}>
-          <h3 className={e.sectionTitle}>Data and model</h3>
+          <h2 className={e.sectionTitle}>Data and model</h2>
           <dl className={s.kv}>
             <dt>Prompts</dt>
             <dd>

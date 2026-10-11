@@ -128,7 +128,7 @@ export function SystemCheck() {
         )}
 
         <section className={s.updates} aria-label="Updates">
-          <h3 className={s.sectionTitle}>Updates</h3>
+          <h2 className={s.sectionTitle}>Updates</h2>
           <UpdateDetails />
         </section>
 

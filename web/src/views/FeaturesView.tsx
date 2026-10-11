@@ -49,7 +49,7 @@ export function FeaturesView() {
     <div className={s.view}>
       <div className={s.head}>
         <div className={s.titleBlock}>
-          <h2 className={s.title}>{sae.state === "ready" && sae.info ? "What the SAE reads in these prompts" : "Read features with a sparse autoencoder"}</h2>
+          <h1 className={s.title}>{sae.state === "ready" && sae.info ? "What the SAE reads in these prompts" : "Read features with a sparse autoencoder"}</h1>
           <p className={s.subtitle}>
             An SAE writes an activation as a few active features, each a direction in the model, plus an error it misses. Load
             one trained on {modelName(model.info.id)}, check that it fits these prompts, then look at, patch or estimate its features.
@@ -179,7 +179,7 @@ function Loaded({ info }: { info: SAEInfo }) {
         <div className={f.cardHead}>
           <div>
             <p className={s.eyebrow}>{info.repo}</p>
-            <h3 className={f.cardTitle}>{info.path || "(top level)"}</h3>
+            <h2 className={f.cardTitle}>{info.path || "(top level)"}</h2>
             <p className={s.small}>
               Reads {siteOf(info)} · {count(info.d_sae)} features ·{" "}
               {info.activation === "topk" ? `the top ${info.k} per token` : info.activation === "jumprelu" ? "JumpReLU" : "ReLU"}
@@ -366,7 +366,7 @@ function FeaturePanel({ info, feature }: { info: SAEInfo; feature: number }) {
               );
             })}
           </div>
-          <h4 className={s.panelTitle}>Where it fires most</h4>
+          <h3 className={s.panelTitle}>Where it fires most</h3>
           <p className={s.small}>
             It fires on {count(data.active_prompts)} of {count(data.n)} clean prompts. These are the strongest; descriptions of features live on
             sites like Neuronpedia, which Logogram doesn't contact.

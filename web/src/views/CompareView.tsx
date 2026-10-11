@@ -112,7 +112,7 @@ export function CompareView() {
     <div className={s.view}>
       <div className={s.head}>
         <div className={s.titleBlock}>
-          <h2 className={s.title}>{verification ? "Estimates checked by patching" : robust ? "Robustness check" : "Compare runs"}</h2>
+          <h1 className={s.title}>{verification ? "Estimates checked by patching" : robust ? "Robustness check" : "Compare runs"}</h1>
           <p className={s.subtitle}>
             {verification
               ? "A estimates every site to first order; B patches the strongest of them for real. Where they disagree, the estimate is flagged."
@@ -404,7 +404,7 @@ function ChangesTable({ changes, topK }: { changes: ComparisonChange[]; topK: nu
   const paired = changes.some((ch) => ch.difference);
   return (
     <div className={c.changes}>
-      <h3 className={s.panelTitle}>Top components in either run</h3>
+      <h2 className={s.panelTitle}>Top components in either run</h2>
       <table className={s.table}>
         <thead>
           <tr>
