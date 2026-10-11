@@ -187,7 +187,7 @@ function LayerDiagram({ arch, layer }: { arch: Architecture; layer: number }) {
       const fill = painted ? color(value) : colors.surface;
       ctx.fillStyle = fill; ctx.strokeStyle = colors.lineSoft; ctx.lineWidth = 1;
       ctx.beginPath(); ctx.roundRect(node.x, node.y, node.w, node.h, 4); ctx.fill(); if (!painted) ctx.stroke();
-      ctx.font = font(colors, node.sel?.part === "head" ? 13 : 12.5, 550); ctx.textAlign = node.sel?.part === "resid" ? "left" : "center"; ctx.textBaseline = "middle"; ctx.fillStyle = painted ? textOn(fill, theme) : colors.text;
+      ctx.font = font(colors, node.sel?.part === "head" ? 13 : 12.5, 550); ctx.textAlign = node.sel?.part === "resid" ? "left" : "center"; ctx.textBaseline = "middle"; ctx.fillStyle = painted ? textOn(fill) : colors.text;
       const tx = node.sel?.part === "resid" ? node.x + 12 : node.x + node.w / 2;
       ctx.fillText(fitText(ctx, node.label, node.w - 18), tx, node.y + (node.detail ? 17 : node.h / 2));
       if (node.detail) { ctx.font = font(colors, 11, 450); ctx.fillText(fitText(ctx, node.detail, node.w - 18), tx, node.y + 35); }
