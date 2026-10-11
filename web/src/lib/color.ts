@@ -89,11 +89,21 @@ export function inkScale(max: number, theme: ResolvedTheme): ColorScale {
   return fn;
 }
 
-/** A readable text color on top of a data color. */
-export function textOn(color: string, theme: ResolvedTheme): string {
-  const l = lab(color).l;
-  if (theme === "light") return l < 58 ? "#ffffff" : "#0a0a0b";
-  return l > 62 ? "#000000" : "#f5f5f7";
+/** WCAG relative luminance, from 0 (black) to 1 (white). */
+function luminance(color: string): number {
+  const { r, g, b } = rgb(color);
+  const linear = (c: number) => {
+    const s = c / 255;
+    return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b);
+}
+
+/** Text on a data color: black or white, whichever contrasts more with it. On any opaque color
+ * that is at least 4.58:1, above the 4.5:1 WCAG asks of small text, in either theme. */
+export function textOn(color: string): string {
+  const y = luminance(color);
+  return (y + 0.05) / 0.05 >= 1.05 / (y + 0.05) ? "#000000" : "#ffffff";
 }
 
 /**

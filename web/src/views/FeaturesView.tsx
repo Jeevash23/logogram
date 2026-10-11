@@ -360,7 +360,7 @@ function FeaturePanel({ info, feature }: { info: SAEInfo; feature: number }) {
             {data.tokens.map((t, i) => {
               const fill = ink(Math.max(0, data.activations[i]));
               return (
-                <span key={i} className={f.stripToken} style={{ background: fill, color: textOn(fill, theme) }} title={`${visibleToken(t)}: ${num(data.activations[i], 3)}`}>
+                <span key={i} className={f.stripToken} style={{ background: fill, color: textOn(fill) }} title={`${visibleToken(t)}: ${num(data.activations[i], 3)}`}>
                   {visibleToken(t)}
                 </span>
               );
