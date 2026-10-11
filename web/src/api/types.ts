@@ -654,7 +654,8 @@ export interface Manifest {
     deterministic_algorithms: boolean;
   };
   dtype?: string;
-  dataset?: { path: string; sha256: string; n: number };
+  /** The prompts the run read: its saved copy, and the dataset it was copied from. */
+  dataset?: { path: string; sha256: string; n: number; source_path?: string | null };
   derived_from?: DerivedFrom | null;
 }
 
@@ -981,6 +982,18 @@ export interface DatasetCreated {
   name: string;
   path: string;
   n: number;
+}
+
+/** A dataset's prompt pairs, some edited and some left out, to save as a new dataset (POST
+ * /api/datasets/derive). The dataset they come from never changes. */
+export interface DeriveRequest {
+  /** The dataset edited, by its path in the project, and the version of it that was edited. */
+  dataset: string;
+  dataset_sha256: string;
+  name: string;
+  /** Indices of the prompt pairs to leave out, and the new value of each edited one by index. */
+  remove: number[];
+  replace: Record<number, PromptRecord>;
 }
 
 export interface TaskDatasetCreated extends DatasetCreated {

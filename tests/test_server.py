@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -236,6 +237,15 @@ def test_every_endpoint_matches_its_schema(app, client, tiny_backend, tmp_path, 
     client.post("/api/datasets/ioi", json={"name": "ioi", "n": 6}, headers=headers)
     detail = client.get("/api/datasets/ioi.jsonl", headers=AUTH).json()
     assert detail["n"] == 6 and detail["issues"] == [] and len(detail["lengths"]) >= 1
+    edits = {
+        "dataset": "datasets/ioi.jsonl",
+        "dataset_sha256": detail["sha256"],
+        "name": "ioi-edited",
+        "remove": [0],
+        "replace": {"1": detail["records"][2]},
+    }
+    derived = client.post("/api/datasets/derive", json=edits, headers=headers).json()
+    assert derived == {"name": "ioi-edited.jsonl", "path": "datasets/ioi-edited.jsonl", "n": 5}
     tasks = {t["id"]: t for t in client.get("/api/tasks", headers=AUTH).json()}
     assert {"ioi", "greater_than", "docstring", "factual_recall"} <= set(tasks)
     assert tasks["greater_than"]["metric"] == "prob_diff"
@@ -301,3 +311,219 @@ def test_an_attribution_patching_run_is_verified_by_patching(
     # Only attribution patching runs are verified this way.
     again = client.post(f"/api/runs/{verified}/verify", json={"top": 4}, headers=headers)
     assert again.status_code == 400 and "Only attribution patching" in again.json()["error"]
+
+
+# -- editing a dataset's prompts into a new dataset ----------------------------------------------
+
+CLEAN = "When Mary and John went to the store, John gave a drink to"
+CORRUPT = "When Mary and John went to the store, Mary gave a drink to"
+DERIVE = "/api/datasets/derive"
+WRITE = {**AUTH, **ORIGIN}
+
+
+def _pair(i: int) -> dict[str, Any]:
+    return {
+        "clean": CLEAN,
+        "corrupt": CORRUPT,
+        "answer": " Mary",
+        "distractor": " John",
+        "id": f"pair-{i}",
+    }
+
+
+@pytest.fixture
+def edits(app, client, tmp_path) -> dict[str, Any]:
+    """A project with a dataset of four prompt pairs, and a request that changes none of them."""
+    client.post("/api/projects", json={"name": "Edits", "parent": str(tmp_path)}, headers=WRITE)
+    text = "\n".join(json.dumps(_pair(i)) for i in range(4))
+    created = client.post("/api/datasets/import", json={"name": "src", "text": text}, headers=WRITE)
+    assert created.status_code == 200, created.text
+    detail = client.get("/api/dataset", params={"path": "datasets/src.jsonl"}, headers=AUTH).json()
+    return {
+        "dataset": "datasets/src.jsonl",
+        "dataset_sha256": detail["sha256"],
+        "name": "src-edited",
+        "remove": [],
+        "replace": {},
+    }
+
+
+def _datasets(app) -> Path:
+    return app.state.logogram.project.datasets_dir
+
+
+def _files(app) -> list[str]:
+    return sorted(p.name for p in _datasets(app).iterdir())
+
+
+def test_edited_prompts_are_saved_as_a_new_dataset(app, client, edits):
+    source = _datasets(app) / "src.jsonl"
+    before = source.read_bytes()
+    clean = "When Anna and Ben went home, Ben gave a book to"
+    edited = {
+        "clean": clean,
+        "corrupt": "When Anna and Ben went home, Anna gave a book to",
+        "answer": [" Anna", " Ann"],  # a set of tokens, any of which counts
+        "distractor": " Ben Smith",  # a continuation of several tokens
+        "positions": {"IO": [5, 9], "end": [len(clean) - 2, len(clean)]},
+        "id": "edited",
+        "meta": {"template": "home", "checked": True},
+    }
+    body = {**edits, "remove": [0, 3], "replace": {"2": edited}}
+    r = client.post(DERIVE, json=body, headers=WRITE)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"name": "src-edited.jsonl", "path": "datasets/src-edited.jsonl", "n": 2}
+    # The dataset edited never changes: runs record its hash.
+    assert source.read_bytes() == before
+    params = {"path": "datasets/src-edited.jsonl"}
+    detail = client.get("/api/dataset", params=params, headers=AUTH).json()
+    assert detail["records"] == [_pair(1), edited]
+    listed = {d["name"]: d for d in client.get("/api/project", headers=AUTH).json()["datasets"]}
+    assert listed["src-edited.jsonl"]["n"] == 2 and listed["src.jsonl"]["n"] == 4
+
+    # A run's saved copy of its prompts is edited the same way.
+    snapshot = _datasets(app) / "snapshots" / f"{edits['dataset_sha256']}.jsonl"
+    snapshot.parent.mkdir()
+    snapshot.write_bytes(before)
+    body = {**edits, "dataset": f"datasets/snapshots/{snapshot.name}", "name": "from-run.jsonl"}
+    r = client.post(DERIVE, json={**body, "remove": [1]}, headers=WRITE)
+    assert r.json() == {"name": "from-run.jsonl", "path": "datasets/from-run.jsonl", "n": 3}
+    assert snapshot.read_bytes() == before
+
+
+def test_a_new_dataset_never_replaces_a_file(app, client, edits):
+    (_datasets(app) / "taken.jsonl").write_text(json.dumps(_pair(9)) + "\n", encoding="utf-8")
+    files = {p.name: p.read_bytes() for p in _datasets(app).iterdir()}
+    for name in ("taken", "taken.jsonl", "src"):  # the dataset edited is no exception
+        r = client.post(DERIVE, json={**edits, "name": name, "remove": [0]}, headers=WRITE)
+        assert r.status_code == 400, r.text
+        assert r.json()["error"] == f"{Path(name).stem}.jsonl already exists. Choose another name."
+    assert {p.name: p.read_bytes() for p in _datasets(app).iterdir()} == files
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        {"clean": "a", "corrupt": "b", "answer": "c"},
+        {"clean": "", "corrupt": "b", "answer": "c", "distractor": "d"},
+        {"clean": "a", "corrupt": "b", "answer": "", "distractor": "d"},
+        {"clean": "a", "corrupt": "b", "answer": [" x", " x"], "distractor": "d"},
+        {"clean": "a", "corrupt": "b", "answer": [], "distractor": "d"},
+        {"clean": "a", "corrupt": "b", "answer": "c", "distractor": 4},
+        {
+            "clean": "ab",
+            "corrupt": "b",
+            "answer": "c",
+            "distractor": "d",
+            "positions": {"X": [0, 9]},
+        },
+        {
+            "clean": "ab",
+            "corrupt": "b",
+            "answer": "c",
+            "distractor": "d",
+            "positions": {"X": [1, 1]},
+        },
+        {
+            "clean": "ab",
+            "corrupt": "b",
+            "answer": "c",
+            "distractor": "d",
+            "positions": {"7": [0, 1]},
+        },
+        {"clean": "a", "corrupt": "b", "answer": "c", "distractor": "d", "meta": [1]},
+        {"clean": "a", "corrupt": "b", "answer": "c", "distractor": "d", "note": "no such field"},
+        [1, 2],
+        "a prompt",
+    ],
+)
+def test_edited_prompts_are_checked_as_an_import_is(app, client, edits, record):
+    imported = client.post(
+        "/api/datasets/import", json={"name": "check", "text": json.dumps(record)}, headers=WRITE
+    )
+    derived = client.post(DERIVE, json={**edits, "replace": {"1": record}}, headers=WRITE)
+    assert imported.status_code == derived.status_code == 400, derived.text
+    # The same check in the same words; only the place it names differs.
+    expected = imported.json()["error"].replace("check.jsonl, line 1", "Prompt 1")
+    assert derived.json()["error"] == expected
+    assert _files(app) == ["src.jsonl"]
+
+
+@pytest.mark.parametrize(
+    "name", ["../outside", "a/b", "/abs", ".hidden", "-dash", "", "has space", "x" * 101]
+)
+def test_a_new_dataset_needs_a_plain_name(app, client, edits, tmp_path, name):
+    r = client.post(DERIVE, json={**edits, "name": name, "remove": [0]}, headers=WRITE)
+    assert r.status_code == 400 and r.json()["error"].startswith("Dataset names can use letters")
+    assert _files(app) == ["src.jsonl"]
+    assert not list(tmp_path.rglob("outside*")) and not list(tmp_path.rglob("abs*"))
+
+
+@pytest.mark.parametrize(
+    "change, message",
+    [
+        ({"remove": [0, 1, 2, 3]}, "Removing every prompt would leave an empty dataset."),
+        ({"remove": [3, 2, 1, 0]}, "Removing every prompt would leave an empty dataset."),
+        ({"remove": [4]}, "There is no prompt 4 to remove: the prompts are 0 to 3."),
+        ({"remove": [-1]}, "There is no prompt -1 to remove"),
+        ({"remove": [1, 1]}, "Prompt 1 is listed twice to remove."),
+        ({"replace": {"4": _pair(0)}}, "There is no prompt 4 to edit"),
+        ({"remove": [2], "replace": {"2": _pair(0)}}, "Prompt 2 is both edited and removed."),
+    ],
+)
+def test_edits_must_name_prompts_the_dataset_has(app, client, edits, change, message):
+    r = client.post(DERIVE, json={**edits, **change}, headers=WRITE)
+    assert r.status_code == 400 and r.json()["error"].startswith(message), r.text
+    assert _files(app) == ["src.jsonl"]
+
+
+def test_edits_to_a_dataset_that_changed_since_are_refused(app, client, edits):
+    source = _datasets(app) / "src.jsonl"
+    source.write_text(source.read_text("utf-8") + json.dumps(_pair(4)) + "\n", "utf-8")
+    r = client.post(DERIVE, json={**edits, "remove": [0]}, headers=WRITE)
+    assert r.status_code == 409 and "src.jsonl changed since these edits were made" in r.text
+    gone = client.post(DERIVE, json={**edits, "dataset": "datasets/gone.jsonl"}, headers=WRITE)
+    assert gone.status_code == 400 and "gone.jsonl" in gone.json()["error"]
+    assert _files(app) == ["src.jsonl"]
+
+
+def test_a_new_dataset_stays_within_what_logogram_reads(app, client, edits, monkeypatch):
+    size = (_datasets(app) / "src.jsonl").stat().st_size
+    monkeypatch.setattr("logogram.datasets.DATASET_LIMIT", size + 64)
+    longer = {**_pair(0), "clean": CLEAN + " and" * 40}
+    r = client.post(DERIVE, json={**edits, "replace": {"0": longer}}, headers=WRITE)
+    assert r.status_code == 400 and r.json()["error"] == (
+        f"src-edited.jsonl would be larger than the {size + 64} bytes Logogram reads. "
+        "Split the prompts into smaller files."
+    )
+    monkeypatch.setattr("logogram.datasets.DATASET_LIMIT", size - 1)  # nor is a larger one read
+    r = client.post(DERIVE, json={**edits, "remove": [0]}, headers=WRITE)
+    assert r.status_code == 400 and "src.jsonl is larger than" in r.json()["error"]
+    assert _files(app) == ["src.jsonl"]
+
+
+def test_editing_prompts_needs_the_token_its_origin_and_the_project(app, client, edits):
+    body = {**edits, "remove": [0]}
+    refused = [
+        (ORIGIN, 401),
+        ({**AUTH, "origin": "http://evil.example"}, 403),
+        ({**AUTH, "origin": "http://127.0.0.1:9999"}, 403),
+        ({**AUTH, "sec-fetch-site": "cross-site"}, 403),
+        ({**WRITE, "host": "evil.example"}, 421),
+    ]
+    for headers, status in refused:
+        assert client.post(DERIVE, json=body, headers=headers).status_code == status
+    # A tab signed in by its cookie says where a change comes from, and for which project.
+    client.get(f"/?token={TOKEN}", follow_redirects=False)
+    assert client.post(DERIVE, json=body).status_code == 403
+    assert client.post(DERIVE, json=body, headers=ORIGIN).status_code == 409
+    stale = {**ORIGIN, "x-logogram-project": "an-earlier-project"}
+    assert client.post(DERIVE, json=body, headers=stale).status_code == 409
+    assert _files(app) == ["src.jsonl"]
+    tab = {**ORIGIN, "x-logogram-project": app.state.logogram.project.session_id}
+    assert client.post(DERIVE, json=body, headers=tab).json()["n"] == 3
+    # With no project open there is nothing to edit.
+    client.post("/api/projects/close", headers=tab)
+    closed = {**ORIGIN, "x-logogram-project": "none"}
+    r = client.post(DERIVE, json={**body, "name": "again"}, headers=closed)
+    assert r.status_code == 409 and r.json()["error"] == "Open a project first."

@@ -48,6 +48,7 @@ import {
 } from "../lib/formHistory";
 import type { Route } from "../lib/route";
 import { fitSelection, isResidKind, sitesOnComponent, type Selection } from "../lib/sites";
+import { hasEdits, type PromptEdits } from "../lib/promptEdits";
 
 export type Screen = "loading" | "system" | "projects" | "workbench" | "error";
 export type View =
@@ -197,6 +198,9 @@ interface Store {
   datasetPath: string | null;
   dataset: DatasetDetail | null;
   promptIndex: number;
+  /** Unsaved edits to datasets' prompt pairs, by dataset path. A dataset file never changes:
+   * edits are saved as a new dataset (lib/promptEdits). */
+  datasetEdits: Record<string, PromptEdits>;
   activeRunId: string | null;
   runDetails: Record<string, RunDetail>;
   live: Record<string, LiveRun>;
@@ -253,6 +257,8 @@ interface Store {
   selectDataset: (path: string | null, source?: "run" | "form") => Promise<void>;
   reloadDataset: () => Promise<void>;
   setPromptIndex: (i: number) => void;
+  /** Keep a dataset's unsaved edits, or drop them (null, or edits that change nothing). */
+  setDatasetEdits: (path: string, edits: PromptEdits | null) => void;
   applyJob: (job: Job) => void;
   checkUpdates: () => Promise<void>;
   setUpdateConsent: (allowed: boolean) => Promise<void>;
@@ -361,6 +367,7 @@ export const useStore = create<Store>((set, get) => ({
   datasetPath: null,
   dataset: null,
   promptIndex: 0,
+  datasetEdits: {},
   activeRunId: null,
   runDetails: {},
   live: {},
@@ -514,6 +521,7 @@ export const useStore = create<Store>((set, get) => ({
       datasetPath: null,
       dataset: null,
       promptIndex: 0,
+      datasetEdits: {},
       analysisSource: "form",
       view: "prompts",
       inspectorFocus: null,
@@ -574,7 +582,7 @@ export const useStore = create<Store>((set, get) => ({
     datasetSeq += 1;
     inflight.clear();
     setProjectSession(null);
-    set({ project: null, screen: "projects", datasetPath: null, dataset: null, promptIndex: 0,
+    set({ project: null, screen: "projects", datasetPath: null, dataset: null, promptIndex: 0, datasetEdits: {},
       tokenPosition: null, stagedSites: [], headPins: [], noteEditor: null, researchVersion: 0,
       job: get().job?.project_session ? null : get().job, queue: [],
       runs: [], runDetails: {}, activeRunId: null, pendingRunId: null, live: {}, selection: null,
@@ -630,6 +638,11 @@ export const useStore = create<Store>((set, get) => ({
     if (n === 0) return;
     const next = Math.max(0, Math.min(n - 1, i));
     set({ promptIndex: next, ...(next !== get().promptIndex ? { tokenPosition: null } : {}) });
+  },
+
+  setDatasetEdits: (path, edits) => {
+    const { [path]: _dropped, ...rest } = get().datasetEdits;
+    set({ datasetEdits: edits && hasEdits(edits) ? { ...rest, [path]: edits } : rest });
   },
 
   openRun: async (id, view) => {

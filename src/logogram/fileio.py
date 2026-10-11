@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import os
 import secrets
 import stat
@@ -35,11 +36,14 @@ def read_limited(path: Path, limit: int, fix: str) -> bytes:
             raise ValueError(f"{path.name} isn't a regular file.")
         data = fh.read(limit + 1) if info.st_size <= limit else b""
     if info.st_size > limit or len(data) > limit:
-        raise FileTooLarge(f"{path.name} is larger than the {_size(limit)} Logogram reads. {fix}")
+        raise FileTooLarge(
+            f"{path.name} is larger than the {size_text(limit)} Logogram reads. {fix}"
+        )
     return data
 
 
-def _size(n: int) -> str:
+def size_text(n: int) -> str:
+    """A size limit in words, such as "256 MB"."""
     if n >= 1024**2:
         return f"{n // 1024**2} MB"
     return f"{n // 1024} KB" if n >= 1024 else f"{n} bytes"
@@ -74,24 +78,47 @@ def _create_exclusive(path: Path) -> tuple[int, Path]:
     raise FileExistsError(f"Can't create a temporary file next to {path.name}.")
 
 
+def place_new(tmp: Path, path: Path) -> None:
+    """Move the finished file ``tmp`` to ``path``, where nothing may be yet, not even a link.
+
+    A hard link fails rather than replace what is at ``path``, so a file created there in the
+    meantime is never overwritten. A file system without hard links is checked first instead.
+    """
+    try:
+        os.link(tmp, path)
+    except FileExistsError:
+        raise
+    except OSError:
+        if os.path.lexists(path):
+            raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(path)) from None
+        replace_file(tmp, path)
+        return
+    with contextlib.suppress(OSError):  # a stray temporary file is hidden and harmless
+        tmp.unlink()
+
+
 @contextlib.contextmanager
-def atomic_output(path: Path) -> Iterator[BinaryIO]:
+def atomic_output(path: Path, *, replace: bool = True) -> Iterator[BinaryIO]:
     """Write ``path`` through a fresh temporary file, then move it into place.
 
     Readers never see a half-written file, and the final move replaces ``path`` itself (a symlink
-    at ``path`` is replaced, not followed).
+    at ``path`` is replaced, not followed). With ``replace`` false, anything already at ``path``
+    stays as it is and the write fails with ``FileExistsError``.
     """
     fd, tmp = _create_exclusive(path)
     try:
         with os.fdopen(fd, "wb") as fh:
             yield fh
-        replace_file(tmp, path)
+        if replace:
+            replace_file(tmp, path)
+        else:
+            place_new(tmp, path)
     except BaseException:
         with contextlib.suppress(OSError):
             tmp.unlink()
         raise
 
 
-def write_text_atomic(path: Path, text: str) -> None:
-    with atomic_output(path) as fh:
+def write_text_atomic(path: Path, text: str, *, replace: bool = True) -> None:
+    with atomic_output(path, replace=replace) as fh:
         fh.write(text.encode("utf-8"))

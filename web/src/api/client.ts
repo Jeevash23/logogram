@@ -6,6 +6,7 @@ import type {
   Comparison,
   DatasetCreated,
   DatasetDetail,
+  DeriveRequest,
   EstimateResponse,
   FolderListing,
   Job,
@@ -179,6 +180,8 @@ export const api = {
     post<DatasetCreated>("/api/datasets/import", { name, text, overwrite }),
   savePair: (body: PromptRecord & { name: string; overwrite?: boolean }) =>
     post<DatasetCreated>("/api/datasets/pair", body),
+  /** Save a dataset's prompt pairs, some edited and some left out, as a new dataset. */
+  deriveDataset: (body: DeriveRequest) => post<DatasetCreated>("/api/datasets/derive", body),
   /** The metric decides whether answers of several tokens can be read. */
   tokenize: (body: { dataset?: string; index?: number; record?: PromptRecord; metric: MetricSpec } & AnalysisOptions) =>
     post<TokenStripData>("/api/tokenize", body),
