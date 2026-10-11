@@ -21,23 +21,33 @@ interface Violation {
   targets: string[];
 }
 
+interface AxeNode {
+  target: string[];
+  any: { data?: { fgColor?: string; bgColor?: string; contrastRatio?: number } | null }[];
+}
+
 async function violations(page: Page): Promise<Violation[]> {
   await page.evaluate(AXE);
   return page.evaluate(async () => {
     // @ts-expect-error axe is defined by the script above
     const result = await window.axe.run(document, { resultTypes: ["violations"] });
-    return result.violations.map((v: { id: string; impact: string | null; help: string; nodes: { target: string[] }[] }) => ({
+    return result.violations.map((v: { id: string; impact: string | null; help: string; nodes: AxeNode[] }) => ({
       id: v.id,
       impact: v.impact,
       help: v.help,
-      targets: v.nodes.slice(0, 3).map((n) => n.target.join(" ")),
+      // A contrast failure names its colors, so a report says what to fix.
+      targets: v.nodes.slice(0, 3).map((n) => {
+        const colors = n.any.map((check) => check.data).find((data) => data?.fgColor);
+        return colors ? `${n.target.join(" ")}: ${colors.fgColor} on ${colors.bgColor}, ${colors.contrastRatio}:1` : n.target.join(" ");
+      }),
     }));
   });
 }
 
+/** No violations once the view settles: a moment between two states (a reply arriving, a panel
+ * filling in) can look different, so a view gets three seconds to come clean. */
 async function expectAccessible(page: Page, view: string) {
-  const found = await violations(page);
-  expect(found, `${view}: ${JSON.stringify(found, null, 2)}`).toEqual([]);
+  await expect.poll(() => violations(page), { message: `${view} has accessibility violations`, timeout: 3_000 }).toEqual([]);
 }
 
 async function open(page: Page, name: string) {
