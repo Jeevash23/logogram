@@ -195,6 +195,8 @@ class FeatureRun(_Model):
     fit: dict[str, Any]
     site_estimate: float | None = None
     features_estimate: float | None = None
+    # Through a transcoder's skip connection (input · W_skip), which no feature carries.
+    skip_estimate: float | None = None
     evaluated: int | None = None
     # Every feature, chosen on some prompts and reported on the others: their dataset indices.
     chosen_on: list[int] | None = None
@@ -284,6 +286,9 @@ class ModelProvenance(_Model):
     process_weights: bool
     backend: str
     backend_version: str
+    # Whether the model is made for chat (prompts ran as plain text, without its chat template),
+    # whether its tokenizer has a chat template, and why it counts as made for chat.
+    chat: dict[str, Any] | None = None
 
 
 class DeviceInfo(_Model):

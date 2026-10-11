@@ -4,6 +4,8 @@ feature, and check fit.
 An SAE writes an activation x as a sparse sum of decoder directions: x = f · W_dec + b_dec + e,
 where f are the feature activations and e is what the SAE misses (its error). Editing a feature
 changes x by (new - old) · W_dec[i] and keeps the error as it was, so only that feature changes.
+A transcoder writes its MLP's output y the same way from the MLP's input x; one with a skip
+connection also adds x · W_skip, which no feature edit changes, since the input stays as it was.
 Whether an SAE fits a loaded model at all depends on how it was trained (on which model, and with
 or without TransformerLens's weight processing), so Logogram measures the fit on the project's
 prompts instead of assuming it.
@@ -51,6 +53,11 @@ class SAE:
     def transcoder(self) -> bool:
         return self.params.transcoder
 
+    @property
+    def skip(self) -> bool:
+        """Whether it adds a skip connection (input · W_skip) to what it decodes."""
+        return self.params.W_skip is not None
+
     @staticmethod
     def flat(x: torch.Tensor) -> torch.Tensor:
         """Activations as the SAE reads them: heads' outputs ``[..., H, d_head]`` side by side."""
@@ -69,7 +76,7 @@ class SAE:
 
     def to(self, device: str) -> SAE:
         p = self.params
-        for name in ("W_enc", "b_enc", "W_dec", "b_dec", "threshold"):
+        for name in ("W_enc", "b_enc", "W_dec", "b_dec", "threshold", "W_skip"):
             value = getattr(p, name)
             if value is not None:
                 setattr(p, name, value.to(device))
@@ -93,6 +100,7 @@ class SAE:
             "note": p.note,
             "site_in": self.site_in,
             "transcoder": self.transcoder,
+            "skip": self.skip,
             "fit": self.fit or None,
         }
 
@@ -128,13 +136,28 @@ class SAE:
             f = torch.zeros_like(pre).scatter(-1, top.indices, torch.relu(top.values))
         return f, stats
 
-    def decode(self, f: torch.Tensor, stats: Any) -> torch.Tensor:
+    def decode(self, f: torch.Tensor, stats: Any, x: torch.Tensor | None = None) -> torch.Tensor:
+        """What the SAE writes for features ``f``: their decoder directions plus the decoder bias
+        (restored to each input's spread and mean when inputs are standardized), plus, for a
+        transcoder with a skip connection, its input ``x`` (as read, ``[..., d_in]``) · W_skip."""
         p = self.params
         out = f @ p.W_dec + p.b_dec
         if stats is not None:
             mu, std = stats
             out = out * std + mu
+        if p.W_skip is not None:
+            if x is None:
+                raise ValueError("A transcoder with a skip connection decodes with its input.")
+            out = out + x.float() @ p.W_skip
         return out
+
+    def skip_write(self, x: torch.Tensor) -> torch.Tensor:
+        """What the skip connection adds for inputs ``x`` (``[..., d_in]``): x · W_skip, or zeros
+        without one."""
+        p = self.params
+        if p.W_skip is None:
+            return torch.zeros(*x.shape[:-1], self.params.d_out, device=x.device)
+        return x.float() @ p.W_skip
 
     def feature_direction(self, feature: int, stats: Any = None) -> torch.Tensor:
         """What one unit of the feature adds to the activation: its decoder row, scaled back by
@@ -161,7 +184,7 @@ def fit_on(
         x = activations[start : start + FIT_CHUNK].to(sae.device).float()
         y = x if targets is None else targets[start : start + FIT_CHUNK].to(sae.device).float()
         f, stats = sae.encode(x)
-        residual += float(float64((y - sae.decode(f, stats)) ** 2).sum())
+        residual += float(float64((y - sae.decode(f, stats, x)) ** 2).sum())
         active += int((f > 0).sum())
     # The variance of what the SAE should give, around its mean, in two passes over the chunks.
     mean = sum(float64(wanted[s : s + FIT_CHUNK]).sum(0) for s in range(0, n, FIT_CHUNK)) / n

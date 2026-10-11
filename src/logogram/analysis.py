@@ -362,8 +362,9 @@ def sae_fit_report(
             # appended to read a continuation. A transcoder's prediction replaces its MLP's output.
             out = x.float().clone()
             source = out if read is None else read.float()
-            f, stats = sae.encode(sae.reads(source[:, start:length]))
-            out[:, start:length] = sae.decode(f, stats).reshape(out[:, start:length].shape)
+            sae_in = sae.reads(source[:, start:length])
+            f, stats = sae.encode(sae_in)
+            out[:, start:length] = sae.decode(f, stats, sae_in).reshape(out[:, start:length].shape)
             return out
 
         def edited(toks: torch.Tensor, keep: int, splice: Any = splice) -> torch.Tensor:
@@ -418,7 +419,8 @@ def token_features_report(
     tokenized = target.clean if which == "clean" else target.corrupt
     tokens = torch.tensor([tokenized.ids], dtype=torch.long)
     key = (sae.site_in, sae.layer)
-    f, _ = sae.encode(sae.reads(backend.capture(tokens, [key])[key][0].float()))
+    # The whole batch is read, so heads' outputs [1, pos, H, d_head] are put side by side.
+    f, _ = sae.encode(sae.reads(backend.capture(tokens, [key])[key].float())[0])
     values, ids = f.topk(min(top_k, f.shape[-1]), dim=-1)
     per_token = [
         [
@@ -496,3 +498,36 @@ def feature_report(
         "active_prompts": sum(1 for r in strongest if r["max"] > 0),
         "n": len(strongest),
     }
+
+
+def feature_writes_report(
+    backend: ModelBackend,
+    sae: Any,
+    records: list[PromptRecord],
+    *,
+    feature: int,
+    index: int,
+    which: str,
+    prepend_bos: bool,
+    position: Any = None,
+    top: int = 10,
+) -> dict[str, Any]:
+    """The tokens one feature promotes and suppresses directly, read at one token of one prompt:
+    ``position`` (a spec position, such as a site's), or where the feature fires most in the
+    prompt. See :func:`logogram.features.feature_writes` for exactly what is computed."""
+    from logogram.features import feature_writes
+    from logogram.sites import resolve_position
+
+    _, target = _single(backend, records, index, prepend_bos)
+    tokenized = target.clean if which == "clean" else target.corrupt
+    at = None if position is None else resolve_position(position, target)
+    report = feature_writes(
+        backend,
+        sae,
+        feature,
+        tokenized.ids,
+        position=at,
+        first=_first_real_token(prepend_bos),
+        top=top,
+    )
+    return {**report, "index": index, "which": which, "tokens": tokenized.tokens}

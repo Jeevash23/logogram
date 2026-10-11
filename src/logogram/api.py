@@ -39,10 +39,12 @@ __all__ = [
     "compare_runs",
     "create_project",
     "delete_run",
+    "feature_writes",
     "generate",
     "list_runs",
     "load_model",
     "load_run",
+    "load_sae",
     "load_spec",
     "open_project",
     "run",
@@ -88,6 +90,53 @@ def load_model(
         process_weights=process_weights,
         on_progress=on_progress,
     )
+
+
+def load_sae(repo: str, path: str = "", *, model: Any, revision: str | None = None) -> Any:
+    """Download (once) and read a published SAE or transcoder at an exact revision, onto
+    ``model``'s device. It is refused if it was made for another model's sizes or reads a site the
+    model doesn't have. Pass it to :func:`run` with a spec that names it, or explore its features
+    with :func:`feature_writes`."""
+    from logogram.features import check_sae_fits
+    from logogram.sae import load_sae as load
+    from logogram.spec import SAERef
+
+    sae = load(SAERef(repo=repo, path=path, revision=revision), model.info.device)
+    check_sae_fits(sae, model.info)
+    return sae
+
+
+def feature_writes(
+    model: Any,
+    sae: Any,
+    feature: int,
+    prompt: str,
+    *,
+    prepend_bos: bool,
+    position: int | None = None,
+    top: int = 10,
+) -> dict[str, Any]:
+    """The tokens a feature promotes and suppresses directly, as the app's Features view shows
+    them: one unit of the feature's decoder direction, added to the residual stream entering the
+    final normalization at one token of ``prompt``, read through that normalization with its
+    scale held at its value there and through the unembedding, skipping every later layer. Each
+    token's logit change per unit of the feature, relative to the mean change over the
+    vocabulary. ``position`` is the token (negative counts from the end); by default, where the
+    feature fires most in the prompt. See :func:`logogram.features.feature_writes`."""
+    from logogram.features import feature_writes as writes
+
+    tokenized = model.tokenize(prompt, prepend_bos)
+    with model.lock:
+        report = writes(
+            model,
+            sae,
+            feature,
+            tokenized.ids,
+            position=position,
+            first=1 if prepend_bos else 0,
+            top=top,
+        )
+    return {**report, "tokens": tokenized.tokens}
 
 
 def load_spec(data: dict[str, Any] | str | Path) -> Spec:

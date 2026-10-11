@@ -397,6 +397,7 @@ def run_spec(
                     "process_weights": info.process_weights,
                     "backend": info.backend,
                     "backend_version": info.backend_version,
+                    "chat": info.extra.get("chat"),
                 },
                 "device": {
                     "type": info.device,

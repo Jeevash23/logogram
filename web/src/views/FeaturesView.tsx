@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { api } from "../api/client";
 import type { FeatureReport, SAEInfo, TokenFeatures } from "../api/types";
+import { FeatureWrites } from "../components/FeatureWrites";
 import { Button, Callout, Empty, Field, Input, Progress, Segmented, Select, Spinner, useRadioGroup } from "../components/ui";
 import { inkScale, textOn } from "../lib/color";
 import { bytes, count, num, pct, signed, visibleToken } from "../lib/format";
@@ -12,8 +13,11 @@ import { useStore } from "../store/app";
 import s from "./views.module.css";
 import f from "./FeaturesView.module.css";
 
-/** The activation an SAE reads, in words. */
+/** What an SAE reads (and a transcoder writes), in words. */
 function siteOf(info: SAEInfo): string {
+  if (info.transcoder) {
+    return `layer ${info.layer}'s MLP input and writes its output${info.skip ? ", plus a skip connection from the input" : ""}`;
+  }
   switch (info.site) {
     case "resid_pre":
       return `the residual stream entering layer ${info.layer}`;
@@ -23,6 +27,8 @@ function siteOf(info: SAEInfo): string {
       return `layer ${info.layer}'s attention output`;
     case "mlp_out":
       return `layer ${info.layer}'s MLP output`;
+    case "head":
+      return `the outputs (z) of every attention head in layer ${info.layer}, side by side`;
     default:
       return `the ${KIND_NAMES[info.site]} of layer ${info.layer}`;
   }
@@ -121,7 +127,7 @@ function Loader() {
         </div>
       )}
       <div className={s.row}>
-        <Field label="Hugging Face repository" help="SAEs in SAELens or EleutherAI format, read from safetensors files only.">
+        <Field label="Hugging Face repository" help="SAEs and transcoders in SAELens, EleutherAI or Gemma Scope 2 format, read from safetensors files only.">
           <Input value={repo} onChange={(e) => { setRepo(e.target.value); setFolders(null); }} placeholder="owner/name" spellCheck={false} style={{ width: 360 }} />
         </Field>
         <Button onClick={() => void find()} disabled={!/^[\w.-]+\/[\w.-]+$/.test(repo.trim()) || finding}>
@@ -368,6 +374,20 @@ function FeaturePanel({ info, feature }: { info: SAEInfo; feature: number }) {
               );
             })}
           </div>
+          <h3 className={s.panelTitle}>Tokens it promotes and suppresses directly</h3>
+          {dataset && (
+            <FeatureWrites
+              dataset={dataset}
+              index={index}
+              which="clean"
+              feature={feature}
+              position={token === null ? null : { kind: "index", index: token }}
+              options={context.options}
+              optionsKey={context.key}
+              sae={`${info.repo}/${info.path}@${info.revision}`}
+              standardized={info.normalize === "layer_norm"}
+            />
+          )}
           <h3 className={s.panelTitle}>Where it fires most</h3>
           <p className={s.small}>
             It fires on {count(data.active_prompts)} of {count(data.n)} clean prompts. These are the strongest; descriptions of features live on

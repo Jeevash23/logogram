@@ -206,6 +206,12 @@ export function ResultsView() {
                     <dt>Of it, through the features</dt>
                     <dd className="figure">{signed(summary.features.features_estimate)}</dd>
                   </div>
+                  {summary.features.skip_estimate != null && (
+                    <div>
+                      <dt>Through the skip connection</dt>
+                      <dd className="figure">{signed(summary.features.skip_estimate)}</dd>
+                    </div>
+                  )}
                 </>
               ) : (
                 <div>

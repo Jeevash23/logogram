@@ -32,6 +32,10 @@ export interface ModelInfo {
     /** Whether the tokenizer has a beginning-of-sequence token to prepend. */
     bos?: boolean;
     checks?: ModelChecks;
+    /** Whether it is made for chat (prompts run as plain text, without its chat template). */
+    chat?: ChatFormat;
+    /** A soft cap on its logits, or null. */
+    logit_soft_cap?: number | null;
   };
 }
 
@@ -248,7 +252,8 @@ export interface SAEFit {
 }
 
 export interface SAEInfo extends SAERef {
-  site: StreamKind;
+  /** The site it writes: heads' outputs (z, every head of the layer side by side) for "head". */
+  site: StreamKind | "head";
   layer: number;
   d_in: number;
   d_sae: number;
@@ -258,6 +263,46 @@ export interface SAEInfo extends SAERef {
   format: string;
   note: string;
   fit: SAEFit | null;
+  /** The site it reads: the MLP's input ("mlp_in") for a transcoder. */
+  site_in?: string;
+  transcoder?: boolean;
+  /** A transcoder that also adds its input times a skip matrix to what it writes. */
+  skip?: boolean;
+}
+
+/** What one feature writes directly into the logits: one unit of its decoder direction, read
+ * through the final normalization (its scale held at its value at one token) and the
+ * unembedding, skipping every later layer. Logit changes are relative to the vocabulary's mean. */
+export interface FeatureWrites {
+  feature: number;
+  site: StreamKind | "head";
+  layer: number;
+  index: number;
+  which: "clean" | "corrupt";
+  tokens: string[];
+  /** The token it was read at, and why that one: chosen, where the feature fires most in the
+   * prompt, or the last token (it fires nowhere in the prompt). */
+  position: number;
+  token: string;
+  chosen: "given" | "fires_most" | "last";
+  /** The feature's activation at that token. */
+  activation: number;
+  promoted: { id: number; token: string; logit: number }[];
+  suppressed: { id: number; token: string; logit: number }[];
+  /** The length of one unit of the feature in the residual stream. */
+  norm: number;
+  /** The model's soft cap on its logits (the values are before it), or null. */
+  soft_cap: number | null;
+}
+
+/** Whether a loaded model is made for chat: Logogram runs prompts as plain text, without the chat
+ * template such models are trained on. */
+export interface ChatFormat {
+  instruct: boolean;
+  /** Whether its tokenizer has a chat template. */
+  template: boolean;
+  /** Why it counts as made for chat, or null. */
+  reason: string | null;
 }
 
 export interface SAEStatus {
@@ -551,6 +596,8 @@ export interface Summary {
     fit: SAEFit;
     site_estimate?: number | null;
     features_estimate?: number | null;
+    /** Through a transcoder's skip connection, which no feature carries. */
+    skip_estimate?: number | null;
     evaluated?: number | null;
     /** Every feature, chosen on some prompts and reported on the others: their dataset indices. */
     chosen_on?: number[] | null;
@@ -654,6 +701,8 @@ export interface Manifest {
     process_weights: boolean;
     backend: string;
     backend_version: string;
+    /** Whether the model is made for chat: its prompts ran as plain text, without its template. */
+    chat?: ChatFormat | null;
   };
   device?: {
     type: string;

@@ -20,6 +20,8 @@ import type {
   SAEStatus,
   TokenFeatures,
   FeatureReport,
+  FeatureWrites,
+  PositionSpec,
   ProjectInfo,
   PromptRecord,
   ProblemReport,
@@ -96,6 +98,7 @@ export const PROJECT_SCOPED = [
   "/api/sae/fit",
   "/api/sae/tokens",
   "/api/sae/feature",
+  "/api/sae/writes",
   "/api/runs",
   "/api/drafts",
   "/api/compare",
@@ -261,6 +264,10 @@ export const api = {
     post<TokenFeatures>("/api/sae/tokens", { dataset, index, which, ...options }),
   saeFeature: (dataset: string, index: number, which: "clean" | "corrupt", feature: number, options: Partial<AnalysisOptions>) =>
     post<FeatureReport>("/api/sae/feature", { dataset, index, which, feature, ...options }),
+  /** The tokens a feature promotes and suppresses directly, read at one token of one prompt: the
+   * position given, or where the feature fires most in the prompt. */
+  saeWrites: (body: { dataset: string; index: number; which: "clean" | "corrupt"; feature: number; position: PositionSpec | null; top: number } & Partial<AnalysisOptions>) =>
+    post<FeatureWrites>("/api/sae/writes", body),
   siteDetail: (id: string, site: number) =>
     get<SiteDetail>(`/api/runs/${encodeURIComponent(id)}/sites/${site}`),
   compare: (a: string, b: string) =>

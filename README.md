@@ -293,6 +293,10 @@ lg.check_robustness(run, experiment={"kind": "ablation", "baseline": {"kind": "z
 
 records = lg.generate("greater_than", 200, seed=0, model=model)
 lg.write_dataset(project, "greater-than", records)
+
+sae = lg.load_sae("jbloom/GPT2-Small-SAEs-Reformatted", "blocks.8.hook_resid_pre", model=model)
+lg.feature_writes(model, sae, 1234, "When Mary and John went to the store, John gave a drink to",
+                  prepend_bos=True)   # the tokens the feature promotes and suppresses directly
 ```
 
 Tables come back as pandas DataFrames when pandas is installed, and as pyarrow Tables otherwise.
@@ -532,6 +536,23 @@ prompt and, for one feature, its activation along the prompt and the prompts whe
 all computed from your own prompts. Feature descriptions live on sites like Neuronpedia, which
 Logogram doesn't contact.
 
+**What a feature writes** lists the tokens it promotes and suppresses directly, in the feature's
+panel and in the inspector for a feature site of a run. One unit of the feature adds its decoder
+direction to the activation the SAE writes (times the input's spread at that token, for SAEs that
+standardize their inputs; through each head's slice of the output projection, for SAEs on
+attention heads' outputs). That direction is added to the residual stream entering the final
+normalization at one token, skipping every later layer, and read through the final normalization,
+with its scale held at its value at that token as direct logit attribution holds it, and the
+unembedding, before any soft cap on the logits. The values are each token's logit change per unit
+of the feature, relative to the mean change over the vocabulary (which also makes them the same
+with or without weight processing). The scale is one positive number per token, so the tokens rank
+the same at every token and only the sizes change. The token is the one chosen in the prompt,
+where the feature fires most, or, in the inspector, the site's position. It is refused where it
+isn't defined: when the residual stream couldn't be verified to be a sum of its components, when
+the final normalization and unembedding don't reproduce the model's output, and for SAEs on heads'
+outputs in models that normalize the attention output after combining its heads (Gemma 2 and 3,
+OLMo 2), where patching those features is still exact.
+
 Features are sites like any other (`sae_feature`, with a feature index). **Patching a feature**
 encodes the receiver's activation and changes only that feature, to its value in the source prompt
 (or to zero, for zero ablation): the activation moves along the feature's decoder direction, and the
@@ -542,14 +563,28 @@ thousands of features and reporting them on the same prompts biases their effect
 (the winner's curse), so the sweep can choose them on a seeded share of the prompts and report
 them only on the rest (`choose_on` and `seed` in the scope).
 
-Logogram reads the SAELens and EleutherAI formats, and Gemma Scope 2 (`config.json` and
-`params.safetensors`, JumpReLU), from safetensors files only; the first Gemma Scope's NumPy
-archives are refused, as are SAEs whose input scaling or architecture it can't reproduce exactly.
+Logogram reads the SAELens and EleutherAI (sparsify) formats, and Gemma Scope 2 (`config.json`
+and `params.safetensors`, JumpReLU), from safetensors files only; the first Gemma Scope's NumPy
+archives are refused, as are SAEs whose input scaling, architecture, settings or tensors it can't
+reproduce exactly (such as sparsify's group-max activation, or settings from forks of sparsify).
 **Transcoders** (from Gemma Scope 2 or EleutherAI) read an MLP's input and write its output: a
 feature's value comes from the MLP's input, and patching it changes the MLP's output along the
-feature's decoder direction. SAEs trained on attention heads' outputs (SAELens `hook_z`, Gemma
-Scope 2's attention SAEs) read every head of the layer at once. Cross-layer transcoders and
-crosscoders are refused for now.
+feature's decoder direction. **Skip transcoders** also add their input times a matrix:
+EleutherAI's add `x @ W_skip.T`, as sparsify computes it, and Gemma Scope 2's affine ones add
+`x @ affine_skip_connection` (on Gemma 3 270M this explains 91% of an MLP output's variance, and
+the transpose 34%, so this is the way round the files mean). The input doesn't change when a
+feature is patched, so neither does the skip connection, and attribution patching reports the
+part of the site's estimate that flows through it beside the features' part. sparsify files
+written before February 2025 don't record whether they are transcoders, so Logogram reads it from
+their training run's `config.json` at the top of the repository (they also subtract `b_dec` from
+the input, as sparsify did then). SAEs trained on attention heads' outputs (SAELens `hook_z`,
+Gemma Scope 2's attention SAEs) read the output `z` of every head of the layer, side by side as
+the output projection reads it; patching a feature changes every head's output, which reaches
+the residual stream through the output projection. SAEs with a skip connection (which rebuild an
+activation partly from itself), cross-layer transcoders and crosscoders are refused for now. The
+fit measured on your prompts remains the last check, since a file can be trained on something its
+configuration doesn't record: EleutherAI's SmolLM2 skip transcoders were trained on normalized
+inputs and outputs, which only their model card says, and they fit poorly as published.
 
 **Sites** are abstract: `resid_pre`, `resid_mid`, `resid_post`, `attn_out`, `mlp_out` and `head`
 (an attention head's output `z`), each at a layer, head and position. Positions are `all`,
@@ -812,8 +847,12 @@ of the Llama, Pythia, Qwen 2, Gemma 2 and OLMo 2 families without downloading an
 added was checked on GPT-2 small: patching the whole input gives an effect of exactly 1 under
 every metric, including for answers of several tokens; the logit and log-probability differences
 agree to 5 × 10⁻⁷; integrated gradients, sets of sites, the tasks and clustered bootstraps give
-the results described above; and reruns are bit-identical. Gemma Scope 2's SAEs and transcoders
-were read from their published files; running them needs Gemma 3, which wasn't checked. The
+the results described above; and reruns are bit-identical. Gemma Scope 2's files were checked on
+Gemma 3 270M with weight processing off: the points they read (each MLP's input and output, and
+the attention's output projection's input) are exactly TransformerLens's hooks, and as read here
+an affine transcoder explains 91% of its MLP output's variance, the same transcoder without the
+skip connection 89%, and an attention SAE 76% (with weights from an ungated copy whose file hash is
+Google's). Other methods weren't run on Gemma 3. The
 example's names are single tokens for GPT-2 and Qwen but not all for Pythia; for another model,
 generate IOI prompts in the app, which keeps only names that are single tokens for it. A small
 model may not do the task at all (Pythia-70m prefers the repeated name), and its runs then say so.
@@ -822,6 +861,17 @@ so an experiment can be rerun at several points of training.
 
 Some tokenizers, such as Qwen's, have no beginning-of-sequence token. Logogram then runs prompts
 without one, and the spec records it.
+
+**Models made for chat** (instruction-tuned ones, such as Gemma 3 270M IT or Qwen 2.5 0.5B
+Instruct) are trained on conversations wrapped in their chat template, but Logogram feeds every
+prompt as plain text, without it, so such a model can behave differently here than in a chat.
+When a model loads, Logogram checks whether it is made for chat: its name says so (`-it`,
+`-Instruct`, `-Chat`, ...), or it stops generating at the token that ends each turn in its chat
+template (Qwen3 0.6B). A chat template alone isn't enough, since some base models ship one
+(Qwen 2.5 0.5B). The model dialog, the summary beside **Run** and the baseline say so, the model's
+info and each run's manifest record it, and prompts and results are unchanged. Check the baseline
+before trusting a run on such a model; for tasks posed as plain text, its base model is the closer
+fit. Applying chat templates is not built yet.
 
 ## Troubleshooting
 
@@ -1004,9 +1054,10 @@ checked when they load and in the tiny-model tests.
 
 Model access goes through `logogram.backends.base.ModelBackend`. TransformerLens is the only
 backend today; remote execution and other libraries can be added behind the same interface.
-Not built yet, with room left for them: attribution graphs over transcoders, cross-layer
-transcoders and crosscoders, the first Gemma Scope's NumPy SAE files, steering with SAE features,
-remote compute, a native desktop wrapper, plugins and assistants.
+Not built yet, with room left for them: chat templates for models made for chat, attribution
+graphs over transcoders, cross-layer transcoders and crosscoders, the first Gemma Scope's NumPy
+SAE files, steering with SAE features, remote compute, a native desktop wrapper, plugins and
+assistants.
 
 ## License
 

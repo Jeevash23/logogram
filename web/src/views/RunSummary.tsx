@@ -5,8 +5,9 @@ import type { ExperimentKind, RunMemory, Spec } from "../api/types";
 import { MOD } from "../components/Header";
 import { RunButton } from "../components/RunButton";
 import { Button, Callout, Kbd } from "../components/ui";
+import { CHAT_ADVICE, chatReason } from "../lib/chat";
 import { bytes, plural } from "../lib/format";
-import { useAnalysisContext } from "../lib/hooks";
+import { modelName, useAnalysisContext } from "../lib/hooks";
 import { metricWords } from "../lib/metrics";
 import { experimentText, scopeText, workloadText } from "../lib/spec";
 import { behaviorPresent, PRESENT_GAP } from "../lib/thresholds";
@@ -45,6 +46,9 @@ export function RunSummary({
 }) {
   const titleId = useId();
   const waiting = useStore((st) => st.job?.status === "running" || st.queue.length > 0);
+  const loaded = useStore((st) => (st.model.state === "ready" ? st.model.info : undefined));
+  // The loaded model runs the spec, so what is known about it applies when the spec names it.
+  const chat = loaded && (!spec || spec.model.id === loaded.id) ? chatReason(loaded) : null;
   return (
     <section className={e.panel} aria-labelledby={titleId}>
       <h2 id={titleId} className={e.panelTitle}>
@@ -67,6 +71,20 @@ export function RunSummary({
         <dd>
           <BaselineState />
         </dd>
+        {chat && (
+          <>
+            <dt>Prompt format</dt>
+            <dd>
+              <span>
+                Plain text, without the chat template {modelName(loaded?.id)} is made for: results describe how it behaves on
+                plain text, which can differ from how it behaves in a chat.
+              </span>
+              <span className={e.factNote}>
+                {chat} {CHAT_ADVICE}
+              </span>
+            </dd>
+          </>
+        )}
       </dl>
       {differences.length > 0 && (
         <Callout title="This runs with something other than the saved spec">
