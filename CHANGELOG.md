@@ -97,6 +97,10 @@ gradients, all checked by patching.
   the experiment form's.
 - Heatmaps and the model map draw hover and selection on a layer of their own, and find cells
   through a map, so large sweeps no longer redraw everything on every mouse move.
+- Every view has one top-level heading, with the headings below it in order, and the inspector's
+  resize handle belongs to the inspector, so screen reader users can move through each page by
+  its headings and landmarks.
+- Pydantic before 2.10 no longer warns about a field named `model_id` when Logogram starts.
 
 ### Development
 
@@ -108,9 +112,9 @@ gradients, all checked by patching.
   rules too, checks the lockfile, keeps coverage at 85% or more, tests at the lowest declared
   dependency versions, audits Python and web dependencies, and pins its actions to commits;
   Dependabot and CodeQL watch them. Typer 0.13 or later is required.
-- The browser checks also run in the dark theme, and an axe scan of the main views fails on
-  serious or critical accessibility violations. The inspector's resize handle now says its width
-  to assistive technology, and commands wider than their box can be scrolled from the keyboard.
+- The browser checks also run in the dark theme, and an axe scan of every view fails on any
+  accessibility violation. The inspector's resize handle now says its width to assistive
+  technology, and commands wider than their box can be scrolled from the keyboard.
 - The privacy check also reads binary files and catches more home paths and short usernames.
 - What 0.2 added was checked on GPT-2 small's real weights (see Models in the README).
 

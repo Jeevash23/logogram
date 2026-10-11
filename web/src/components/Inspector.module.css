@@ -306,6 +306,8 @@
   margin-top: -4px;
   font-size: var(--text-lg);
   font-weight: 620;
+  font-stretch: inherit;
+  letter-spacing: inherit;
   line-height: 1.3;
 }
 

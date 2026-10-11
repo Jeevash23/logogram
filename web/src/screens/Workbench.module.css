@@ -98,6 +98,13 @@
   overflow: auto;
 }
 
+/* The inspector landmark: its resize handle, then the inspector. */
+.inspectorPane {
+  flex: none;
+  display: flex;
+  min-height: 0;
+}
+
 .inspector {
   flex: none;
   display: flex;

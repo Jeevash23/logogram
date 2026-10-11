@@ -86,11 +86,11 @@ export function Workbench() {
         <div className={s.view} ref={viewPane}><ErrorBoundary key={view} name="This view"><ActiveView view={view} /></ErrorBoundary></div>
         {!["notes", "compare", "spec"].includes(view) && <ErrorBoundary name="The token strip" resetKey={view}><TokenStrip /></ErrorBoundary>}
       </main>
-      {showInspector && <><Splitter orientation="vertical" label="Resize the inspector" value={inspectorWidth} min={280} max={480} onReset={() => setInspectorWidth(320)} onResize={(delta, phase) => {
+      {showInspector && <aside className={s.inspectorPane} aria-label="Inspector"><Splitter orientation="vertical" label="Resize the inspector" value={inspectorWidth} min={280} max={480} onReset={() => setInspectorWidth(320)} onResize={(delta, phase) => {
         if (phase === "start") { startWidth.current = inspectorWidth; return; }
         const next = Math.max(280, Math.min(480, startWidth.current - delta)); setInspectorWidth(next);
         if (phase === "end") { try { localStorage.setItem("logogram.inspectorWidth", String(next)); } catch { /* use session size */ } }
-      }} /><aside className={s.inspector} style={{ width: inspectorWidth }} aria-label="Inspector"><SafeInspector /></aside></>}
+      }} /><div className={s.inspector} style={{ width: inspectorWidth }}><SafeInspector /></div></aside>}
     </div>
     <StatusLine />
     <CancelRunDialog />
