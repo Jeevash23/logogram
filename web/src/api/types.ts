@@ -32,6 +32,10 @@ export interface ModelInfo {
     /** Whether the tokenizer has a beginning-of-sequence token to prepend. */
     bos?: boolean;
     checks?: ModelChecks;
+    /** Whether it is made for chat (prompts run as plain text, without its chat template). */
+    chat?: ChatFormat;
+    /** A soft cap on its logits, or null. */
+    logit_soft_cap?: number | null;
   };
 }
 
@@ -280,6 +284,16 @@ export interface FeatureWrites {
   norm: number;
   /** The model's soft cap on its logits (the values are before it), or null. */
   soft_cap: number | null;
+}
+
+/** Whether a loaded model is made for chat: Logogram runs prompts as plain text, without the chat
+ * template such models are trained on. */
+export interface ChatFormat {
+  instruct: boolean;
+  /** Whether its tokenizer has a chat template. */
+  template: boolean;
+  /** Why it counts as made for chat, or null. */
+  reason: string | null;
 }
 
 export interface SAEStatus {
@@ -678,6 +692,8 @@ export interface Manifest {
     process_weights: boolean;
     backend: string;
     backend_version: string;
+    /** Whether the model is made for chat: its prompts ran as plain text, without its template. */
+    chat?: ChatFormat | null;
   };
   device?: {
     type: string;

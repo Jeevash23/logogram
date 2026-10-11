@@ -286,6 +286,9 @@ class ModelProvenance(_Model):
     process_weights: bool
     backend: str
     backend_version: str
+    # Whether the model is made for chat (prompts ran as plain text, without its chat template),
+    # whether its tokenizer has a chat template, and why it counts as made for chat.
+    chat: dict[str, Any] | None = None
 
 
 class DeviceInfo(_Model):

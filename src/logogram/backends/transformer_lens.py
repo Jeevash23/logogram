@@ -8,6 +8,7 @@ from __future__ import annotations
 import gc
 import logging
 import math
+import re
 import threading
 import warnings
 from collections.abc import Callable
@@ -391,6 +392,10 @@ class TransformerLensBackend(ModelBackend):
         structure = checks.structure
         if structure == "sequential" and model_type == "gpt2":
             structure = "sequential_pre_norm"  # GPT-2's layout, normalization included, is known
+        # The model's own chat template and end tokens, as boot_local read them before the
+        # bridge's tokenizer could change them.
+        recorded: tuple[str | None, list[str]] | None = bridge.__dict__.get(_CHAT)
+        template, ends = recorded or chat_facts(bridge.tokenizer, bridge.original_model)
         info = ModelInfo(
             id=model_id,
             revision=revision,
@@ -422,6 +427,8 @@ class TransformerLensBackend(ModelBackend):
                 "model_type": str(model_type or "unknown"),
                 "n_key_value_heads": int(getattr(cfg, "n_key_value_heads", None) or cfg.n_heads),
                 "bos": own_bos_token_id(bridge) is not None,
+                # Whether it is made for chat: prompts run as plain text, without its template.
+                "chat": chat_format(model_id, template, ends),
                 # TransformerLens marks "no soft-cap" with a value of zero or below.
                 "logit_soft_cap": _soft_cap(cfg),
                 "checks": checks.to_dict(),
@@ -1051,6 +1058,53 @@ def own_bos_token_id(bridge: Any) -> int | None:
     return getattr(bridge.tokenizer, "bos_token_id", None)
 
 
+# Where boot_local records the model's own chat template and end-of-sequence tokens.
+_CHAT = "_logogram_chat"
+# Words in a model's name that mark it as made for chat: instruction-tuned (gemma-3-270m-it,
+# Qwen2.5-0.5B-Instruct), chat models, and the post-training stages that make them.
+_CHAT_NAME = re.compile(
+    r"(?:^|[-_.])(it|instruct|instruction|chat|sft|dpo|rlhf|orpo)(?=$|[-_.\d])", re.IGNORECASE
+)
+
+
+def chat_facts(tokenizer: Any, model: Any) -> tuple[str | None, list[str]]:
+    """A tokenizer's chat template (None without one), and the tokens the model ends a sequence
+    with: its tokenizer's end-of-sequence token and those of its configuration and generation
+    configuration."""
+    template = getattr(tokenizer, "chat_template", None)
+    if isinstance(template, dict):  # several named templates
+        template = "\n".join(str(t) for t in template.values())
+    elif isinstance(template, list):
+        template = "\n".join(str(t.get("template", "")) for t in template if isinstance(t, dict))
+    ids: set[int] = set()
+    for source in (getattr(model, "config", None), getattr(model, "generation_config", None)):
+        value = getattr(source, "eos_token_id", None)
+        ids.update([value] if isinstance(value, int) else value or [])
+    ends = [str(t) for t in tokenizer.convert_ids_to_tokens(sorted(i for i in ids if i >= 0))]
+    if tokenizer.eos_token:
+        ends.append(str(tokenizer.eos_token))
+    return (template or None) if isinstance(template, str) else None, sorted(set(ends))
+
+
+def chat_format(model_id: str, template: str | None, ends: list[str]) -> dict[str, Any]:
+    """Whether a model is made for chat, which matters because Logogram feeds prompts as plain
+    text, without the chat template such models are trained on. ``template`` is its tokenizer's
+    chat template; ``ends`` are the tokens it ends a sequence with.
+
+    A model is made for chat when its name says so, or when it stops at a token that ends a turn
+    in its chat template (Qwen3-0.6B, whose name doesn't say). A chat template alone isn't
+    enough: some base models ship one (Qwen2.5-0.5B), while they stop at their end of text."""
+    reason = None
+    match = _CHAT_NAME.search(model_id.rsplit("/", 1)[-1])
+    if match:
+        reason = f"its name marks it as made for chat ({match.group(1)})"
+    elif template:
+        turn = next((t for t in ends if len(t) > 1 and t in template), None)
+        if turn is not None:
+            reason = f"it stops at {turn}, which ends each turn in its chat template"
+    return {"instruct": reason is not None, "template": template is not None, "reason": reason}
+
+
 def boot_local(folder: Path, *, device: str, dtype: str) -> Any:
     from transformer_lens.model_bridge import TransformerBridge
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -1079,6 +1133,7 @@ def boot_local(folder: Path, *, device: str, dtype: str) -> Any:
                 trust_remote_code=False,
             )
             own_bos = tokenizer.bos_token_id  # read first: booting gives the tokenizer a substitute
+            chat = chat_facts(tokenizer, model)
             bridge = TransformerBridge.boot_transformers(
                 str(folder),
                 device=device,
@@ -1088,6 +1143,7 @@ def boot_local(folder: Path, *, device: str, dtype: str) -> Any:
                 trust_remote_code=False,
             )
             bridge.__dict__[_OWN_BOS] = own_bos
+            bridge.__dict__[_CHAT] = chat
             return bridge
     except BackendError:
         raise

@@ -712,6 +712,17 @@ so an experiment can be rerun at several points of training.
 Some tokenizers, such as Qwen's, have no beginning-of-sequence token. Logogram then runs prompts
 without one, and the spec records it.
 
+**Models made for chat** (instruction-tuned ones, such as Gemma 3 270M IT or Qwen 2.5 0.5B
+Instruct) are trained on conversations wrapped in their chat template, but Logogram feeds every
+prompt as plain text, without it, so such a model can behave differently here than in a chat.
+When a model loads, Logogram checks whether it is made for chat: its name says so (`-it`,
+`-Instruct`, `-Chat`, ...), or it stops generating at the token that ends each turn in its chat
+template (Qwen3 0.6B). A chat template alone isn't enough, since some base models ship one
+(Qwen 2.5 0.5B). The model dialog, the summary beside **Run** and the baseline say so, the model's
+info and each run's manifest record it, and prompts and results are unchanged. Check the baseline
+before trusting a run on such a model; for tasks posed as plain text, its base model is the closer
+fit. Applying chat templates is not built yet.
+
 ## Development
 
 ```bash
@@ -783,9 +794,10 @@ checked when they load and in the tiny-model tests.
 
 Model access goes through `logogram.backends.base.ModelBackend`. TransformerLens is the only
 backend today; remote execution and other libraries can be added behind the same interface.
-Not built yet, with room left for them: attribution graphs over transcoders, cross-layer
-transcoders and crosscoders, the first Gemma Scope's NumPy SAE files, steering with SAE features,
-remote compute, a native desktop wrapper, plugins and assistants.
+Not built yet, with room left for them: chat templates for models made for chat, attribution
+graphs over transcoders, cross-layer transcoders and crosscoders, the first Gemma Scope's NumPy
+SAE files, steering with SAE features, remote compute, a native desktop wrapper, plugins and
+assistants.
 
 ## License
 
