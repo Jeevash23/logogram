@@ -683,6 +683,9 @@ export interface RunListing {
   error: string | null;
   /** Per layer, the largest normalized effect (signed): writes the run's logogram. */
   profile?: number[] | null;
+  /** Running in another process (logogram run, a notebook, another server): its progress isn't
+   * streamed here, so the app reads the history again to see it end. */
+  elsewhere?: boolean;
 }
 
 export interface RunDetail {
@@ -693,6 +696,8 @@ export interface RunDetail {
   predictions?: PredictionReport | null;
   listing: RunListing | null;
   folder: string;
+  /** A failed run's traceback, without the paths and names of the machine it ran on. */
+  traceback?: string | null;
 }
 
 export interface PromptEvidence {
@@ -899,6 +904,31 @@ export interface Comparison {
   paired?: boolean;
   /** Sites whose paired difference excludes zero. */
   n_differs?: number;
+  /** Versions or devices the two manifests differ in: these alone can change the last digits. */
+  environment_differences?: EnvironmentDifference[];
+}
+
+export interface EnvironmentDifference {
+  /** A version ("torch"), or a device's "device.type", "device.name" or "device.cuda". */
+  key: string;
+  label: string;
+  a: string;
+  b: string;
+}
+
+/** What the server's results depend on beyond a spec (GET /api/environment). */
+export interface Environment {
+  logogram: string;
+  python: string;
+  implementation: string;
+  os: string;
+  architecture: string;
+  /** Named as in run manifests: torch, transformer_lens, transformers, numpy, … */
+  versions: Record<string, string | null>;
+  torch_cuda: string | null;
+  devices: string[];
+  /** What a spec's "auto" device runs on here. */
+  default_device: string;
 }
 
 /** What a run would need beyond the loaded model's weights (POST /api/models/run-memory). */

@@ -7,6 +7,7 @@ import type {
   DatasetCreated,
   DatasetDetail,
   DeriveRequest,
+  Environment,
   EstimateResponse,
   FolderListing,
   Job,
@@ -160,6 +161,8 @@ export const api = {
   settings: (values: { system_check_seen?: boolean; theme?: ThemeSetting; update_check?: boolean; single_key_shortcuts?: boolean }) =>
     post<Record<string, unknown>>("/api/settings", values),
   system: () => get<SystemReport>("/api/system"),
+  /** The versions and devices a rerun here would use, to compare with a run's manifest. */
+  environment: () => get<Environment>("/api/environment"),
 
   folders: (path?: string) =>
     get<FolderListing>(`/api/fs${path ? `?path=${encodeURIComponent(path)}` : ""}`),
