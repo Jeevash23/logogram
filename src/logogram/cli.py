@@ -779,17 +779,38 @@ def export(
         Path | None,
         typer.Option("--output", "-o", help="Where to write the CSV (default: stdout)."),
     ] = None,
+    sites: Annotated[
+        bool, typer.Option("--sites", help="One row per site instead of per site and prompt.")
+    ] = False,
+    prompt_text: Annotated[
+        bool, typer.Option("--prompt-text", help="Add each prompt's text to its rows.")
+    ] = False,
     project_dir: Annotated[Path | None, ProjectOption] = None,
 ) -> None:
-    """Write a finished run's per-prompt values as CSV: one row per site and prompt."""
-    from logogram.exports import results_csv
+    """Write a finished run's values as CSV: one row per site and prompt, or per site."""
+    from logogram.exports import results_csv, sites_csv
+    from logogram.report import sites_table
+    from logogram.runs import load_summary, run_records
+    from logogram.spec import Spec
 
     project = _open_project(project_dir, Path(run) if Path(run).exists() else None)
     run_id = _run_id(project, run)
-    path = project.run_dir(run_id) / "results.parquet"
+    folder = project.run_dir(run_id)
+    path = folder / "results.parquet"
     if not path.is_file():
         raise _fail(f"{run_id} has no results to export.")
-    chunks = results_csv(project.readable(path))
+    if sites:
+        chunks: Any = iter([sites_csv(sites_table(load_summary(project, run_id)))])
+    else:
+        records = None
+        if prompt_text:
+            records = run_records(project, Spec.from_path(project.readable(folder / "spec.json")))
+            if records is None:
+                raise _fail(
+                    f"{run_id}'s prompts are gone or have changed since it ran, so its rows can't "
+                    "carry their text. Export without --prompt-text."
+                )
+        chunks = results_csv(project.readable(path), records)
     if output is None:
         for chunk in chunks:
             sys.stdout.write(chunk)
@@ -798,6 +819,56 @@ def export(
         for chunk in chunks:
             fh.write(chunk)
     typer.echo(f"Wrote {output}", err=True)
+
+
+@app.command()
+def report(
+    run: Annotated[str, typer.Argument(help="A finished run.")],
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", "-o", help="Where to write the page (default: RUN.html here)."),
+    ] = None,
+    hardware: Annotated[
+        bool,
+        typer.Option("--hardware", help="Name the CPU or GPU it ran on (left out by default)."),
+    ] = False,
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Write a finished run as one HTML page anyone can open: its map, strongest sites, every
+    site's numbers, the methods and where it came from."""
+    from logogram.report import run_report
+    from logogram.runs import load_summary
+    from logogram.spec import Spec
+
+    project = _open_project(project_dir, Path(run) if Path(run).exists() else None)
+    run_id = _run_id(project, run)
+    folder = project.run_dir(run_id)
+    if not (folder / "summary.json").is_file():
+        raise _fail(f"{run_id} has no results to report.")
+    spec = Spec.from_path(project.readable(folder / "spec.json"))
+    manifest = project.read_json(folder / "manifest.json", optional=True) or {}
+    page = run_report(spec, load_summary(project, run_id), manifest, run_id, hardware=hardware)
+    target = output or Path(f"{run_id}.html")
+    target.write_text(page, encoding="utf-8")
+    typer.echo(f"Wrote {target}", err=True)
+
+
+@app.command()
+def methods(
+    run: Annotated[str, typer.Argument(help="A run.")],
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Print a run's methods paragraph: every choice that can change a number, in sentences."""
+    from logogram.report import methods_text
+    from logogram.spec import Spec
+
+    project = _open_project(project_dir, Path(run) if Path(run).exists() else None)
+    run_id = _run_id(project, run)
+    folder = project.run_dir(run_id)
+    spec = Spec.from_path(project.readable(folder / "spec.json"))
+    summary = project.read_json(folder / "summary.json", optional=True)
+    manifest = project.read_json(folder / "manifest.json", optional=True) or {}
+    typer.echo(methods_text(spec, summary, manifest, run_id))
 
 
 @app.command()

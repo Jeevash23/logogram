@@ -24,6 +24,19 @@ def load_summary(project: Project, run_id: str) -> dict[str, Any]:
     return project.read_json(path) or {}
 
 
+def run_records(project: Project, spec: Spec) -> list[Any] | None:
+    """The prompts a finished run measured, in order (its dataset snapshot, limited as it was), or
+    None when the file is gone or no longer has the hash the run recorded."""
+    try:
+        path = project.resolve_dataset(spec.dataset.path)
+        if spec.dataset.sha256 and file_sha256(path) != spec.dataset.sha256:
+            return None
+        records = load_dataset(path)
+    except (DatasetError, ValueError, OSError):
+        return None
+    return records[: spec.dataset.limit] if spec.dataset.limit else records
+
+
 def site_detail(
     project: Project, run_id: str, site_index: int, extremes: int = 3
 ) -> dict[str, Any]:

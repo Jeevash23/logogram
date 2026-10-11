@@ -16,7 +16,7 @@ import { useStore } from "../store/app";
 import { Distribution } from "../components/Distribution";
 import { api } from "../api/client";
 import { copyText } from "../components/CopyCommand";
-import { downloadBlob, exportFigure, methodsText } from "../lib/export";
+import { downloadBlob, exportFigure } from "../lib/export";
 import { CircuitDialog } from "../components/CircuitDialog";
 import { rankedSites, universeText } from "../lib/circuits";
 import { CircuitResults } from "./CircuitResults";
@@ -539,6 +539,8 @@ function MethodsLine({ spec, n, clusters }: { spec: Spec; n: number | undefined;
 
 /** Exports in one place: the per-prompt table, the figure, and the methods text. */
 function ExportMenu({ runId, detail }: { runId: string; detail: NonNullable<ReturnType<typeof useActiveRun>["detail"]> }) {
+  const kind = detail.summary?.layout.kind;
+  const hasMap = !!kind && kind !== "sites" && kind !== "site_sets";
   const metric = useStore((st) => st.mapMetric);
   const scaleMode = useStore((st) => st.scaleMode);
   const guard = useStore((st) => st.guard);
@@ -549,18 +551,39 @@ function ExportMenu({ runId, detail }: { runId: string; detail: NonNullable<Retu
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
         <DropdownMenu.Content className={menuClasses.menu} sideOffset={6} align="end">
+          <DropdownMenu.Item className={menuClasses.item} onSelect={() => void guard(async () => downloadBlob(await api.runReport(runId), `${runId}.html`))}>
+            <Icon name="download" size={14} /> Download the report (HTML)
+          </DropdownMenu.Item>
+          <DropdownMenu.Separator className={menuClasses.separator} />
+          <DropdownMenu.Item className={menuClasses.item} onSelect={() => void guard(async () => downloadBlob(await api.exportSites(runId), `${runId}-sites.csv`))}>
+            <Icon name="download" size={14} /> Export per-site CSV
+          </DropdownMenu.Item>
           <DropdownMenu.Item className={menuClasses.item} onSelect={() => void guard(async () => downloadBlob(await api.exportRun(runId), `${runId}.csv`))}>
             <Icon name="download" size={14} /> Export per-prompt CSV
           </DropdownMenu.Item>
-          <DropdownMenu.Item className={menuClasses.item} onSelect={() => void guard(() => exportFigure(detail, metric, scaleMode === "unit"))}>
-            <Icon name="download" size={14} /> Export figure PNG
+          <DropdownMenu.Item className={menuClasses.item} onSelect={() => void guard(async () => downloadBlob(await api.exportRun(runId, true), `${runId}-with-prompts.csv`))}>
+            <Icon name="download" size={14} /> Export per-prompt CSV with prompt text
           </DropdownMenu.Item>
+          {hasMap && (
+            <>
+              <DropdownMenu.Item className={menuClasses.item} onSelect={() => void guard(() => exportFigure(detail, metric, scaleMode === "unit"))}>
+                <Icon name="download" size={14} /> Export figure PNG
+              </DropdownMenu.Item>
+              <DropdownMenu.Item
+                className={menuClasses.item}
+                onSelect={() => void guard(async () => downloadBlob(await api.runFigure(runId, metric, scaleMode === "unit"), `${runId}.svg`))}
+              >
+                <Icon name="download" size={14} /> Export figure SVG
+              </DropdownMenu.Item>
+            </>
+          )}
           <DropdownMenu.Separator className={menuClasses.separator} />
           <DropdownMenu.Item
             className={menuClasses.item}
             onSelect={() =>
               void guard(async () => {
-                if (!(await copyText(methodsText(detail)))) throw new Error("Couldn't access the clipboard. Use Download methods instead.");
+                const { text } = await api.methods(runId);
+                if (!(await copyText(text))) throw new Error("Couldn't access the clipboard. Use Download methods instead.");
                 useStore.getState().notify("Methods copied.");
               })
             }
@@ -569,7 +592,12 @@ function ExportMenu({ runId, detail }: { runId: string; detail: NonNullable<Retu
           </DropdownMenu.Item>
           <DropdownMenu.Item
             className={menuClasses.item}
-            onSelect={() => downloadBlob(new Blob([methodsText(detail)], { type: "text/plain;charset=utf-8" }), `${runId}-methods.txt`)}
+            onSelect={() =>
+              void guard(async () => {
+                const { text } = await api.methods(runId);
+                downloadBlob(new Blob([text], { type: "text/plain;charset=utf-8" }), `${runId}-methods.txt`);
+              })
+            }
           >
             <Icon name="download" size={14} /> Download methods
           </DropdownMenu.Item>

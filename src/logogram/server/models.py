@@ -361,6 +361,10 @@ class HeadKinds(_Out):
     top: dict[Literal["previous_token", "duplicate_token", "induction"], list[TopHead]]
 
 
+class MethodsText(_Out):
+    text: str
+
+
 class LookToken(_Out):
     id: int
     token: str

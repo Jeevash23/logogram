@@ -1139,22 +1139,102 @@ def create_app(
     def get_run(run_id: str) -> dict[str, Any]:
         return _read_run(state.require_project(), run_id)
 
-    @app.get("/api/runs/{run_id}/export.csv")
-    def export_run(run_id: str) -> StreamingResponse:
-        from logogram.exports import results_csv
-
-        project = state.require_project()
+    def _finished(project: Project, run_id: str) -> None:
         listing = project.run_listing(run_id)
         if listing is None or listing.status != "finished":
             raise Conflict("Only finished runs can be exported. Select a finished run first.")
-        path = project.readable(project.run_dir(run_id) / "results.parquet")
+
+    @app.get("/api/runs/{run_id}/export.csv")
+    def export_run(run_id: str, text: bool = False) -> StreamingResponse:
+        """Every site and prompt, one row each; with ``text``, each row carries its prompt."""
+        from logogram.exports import results_csv
+        from logogram.runs import run_records
+
+        project = state.require_project()
+        _finished(project, run_id)
+        folder = project.run_dir(run_id)
+        path = project.readable(folder / "results.parquet")
+        records = None
+        if text:
+            records = run_records(project, Spec.from_path(project.readable(folder / "spec.json")))
+            if records is None:
+                raise Conflict(
+                    "This run's prompts are gone or have changed since it ran, so its rows can't "
+                    "carry their text. Export without prompt text."
+                )
         return StreamingResponse(
-            results_csv(path),
+            results_csv(path, records),
             media_type="text/csv",
             headers={
                 "content-disposition": f'attachment; filename="{run_id}.csv"',
             },
         )
+
+    @app.get("/api/runs/{run_id}/sites.csv")
+    def export_sites(run_id: str) -> Response:
+        """One row per site: its mean, intervals, q-value and counts."""
+        from logogram.exports import sites_csv
+        from logogram.report import sites_table
+        from logogram.runs import load_summary
+
+        project = state.require_project()
+        _finished(project, run_id)
+        return Response(
+            sites_csv(sites_table(load_summary(project, run_id))),
+            media_type="text/csv",
+            headers={"content-disposition": f'attachment; filename="{run_id}-sites.csv"'},
+        )
+
+    @app.get("/api/runs/{run_id}/report.html")
+    def report_run(run_id: str, hardware: bool = False) -> Response:
+        """The run as one self-contained HTML page, to download and pass on."""
+        from logogram.report import run_report
+        from logogram.runs import load_summary
+
+        project = state.require_project()
+        _finished(project, run_id)
+        folder = project.run_dir(run_id)
+        spec = Spec.from_path(project.readable(folder / "spec.json"))
+        manifest = project.read_json(folder / "manifest.json", optional=True) or {}
+        page = run_report(spec, load_summary(project, run_id), manifest, run_id, hardware=hardware)
+        return Response(
+            page,
+            media_type="text/html; charset=utf-8",
+            headers={"content-disposition": f'attachment; filename="{run_id}.html"'},
+        )
+
+    @app.get("/api/runs/{run_id}/figure.svg")
+    def figure_run(
+        run_id: str, value: Literal["effect", "delta"] = "effect", unit: bool = False
+    ) -> Response:
+        """The run's map as a vector figure: the normalized effect or the change in the metric,
+        on a fitted scale or fixed at ±1."""
+        from logogram.report import figure_svg
+        from logogram.runs import load_summary
+
+        project = state.require_project()
+        _finished(project, run_id)
+        summary = load_summary(project, run_id)
+        if (summary.get("layout") or {}).get("kind") in ("sites", "site_sets"):
+            raise Conflict("This run has no map to draw: its results are a list. Export a CSV.")
+        spec = Spec.from_path(project.readable(project.run_dir(run_id) / "spec.json"))
+        return Response(
+            figure_svg(spec, summary, value, unit),
+            media_type="image/svg+xml",
+            headers={"content-disposition": f'attachment; filename="{run_id}.svg"'},
+        )
+
+    @app.get("/api/runs/{run_id}/methods", response_model=M.MethodsText)
+    def run_methods(run_id: str) -> dict[str, Any]:
+        """The methods paragraph, as the app copies it and the report prints it."""
+        from logogram.report import methods_text
+
+        project = state.require_project()
+        folder = project.run_dir(run_id)
+        spec = Spec.from_path(project.readable(folder / "spec.json"))
+        summary = project.read_json(folder / "summary.json", optional=True)
+        manifest = project.read_json(folder / "manifest.json", optional=True) or {}
+        return {"text": methods_text(spec, summary, manifest, run_id)}
 
     @app.post("/api/runs", response_model=M.StartedRun)
     def start_run(body: RunRequest) -> dict[str, Any]:

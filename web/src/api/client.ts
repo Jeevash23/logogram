@@ -232,7 +232,13 @@ export const api = {
 
   runs: () => get<RunListing[]>("/api/runs"),
   run: (id: string) => get<RunDetail>(`/api/runs/${encodeURIComponent(id)}`),
-  exportRun: (id: string) => request<Blob>("GET", `/api/runs/${encodeURIComponent(id)}/export.csv`, undefined, "blob"),
+  exportRun: (id: string, text = false) =>
+    request<Blob>("GET", `/api/runs/${encodeURIComponent(id)}/export.csv${text ? "?text=true" : ""}`, undefined, "blob"),
+  exportSites: (id: string) => request<Blob>("GET", `/api/runs/${encodeURIComponent(id)}/sites.csv`, undefined, "blob"),
+  runReport: (id: string) => request<Blob>("GET", `/api/runs/${encodeURIComponent(id)}/report.html`, undefined, "blob"),
+  runFigure: (id: string, value: "effect" | "delta", unit: boolean) =>
+    request<Blob>("GET", `/api/runs/${encodeURIComponent(id)}/figure.svg?value=${value}&unit=${unit}`, undefined, "blob"),
+  methods: (id: string) => get<{ text: string }>(`/api/runs/${encodeURIComponent(id)}/methods`),
   startRun: (spec: Spec, draftId: string | null = null) =>
     post<{ run_id: string; job: Job }>("/api/runs", { spec, draft_id: draftId }),
   /** Run the spec when the job in progress ends, or now if nothing is running. */

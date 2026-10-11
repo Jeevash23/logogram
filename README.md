@@ -116,9 +116,14 @@ form, including BOS, prompt limit and batch size. Inspecting a saved run require
 revision, dtype, device and weight processing; **Load a model → Use saved experiment model
 settings** fills those choices in.
 
-Finished results offer a per-prompt CSV, a PNG heatmap with a symmetric legend, and a copyable or
-downloadable methods description. The CSV retains every site/prompt row; text fields that could
-be interpreted as spreadsheet formulas are prefixed with an apostrophe.
+Finished results offer a **report**: one HTML file anyone can open without Logogram, with the
+run's map, its strongest sites with their intervals, every site's numbers, the baseline, the
+methods paragraph, the spec and where the run came from. It runs no script and fetches nothing,
+and it leaves out the CPU or GPU's name unless asked (`logogram report RUN --hardware`). They also
+offer per-site and per-prompt CSV (with each prompt's text if you like), the map as PNG or SVG,
+and the methods paragraph, which says every choice that can change a number in sentences. The CSV
+retains every site/prompt row; text fields that could be interpreted as spreadsheet formulas are
+prefixed with an apostrophe.
 
 ## Explore, experiment, evidence
 
@@ -224,7 +229,9 @@ logogram compare RUN RUN      how two runs agree, with paired differences where 
 logogram diff A B             every choice that differs between two runs or spec files
 logogram verify RUN           patch the strongest sites of an attribution patching run, and compare
 logogram robustness RUN       rerun with one choice changed (--experiment JSON, or --dtype)
-logogram export RUN           a run's per-prompt values as CSV (-o FILE)
+logogram export RUN           a run's per-prompt values as CSV (-o FILE; --sites, --prompt-text)
+logogram report RUN           a run as one HTML page anyone can open (-o FILE, --hardware)
+logogram methods RUN          a run's methods paragraph
 logogram tasks                the tasks Logogram writes prompts for, with their options
 logogram generate TASK        a seeded dataset for a task (-n N --seed S, --option NAME=VALUE)
 logogram doctor               environment and hardware report, with fixes
@@ -266,6 +273,8 @@ run = lg.run(spec, project, model=model)
 run                  # in a notebook: the method, a heatmap and the strongest sites
 run.sites()          # one row per site: mean effect, interval, simultaneous band, q-value, …
 run.per_prompt()     # one row per site and prompt: everything the statistics came from
+run.methods()        # the methods paragraph, in sentences
+run.report("run.html")   # the run as one HTML page anyone can open
 run.strongest(5)
 
 estimate = lg.run(lg.load_spec({**spec.model_dump(), "experiment": {
