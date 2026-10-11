@@ -78,15 +78,28 @@ def _open_when_started(server: Any, security: Any) -> None:
     threading.Thread(target=wait_and_open, daemon=True).start()
 
 
+def _forwarded_ports(given: list[int] | None) -> list[int]:
+    """The ports from --forwarded-port and LOGOGRAM_FORWARDED_PORTS, each once."""
+    from logogram.server.security import FORWARDED_PORTS_ENV, parse_ports
+
+    try:
+        listed = parse_ports(os.environ.get(FORWARDED_PORTS_ENV))
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
+    return list(dict.fromkeys([*(given or []), *listed]))
+
+
 def _serve(
     *,
     port: int,
     open_browser: bool,
     project: Path | None = None,
     dev: bool = False,
+    forwarded_ports: list[int] | None = None,
 ) -> None:
     from logogram.server.security import SecurityConfig, new_token
 
+    forwarded = _forwarded_ports(forwarded_ports)
     sock = _bind(port)
     port = int(sock.getsockname()[1])
     token = os.environ.get("LOGOGRAM_TOKEN") if dev else None
@@ -96,10 +109,19 @@ def _serve(
         if dev
         else []
     )
-    security = SecurityConfig(token=token or new_token(), port=port, dev_origins=dev_list)
+    security = SecurityConfig(
+        token=token or new_token(), port=port, dev_origins=dev_list, forwarded_ports=forwarded
+    )
     url = f"http://127.0.0.1:{port}/?token={security.token}"
     # Print the address first: loading PyTorch takes a few seconds.
     typer.echo(f"Logogram {__version__} is running at:\n\n  {url}\n")
+    others = [p for p in forwarded if p != port]
+    if others:
+        where = "the forwarded port" if len(others) == 1 else "the forwarded ports"
+        typer.echo(f"Through {where}, open:\n")
+        for other in others:
+            typer.echo(f"  http://127.0.0.1:{other}/?token={security.token}")
+        typer.echo("")
     if dev:
         typer.echo(
             f"Development UI (npm run dev):\n\n  {dev_list[0]}/api/session?token={security.token}\n"
@@ -134,6 +156,14 @@ def _serve(
 
 PortOption = typer.Option(
     min=0, max=65535, help="Port to listen on (127.0.0.1 only; 0 picks any free port)."
+)
+ForwardedPortOption = typer.Option(
+    "--forwarded-port",
+    min=1,
+    max=65535,
+    help="A port on the browser's computer that forwards to this server, such as an SSH "
+    "tunnel's local end (ssh -L 9000:127.0.0.1:8765 HOST): addresses on it are accepted too. "
+    "Repeat it for several, or list them in LOGOGRAM_FORWARDED_PORTS.",
 )
 
 
@@ -179,11 +209,12 @@ def main_callback(
     ] = False,
     port: Annotated[int, PortOption] = 8765,
     no_browser: Annotated[bool, typer.Option("--no-browser", help="Don't open a browser.")] = False,
+    forwarded_port: Annotated[list[int] | None, ForwardedPortOption] = None,
 ) -> None:
     """Start Logogram and open it in your browser."""
     _quiet_environment()
     if ctx.invoked_subcommand is None:
-        _serve(port=port, open_browser=not no_browser)
+        _serve(port=port, open_browser=not no_browser, forwarded_ports=forwarded_port)
 
 
 @app.command("open")
@@ -191,6 +222,7 @@ def open_cmd(
     path: Annotated[Path, typer.Argument(help="A project folder.")],
     port: Annotated[int, PortOption] = 8765,
     no_browser: Annotated[bool, typer.Option("--no-browser")] = False,
+    forwarded_port: Annotated[list[int] | None, ForwardedPortOption] = None,
 ) -> None:
     """Start Logogram with a project open."""
     from logogram.project import Project, ProjectError
@@ -200,7 +232,12 @@ def open_cmd(
     except ProjectError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1) from exc
-    _serve(port=port, open_browser=not no_browser, project=project.root)
+    _serve(
+        port=port,
+        open_browser=not no_browser,
+        project=project.root,
+        forwarded_ports=forwarded_port,
+    )
 
 
 @app.command()
@@ -211,9 +248,16 @@ def serve(
     ] = False,
     no_browser: Annotated[bool, typer.Option("--no-browser")] = False,
     project: Annotated[Path | None, typer.Option(help="Open this project.")] = None,
+    forwarded_port: Annotated[list[int] | None, ForwardedPortOption] = None,
 ) -> None:
     """Run the server (use --dev with `npm run dev` when working on the web app)."""
-    _serve(port=port, open_browser=not (no_browser or dev), project=project, dev=dev)
+    _serve(
+        port=port,
+        open_browser=not (no_browser or dev),
+        project=project,
+        dev=dev,
+        forwarded_ports=forwarded_port,
+    )
 
 
 @app.command("check-updates")

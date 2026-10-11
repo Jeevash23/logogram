@@ -6,15 +6,18 @@
 * The browser is opened with a single-use launch code instead of the token, because a browser's
   command line can be read by other users of the machine. The URL printed in the terminal carries
   the token itself, for opening more tabs or another browser.
-* The Host header must name this server (defeats DNS rebinding). Requests that carry an Origin
-  must come from this server's origin; WebSocket handshakes must carry one, and so must
-  cookie-authenticated requests that change anything (or a Fetch Metadata header). Fetch Metadata
-  headers must say same-origin. No CORS headers are sent.
+* The Host header must name this server (defeats DNS rebinding): a loopback name (127.0.0.1,
+  localhost or [::1]) on its own port, or on a port the user named as forwarding to it, such as
+  an SSH tunnel's local end (``--forwarded-port``). Requests that carry an Origin must come from
+  one of those origins; WebSocket handshakes must carry one, and so must cookie-authenticated
+  requests that change anything (or a Fetch Metadata header). Fetch Metadata headers must say
+  same-origin. No CORS headers are sent.
 """
 
 from __future__ import annotations
 
 import hmac
+import re
 import secrets
 import threading
 import time
@@ -26,10 +29,35 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 # The launch URL. /api/session also works behind the Vite dev proxy.
 LOGIN_PATHS = {"/", "/api/session"}
+# The only names the server answers to. Any other name could be a DNS rebinding attack: a web
+# page whose own name has been pointed at 127.0.0.1.
+LOOPBACK_NAMES = ("127.0.0.1", "localhost", "[::1]")
+# Where the forwarded ports can also be given, as a list such as "9000" or "9000,9001".
+FORWARDED_PORTS_ENV = "LOGOGRAM_FORWARDED_PORTS"
 
 
 def new_token() -> str:
     return secrets.token_urlsafe(32)
+
+
+def parse_ports(text: str | None) -> list[int]:
+    """Port numbers separated by commas or spaces, as in LOGOGRAM_FORWARDED_PORTS."""
+    ports: list[int] = []
+    for part in re.split(r"[\s,]+", text or ""):
+        if not part:
+            continue
+        if not (part.isascii() and part.isdigit()) or not 1 <= int(part) <= 65535:
+            raise ValueError(
+                f"{part!r} isn't a port number. {FORWARDED_PORTS_ENV} lists ports from 1 to "
+                "65535, separated by commas, such as 9000,9001."
+            )
+        ports.append(int(part))
+    return ports
+
+
+def _host_forms(name: str, port: int) -> set[str]:
+    """How a browser writes a host and port in the Host header: port 80 is left out."""
+    return {f"{name}:{port}", name} if port == 80 else {f"{name}:{port}"}
 
 
 @dataclass
@@ -37,6 +65,10 @@ class SecurityConfig:
     token: str
     port: int
     dev_origins: list[str] = field(default_factory=list)
+    # Local ports that forward to this server, as the end of an SSH tunnel does
+    # (ssh -L 9000:127.0.0.1:8765). The browser addresses the server by that port, so loopback
+    # names on it are this server too. Nothing else about a request is trusted more for it.
+    forwarded_ports: list[int] = field(default_factory=list)
     _launch: tuple[str, float] | None = field(default=None, repr=False)
     _launch_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
@@ -44,8 +76,22 @@ class SecurityConfig:
     def cookie_name(self) -> str:
         return f"logogram_{self.port}"
 
+    def cookie_name_for(self, host: str | None) -> str:
+        """The session cookie for an allowed Host. Through a forwarded port it is named for that
+        port: cookies aren't kept apart by port, and the browser's machine may run a Logogram of
+        its own on this server's port, whose cookie this one mustn't replace."""
+        for port in self.forwarded_ports:
+            if port != self.port and any(host in _host_forms(n, port) for n in LOOPBACK_NAMES):
+                return f"logogram_{port}"
+        return self.cookie_name
+
     def allowed_hosts(self) -> set[str]:
-        hosts = {f"127.0.0.1:{self.port}", f"localhost:{self.port}", f"[::1]:{self.port}"}
+        hosts = {
+            form
+            for port in (self.port, *self.forwarded_ports)
+            for name in LOOPBACK_NAMES
+            for form in _host_forms(name, port)
+        }
         for origin in self.dev_origins:
             hosts.add(urlsplit(origin).netloc)
         return hosts
@@ -124,7 +170,7 @@ class SecurityMiddleware:
         cfg = self.config
         host = _header(scope, b"host")
         if host not in cfg.allowed_hosts():
-            await self._deny(scope, receive, send, 421, "Unknown host.")
+            await self._deny(scope, receive, send, 421, unknown_host_help(host, cfg))
             return
         origin = _header(scope, b"origin")
         method = scope.get("method", "GET")
@@ -144,10 +190,11 @@ class SecurityMiddleware:
 
         # Opening the launch URL exchanges the token (or the single-use launch code) for a
         # cookie, then drops it from the URL.
+        cookie_name = cfg.cookie_name_for(host)
         query_token = _query_token(scope)
         if scope["type"] == "http" and query_token is not None and scope["path"] in LOGIN_PATHS:
             if cfg.token_ok(query_token) or cfg.use_launch_code(query_token):
-                await self._login(send)
+                await self._login(send, cookie_name)
             else:
                 await self._deny(scope, receive, send, 401, _LOGIN_HELP)
             return
@@ -157,7 +204,7 @@ class SecurityMiddleware:
         if cfg.token_ok(bearer_token):
             await self.app(scope, receive, send)
             return
-        if any(cfg.token_ok(c) for c in _cookies(scope, cfg.cookie_name)):
+        if any(cfg.token_ok(c) for c in _cookies(scope, cookie_name)):
             # A browser sends the cookie by itself, so a request that changes something must
             # show where it came from (every current browser sends one of these).
             if needs_origin and origin is None and fetch_site is None:
@@ -167,8 +214,8 @@ class SecurityMiddleware:
             return
         await self._deny(scope, receive, send, 401, _LOGIN_HELP)
 
-    async def _login(self, send: Send) -> None:
-        cookie = f"{self.config.cookie_name}={self.config.token}; HttpOnly; SameSite=Strict; Path=/"
+    async def _login(self, send: Send, cookie_name: str) -> None:
+        cookie = f"{cookie_name}={self.config.token}; HttpOnly; SameSite=Strict; Path=/"
         await send(
             {
                 "type": "http.response.start",
@@ -208,6 +255,8 @@ class SecurityMiddleware:
                     (b"content-type", b"text/plain; charset=utf-8"),
                     (b"content-length", str(len(body)).encode()),
                     (b"cache-control", b"no-store"),
+                    # Shown as text, whatever it contains.
+                    (b"x-content-type-options", b"nosniff"),
                 ],
             }
         )
@@ -220,3 +269,47 @@ _LOGIN_HELP = (
     "(it ends with ?token=...). Each start creates a new token, and the link the browser was "
     "first opened with works only once.\n"
 )
+
+# A Host header as browsers write one: a name, or an IPv6 address in brackets, and maybe a port.
+# The page that refuses a request repeats its Host header only when it has this shape.
+_HOST_SHAPE = re.compile(
+    r"(?P<name>[A-Za-z0-9][A-Za-z0-9.-]{0,252}|\[[0-9A-Fa-f:.]{2,45}\])"
+    r"(?::(?P<port>[1-9][0-9]{0,4}))?"
+)
+
+
+def unknown_host_help(host: str | None, config: SecurityConfig) -> str:
+    """The page for a request whose Host header names no address of this server: what went wrong
+    and how to fix it. The header is repeated only when it is plainly a host and port, so the
+    page never echoes arbitrary text (and it is sent as plain text, never sniffed as HTML)."""
+    port = config.port
+    shape = _HOST_SHAPE.fullmatch(host or "")
+    if shape is not None and int(shape["port"] or 80) > 65535:
+        shape = None
+    loopback = ", ".join(LOOPBACK_NAMES[:-1]) + f" and {LOOPBACK_NAMES[-1]}"
+    why = (
+        f"Logogram answers only to the loopback names {loopback}, on the ports it was started "
+        "with, so that web pages from elsewhere can't reach it."
+    )
+    if shape is not None and shape["name"] in LOOPBACK_NAMES:
+        asked = int(shape["port"] or 80)
+        sent = host if shape["port"] else f"{host} (port 80)"
+        return (
+            f"Logogram didn't answer this request: it was sent to {sent}, and this Logogram "
+            f"listens on port {port}.\n\n"
+            f"If port {asked} forwards to Logogram, as the local end of an SSH tunnel does "
+            f"(ssh -L {asked}:127.0.0.1:{port} HOST), start Logogram again with that port "
+            "allowed:\n\n"
+            f"    logogram --no-browser --forwarded-port {asked}\n\n"
+            f"(`logogram open` and `logogram serve` take the same option, or set "
+            f"{FORWARDED_PORTS_ENV}={asked}), then open the address it prints for port "
+            f"{asked}.\n\n{why}\n"
+        )
+    sent = f"it was sent to {host}" if shape is not None else "it didn't name a host Logogram knows"
+    return (
+        f"Logogram didn't answer this request: {sent}. {why}\n\n"
+        f"Open http://127.0.0.1:{port}/ on the machine where Logogram runs, with the token it "
+        "printed. To use it from another computer, forward the port over SSH "
+        f"(ssh -L {port}:127.0.0.1:{port} HOST) and open the same address there. If the port "
+        "on that computer is another one, start Logogram with --forwarded-port and that port.\n"
+    )
