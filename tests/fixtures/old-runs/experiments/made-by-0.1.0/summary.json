@@ -1,0 +1,418 @@
+{
+  "logogram_summary": 1,
+  "run_id": "made-by-0.1.0",
+  "name": "Heads, as Logogram 0.1.0 ran them",
+  "description": "Patch clean → corrupt · every head, all positions",
+  "model": {
+    "id": "tiny-gpt2",
+    "n_layers": 2,
+    "n_heads": 4,
+    "d_model": 32,
+    "d_head": 8,
+    "d_mlp": 128,
+    "site_kinds": [
+      "resid_pre",
+      "resid_mid",
+      "resid_post",
+      "attn_out",
+      "mlp_out",
+      "head"
+    ],
+    "block_structure": "sequential_pre_norm",
+    "normalization": "LN",
+    "activation": "gelu_new"
+  },
+  "n_prompts": 6,
+  "n_sites": 8,
+  "layout": {
+    "kind": "heads",
+    "site": null,
+    "row_title": "Layer",
+    "col_title": "Head",
+    "rows": [
+      {
+        "key": "0",
+        "label": "0"
+      },
+      {
+        "key": "1",
+        "label": "1"
+      }
+    ],
+    "cols": [
+      {
+        "key": "0",
+        "label": "0"
+      },
+      {
+        "key": "1",
+        "label": "1"
+      },
+      {
+        "key": "2",
+        "label": "2"
+      },
+      {
+        "key": "3",
+        "label": "3"
+      }
+    ]
+  },
+  "receiver": "corrupt",
+  "reference": "clean",
+  "measure": "intervention",
+  "metric": {
+    "kind": "logit_diff",
+    "normalization": "dataset_gap",
+    "denominator": -0.522232304016749,
+    "description": "logit(answer) − logit(distractor) at the last position",
+    "normalized_effect": "(patched − corrupt) ÷ mean(clean − corrupt) logit difference; mean gap = -0.5222"
+  },
+  "statistics": {
+    "bootstrap": 200,
+    "ci": 0.95,
+    "seed": 0,
+    "method": "percentile bootstrap over prompts"
+  },
+  "baseline": {
+    "clean": {
+      "logit_diff": {
+        "mean": -1.1356444259484608,
+        "sd": 2.6754787376098843
+      },
+      "answer_prob": {
+        "mean": 0.001635402841202449,
+        "sd": 0.0020029821150257263
+      },
+      "prefers_answer": 2
+    },
+    "corrupt": {
+      "logit_diff": {
+        "mean": -0.6134121219317118,
+        "sd": 2.904773890123781
+      },
+      "answer_prob": {
+        "mean": 0.0013305678633817781,
+        "sd": 0.0019311441721999876
+      },
+      "prefers_answer": 2
+    },
+    "gap": {
+      "mean": -0.522232304016749,
+      "sd": 0.3159409385124445
+    }
+  },
+  "sites": [
+    {
+      "index": 0,
+      "kind": "head",
+      "layer": 0,
+      "head": 0,
+      "feature": null,
+      "position": {
+        "kind": "all"
+      },
+      "position_key": "all",
+      "row": 0,
+      "col": 0,
+      "label": "L0 H0",
+      "variant": null,
+      "variant_key": null,
+      "n": 6,
+      "effect": {
+        "mean": 0.039993532386810825,
+        "sd": 0.04562690715961467,
+        "lo": 0.008563319970584475,
+        "hi": 0.09651377628443927
+      },
+      "delta": {
+        "mean": -0.02088591456413269,
+        "sd": 0.02382784485112387,
+        "lo": -0.040091235438982645,
+        "hi": -0.005275656034549074
+      },
+      "patched_logit_diff": -0.6342980364958445,
+      "answer_prob": 0.0013422507860620196,
+      "answer_prob_delta": 1.1682922680241367e-05,
+      "sign_flips": 0,
+      "opposite_sign": 1
+    },
+    {
+      "index": 1,
+      "kind": "head",
+      "layer": 0,
+      "head": 1,
+      "feature": null,
+      "position": {
+        "kind": "all"
+      },
+      "position_key": "all",
+      "row": 0,
+      "col": 1,
+      "label": "L0 H1",
+      "variant": null,
+      "variant_key": null,
+      "n": 6,
+      "effect": {
+        "mean": 1.0398265157873963,
+        "sd": 0.9724706479301329,
+        "lo": 0.6018512472686106,
+        "hi": 1.5406058038082633
+      },
+      "delta": {
+        "mean": -0.5430309971173605,
+        "sd": 0.5078555870572141,
+        "lo": -0.8801525051395098,
+        "hi": -0.21309172436594945
+      },
+      "patched_logit_diff": -1.1564431190490723,
+      "answer_prob": 0.0015033359595690854,
+      "answer_prob_delta": 0.00017276809618730718,
+      "sign_flips": 0,
+      "opposite_sign": 1
+    },
+    {
+      "index": 2,
+      "kind": "head",
+      "layer": 0,
+      "head": 2,
+      "feature": null,
+      "position": {
+        "kind": "all"
+      },
+      "position_key": "all",
+      "row": 0,
+      "col": 2,
+      "label": "L0 H2",
+      "variant": null,
+      "variant_key": null,
+      "n": 6,
+      "effect": {
+        "mean": -0.027254331755267425,
+        "sd": 0.34515134504576567,
+        "lo": -0.38134356069458547,
+        "hi": 0.23547896196375842
+      },
+      "delta": {
+        "mean": 0.014233092466990152,
+        "sd": 0.18024918215773011,
+        "lo": -0.1153149515390396,
+        "hi": 0.18211360772450766
+      },
+      "patched_logit_diff": -0.5991790294647217,
+      "answer_prob": 0.0013493844041173968,
+      "answer_prob_delta": 1.881654073561852e-05,
+      "sign_flips": 0,
+      "opposite_sign": 3
+    },
+    {
+      "index": 3,
+      "kind": "head",
+      "layer": 0,
+      "head": 3,
+      "feature": null,
+      "position": {
+        "kind": "all"
+      },
+      "position_key": "all",
+      "row": 0,
+      "col": 3,
+      "label": "L0 H3",
+      "variant": null,
+      "variant_key": null,
+      "n": 6,
+      "effect": {
+        "mean": -0.04568421403044059,
+        "sd": 0.11402256601297538,
+        "lo": -0.1509085402904676,
+        "hi": 0.04775693527213939
+      },
+      "delta": {
+        "mean": 0.02385777235031128,
+        "sd": 0.05954626735885799,
+        "lo": -0.02217935721079508,
+        "hi": 0.06010289539893468
+      },
+      "patched_logit_diff": -0.5895543495814005,
+      "answer_prob": 0.0013369273219723254,
+      "answer_prob_delta": 6.359458590547244e-06,
+      "sign_flips": 0,
+      "opposite_sign": 2
+    },
+    {
+      "index": 4,
+      "kind": "head",
+      "layer": 1,
+      "head": 0,
+      "feature": null,
+      "position": {
+        "kind": "all"
+      },
+      "position_key": "all",
+      "row": 1,
+      "col": 0,
+      "label": "L1 H0",
+      "variant": null,
+      "variant_key": null,
+      "n": 6,
+      "effect": {
+        "mean": -0.026616815318732074,
+        "sd": 0.4254509605653888,
+        "lo": -0.46833417837928526,
+        "hi": 0.26131548648087194
+      },
+      "delta": {
+        "mean": 0.013900160789489746,
+        "sd": 0.222184235382202,
+        "lo": -0.10595776786406833,
+        "hi": 0.20113512376944231
+      },
+      "patched_logit_diff": -0.599511961142222,
+      "answer_prob": 0.0014222708632587455,
+      "answer_prob_delta": 9.170299987696733e-05,
+      "sign_flips": 0,
+      "opposite_sign": 5
+    },
+    {
+      "index": 5,
+      "kind": "head",
+      "layer": 1,
+      "head": 1,
+      "feature": null,
+      "position": {
+        "kind": "all"
+      },
+      "position_key": "all",
+      "row": 1,
+      "col": 1,
+      "label": "L1 H1",
+      "variant": null,
+      "variant_key": null,
+      "n": 6,
+      "effect": {
+        "mean": 0.10352851099850913,
+        "sd": 0.24818758303159635,
+        "lo": -0.07106768902289527,
+        "hi": 0.2244909144570428
+      },
+      "delta": {
+        "mean": -0.054065932830174766,
+        "sd": 0.12961157331493878,
+        "lo": -0.16646427909533182,
+        "hi": 0.02810177703698477
+      },
+      "patched_logit_diff": -0.6674780547618866,
+      "answer_prob": 0.001238321793304446,
+      "answer_prob_delta": -9.224607007733236e-05,
+      "sign_flips": 0,
+      "opposite_sign": 2
+    },
+    {
+      "index": 6,
+      "kind": "head",
+      "layer": 1,
+      "head": 2,
+      "feature": null,
+      "position": {
+        "kind": "all"
+      },
+      "position_key": "all",
+      "row": 1,
+      "col": 2,
+      "label": "L1 H2",
+      "variant": null,
+      "variant_key": null,
+      "n": 6,
+      "effect": {
+        "mean": 0.036824116588238934,
+        "sd": 0.5244405329609917,
+        "lo": -0.2527170354861157,
+        "hi": 0.5616971198495446
+      },
+      "delta": {
+        "mean": -0.019230743249257404,
+        "sd": 0.2738797878479905,
+        "lo": -0.23006828079620997,
+        "hi": 0.18238535871108383
+      },
+      "patched_logit_diff": -0.6326428651809692,
+      "answer_prob": 0.0015352415721281432,
+      "answer_prob_delta": 0.00020467370874636495,
+      "sign_flips": 0,
+      "opposite_sign": 1
+    },
+    {
+      "index": 7,
+      "kind": "head",
+      "layer": 1,
+      "head": 3,
+      "feature": null,
+      "position": {
+        "kind": "all"
+      },
+      "position_key": "all",
+      "row": 1,
+      "col": 3,
+      "label": "L1 H3",
+      "variant": null,
+      "variant_key": null,
+      "n": 6,
+      "effect": {
+        "mean": 0.13193702637216834,
+        "sd": 0.23898726291124897,
+        "lo": -0.020058754698286954,
+        "hi": 0.40239123265635257
+      },
+      "delta": {
+        "mean": -0.06890177726745605,
+        "sd": 0.12480686894079812,
+        "lo": -0.1678211102883021,
+        "hi": 0.011165658632914225
+      },
+      "patched_logit_diff": -0.6823138991991679,
+      "answer_prob": 0.0013372754644175682,
+      "answer_prob_delta": 6.707601035789897e-06,
+      "sign_flips": 0,
+      "opposite_sign": 2
+    }
+  ],
+  "per_prompt": {
+    "clean_logit_diff": [
+      -2.710327625274658,
+      -4.010311126708984,
+      3.279942274093628,
+      -2.7946105003356934,
+      0.5369635224342346,
+      -1.115523099899292
+    ],
+    "corrupt_logit_diff": [
+      -2.3782401084899902,
+      -3.602233648300171,
+      4.382616996765137,
+      -2.180105447769165,
+      1.0102920532226562,
+      -0.9128025770187378
+    ],
+    "clean_answer_prob": [
+      0.0006078302976675332,
+      0.00038280722219496965,
+      0.005194045137614012,
+      0.0005311827990226448,
+      0.002878006314858794,
+      0.00021854527585674077
+    ],
+    "corrupt_answer_prob": [
+      0.0007598023512400687,
+      0.00017332134302705526,
+      0.005180984735488892,
+      0.00048331223661080003,
+      0.0012520287418738008,
+      0.00013395777205005288
+    ]
+  },
+  "donors": null,
+  "warnings": [],
+  "direct": null,
+  "steering": null,
+  "features": null
+}

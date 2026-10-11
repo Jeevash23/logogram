@@ -7,6 +7,7 @@ import { analysisContext, analysisSourceFor } from "../lib/analysis";
 import type {
   BaselineReport,
   DatasetDetail,
+  Environment,
   Job,
   SAEStatus,
   Layout,
@@ -149,6 +150,10 @@ export interface NoticeOptions {
 /** How long a plain confirmation stays on screen. */
 export const NOTICE_MS = 5000;
 
+/** How often the history is read again while a run runs in another process, whose progress
+ * isn't streamed here: often enough to see it end, rarely enough to cost nothing. */
+export const ELSEWHERE_POLL_MS = 4000;
+
 /** How an action from elsewhere replaces the experiment form. */
 export interface ReplaceFormOptions {
   /** The notice that offers to undo it: "Experiment form replaced" unless given; null for none. */
@@ -193,6 +198,8 @@ interface Store {
   /** Runs waiting for the job in progress to end, first in line first (the server's queue). */
   queue: QueuedRun[];
   runs: RunListing[];
+  /** The versions and devices a rerun here would use, to compare with a run's manifest. */
+  environment: Environment | null;
 
   view: View;
   datasetPath: string | null;
@@ -260,6 +267,8 @@ interface Store {
   /** Keep a dataset's unsaved edits, or drop them (null, or edits that change nothing). */
   setDatasetEdits: (path: string, edits: PromptEdits | null) => void;
   applyJob: (job: Job) => void;
+  /** Read the server's environment, once, to compare runs' manifests with it. */
+  loadEnvironment: () => void;
   checkUpdates: () => Promise<void>;
   setUpdateConsent: (allowed: boolean) => Promise<void>;
   fitSelection: () => void;
@@ -324,6 +333,7 @@ let datasetSeq = 0;
 // One request per run detail at a time, however many components ask for it.
 const inflight = new Map<string, Promise<RunDetail | undefined>>();
 let starting = false;
+let environmentRequest: Promise<void> | null = null;
 
 function emptyLive(runId: string): LiveRun {
   return { runId, layout: null, sites: [], cells: {}, layersDone: [], progress: null, status: "running" };
@@ -362,6 +372,7 @@ export const useStore = create<Store>((set, get) => ({
   job: null,
   queue: [],
   runs: [],
+  environment: null,
 
   view: "prompts",
   datasetPath: null,
@@ -427,6 +438,17 @@ export const useStore = create<Store>((set, get) => ({
       if (s.project) void get().enterProject(s.project);
       else get().leaveProject();
     }
+  },
+
+  loadEnvironment: () => {
+    // Static while the server runs: read once, when a view first compares a run with it.
+    if (get().environment || environmentRequest) return;
+    environmentRequest = api.environment().then(
+      (environment) => set({ environment }),
+      () => {
+        environmentRequest = null; // try again next time
+      },
+    );
   },
 
   checkUpdates: async () => {
@@ -555,7 +577,8 @@ export const useStore = create<Store>((set, get) => ({
     const wanted = route?.screen === "workbench" ? route : null;
     const runOf = (id: string | undefined) => (id ? runs.find((r) => r.id === id) : undefined);
     const asked = wanted && runOf(wanted.compare?.[0] ?? wanted.run);
-    const running = runs.find((r) => r.status === "running");
+    // This server's run, which streams here; one in another process doesn't.
+    const running = runs.find((r) => r.status === "running" && !r.elsewhere);
     const finished = runs.find((r) => r.status === "finished");
     const draft = runs.find((r) => r.status === "draft");
     if (running) set((s) => ({ live: { ...s.live, [running.id]: s.live[running.id] ?? emptyLive(running.id) } }));
@@ -603,7 +626,18 @@ export const useStore = create<Store>((set, get) => ({
     const seq = projectSeq;
     const runs = await get().guard(() => api.runs());
     if (!runs || seq !== projectSeq) return;
+    const before = get().runs;
     set({ runs });
+    // A run in another process has ended: say so, and read it again where it is shown.
+    for (const run of runs) {
+      const was = before.find((r) => r.id === run.id);
+      if (!was?.elsewhere || was.status !== "running" || run.status === "running") continue;
+      const ended = run.status === "finished" ? "finished" : run.status === "cancelled" ? "was cancelled" : "failed";
+      get().notify(`“${run.name}”, running in another process, ${ended}.`, "info", {
+        action: { label: run.status === "finished" ? "Show results" : "Show the run", run: () => void get().openRun(run.id, "results") },
+      });
+      if (get().runDetails[run.id] || get().activeRunId === run.id) void get().loadRun(run.id, true).then(() => get().fitSelection());
+    }
     // A run this tab still shows as running may have ended while the event stream was down.
     for (const [id, live] of Object.entries(get().live)) {
       const listed = runs.find((r) => r.id === id);
@@ -1069,6 +1103,20 @@ useStore.subscribe((state, prev) => {
   if (state.form === prev.form || !state.project || state.project.session_id !== prev.project?.session_id) return;
   if (sameForm(state.form, savedForm) || sameForm(state.form, DEFAULT_FORM)) clearStoredForm(state.project.path);
   else writeStoredForm(state.project.path, state.form);
+});
+
+// While a run runs in another process (logogram run, a notebook), nothing streams its end here:
+// read the history again on a slow timer until no such run is left.
+let elsewherePoll: ReturnType<typeof setInterval> | null = null;
+useStore.subscribe((state, prev) => {
+  if (state.runs === prev.runs) return;
+  const watching = state.runs.some((r) => r.status === "running" && r.elsewhere);
+  if (watching && elsewherePoll === null) {
+    elsewherePoll = globalThis.setInterval(() => void useStore.getState().refreshRuns(), ELSEWHERE_POLL_MS);
+  } else if (!watching && elsewherePoll !== null) {
+    globalThis.clearInterval(elsewherePoll);
+    elsewherePoll = null;
+  }
 });
 
 /** Put back the form left unsaved when the project was last open, offering to undo that. */

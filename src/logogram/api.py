@@ -112,8 +112,19 @@ def run(
     experiment = load_spec(experiment) if isinstance(experiment, dict) else experiment
     outcome = run_spec(experiment, project, backend=model, sae=sae, on_event=on_event)
     if outcome.status != "finished":
-        raise LogogramError(f"The run {outcome.status}: {outcome.manifest.get('error')}")
+        raise LogogramError(_ended(outcome, "The run"))
     return load_run(project, outcome.run_id, model=outcome.backend)
+
+
+def _ended(outcome: Any, what: str) -> str:
+    """Why a run didn't finish, and where its traceback is."""
+    message = f"{what} {outcome.status}: {outcome.manifest.get('error')}"
+    if outcome.traceback:
+        message += (
+            f" Its traceback is in experiments/{outcome.run_id}/traceback.txt "
+            f"(load_run(project, {outcome.run_id!r}).traceback)."
+        )
+    return message
 
 
 def list_runs(project: Project) -> list[dict[str, Any]]:
@@ -170,7 +181,7 @@ def verify_run(estimated: Run, top: int = 10, *, model: Any = None) -> Run:
         },
     )
     if outcome.status != "finished":
-        raise LogogramError(f"The verification {outcome.status}: {outcome.manifest.get('error')}")
+        raise LogogramError(_ended(outcome, "The verification"))
     return load_run(estimated.project, outcome.run_id, model=outcome.backend)
 
 
@@ -193,7 +204,7 @@ def check_robustness(
         derived_from={"run": original.id, "kind": "robustness", "change": change},
     )
     if outcome.status != "finished":
-        raise LogogramError(f"The rerun {outcome.status}: {outcome.manifest.get('error')}")
+        raise LogogramError(_ended(outcome, "The rerun"))
     return load_run(original.project, outcome.run_id, model=outcome.backend)
 
 
@@ -259,7 +270,17 @@ class Run:
 
     @property
     def status(self) -> str:
-        return str(self.manifest.get("status") or "draft")
+        status = str(self.manifest.get("status") or "draft")
+        if status == "running":
+            # Still going, here or in another process, or interrupted: the history knows which.
+            listing = self.project.run_listing(self.id)
+            return listing.status if listing is not None else status
+        return status
+
+    @property
+    def traceback(self) -> str | None:
+        """What a failed run kept of the error that stopped it (this machine's paths scrubbed)."""
+        return self.project.run_traceback(self.id)
 
     def _summary(self) -> dict[str, Any]:
         if self.summary is None:

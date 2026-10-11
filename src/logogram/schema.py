@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class _Model(BaseModel):
@@ -326,6 +326,22 @@ class Manifest(_Model):
     sae: dict[str, Any] | None = None
 
 
+# -- owner.json --------------------------------------------------------------------------------
+
+
+class RunOwner(_Model):
+    """The process running a run, kept in its folder while it runs (see logogram.owner). A
+    running manifest whose owner is gone is a run that was interrupted."""
+
+    logogram_owner: Literal[1] = 1
+    pid: int = Field(ge=1, lt=2**32, strict=True)
+    # The process's start time, in seconds since the epoch, as psutil reports it: with the pid,
+    # it tells the process apart from a later one that reuses the pid.
+    started: float = Field(gt=0, allow_inf_nan=False)
+    # Random, so the run removes only its own record.
+    token: str = Field(pattern=r"^[0-9a-f]{32}$")
+
+
 # -- live events (WebSocket) -------------------------------------------------------------------
 
 
@@ -428,6 +444,9 @@ class RunListing(_Model):
     error: str | None
     # Per layer, the largest normalized effect (signed): what writes the run's logogram in the app.
     profile: list[float] | None = None
+    # A running run whose process is another one (logogram run, a notebook, another server): its
+    # progress isn't streamed here, so the app reads the listing again to see it end.
+    elsewhere: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json")

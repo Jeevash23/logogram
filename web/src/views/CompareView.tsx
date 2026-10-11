@@ -6,6 +6,7 @@ import { Heatmap, type Axis } from "../components/Heatmap/Heatmap";
 import { ScaleBar } from "../components/Heatmap/ScaleBar";
 import { Button, Callout, Empty, Field, Progress, Segmented, Select } from "../components/ui";
 import { divergingScale, niceBound, SCALE_FLOOR, type ColorScale, type ResolvedTheme } from "../lib/color";
+import { differenceText } from "../lib/environment";
 import { ci, count, num, pct, signed } from "../lib/format";
 import { siteValue } from "../lib/hooks";
 import { findSite, gridKey, isResidKind, partOfKind, selectionOfSite, siteGrid, siteKey, type Selection } from "../lib/sites";
@@ -205,6 +206,22 @@ export function CompareView() {
             </div>
           ))}
         </div>
+      )}
+      {comparison && (comparison.environment_differences?.length ?? 0) > 0 && (
+        <section className={c.differences} aria-label="Where the runs ran">
+          <span className={s.small}>They ran with other versions or on other devices, which alone can change results in the last digits</span>
+          {comparison.environment_differences?.map((d) => {
+            const { a, b } = differenceText(d);
+            return (
+              <div key={d.key} className={c.difference}>
+                <span className={c.path}>{d.label}</span>
+                <span>{a}</span>
+                <span className="faint">→</span>
+                <span>{b}</span>
+              </div>
+            );
+          })}
+        </section>
       )}
       {error && <Callout tone="error">{error}</Callout>}
 

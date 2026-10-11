@@ -2,6 +2,8 @@ import { test, expect, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
+import { fakeRuns, otherVersions, TRACEBACK } from "./fakeRuns";
+
 // Axe checks every view of the workbench, the inspector and a feature's details for
 // accessibility violations, from those that block people using assistive technology to headings
 // out of order. It runs inside the page; the app's content security policy forbids injected
@@ -100,4 +102,33 @@ test("every view has no accessibility violations", async ({ page }) => {
     await open(page, view);
     await expectAccessible(page, `Evidence, ${view}`);
   }
+});
+
+test("runs that failed, run elsewhere or ran with other versions have no accessibility violations", async ({ page }) => {
+  await fakeRuns(page, () => [
+    { id: "fake-failed", name: "A sweep that failed", status: "failed", error: "Can't load the model.", traceback: TRACEBACK },
+    { id: "fake-elsewhere", name: "A sweep from a notebook", status: "running", elsewhere: true },
+  ]);
+  await otherVersions(page, { torch: "0.0.1", numpy: "0.0.2" });
+  await page.goto("/?token=browser-test-token");
+  await expect(page.getByRole("main").getByRole("heading", { name: "tiny-gpt2", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Evidence", exact: true }).click();
+  await open(page, "Results");
+  await expect(page.getByRole("note").filter({ hasText: "A rerun here may differ in the last digits." })).toBeVisible();
+  await expectAccessible(page, "Results, a run from other versions");
+  const history = page.getByRole("dialog", { name: "Experiment history" });
+  for (const [name, view] of [
+    ["A sweep from a notebook", "a run in another process"],
+    ["A sweep that failed", "a failed run"],
+  ]) {
+    await page.getByRole("button", { name: /^History/ }).click();
+    await expect(history.getByRole("button", { name: new RegExp(name) })).toBeVisible();
+    await expectAccessible(page, `History, ${view}`);
+    await history.getByRole("button", { name: new RegExp(name) }).click();
+    await expect(page.getByRole("main").getByRole("heading", { level: 1, name })).toBeVisible();
+    await expectAccessible(page, `Results, ${view}`);
+  }
+  await page.getByText("Show details", { exact: true }).click();
+  await expect(page.getByLabel("Traceback", { exact: true })).toBeVisible();
+  await expectAccessible(page, "Results, a failed run's traceback");
 });

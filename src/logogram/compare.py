@@ -18,6 +18,7 @@ from typing import Any
 
 import numpy as np
 
+from logogram.schema import Manifest
 from logogram.spec import Spec
 from logogram.stats import paired_difference, resample_counts, spearman
 
@@ -70,6 +71,40 @@ def spec_differences(
             out.extend(spec_differences(va, vb, path))
         elif va != vb:
             out.append({"path": path, "a": va, "b": vb})
+    return out
+
+
+# What a run's manifest records about where it ran that can change its numbers in the last digits:
+# the same spec, on the same machine with the same versions, gives bit-identical results.
+ENVIRONMENT_VERSIONS = {
+    "logogram": "Logogram",
+    "torch": "PyTorch",
+    "transformer_lens": "TransformerLens",
+    "transformers": "Transformers",
+    "numpy": "NumPy",
+}
+
+
+def environment_differences(
+    manifest_a: dict[str, Any] | None, manifest_b: dict[str, Any] | None
+) -> list[dict[str, Any]]:
+    """What two runs' manifests record differently about where they ran: the versions above,
+    the device type, and on the same type the device itself or the CUDA version. What either
+    run didn't record isn't compared."""
+    a, b = manifest_a or {}, manifest_b or {}
+    out: list[dict[str, Any]] = []
+    versions_a, versions_b = a.get("versions") or {}, b.get("versions") or {}
+    for key, label in ENVIRONMENT_VERSIONS.items():
+        va, vb = versions_a.get(key), versions_b.get(key)
+        if va and vb and va != vb:
+            out.append({"key": key, "label": label, "a": va, "b": vb})
+    device_a, device_b = a.get("device") or {}, b.get("device") or {}
+    for key, label in (("type", "Device"), ("name", "Device model"), ("cuda", "CUDA")):
+        va, vb = device_a.get(key), device_b.get(key)
+        if va and vb and va != vb:
+            out.append({"key": f"device.{key}", "label": label, "a": va, "b": vb})
+            if key == "type":
+                break  # another kind of device: its model and CUDA version follow from that
     return out
 
 
@@ -248,7 +283,7 @@ def compare_runs(project: Any, run_a: str, run_b: str) -> dict[str, Any]:
 
     from logogram.runs import load_summary
 
-    summaries, specs, tables = [], [], []
+    summaries, specs, tables, manifests = [], [], [], []
     for run_id in (run_a, run_b):
         folder = project.run_dir(run_id)
         try:
@@ -258,5 +293,12 @@ def compare_runs(project: Any, run_a: str, run_b: str) -> dict[str, Any]:
         summaries.append(summary)
         specs.append(Spec.from_path(project.readable(folder / "spec.json")))
         tables.append(pq.read_table(project.readable(folder / "results.parquet")))
+        try:
+            manifest = project.read_json(folder / "manifest.json", optional=True)
+            manifests.append(Manifest.model_validate(manifest).model_dump() if manifest else None)
+        except (ValueError, OSError):  # unreadable: nothing to say about where it ran
+            manifests.append(None)
     paired = paired_differences(tables[0], tables[1], *summaries, *specs)
-    return compare_summaries(summaries[0], summaries[1], specs[0], specs[1], paired=paired)
+    result = compare_summaries(summaries[0], summaries[1], specs[0], specs[1], paired=paired)
+    result["environment_differences"] = environment_differences(*manifests)
+    return result

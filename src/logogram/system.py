@@ -7,6 +7,7 @@ here is written to disk or sent anywhere.
 from __future__ import annotations
 
 import contextlib
+import copy
 import functools
 import os
 import platform
@@ -295,6 +296,122 @@ def system_report() -> SystemReport:
         mps_available=mps,
         issues=issues,
     )
+
+
+# -- the environment, for reproducing runs -----------------------------------------------------
+
+# What a run's numbers can depend on beyond its spec, as their distributions are named on PyPI:
+# the same spec, on the same machine with the same versions, gives bit-identical results.
+LIBRARIES = (
+    "torch",
+    "transformer-lens",
+    "transformers",
+    "tokenizers",
+    "safetensors",
+    "huggingface-hub",
+    "numpy",
+    "pyarrow",
+)
+
+
+def os_family() -> str:
+    """linux, macos or windows (or the system's own name, in lower case)."""
+    system = platform.system()
+    return {"Darwin": "macos"}.get(system, system.lower() or "unknown")
+
+
+def device_types() -> list[str]:
+    """The devices PyTorch can run a model on here: cpu, and cuda and mps where available."""
+    import torch
+
+    devices = ["cpu"]
+    if torch.cuda.is_available():
+        devices.append("cuda")
+    if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+        devices.append("mps")
+    return devices
+
+
+@functools.cache
+def _environment(hardware: bool) -> dict[str, Any]:
+    import torch
+
+    from logogram import __version__
+
+    devices = device_types()
+    machine = platform.machine().lower()
+    # Named and read as run manifests record them (runner.environment_versions), so the two
+    # compare key by key: transformer_lens, and PyTorch's own version, with its build (+cu124).
+    versions = {name.replace("-", "_"): _pkg(name) for name in LIBRARIES}
+    versions["torch"] = torch.__version__
+    out: dict[str, Any] = {
+        "logogram": __version__,
+        "python": platform.python_version(),
+        "implementation": platform.python_implementation(),
+        "os": os_family(),
+        "architecture": {"amd64": "x86_64", "aarch64": "arm64"}.get(machine, machine),
+        "versions": versions,
+        "torch_cuda": torch.version.cuda,
+        "devices": devices,
+        # What a spec's "auto" device runs on here (see backends.transformer_lens.resolve_device).
+        "default_device": "cuda" if "cuda" in devices else "cpu",
+    }
+    if hardware:
+        vm = psutil.virtual_memory()
+        gpus = [
+            {
+                "name": torch.cuda.get_device_name(i),
+                "memory": int(torch.cuda.get_device_properties(i).total_memory),
+            }
+            for i in range(torch.cuda.device_count() if "cuda" in devices else 0)
+        ]
+        if "mps" in devices:
+            gpus.append({"name": "Apple GPU (Metal)", "memory": int(vm.total)})
+        cores = None
+        with contextlib.suppress(Exception):
+            cores = psutil.cpu_count(logical=False)
+        out["hardware"] = {
+            "os": _os_label(),
+            "cpu": cpu_name(),
+            "cpu_cores": cores,
+            "cpu_threads": psutil.cpu_count(logical=True),
+            "memory": int(vm.total),
+            "gpus": gpus,
+        }
+    return out
+
+
+def environment(hardware: bool = False) -> dict[str, Any]:
+    """What a run's numbers can depend on, beyond its spec: Logogram's, Python's and the
+    libraries' versions, the operating system's family, the processor architecture and the
+    devices PyTorch can use. Nothing that names the person or the machine: no host or user names
+    and no paths, and the hardware's models only with ``hardware``."""
+    return copy.deepcopy(_environment(hardware))
+
+
+def requirements() -> str:
+    """Pinned requirements that install the versions :func:`environment` reports, with Python's
+    version and PyTorch's build as comments (an index, not a version, chooses the build)."""
+    env = environment()
+    lines = [
+        f"# Logogram's environment: Python {env['python']} ({env['implementation']}) on "
+        f"{env['os']} ({env['architecture']}).",
+        f"logogram=={env['logogram']}",
+    ]
+    for name in LIBRARIES:
+        installed = env["versions"][name.replace("-", "_")]
+        if installed is None:
+            lines.append(f"# {name} isn't installed.")
+            continue
+        public, _, build = installed.partition("+")
+        if build:
+            # A local version label (2.6.0+cu124) names a build that PyPI doesn't serve.
+            how = f"with uv: uv pip install --torch-backend={build} -r this file"
+            lines.append(
+                f"# {name} {installed} is the {build} build, from PyTorch's index ({how})."
+            )
+        lines.append(f"{name}=={public}")
+    return "\n".join(lines) + "\n"
 
 
 # -- memory estimate ---------------------------------------------------------------------------

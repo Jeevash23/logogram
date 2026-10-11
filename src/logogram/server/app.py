@@ -501,6 +501,13 @@ def create_app(
 
         return system_report().to_dict()
 
+    @app.get("/api/environment", response_model=M.EnvironmentOut)
+    def get_environment() -> dict[str, Any]:
+        """The versions and devices a rerun here would use, to compare with a run's manifest."""
+        from logogram.system import environment
+
+        return environment()
+
     # -- files and projects -----------------------------------------------------------------
 
     def _is_project(folder: Path) -> bool:
@@ -1039,6 +1046,10 @@ def create_app(
         listing = project.run_listing(run_id)
         out["listing"] = listing.to_dict() if listing else None
         out["folder"] = f"experiments/{run_id}"
+        try:
+            out["traceback"] = project.run_traceback(run_id)
+        except (ValueError, OSError):  # not a regular file in the project, or far too large
+            out["traceback"] = None
         return out
 
     @app.get("/api/runs", response_model=list[RunListing])

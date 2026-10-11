@@ -18,6 +18,8 @@ export function History({ onOpen }: { onOpen?: () => void } = {}) {
   const projectPath = useStore((st) => st.project?.path);
   const [checked, setChecked] = useState<string[]>([]);
   useEffect(() => setChecked([]), [projectPath]); // ticks belong to the project they were made in
+  // Runs made elsewhere (logogram run, a notebook) reach the history only when it is read again.
+  useEffect(() => void useStore.getState().refreshRuns(), []);
 
   // Variants (robustness checks, reruns) sit under the run they came from.
   const ordered = useMemo(() => {
@@ -55,7 +57,8 @@ export function History({ onOpen }: { onOpen?: () => void } = {}) {
       onOpen?.();
       return;
     }
-    await openRun(run.id, run.status === "finished" || run.status === "running" ? "results" : undefined);
+    // Results say how a run went: its findings, its progress, or why it failed or was cancelled.
+    await openRun(run.id, "results");
     onOpen?.();
   };
 
@@ -110,7 +113,7 @@ export function History({ onOpen }: { onOpen?: () => void } = {}) {
                   <span className={s.state}>
                     {status === "running" ? (
                       <>
-                        <Spinner />
+                        <Spinner label={run.elsewhere ? "Running in another process" : "Running"} />
                         {progress ? pct(progress.done / progress.total) : ""}
                       </>
                     ) : status === "draft" ? (
@@ -124,6 +127,7 @@ export function History({ onOpen }: { onOpen?: () => void } = {}) {
                   <span className={s.meta}>
                     {experimentShort(run.experiment)} · {scopeShort(run.scope)}
                     {run.n_prompts ? ` · ${plural(run.n_prompts, "prompt")}` : ""}
+                    {status === "running" && run.elsewhere ? " · running in another process" : ""}
                   </span>
                 </button>
               </li>

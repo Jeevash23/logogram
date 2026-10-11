@@ -206,7 +206,7 @@ logogram open PATH            start with a project open
 logogram run SPEC.json        run an experiment headlessly and print a summary
 logogram validate SPEC.json   check a spec without running it, and say what it left out
 logogram list                 the project's runs and drafts, newest first
-logogram show RUN             a finished run's method, baseline and strongest sites
+logogram show RUN             a finished run's method, baseline and strongest sites, or why it failed
 logogram compare RUN RUN      how two runs agree, with paired differences where they can be paired
 logogram diff A B             every choice that differs between two runs or spec files
 logogram verify RUN           patch the strongest sites of an attribution patching run, and compare
@@ -215,14 +215,21 @@ logogram export RUN           a run's per-prompt values as CSV (-o FILE)
 logogram tasks                the tasks Logogram writes prompts for, with their options
 logogram generate TASK        a seeded dataset for a task (-n N --seed S, --option NAME=VALUE)
 logogram doctor               environment and hardware report, with fixes
+logogram env                  the versions and devices results depend on, as JSON (--requirements pins them)
 logogram check-updates        ask PyPI whether a newer Logogram is out
 logogram serve --dev          API only, for working on the web app
 logogram --version
 ```
 
 The app listens on port 8765, or the next free one; `--port N` picks another (`--port 0` takes
-any free port) and `--no-browser` skips opening the browser. Commands that read runs use the
+any free port) and `--no-browser` skips opening the browser. Only errors reach the terminal;
+`--verbose` also logs what the server does, with the traceback of each failed run, and
+`--log-file PATH` appends the same to a file. Commands that read runs use the
 project in the current folder or above it, or `--project PATH`; a run is its id or its folder.
+
+A failed run keeps its traceback in `traceback.txt`, without this machine's paths or names:
+`logogram show RUN` prints it, `logogram run --verbose` prints it as the run fails, and the app
+shows it under **Show details**. Ctrl+C during `logogram run` records the run as cancelled.
 
 `logogram run` writes a new experiment folder next to the original. When the spec came from a
 finished run, it also checks the new results against the old ones:
@@ -268,7 +275,8 @@ lg.write_dataset(project, "greater-than", records)
 
 Tables come back as pandas DataFrames when pandas is installed, and as pyarrow Tables otherwise.
 `lg.list_runs(project)` and `lg.load_run(project, run_id)` read runs made anywhere. A run that
-fails raises `lg.api.LogogramError` with the reason.
+fails raises `lg.api.LogogramError` with the reason, and `lg.load_run(project, run_id).traceback`
+reads the traceback it kept. Interrupting the kernel records the run as cancelled.
 
 ## Prompts
 
@@ -546,6 +554,8 @@ my-project/
   experiments/<id>/summary.json       per-site statistics and the layout of the results
   experiments/<id>/predictions.json   optional per-layer prediction diagnostic
   experiments/<id>/manifest.json      versions, device, dtype, model revision, dataset hash, timing
+  experiments/<id>/traceback.txt      a failed run's traceback, without this machine's paths
+  experiments/<id>/owner.json         while a run runs: its process id and start time
   .gitignore
 ```
 
@@ -562,8 +572,11 @@ experiments when sharing a project. Older runs still use the dataset path in the
 
 Browser tabs follow the server's open project. Switching projects clears the other tabs' forms,
 prompts, cached analyses and results; stale requests are rejected. A project cannot be switched
-while a job runs. The status line shows lost connections, and interrupted runs are marked failed
-when their project is reopened, with their saved spec available to rerun.
+while a job runs. The status line shows lost connections. A run started elsewhere, by
+`logogram run` or from Python, lists as running in another process until it ends; the app
+notices when it does. A run whose process stopped before it finished (closed, killed or
+crashed) is marked failed, with its saved spec available to rerun. `owner.json` tells the two
+apart: the process id and its start time, and a random token, nothing about you or the machine.
 
 **Reproducibility.** Runs seed Python, NumPy and PyTorch from `statistics.seed`, require deterministic
 PyTorch algorithms (unsupported operations fail rather than merely warn), and disable
@@ -572,6 +585,26 @@ and GPU model, the dtype, the model id and revision, whether weights were proces
 hash and the wall time. The same spec on the same machine gives bit-identical results. Results
 on different devices or library versions can differ; compare their per-prompt values before
 treating them as equivalent.
+
+## Stability
+
+**What stays readable.** Each release reads the run folders earlier releases wrote: their specs,
+manifests, summaries and per-prompt results list, open, compare and export as before. What a
+later release added and an older run didn't measure (corrections for the number of sites, say)
+is left out; runs from 0.1, which measured the logit difference only, read it as their metric.
+Version 1 and version 2 specs both run: a version 1 spec takes version 1's value for each choice
+it left out, `logogram validate` lists them, and its runs say so. The tests keep run folders
+written by 0.1.0 and 0.2.0 to hold every release to this.
+
+**What is bit-identical.** The same spec, on the same machine, with the same versions of
+Logogram, PyTorch, TransformerLens, Transformers and NumPy, gives the same per-prompt values to
+the last bit. `logogram run` on a finished run's spec checks this.
+
+**What may differ.** On another device (the CPU, CUDA or MPS, or another GPU) or with other
+library versions, results may differ in the last digits, because the same sums run in another
+order. Each manifest records the versions and the device; the Results view says when they
+differ from this machine's, and Compare says when two runs differ in them. `logogram env`
+prints this machine's, and `logogram env --requirements` pins its versions.
 
 ## Privacy
 
@@ -591,7 +624,8 @@ treating them as equivalent.
 * Projects are often shared, so Logogram treats their contents with care: it writes only into
   folders that are really inside the project (never through a symlink that leads out of it), and
   a damaged, oversized or unexpected file shows up as an error on that file rather than breaking
-  the project. A failed run's error is saved without this machine's paths.
+  the project. A failed run's error and traceback are saved without this machine's paths, your
+  account name or the machine's name. `logogram env` names hardware only with `--hardware`.
 * Weights are loaded only from safetensors files, which cannot run code. Logogram never unpickles
   files.
 * Settings and the list of recent projects are kept in your user configuration folder, not in

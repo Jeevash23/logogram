@@ -272,26 +272,13 @@ class AppState:
     # -- project -----------------------------------------------------------------------------
 
     def open_project(self, project: Project) -> None:
-        from logogram.runner import write_json
-
         with self._job_lock:
             self._check_switch()
-            # A running manifest from an earlier process is an interrupted run, never a draft.
-            for listing in project.list_runs():
-                if listing.status == "running":
-                    project.interrupted_runs.add(listing.id)
-                    path = project.run_dir(listing.id) / "manifest.json"
-                    data = project.read_json(path)
-                    assert data is not None
-                    data.update(
-                        status="failed",
-                        error="The server stopped before this run finished. Rerun its saved spec.",
-                    )
-                    with contextlib.suppress(OSError):  # read-only projects remain inspectable
-                        write_json(project.writable(path), data)
+            mark_interrupted_runs(project)
             self._clear_queue()
             self.project = project
         remember_recent(project)
+        log.info("Opened the project %s", project.root)
         self.hub.publish("project", {"session_id": project.session_id})
 
     def _check_switch(self) -> None:
@@ -518,6 +505,7 @@ class AppState:
         self.hub.publish("job", job.to_dict())
 
         def target() -> None:
+            log.info("Started the job %s (%s): %s", job.id, kind, title)
             try:
                 work(job)
                 if job.status == "running":
@@ -527,6 +515,8 @@ class AppState:
             except Exception as exc:
                 log.exception("job failed")
                 job.update(status="failed", error=str(exc) or type(exc).__name__)
+            reason = f" ({job.error})" if job.error else ""
+            log.info("The job %s ended: %s%s", job.id, job.status, reason)
             self.hub.publish("job", job.to_dict())
             # This job has let go of the server, however it ended: the queue's next run starts.
             self._start_next()
@@ -732,6 +722,37 @@ class AppState:
             session = self._queue[0].project_session
             self._queue.clear()
             self._publish_queue(session)
+
+
+def mark_interrupted_runs(project: Project) -> None:
+    """Record as failed the runs whose manifest says they are running but whose process is gone,
+    so they read as interrupted, never as drafts or as still going. A run still going in another
+    process (``logogram run``, a notebook, another server) is left alone. A run with no owner
+    record, from before Logogram kept one, is taken to be interrupted, as it always was."""
+    from logogram.owner import OWNER_STOPPED, SERVER_STOPPED, owner_state, read_owner, remove_owner
+    from logogram.runner import write_json
+
+    for listing in project.list_runs():
+        if listing.status not in ("running", "failed") or listing.elsewhere:
+            continue
+        folder = project.run_dir(listing.id)
+        path = folder / "manifest.json"
+        try:
+            data = project.read_json(path, optional=True)
+        except (ValueError, OSError):  # unreadable: its listing already says so
+            continue
+        if not data or data.get("status") != "running":
+            continue
+        state = owner_state(read_owner(project, folder))
+        if state in ("here", "elsewhere"):
+            continue  # still going
+        if state == "unknown":
+            project.interrupted_runs.add(listing.id)
+        data.update(status="failed", error=SERVER_STOPPED if state == "unknown" else OWNER_STOPPED)
+        log.info("The run %s was interrupted: %s", listing.id, data["error"])
+        with contextlib.suppress(OSError):  # read-only projects remain inspectable
+            write_json(project.writable(path), data)
+            remove_owner(folder)
 
 
 def _reason(exc: Exception) -> str:

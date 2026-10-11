@@ -1,5 +1,5 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import type { ExperimentSpec, Layout, Side, SiteBase, SiteResult, Spec, Summary } from "../api/types";
 import { Heatmap, type Axis } from "../components/Heatmap/Heatmap";
@@ -17,6 +17,7 @@ import { Distribution } from "../components/Distribution";
 import { api } from "../api/client";
 import { copyText } from "../components/CopyCommand";
 import { downloadBlob, exportFigure, methodsText } from "../lib/export";
+import { environmentChanges, environmentNote } from "../lib/environment";
 import { CircuitDialog } from "../components/CircuitDialog";
 import { rankedSites, universeText } from "../lib/circuits";
 import { CircuitResults } from "./CircuitResults";
@@ -39,7 +40,14 @@ export function ResultsView() {
   const profile = useRunProfile(run);
   const runs = useStore((st) => st.runs);
   const job = useStore((st) => st.job);
+  const environment = useStore((st) => st.environment);
+  useEffect(() => useStore.getState().loadEnvironment(), []);
   const listing = runs.find((x) => x.id === run.id);
+  // Where a finished run ran, against where a rerun here would run.
+  const environmentText = useMemo(
+    () => (run.detail?.summary ? environmentNote(environmentChanges(run.detail.manifest, run.detail.spec, environment)) : null),
+    [run.detail, environment],
+  );
 
   const bound = useMemo(() => {
     if (scaleMode === "unit" && metric === "effect") return 1;
@@ -72,6 +80,8 @@ export function ResultsView() {
   }
   const spec = run.detail?.spec;
   const status = run.live?.status === "running" ? "running" : listing?.status ?? (run.detail?.summary ? "finished" : "draft");
+  // Running in another process: nothing streams here until it ends.
+  const elsewhere = status === "running" && run.live?.status !== "running" && !!listing?.elsewhere;
   const summary = run.detail?.summary;
   const manifest = run.detail?.manifest;
   const layout = run.layout;
@@ -85,7 +95,7 @@ export function ResultsView() {
     .filter((x) => x.effect.mean !== null && !x.variant?.control)
     .sort((a, b) => Math.abs(b.effect.mean ?? 0) - Math.abs(a.effect.mean ?? 0))[0];
   const provenance = [
-    status === "running" ? "Running" : status === "finished" ? `Finished ${ago(manifest?.finished_at)}` : status === "draft" ? "Not run yet" : status === "failed" ? "Failed" : "Cancelled",
+    status === "running" ? (elsewhere ? "Running in another process" : "Running") : status === "finished" ? `Finished ${ago(manifest?.finished_at)}` : status === "draft" ? "Not run yet" : status === "failed" ? "Failed" : "Cancelled",
     manifest?.wall_time_s !== undefined && manifest?.wall_time_s !== null ? duration(manifest.wall_time_s) : null,
     manifest?.device?.name ? `on ${manifest.device.name}` : null,
   ].filter(Boolean).join(" · ");
@@ -104,6 +114,12 @@ export function ResultsView() {
           <span className="eyebrow">{provenance}</span>
           <h1 className={r.title}>{spec?.name ?? run.id}</h1>
           {spec && <MethodsLine spec={spec} n={summary?.n_prompts ?? run.live?.nPrompts} clusters={summary?.statistics.clusters} />}
+          {environmentText && (
+            <p className={r.environment} role="note">
+              <Icon name="info" size={14} />
+              {environmentText}
+            </p>
+          )}
         </div>
         <div className={r.heroActions}>
           {status === "finished" && (
@@ -147,13 +163,24 @@ export function ResultsView() {
         </div>
       </div>
 
-      {status === "running" && <RunningBanner />}
+      {status === "running" && !elsewhere && <RunningBanner />}
+      {elsewhere && (
+        <Callout title="This run is running in another process">
+          Another process runs it (<code>logogram run</code>, a notebook or another Logogram), so its progress isn&rsquo;t shown here.
+          Its results appear here when it finishes.
+        </Callout>
+      )}
       {status === "failed" && (
         <Callout tone="error" title="This run failed">
           {manifest?.error ?? listing?.error ?? "No error message was recorded."}
+          {run.detail?.traceback && <FailureDetails key={run.id} traceback={run.detail.traceback} />}
         </Callout>
       )}
-      {status === "cancelled" && <Callout title="This run was cancelled">Its spec and any dataset snapshot were kept. Partial results were discarded.</Callout>}
+      {status === "cancelled" && (
+        <Callout title="This run was cancelled">
+          {manifest?.error ? `${manifest.error} ` : ""}Its spec and any dataset snapshot were kept. Partial results were discarded.
+        </Callout>
+      )}
       {status === "draft" && !run.live && (
         <Callout title="This experiment hasn't run yet">Open it in the form and press Run.</Callout>
       )}
@@ -594,6 +621,30 @@ function RunningBanner() {
       </div>
       <Progress value={p ? p.done / p.total : null} label="Progress of this run" />
     </div>
+  );
+}
+
+/** A failed run's traceback, behind a disclosure, with a way to copy it into a bug report. It
+ * was saved without the paths and names of the machine the run ran on. */
+function FailureDetails({ traceback }: { traceback: string }) {
+  const [open, setOpen] = useState(false);
+  const notify = useStore((st) => st.notify);
+  const copy = async () => {
+    if (await copyText(traceback)) notify("Traceback copied.");
+    else notify("Couldn't reach the clipboard. Select the traceback and copy it instead.", "error");
+  };
+  return (
+    <details className={r.failure} onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary>{open ? "Hide details" : "Show details"}</summary>
+      <div className={r.failureBody}>
+        <pre className={r.traceback} tabIndex={0} aria-label="Traceback">
+          {traceback}
+        </pre>
+        <Button size="small" icon="copy" aria-label="Copy the traceback" onClick={() => void copy()}>
+          Copy
+        </Button>
+      </div>
+    </details>
   );
 }
 
