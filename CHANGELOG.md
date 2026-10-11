@@ -2,6 +2,65 @@
 
 What changed in each version of Logogram.
 
+## 0.3.0 (2026-10-11)
+
+The interface, made easier to work in: the result where you look first, links and Back, a run
+queue, a summary beside Run, a prompts table you can search and edit, the thresholds behind each
+verdict, and nothing that is only explained on hover.
+
+### Added
+
+- **A run queue.** While a job runs, **Run** reads **Queue**: the experiment waits its turn, listed
+  under **Queued** in History, and starts when the jobs ahead of it end, whether they finish, fail
+  or are cancelled. A queued run can be removed until it starts. The queue belongs to the open
+  project and lives in the server's memory (`POST`, `GET` and `DELETE /api/queue`).
+- **Links, Back and Forward.** The address keeps your place: the view, and the run it shows or the
+  two it compares. Back and Forward move between views, a reload comes back to the same place, and
+  **All projects** leads back to the open project as you left it. The address never carries the
+  session token.
+- **A summary beside the experiment form**, in view while the form scrolls: what will run and how
+  much work it is, whether a batch of that size fits in the memory free with the loaded model
+  (`POST /api/models/run-memory`), whether the baseline was checked for these prompts and what it
+  found, and, when the form can't run yet, what is missing, right above **Run**.
+- **The prompts table** can be searched (both prompts, answers and metadata), shows 100 rows a
+  page, and is one tab stop whose arrow keys, Page Up and Down, Home and End choose a prompt.
+  Prompts can be edited or removed, and the edits are saved as a new dataset
+  (`POST /api/datasets/derive`), so the dataset a run recorded never changes.
+- **Compare: a site in both runs.** Choosing a cell, or a row of the table, circles it on both
+  maps and shows each run's effect and interval, B − A (paired prompt by prompt when the runs
+  share prompts), its flags, and a way into each run at that site.
+- **Single-key shortcuts can be turned off**, in the shortcuts list or the command palette, for
+  speech input or keys pressed by accident. Shortcuts with Ctrl or ⌘, the arrow keys and Esc keep
+  working.
+
+### Changed
+
+- **The result first:** the Results heatmap starts on the first screen, right under the run's
+  figures; the corrections for testing many sites follow it, with their explanation on request.
+- **The token strip** remembers being hidden or shown, starts hidden on a short window, and stays
+  off views that show tokens themselves. Its tokens are one tab stop with arrow keys between them.
+- **One name for every view**, shared by the tabs, the command palette and the keys, and the
+  number keys go to the open workspace's tabs (**1** to **5**) instead of seven views across
+  workspaces.
+- **The thresholds behind verdicts are stated where the verdict is:** the behavior is present
+  above a 0.5 gap, a robustness check holds above a 0.8 rank correlation, and an SAE fits poorly
+  under 60% of the variance explained.
+- **Nothing is explained only on hover.** Explanations show on keyboard focus too; a disabled
+  button with a reason stays focusable so the reason can be read; choices that can't be made say
+  why under them; and what matters (the memory estimate's rows, the flag mark on result maps and
+  the forest plot) is written into the page.
+- **Color keeps its job:** focus rings, selection and progress outside a workspace are ink;
+  intervals are drawn in a neutral band instead of the evidence pink; callouts and boxed regions
+  are set off by hairlines instead of grey.
+- The app follows the computer's light or dark setting until a theme is chosen, so a dark-mode
+  user no longer sees it switch to white after it loads.
+- View titles say what the view shows instead of repeating the tab's name.
+- The exported methods paragraph is written in sentences, without raw JSON or true/false values,
+  and exported figures have a white background.
+- The baseline's dot plot is one tab stop: the arrow keys go from prompt to prompt and read the
+  chosen prompt's values. Every progress bar has a name, and smooth scrolling respects reduced
+  motion.
+
 ## 0.2.0 (2026-10-11)
 
 Specs that state every choice, more metrics, circuits, five more tasks, statistics that hold across
