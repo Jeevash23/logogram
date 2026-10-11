@@ -180,6 +180,8 @@ interface Store {
   projectsParent: string;
   themeSetting: ThemeSetting;
   theme: ResolvedTheme;
+  /** Whether single keys (digits, [ and ], letters, ?) act as shortcuts. */
+  singleKeys: boolean;
 
   project: ProjectInfo | null;
   model: ModelStatus;
@@ -231,6 +233,7 @@ interface Store {
   applyServerState: (s: ServerState) => void;
   setTheme: (t: ThemeSetting) => void;
   resolveTheme: () => void;
+  setSingleKeys: (on: boolean) => void;
   goto: (screen: Screen) => void;
   /** Show a view. Views that show the active run read its prompts as it did; see
    * analysisSourceFor. */
@@ -338,6 +341,7 @@ export const useStore = create<Store>((set, get) => ({
   // Until the saved appearance arrives, follow the system, as the page does (tokens.css).
   themeSetting: "system",
   theme: systemTheme(),
+  singleKeys: true,
 
   project: null,
   model: { state: "none" },
@@ -395,6 +399,7 @@ export const useStore = create<Store>((set, get) => ({
       firstRun: s.first_run,
       projectsParent: s.projects_parent,
       themeSetting: s.theme,
+      singleKeys: s.single_key_shortcuts ?? true,
       update: s.update ?? null,
       sae: s.sae ?? { state: "none" },
     });
@@ -432,6 +437,11 @@ export const useStore = create<Store>((set, get) => ({
     set({ themeSetting: t });
     get().resolveTheme();
     void api.settings({ theme: t }).catch(() => undefined);
+  },
+
+  setSingleKeys: (on) => {
+    set({ singleKeys: on });
+    void api.settings({ single_key_shortcuts: on }).catch(() => undefined);
   },
 
   resolveTheme: () => {

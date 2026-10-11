@@ -110,7 +110,7 @@ export function ExperimentView() {
     <div className={s.view}>
       <div className={s.head}>
         <div className={s.titleBlock}>
-          <h1 className={s.title}>{form.draftId ? "Experiment" : "New experiment"}</h1>
+          <h1 className={s.title}>{form.draftId ? form.name || "A saved experiment" : "New experiment"}</h1>
           <p className={s.subtitle}>
             {form.draftId ? (
               <>
@@ -351,10 +351,10 @@ function FormHistoryButtons() {
   const redo = useStore((st) => st.redoForm);
   return (
     <div className={e.history} role="group" aria-label="Form history">
-      <Button size="small" variant="ghost" icon="undo" disabled={!canUndo} onClick={undo} title={`Undo the last change to the form (${MOD}+Z)`} aria-keyshortcuts="Control+Z Meta+Z">
+      <Button size="small" variant="ghost" icon="undo" disabled={!canUndo} onClick={undo} tip={`Undo the last change to the form (${MOD}+Z)`} aria-keyshortcuts="Control+Z Meta+Z">
         Undo
       </Button>
-      <Button size="small" variant="ghost" icon="redo" disabled={!canRedo} onClick={redo} title={`Redo (${MOD}+Shift+Z)`} aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z Control+Y">
+      <Button size="small" variant="ghost" icon="redo" disabled={!canRedo} onClick={redo} tip={`Redo the change undone (${MOD}+Shift+Z)`} aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z Control+Y">
         Redo
       </Button>
     </div>
@@ -596,9 +596,9 @@ function PositionPicker({
           else onChange({ kind: "index", index: -1 });
         }}
         options={[
-          { value: "all", label: "All positions", disabled: !allowAll, title: allowAll ? undefined : "Steering adds the direction at one token of each prompt" },
+          { value: "all", label: "All positions", disabled: !allowAll, reason: "Steering adds the direction at one token of each prompt, so it can't use all positions." },
           { value: "last", label: "Last token" },
-          { value: "label", label: "Named position", disabled: labels.length === 0, title: labels.length ? undefined : "This dataset has no named positions" },
+          { value: "label", label: "Named position", disabled: labels.length === 0, reason: "This dataset has no named positions." },
           { value: "index", label: "Token index" },
         ]}
       />
@@ -707,6 +707,14 @@ function ScopeEditor({
   const verb = method === "ablation" ? "Ablate" : "Patch";
   // Sets of sites are intervened on together, which patching and ablation do.
   const setsAllowed = method === "activation_patching" || method === "ablation";
+  // Why some scopes can't be chosen with this method, said once under the choices.
+  const unavailable = steering
+    ? "Steering adds a direction to the residual stream at one token, so it sweeps no heads, positions or sets of sites."
+    : direct
+      ? "Direct effects are read at the last token only, and sets of sites need activation patching or ablation."
+      : paths
+        ? "Paths start at heads, attention outputs or MLP outputs, and sets of sites need activation patching or ablation."
+        : "Sets of sites need activation patching or ablation.";
   const position = (p: PositionSpec) => (direct ? { kind: "last" } as PositionSpec : p);
   return (
     <div className={e.stack}>
@@ -723,19 +731,8 @@ function ScopeEditor({
           else if (k === "site_sets") onChange(firstSets(scope));
         }}
         options={[
-          { value: "heads", label: "Layer × head", disabled: steering, title: steering ? "Steering adds to the residual stream" : undefined },
-          {
-            value: "layer_position",
-            label: "Layer × position",
-            disabled: direct || steering || paths,
-            title: direct
-              ? "Direct effects are read at the last token only"
-              : steering
-                ? "Steering adds at one token"
-                : paths
-                  ? "Paths start at heads, attention outputs or MLP outputs"
-                  : undefined,
-          },
+          { value: "heads", label: "Layer × head", disabled: steering, reason: unavailable },
+          { value: "layer_position", label: "Layer × position", disabled: direct || steering || paths, reason: unavailable },
           { value: "layer_components", label: steering ? "One site in every layer" : "Attention and MLP per layer" },
           ...(method === "attribution_patching" && (saeLoaded || kind === "features")
             ? [{ value: "features" as const, label: "Every SAE feature" }]
@@ -745,7 +742,7 @@ function ScopeEditor({
             value: "site_sets" as const,
             label: "Sets of sites",
             disabled: !setsAllowed,
-            title: setsAllowed ? "Sites intervened on together, one result per set" : "Sets are intervened on by activation patching or ablation",
+            reason: unavailable,
           },
         ]}
       />

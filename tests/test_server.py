@@ -206,6 +206,7 @@ def test_every_endpoint_matches_its_schema(app, client, tiny_backend, tmp_path, 
     state = client.get("/api/state", headers=AUTH).json()
     assert state["model"]["state"] == "none" and state["first_run"] is True
     assert state["theme"] == "system"  # until someone picks one
+    assert state["single_key_shortcuts"] is True
     assert client.post("/api/models/unload", headers=headers).json()["state"] == "none"
     assert client.get("/api/system", headers=AUTH).json()["backend"] in ("cpu", "cuda", "mps")
     assert client.get("/api/models/presets", headers=AUTH).json()["presets"]
@@ -215,6 +216,8 @@ def test_every_endpoint_matches_its_schema(app, client, tiny_backend, tmp_path, 
     settings = client.post("/api/settings", json={"theme": "dark"}, headers=headers).json()
     assert settings["theme"] == "dark"
     assert client.get("/api/state", headers=AUTH).json()["theme"] == "dark"
+    client.post("/api/settings", json={"single_key_shortcuts": False}, headers=headers)
+    assert client.get("/api/state", headers=AUTH).json()["single_key_shortcuts"] is False
 
     app.state.logogram.backend = tiny_backend
     app.state.logogram.model_status = {"state": "ready"}

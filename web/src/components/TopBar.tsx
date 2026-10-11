@@ -4,7 +4,7 @@ import { useStore, type Workspace } from "../store/app";
 import { MOD, ProjectMenu } from "./Header";
 import { BRAND_SEED, Logogram } from "./Logogram";
 import { UpdateNotice } from "./UpdateNotice";
-import { Icon, menuClasses } from "./ui";
+import { Icon, menuClasses, Tip } from "./ui";
 import type { IconName } from "./ui/Icon";
 import s from "./TopBar.module.css";
 
@@ -31,56 +31,65 @@ export function TopBar({
   return (
     <header className={s.bar}>
       <div className={s.left}>
-        <button
-          type="button"
-          className={s.home}
-          onClick={() => useStore.getState().goto("projects")}
-          title="All projects"
-          aria-label="All projects"
-        >
-          <Logogram seed={BRAND_SEED} size={30} haze={false} detail={0.85} weight={1.3} />
-        </button>
+        <Tip text="All projects" side="bottom">
+          <button
+            type="button"
+            className={s.home}
+            onClick={() => useStore.getState().goto("projects")}
+            aria-label="All projects"
+          >
+            <Logogram seed={BRAND_SEED} size={30} haze={false} detail={0.85} weight={1.3} />
+          </button>
+        </Tip>
         <ProjectMenu />
       </div>
       <nav className={s.workspaces} aria-label="Workspaces">
-        {WORKSPACE_ITEMS.map((w) => (
-          <button
-            key={w.id}
-            type="button"
-            className={s.workspace}
-            data-workspace={w.id}
-            aria-current={workspace === w.id ? "page" : undefined}
-            title={w.hint}
-            onClick={() => onWorkspace(w.id)}
-          >
-            <Icon name={w.icon} size={16} />
-            <span className={s.label}>{w.label}</span>
-            {w.id === "experiment" && staged > 0 && (
-              <span className={s.badge} title="Staged sites">
-                {staged}
-              </span>
-            )}
-          </button>
-        ))}
+        {WORKSPACE_ITEMS.map((w) => {
+          const stagedHere = w.id === "experiment" && staged > 0;
+          const stagedText = `${staged} site${staged === 1 ? "" : "s"} staged on the model map`;
+          return (
+            <Tip key={w.id} text={stagedHere ? `${w.hint}. ${stagedText}.` : w.hint} side="bottom">
+              <button
+                type="button"
+                className={s.workspace}
+                data-workspace={w.id}
+                aria-current={workspace === w.id ? "page" : undefined}
+                onClick={() => onWorkspace(w.id)}
+              >
+                <Icon name={w.icon} size={16} />
+                <span className={s.label}>{w.label}</span>
+                {stagedHere && (
+                  <span className={s.badge}>
+                    {staged}
+                    <span className="visually-hidden"> {staged === 1 ? "site" : "sites"} staged</span>
+                  </span>
+                )}
+              </button>
+            </Tip>
+          );
+        })}
       </nav>
       <div className={s.right}>
         <UpdateNotice />
-        <button type="button" className={s.tool} onClick={onHistory} title="Every run in this project">
-          <Icon name="history" size={16} />
-          <span className={s.label}>History</span>
-          {runs > 0 && <span className={s.count}>{runs}</span>}
-        </button>
-        <button
-          type="button"
-          className={s.tool}
-          onClick={() => useStore.setState({ paletteOpen: true })}
-          title={`Commands (${MOD}+K)`}
-          aria-label="Open the command palette"
-        >
-          <Icon name="search" size={16} />
-          <span className={s.label}>Commands</span>
-          <kbd className={s.kbd}>{MOD} K</kbd>
-        </button>
+        <Tip text="Every run in this project" side="bottom">
+          <button type="button" className={s.tool} onClick={onHistory}>
+            <Icon name="history" size={16} />
+            <span className={s.label}>History</span>
+            {runs > 0 && <span className={s.count}>{runs}</span>}
+          </button>
+        </Tip>
+        <Tip text={`Commands (${MOD}+K)`} side="bottom">
+          <button
+            type="button"
+            className={s.tool}
+            onClick={() => useStore.setState({ paletteOpen: true })}
+            aria-label="Open the command palette"
+          >
+            <Icon name="search" size={16} />
+            <span className={s.label}>Commands</span>
+            <kbd className={s.kbd}>{MOD} K</kbd>
+          </button>
+        </Tip>
         <ThemeMenu />
       </div>
     </header>
@@ -93,9 +102,11 @@ function ThemeMenu() {
   const setTheme = useStore((st) => st.setTheme);
   return (
     <DropdownMenu.Root>
-      <DropdownMenu.Trigger className={s.iconTool} aria-label="Appearance" title="Appearance">
-        <Icon name={theme === "dark" ? "moon" : "sun"} size={16} />
-      </DropdownMenu.Trigger>
+      <Tip text="Appearance" side="bottom">
+        <DropdownMenu.Trigger className={s.iconTool} aria-label="Appearance">
+          <Icon name={theme === "dark" ? "moon" : "sun"} size={16} />
+        </DropdownMenu.Trigger>
+      </Tip>
       <DropdownMenu.Portal>
         <DropdownMenu.Content className={menuClasses.menu} sideOffset={8} align="end">
           <div className={menuClasses.label}>Appearance</div>

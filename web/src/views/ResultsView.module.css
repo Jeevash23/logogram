@@ -294,3 +294,11 @@
 .correctionsMore[open] summary {
   margin-bottom: 4px;
 }
+
+.flagNote {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-xs);
+  color: var(--muted);
+}

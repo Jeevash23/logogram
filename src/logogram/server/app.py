@@ -355,6 +355,9 @@ class SettingsRequest(BaseModel):
     theme: Literal["light", "dark", "system"] | None = None
     # Whether Logogram may ask PyPI about new versions once a day. Off until the user says yes.
     update_check: bool | None = None
+    # Whether single keys (1 to 5, [ and ], P, B, A, C and ?) act as shortcuts. On until turned
+    # off, for someone who uses speech input or presses keys by accident.
+    single_key_shortcuts: bool | None = None
 
 
 # -- app factory -------------------------------------------------------------------------------
@@ -431,6 +434,7 @@ def create_app(
             "first_run": not settings.get("system_check_seen", False),
             # Until someone picks one, the app follows the computer's light or dark setting.
             "theme": settings.get("theme", "system"),
+            "single_key_shortcuts": settings.get("single_key_shortcuts", True),
             "projects_parent": str(default_projects_parent()),
             "update": state.update_status(),
             "sae": state.sae_payload(),

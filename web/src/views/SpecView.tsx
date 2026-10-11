@@ -65,7 +65,7 @@ export function SpecView() {
     <div className={s.view}>
       <div className={s.head}>
         <div className={s.titleBlock}>
-          <h1 className={s.title}>Spec</h1>
+          <h1 className={s.title}>{showing === "run" ? "Exactly what this run executed" : "Exactly what Run will execute"}</h1>
           <p className={s.subtitle}>
             The complete description of an experiment. The app and <code>logogram run</code> execute the same spec,
             so their results are identical on the same machine.

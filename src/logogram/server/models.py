@@ -144,6 +144,7 @@ class ServerState(_Out):
     job: JobInfo | None
     first_run: bool
     theme: Literal["light", "dark", "system"]
+    single_key_shortcuts: bool = True
     projects_parent: str
     update: UpdateStatus
     sae: dict[str, Any] = {"state": "none"}
@@ -155,6 +156,7 @@ class Settings(BaseModel):
     system_check_seen: bool | None = None
     theme: str | None = None
     update_check: bool | None = None
+    single_key_shortcuts: bool | None = None
 
 
 class OkOut(_Out):

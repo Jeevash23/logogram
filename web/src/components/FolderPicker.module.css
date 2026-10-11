@@ -10,7 +10,6 @@
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: var(--surface-2);
   padding: 3px;
 }
 

@@ -40,6 +40,7 @@ export function TokenStrip() {
     }
   };
   const tokenPosition = useStore(st => st.tokenPosition);
+  const singleKeys = useStore((st) => st.singleKeys);
 
   const record = dataset?.records[index];
 
@@ -75,11 +76,11 @@ export function TokenStrip() {
     <div className={s.strip}>
       <div className={s.top}>
         <div className={s.nav}>
-          <Button size="small" variant="ghost" icon="chevronLeft" aria-label="Previous prompt ([)" disabled={index === 0} onClick={() => setIndex(index - 1)} />
+          <Button size="small" variant="ghost" icon="chevronLeft" aria-label={singleKeys ? "Previous prompt ([)" : "Previous prompt"} disabled={index === 0} onClick={() => setIndex(index - 1)} />
           <span className={s.counter}>
             Prompt <strong>{index}</strong> <span className={s.of}>of {context.n}</span>
           </span>
-          <Button size="small" variant="ghost" icon="chevronRight" aria-label="Next prompt (])" disabled={index >= context.n - 1} onClick={() => setIndex(index + 1)} />
+          <Button size="small" variant="ghost" icon="chevronRight" aria-label={singleKeys ? "Next prompt (])" : "Next prompt"} disabled={index >= context.n - 1} onClick={() => setIndex(index + 1)} />
         </div>
         {origin && <span className={s.meta}>{origin}</span>}
         <div className={s.spacer} />

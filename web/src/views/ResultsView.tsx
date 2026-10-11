@@ -20,7 +20,7 @@ import { downloadBlob, exportFigure, methodsText } from "../lib/export";
 import { CircuitDialog } from "../components/CircuitDialog";
 import { rankedSites, universeText } from "../lib/circuits";
 import { CircuitResults } from "./CircuitResults";
-import { Forest } from "./Forest";
+import { FlagMark, Forest } from "./Forest";
 import s from "./views.module.css";
 import r from "./ResultsView.module.css";
 
@@ -113,13 +113,13 @@ export function ResultsView() {
                   variant="primary"
                   disabled={job?.status === "running"}
                   onClick={() => void useStore.getState().startVerification(run.id as string, VERIFY_TOP)}
-                  title="Patch the sites with the largest estimated effects, for real, and compare"
+                  tip={job?.status === "running" ? "A run is in progress. This can start when it finishes." : "Patch the sites with the largest estimated effects, for real, and compare"}
                 >
                   Verify top {VERIFY_TOP} by patching
                 </Button>
               )}
               {ranked.length > 0 && (
-                <Button onClick={() => setCircuitOpen(true)} title="Keep the strongest sites alone, 1, 2, 4, 8 … of them, and replace the rest of the model">
+                <Button onClick={() => setCircuitOpen(true)} tip="Keep the strongest sites alone, 1, 2, 4, 8 … of them, and replace the rest of the model">
                   Test the top sites as a circuit
                 </Button>
               )}
@@ -301,6 +301,11 @@ export function ResultsView() {
           <div className={r.heat}>
             <div className={r.heatHead}>
               <span className={s.panelTitle}>{layoutTitle(layout)}</span>
+              {flagged.size > 0 && (
+                <span className={r.flagNote}>
+                  <FlagMark /> {flagged.size} conclusion{flagged.size === 1 ? "" : "s"} changed in the robustness check
+                </span>
+              )}
               <ScaleBar bound={bound} theme={theme} label={metric === "effect" ? words.effect : words.delta} />
             </div>
             <ResultsHeatmap

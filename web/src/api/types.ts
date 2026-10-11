@@ -122,6 +122,8 @@ export interface ServerState {
   job: Job | null;
   first_run: boolean;
   theme: ThemeSetting;
+  /** Whether single keys act as shortcuts (on until turned off). */
+  single_key_shortcuts?: boolean;
   projects_parent: string;
   update: UpdateStatus;
   sae?: SAEStatus;

@@ -230,14 +230,14 @@ export function ModelDialog() {
               <dd>{bytes(est.activations)}</dd>
               {est.processing > 0 && (
                 <>
-                  <dt title="Float32 copies of the weights, for a moment while the model loads">Processing</dt>
-                  <dd>{bytes(est.processing)}</dd>
+                  <dt>While loading</dt>
+                  <dd>{bytes(est.processing)} of float32 copies of the weights</dd>
                 </>
               )}
               <dt>Margin</dt>
               <dd>{bytes(est.margin)}</dd>
-              <dt title="Parameters and stored buffers, as listed in the safetensors files">Stored values</dt>
-              <dd>{params(est.n_params)}</dd>
+              <dt>Stored values</dt>
+              <dd>{params(est.n_params)} parameters and buffers</dd>
               <dt>Revision</dt>
               <dd title={estimate.revision}>{shortRevision(estimate.revision)}</dd>
               <dt>Download</dt>

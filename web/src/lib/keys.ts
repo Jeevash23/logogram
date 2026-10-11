@@ -70,7 +70,7 @@ export function useGlobalKeys(): void {
         return;
       }
       // The list of shortcuts, from anywhere but a text field or an open dialog.
-      if (e.key === "?" && !mod && !e.altKey && !e.defaultPrevented && !overlayOpen && !typing(e.target) && !st.paletteOpen) {
+      if (e.key === "?" && st.singleKeys && !mod && !e.altKey && !e.defaultPrevented && !overlayOpen && !typing(e.target) && !st.paletteOpen) {
         e.preventDefault();
         useStore.setState({ shortcutsOpen: true });
         return;
@@ -101,10 +101,13 @@ export function useGlobalKeys(): void {
         return;
       }
       const sel = st.selection;
+      if (e.key === "Escape") {
+        st.select(null);
+        return;
+      }
+      // Character keys can be turned off, for speech input or keys pressed by accident.
+      if (!st.singleKeys) return;
       switch (e.key) {
-        case "Escape":
-          st.select(null);
-          return;
         case "[":
           st.setPromptIndex(st.promptIndex - 1);
           return;

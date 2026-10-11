@@ -11,7 +11,7 @@ import { Splitter } from "../components/Splitter";
 import { StatusLine } from "../components/StatusLine";
 import { TokenStrip } from "../components/TokenStrip";
 import { TopBar } from "../components/TopBar";
-import { Button, Dialog, Icon } from "../components/ui";
+import { Button, Dialog, Icon, Tip } from "../components/ui";
 import { useAnalysisContext } from "../lib/hooks";
 import { useStore, workspaceFor, WORKSPACE_VIEWS, type View, type Workspace } from "../store/app";
 import { AttentionView } from "../views/AttentionView";
@@ -34,6 +34,7 @@ export function Workbench() {
   const workspace = workspaceFor(view);
   const pins = useStore(st => st.headPins.length);
   const staged = useStore(st => st.stagedSites.length);
+  const singleKeys = useStore(st => st.singleKeys);
   const runs = useStore(st => st.runs.length);
   const inspectorFocus = useStore(st => st.inspectorFocus);
   const project = useStore(st => st.project?.session_id);
@@ -70,7 +71,7 @@ export function Workbench() {
     <a href="#main" className={s.skip} onClick={(e) => { e.preventDefault(); document.getElementById("main")?.focus(); }}>Skip to the view</a>
     <TopBar workspace={workspace} onWorkspace={goWorkspace} onHistory={() => setDrawer("history")} runs={runs} staged={staged} />
     <div className={s.subbar}>
-      <nav className={s.tabs} aria-label={`${workspace} views`}>{WORKSPACE_VIEWS.find(w => w.id === workspace)?.views.map((v, i) => <button key={v.id} type="button" className={s.tab} aria-current={view === v.id ? "page" : undefined} aria-keyshortcuts={String(i + 1)} onClick={() => setView(v.id)}>{v.label}{v.id === "heads" && pins > 0 && <span className={s.count}>{pins}/2</span>}</button>)}</nav>
+      <nav className={s.tabs} aria-label={`${workspace} views`}>{WORKSPACE_VIEWS.find(w => w.id === workspace)?.views.map((v, i) => <button key={v.id} type="button" className={s.tab} aria-current={view === v.id ? "page" : undefined} aria-keyshortcuts={singleKeys ? String(i + 1) : undefined} onClick={() => setView(v.id)}>{v.label}{v.id === "heads" && pins > 0 && <span className={s.count}>{pins}/2</span>}</button>)}</nav>
       <div className={s.context}>
         <NextStep />
         <ModelChip />
@@ -111,11 +112,11 @@ function NextStep() {
   const step = model.state !== "ready" ? 0 : !dataset ? 1 : !baseline ? 2 : 3;
   const go = () =>
     step === 0 ? useStore.setState({ modelDialogOpen: true }) : useStore.getState().setView(step === 1 ? "prompts" : step === 2 ? "baseline" : "experiment");
-  return <button type="button" className={s.next} onClick={go} aria-label={`Next step: ${STEPS[step]}`} title="Your first experiment, in four steps">
-    <span className={s.nextDots} aria-hidden="true">{STEPS.map((label, i) => <span key={label} data-state={i < step ? "done" : i === step ? "now" : "todo"} />)}</span>
+  return <Tip text="Your first experiment, in four steps" side="bottom"><button type="button" className={s.next} onClick={go} aria-label={`Next step: ${STEPS[step]}`}>
+    <span className={s.nextDots} aria-hidden="true">{STEPS.map((label, i) => <span key={label} data-state={i < step ? "done" : i === step ? "now" : "todo"} data-workspace={i > 0 ? "experiment" : undefined} />)}</span>
     <span className={s.nextText}><span className={s.nextCount}>Step {step + 1} of 4</span>{STEPS[step]}</span>
     <Icon name="arrowRight" size={14} />
-  </button>;
+  </button></Tip>;
 }
 
 /** The inspector, contained: an error in it leaves the rest of the workbench working. Choosing

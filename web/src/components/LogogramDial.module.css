@@ -32,7 +32,7 @@
 
 .label:hover:not(:disabled),
 .label:focus-visible {
-  background: var(--accent-soft);
+  background: var(--hover);
   color: var(--text);
 }
 

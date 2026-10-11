@@ -2,7 +2,7 @@ import { Fragment, useId, type ReactNode } from "react";
 
 import { useStore } from "../store/app";
 import { MOD, SHIFT } from "./Header";
-import { Dialog, Kbd } from "./ui";
+import { Checkbox, Dialog, Kbd } from "./ui";
 import s from "./ShortcutsDialog.module.css";
 
 /** Keys pressed together, such as Ctrl K. */
@@ -96,6 +96,8 @@ const SECTIONS: { title: string; rows: [ReactNode, string][] }[] = [
 /** Every keyboard shortcut, from ? or the command palette. */
 export function ShortcutsDialog() {
   const open = useStore((st) => st.shortcutsOpen);
+  const singleKeys = useStore((st) => st.singleKeys);
+  const setSingleKeys = useStore((st) => st.setSingleKeys);
   const id = useId();
   return (
     <Dialog
@@ -105,6 +107,15 @@ export function ShortcutsDialog() {
       description="Single keys work when the focus isn't in a text field."
       wide
     >
+      <div className={s.setting}>
+        <Checkbox checked={singleKeys} onChange={setSingleKeys}>
+          Use single-key shortcuts
+        </Checkbox>
+        <p className={s.settingNote}>
+          The digits, letters, brackets and ? listed below. Turn them off if you use speech input or press keys by
+          accident; shortcuts with {MOD}, the arrow keys and Esc keep working.
+        </p>
+      </div>
       <div className={s.sections}>
         {SECTIONS.map((section, i) => (
           <section key={section.title} className={s.section} aria-labelledby={`${id}-${i}`}>

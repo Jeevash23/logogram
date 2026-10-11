@@ -226,8 +226,8 @@ export function SelectionTray() {
   return <section className={s.tray} aria-label="Experiment selection">
     <div className={s.trayHeading}><div><span className={s.eyebrow}>Experiment selection</span><strong>{sites.length} site{sites.length === 1 ? "" : "s"}</strong></div><div className={s.controls}>
       <Button size="small" onClick={() => useStore.getState().prepareNote(sites)}>Save selection</Button>
-      <Button size="small" disabled={!!pairError} title={pairError ?? "Each site alone, and both together, in one run"} onClick={() => pair && useStore.getState().configureSets({ kind: "site_sets", universe: null, sets: pair }, { staged: true })}>Check how they interact</Button>
-      <Button disabled={!!circuitError} title={circuitError ?? "Keep these sites alone, remove them, and replace everything"} onClick={() => setCircuitOpen(true)}>Test as a circuit</Button>
+      <Button size="small" disabled={!!pairError} tip={pairError ?? "Each site alone, and both together, in one run"} onClick={() => pair && useStore.getState().configureSets({ kind: "site_sets", universe: null, sets: pair }, { staged: true })}>Check how they interact</Button>
+      <Button disabled={!!circuitError} tip={circuitError ?? "Keep these sites alone, remove them, and replace everything"} onClick={() => setCircuitOpen(true)}>Test as a circuit</Button>
       <Button variant="primary" onClick={() => useStore.getState().configureStaged()}>Configure experiment</Button>
     </div></div>
     <div className={s.chips}>{sites.map((site, i) => <span key={`${siteText(site)}-${i}`} className={s.chip}>{siteText(site)}<span className={s.hint}>{site.position.kind === "all" ? " · all positions" : ""}</span><button type="button" aria-label={`Remove ${siteText(site)} from experiment`} onClick={() => useStore.setState({ stagedSites: sites.filter((_, j) => i !== j) })}>×</button></span>)}</div>

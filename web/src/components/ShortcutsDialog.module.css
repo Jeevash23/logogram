@@ -63,3 +63,18 @@
   font-size: var(--text-xs);
   color: var(--faint);
 }
+
+.setting {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 16px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.settingNote {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--muted);
+}

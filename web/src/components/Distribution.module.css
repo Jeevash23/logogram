@@ -10,7 +10,7 @@
 }
 
 .band {
-  fill: var(--mark);
+  fill: var(--band);
 }
 
 .zero {
@@ -80,7 +80,7 @@
 }
 
 .keyBand {
-  background: var(--mark);
+  background: var(--band);
   border: 1px solid var(--line-soft);
 }
 

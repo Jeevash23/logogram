@@ -60,7 +60,7 @@ export function PredictionsView() {
   const selectLayer = (layer: number) => useStore.getState().select({ layer, part: "resid", kind: "resid_post", positionKey: String(data?.position ?? -1) });
 
   return <div className={s.view}>
-    <div className={s.head}><div className={s.titleBlock}><h1 className={s.title}>Layer predictions</h1><p className={s.subtitle}>Read how the residual stream’s vocabulary projection changes across the model.</p></div><span className={p.methodTag}>Logit lens</span></div>
+    <div className={s.head}><div className={s.titleBlock}><h1 className={s.title}>What each layer would predict</h1><p className={s.subtitle}>Read how the residual stream’s vocabulary projection changes across the model.</p></div><span className={p.methodTag}>Logit lens</span></div>
     <section className={p.method} aria-label="Prediction method"><h2>Final norm + vocabulary projection</h2><p>At each layer’s residual output, recompute the model’s final normalization and apply its vocabulary projection, including bias. Softmax gives the displayed probabilities. These intermediate projections are a diagnostic; they are not causal effects or calibrated early predictions.</p><p className={s.small}>{context.label} · original length-group batch composition preserved</p></section>
     <div className={p.controls}>
       <Field label="Prompt variant"><Segmented label="Prediction prompt variant" value={which} onChange={setWhich} options={[{ value: "clean", label: "Clean" }, { value: "corrupt", label: "Corrupt" }]} /></Field>

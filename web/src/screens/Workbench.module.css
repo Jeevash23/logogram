@@ -182,9 +182,14 @@
 }
 
 .nextDots span[data-state="now"] {
+  background: currentColor;
+  opacity: 1;
+  transform: scale(1.3);
+}
+
+.nextDots span[data-state="now"][data-workspace="experiment"] {
   background: var(--experiment);
   border-color: var(--experiment);
-  opacity: 1;
 }
 
 .nextText {

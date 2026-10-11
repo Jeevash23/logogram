@@ -4,6 +4,7 @@ import { layerAngle } from "../lib/logogram";
 import { selectionOfSite } from "../lib/sites";
 import { useStore } from "../store/app";
 import { Logogram } from "./Logogram";
+import { Tip } from "./ui";
 import s from "./LogogramDial.module.css";
 
 /**
@@ -54,7 +55,7 @@ export function LogogramDial({
           const angle = layerAngle(layer, n);
           const r = (30 + 31) * scale;
           const strongest = strongestIn(layer);
-          return (
+          const label = (
             <button
               key={layer}
               type="button"
@@ -63,10 +64,16 @@ export function LogogramDial({
               disabled={!strongest}
               onClick={() => strongest && select(selectionOfSite(strongest.site))}
               aria-label={strongest ? `Layer ${layer}: strongest ${strongest.site.label}, ${signed(strongest.value, 3)}` : `Layer ${layer}: not measured`}
-              title={strongest ? `${strongest.site.label} ${signed(strongest.value, 2)}` : undefined}
             >
               {layer}
             </button>
+          );
+          return strongest ? (
+            <Tip key={layer} text={`Layer ${layer}: strongest ${strongest.site.label}, ${signed(strongest.value, 2)}`}>
+              {label}
+            </Tip>
+          ) : (
+            label
           );
         })}
       </div>

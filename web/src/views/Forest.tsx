@@ -4,6 +4,11 @@ import type { SiteResult } from "../api/types";
 import { signed } from "../lib/format";
 import f from "./Forest.module.css";
 
+/** The mark a flagged site carries on maps and in lists: an ink corner, as on its map cell. */
+export function FlagMark() {
+  return <span className={f.flag} aria-hidden="true" />;
+}
+
 /** The strongest sites by |effect|, each with its mean and confidence interval. */
 export function Forest({
   results,
@@ -45,12 +50,18 @@ export function Forest({
   const x = (v: number) => ((v - lo) / span) * 100;
   const longest = Math.max(...top.map((site) => site.label.length));
   const labelWidth = `${Math.min(26, Math.max(8, longest + 1))}ch`;
+  const anyFlagged = !!flagged && top.some((site) => flagged.has(site.index));
   return (
     <div className={f.forest} style={{ ["--label-width" as string]: labelWidth }}>
       <div className={f.head}>
         <span>Largest effects</span>
         <span className={f.headNote}>mean · {ciLevel}% CI{banded ? " · band for all sites" : ""}</span>
       </div>
+      {anyFlagged && (
+        <div className={f.flagNote}>
+          <FlagMark /> changed in the robustness check
+        </div>
+      )}
       {top.map((site) => (
         <button
           key={site.index}
@@ -61,7 +72,12 @@ export function Forest({
         >
           <span className={f.label} title={site.label}>
             <span className={f.labelText}>{site.label}</span>
-            {flagged?.has(site.index) && <span className={f.flag} title="Changes with the baseline" />}
+            {flagged?.has(site.index) && (
+              <>
+                <FlagMark />
+                <span className="visually-hidden">, changed in the robustness check</span>
+              </>
+            )}
           </span>
           <span className={f.track} aria-hidden="true">
             <span className={f.zero} style={{ left: `${x(0)}%` }} />

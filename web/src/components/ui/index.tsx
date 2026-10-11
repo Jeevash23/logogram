@@ -33,13 +33,18 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   size?: "small" | "medium" | "large";
   icon?: IconName;
   iconAfter?: IconName;
+  /** What the button does, or why it can't be used yet, shown on hover and on keyboard focus. A
+   * disabled button with a tip stays focusable, so its reason can be read; clicking it does
+   * nothing. */
+  tip?: ReactNode;
 }
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
-  { variant = "secondary", size = "medium", icon, iconAfter, className, children, type, ...rest },
+  { variant = "secondary", size = "medium", icon, iconAfter, className, children, type, tip, disabled, onClick, ...rest },
   ref,
 ) {
-  return (
+  const explained = !!disabled && tip !== undefined && tip !== null && tip !== false;
+  const button = (
     <button
       ref={ref}
       type={type ?? "button"}
@@ -52,6 +57,9 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
         !children && s.iconOnly,
         className,
       )}
+      disabled={explained ? undefined : disabled}
+      aria-disabled={explained || undefined}
+      onClick={explained ? (e) => e.preventDefault() : onClick}
       {...rest}
     >
       {icon && <Icon name={icon} size={size === "small" ? 14 : 16} />}
@@ -59,6 +67,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       {iconAfter && <Icon name={iconAfter} size={size === "small" ? 14 : 16} />}
     </button>
   );
+  return tip === undefined || tip === null || tip === false ? button : <Tip text={tip}>{button}</Tip>;
 });
 
 // -- form controls -----------------------------------------------------------------------------
@@ -169,13 +178,17 @@ export function Segmented<T extends string>({
   label,
 }: {
   value: T;
-  options: { value: T; label: ReactNode; disabled?: boolean; title?: string }[];
+  /** reason: why a disabled option can't be chosen, a sentence shown under the control. */
+  options: { value: T; label: ReactNode; disabled?: boolean; reason?: string }[];
   onChange: (v: T) => void;
   label: string;
 }) {
   const radio = useRadioGroup(options, value, onChange);
-  return (
-    <div className={s.segmented} role="radiogroup" aria-label={label}>
+  const noteId = useId();
+  // Several options can share one reason: it is said once.
+  const reasons = [...new Set(options.filter((o) => o.disabled && o.reason).map((o) => o.reason))];
+  const group = (
+    <div className={s.segmented} role="radiogroup" aria-label={label} aria-describedby={reasons.length ? noteId : undefined}>
       {options.map((o, i) => (
         <button
           key={o.value}
@@ -184,13 +197,21 @@ export function Segmented<T extends string>({
           aria-checked={value === o.value}
           className={s.segment}
           disabled={o.disabled}
-          title={o.title}
           onClick={() => onChange(o.value)}
           {...radio(i)}
         >
           {o.label}
         </button>
       ))}
+    </div>
+  );
+  if (reasons.length === 0) return group;
+  return (
+    <div className={s.segmentedWithNote}>
+      {group}
+      <p id={noteId} className={s.segmentedNote}>
+        {reasons.join(" ")}
+      </p>
     </div>
   );
 }
