@@ -52,7 +52,9 @@ def save_note(
     old = next((n for n in book.notes if n.id == note_id), None)
     if note_id is not None and (old is None or old.revision != revision):
         raise NoteConflict("This note changed in another tab. Reload the note before saving again.")
-    if value.run_id is not None:
+    # A note keeps the run it came from as its provenance, even once that run is deleted; a new
+    # note, or one given another run, names a run of this project.
+    if value.run_id is not None and (old is None or old.run_id != value.run_id):
         project.readable(project.run_dir(value.run_id) / "spec.json")
     now = now_iso()
     note = ResearchNote(

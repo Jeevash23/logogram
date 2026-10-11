@@ -251,6 +251,10 @@ def compare_runs(project: Any, run_a: str, run_b: str) -> dict[str, Any]:
     summaries, specs, tables = [], [], []
     for run_id in (run_a, run_b):
         folder = project.run_dir(run_id)
+        if not folder.is_dir():
+            raise CompareError(
+                f"There is no run {run_id} in this project. It may have been deleted."
+            )
         try:
             summary = load_summary(project, run_id)
         except ValueError as exc:

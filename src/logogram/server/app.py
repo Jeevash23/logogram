@@ -16,7 +16,7 @@ from typing import Any, Literal
 import anyio
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from logogram import __version__
 from logogram.backends.base import BackendError
@@ -32,6 +32,7 @@ from logogram.datasets import (
     read_dataset_bytes,
     write_dataset,
 )
+from logogram.history import RunInUse, RunNotFound
 from logogram.project import (
     Project,
     ProjectError,
@@ -379,6 +380,17 @@ class VerifyRequest(BaseModel):
     top: int = Field(default=10, ge=1, le=200)
 
 
+class AnnotateRequest(BaseModel):
+    """What to change in what is said about a run (its annotations.json: the spec never changes).
+    Fields left out stay as they are; a title of null or "", or the spec's own name, clears it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = Field(default=None, max_length=10_000)  # 200 once on one line
+    starred: bool | None = None
+    archived: bool | None = None
+
+
 class SettingsRequest(BaseModel):
     system_check_seen: bool | None = None
     theme: Literal["light", "dark", "system"] | None = None
@@ -424,11 +436,13 @@ def create_app(
         state.open_project(Project.open(initial_project))
 
     @app.exception_handler(Missing)
+    @app.exception_handler(RunNotFound)
     async def _missing(_: Request, exc: Missing) -> JSONResponse:
         return JSONResponse({"error": str(exc)}, status_code=409)
 
     @app.exception_handler(Conflict)
     @app.exception_handler(NoteConflict)
+    @app.exception_handler(RunInUse)
     async def _conflict(_: Request, exc: Conflict) -> JSONResponse:
         return JSONResponse({"error": str(exc)}, status_code=409)
 
@@ -1138,6 +1152,20 @@ def create_app(
             for r in project.list_runs()
             if r.derived_from and r.derived_from.run == run_id
         ]
+
+    @app.patch("/api/runs/{run_id}", response_model=RunListing)
+    def annotate_run(run_id: str, body: AnnotateRequest) -> dict[str, Any]:
+        """Rename, star or archive a run (or a draft, or a damaged run)."""
+        given = body.model_dump(exclude_unset=True)
+        changes = {k: v for k, v in given.items() if k == "title" or v is not None}
+        return state.annotate_run(run_id, changes).to_dict()
+
+    @app.delete("/api/runs/{run_id}", response_model=M.OkOut)
+    def delete_run(run_id: str) -> dict[str, bool]:
+        """Delete a finished, failed or cancelled run, or a draft, folder and all (there is no
+        trash: see logogram.history). Refused while it runs or waits in the queue."""
+        state.delete_run(run_id)
+        return {"ok": True}
 
     @app.get("/api/runs/{run_id}/sites/{site}", response_model=M.SiteDetail)
     def site_detail(run_id: str, site: int) -> dict[str, Any]:

@@ -7,6 +7,7 @@
       experiments/<id>/results.parquet
       experiments/<id>/summary.json
       experiments/<id>/manifest.json
+      experiments/<id>/annotations.json   (a title, a star, archived: see logogram.history)
       .gitignore
 
 Nothing in a project folder refers to the machine it was made on: paths are project-relative.
@@ -268,11 +269,18 @@ class Project:
         return runs
 
     def run_listing(self, run_id: str) -> RunListing | None:
+        from logogram.history import annotation_fields, damaged_listing
+
         try:
             folder = self.run_dir(run_id)
-            spec = Spec.from_path(self.readable(folder / "spec.json"))
-        except Exception:  # noqa: BLE001 - unreadable specs are skipped in history
+        except ProjectError:
+            return None  # not a name Logogram gives runs, or a folder linking outside the project
+        if not folder.is_dir():
             return None
+        try:
+            spec = Spec.from_path(self.readable(folder / "spec.json"))
+        except Exception as exc:  # noqa: BLE001 - listed as damaged, saying why, never left out
+            return damaged_listing(self, run_id, folder, exc)
         error = None
         try:
             manifest = self.read_json(folder / "manifest.json", optional=True) or {}
@@ -315,11 +323,13 @@ class Project:
             layout_kind=(summary_meta.get("layout") or {}).get("kind"),
             model_id=spec.model.id,
             dataset=spec.dataset.path,
+            dataset_source=(manifest.get("dataset") or {}).get("source_path"),
             experiment=spec.experiment.model_dump(),
             scope=spec.scope.model_dump(),
             derived_from=manifest.get("derived_from"),
             error=error or manifest.get("error"),
             profile=layer_profile(summary_meta) if status == "finished" else None,
+            **annotation_fields(self, folder),
         )
 
     def last_modified(self) -> str:

@@ -18,7 +18,7 @@ from typing import Any
 
 from logogram.backends.base import Cancelled, ModelBackend
 from logogram.project import Project, config_dir, remember_recent
-from logogram.schema import validate_event
+from logogram.schema import RunListing, validate_event
 from logogram.spec import ModelRef, Spec
 
 log = logging.getLogger(__name__)
@@ -732,6 +732,46 @@ class AppState:
             session = self._queue[0].project_session
             self._queue.clear()
             self._publish_queue(session)
+
+    # -- managing runs -----------------------------------------------------------------------
+
+    def annotate_run(self, run_id: str, changes: dict[str, Any]) -> RunListing:
+        """Rename, star or archive a run: its annotations.json, never its spec."""
+        from logogram.history import annotate_run
+
+        project = self.require_project()
+        with self._job_lock:  # never while the run's folder is being deleted
+            self.require_project()
+            listing = annotate_run(project, run_id, **changes)
+        self._runs_changed(project, run_id)
+        return listing
+
+    def delete_run(self, run_id: str) -> None:
+        """Delete a finished, failed or cancelled run, or a draft. Not one that is running or
+        queued: under the job lock, so none can start in its folder meanwhile."""
+        from logogram.history import RunInUse, delete_run, display_name
+
+        project = self.require_project()
+        with self._job_lock:
+            self.require_project()
+            listing = project.run_listing(run_id)
+            name = display_name(listing) if listing else run_id
+            job = self.job
+            if job is not None and job.status == "running" and job.run_id == run_id:
+                raise RunInUse(
+                    f"{name} is running. Wait for it to end, or cancel it, then delete it."
+                )
+            if any(item.draft_id == run_id for item in self._queue):
+                raise RunInUse(
+                    f"{name} is waiting in the queue to run. Take it out of the queue first, then "
+                    "delete it."
+                )
+            delete_run(project, run_id)
+        self._runs_changed(project, run_id, deleted=True)
+
+    def _runs_changed(self, project: Project, run_id: str, deleted: bool = False) -> None:
+        payload = {"project_session": project.session_id, "run_id": run_id, "deleted": deleted}
+        self.hub.publish("runs.changed", validate_event("runs.changed", payload))
 
 
 def _reason(exc: Exception) -> str:

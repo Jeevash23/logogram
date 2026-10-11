@@ -1,6 +1,7 @@
-"""Command line: ``logogram`` (start the app), ``open``, ``run``, ``doctor``, ``serve``, and
+"""Command line: ``logogram`` (start the app), ``open``, ``run``, ``doctor``, ``serve``,
 commands that read and check runs without the app: ``list``, ``show``, ``compare``, ``diff``,
-``verify``, ``robustness``, ``export``, ``validate``, ``tasks`` and ``generate``."""
+``verify``, ``robustness``, ``export``, ``validate``, ``tasks`` and ``generate``, and commands
+that manage them: ``rename``, ``star``, ``archive`` and ``delete``."""
 
 from __future__ import annotations
 
@@ -587,17 +588,141 @@ def _run_id(project: Any, run: str) -> str:
 @app.command("list")
 def list_cmd(
     project_dir: Annotated[Path | None, ProjectOption] = None,
+    archived: Annotated[bool, typer.Option("--archived", help="List archived runs too.")] = False,
 ) -> None:
-    """List the project's runs and drafts, newest first."""
+    """List the project's runs and drafts, newest first, by their titles (★ starred). Archived
+    runs are left out unless --archived is given."""
     project = _open_project(project_dir)
     runs = project.list_runs()
     if not runs:
         typer.echo("No runs yet. Run a spec with `logogram run SPEC.json`.")
         return
+    shown = runs if archived else [r for r in runs if not r.archived]
     width = max(len(r.id) for r in runs)
-    for r in runs:
-        typer.echo(f"{r.id:<{width}}  {r.status:<9}  {r.name}")
-        typer.echo(f"{'':<{width}}  {'':<9}  {r.description}")
+    for r in shown:
+        name = f"{'★ ' if r.starred else ''}{r.title or r.name}"
+        typer.echo(f"{r.id:<{width}}  {r.status:<9}  {name}{' (archived)' if r.archived else ''}")
+        typer.echo(f"{'':<{width}}  {'':<9}  {r.error if r.damaged else r.description}")
+        if r.annotations_error:
+            typer.echo(f"{'':<{width}}  {'':<9}  Note: {r.annotations_error}")
+    hidden = len(runs) - len(shown)
+    if hidden:
+        them = "it" if hidden == 1 else "them"
+        typer.echo(
+            f"\n{hidden} archived run{'' if hidden == 1 else 's'} not listed: list {them} with --archived."
+        )
+
+
+def _named_run(project: Any, run: str) -> str:
+    """A run to change, given by its id or by its folder. Its spec may be unreadable (a damaged
+    run can still be renamed or deleted), and a folder is taken as it is named, never resolved
+    through a link to the run it points at."""
+    if os.sep in run or (os.altsep and os.altsep in run) or run in (".", ".."):
+        path = Path(os.path.abspath(run))
+        if path.parent.resolve() != project.experiments_dir.resolve():
+            raise _fail(
+                f"{run} isn't a run folder of {project.meta.name} (they are in experiments/)."
+            )
+        run = path.name
+    try:
+        if not project.run_dir(run).is_dir():
+            raise _fail(f"there is no run {run} in {project.meta.name}.")
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
+    return run
+
+
+def _annotate(project_dir: Path | None, run: str, **changes: Any) -> Any:
+    from logogram.history import annotate_run, reason
+
+    project = _open_project(project_dir, Path(run) if Path(run).exists() else None)
+    try:
+        return annotate_run(project, _named_run(project, run), **changes)
+    except ValueError as exc:
+        raise _fail(reason(exc)) from exc
+
+
+@app.command()
+def rename(
+    run: Annotated[str, typer.Argument(help="A run id, or its folder.")],
+    title: Annotated[
+        str, typer.Argument(help='The title to show instead of the spec\'s name ("" clears it).')
+    ],
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Give a run a title, shown instead of its spec's name. The spec never changes: the title is
+    kept beside it, in annotations.json."""
+    listing = _annotate(project_dir, run, title=title)
+    if listing.title:
+        typer.echo(f"{listing.id} is now called “{listing.title}”.")
+    else:
+        typer.echo(f"{listing.id} shows its spec's name again: “{listing.name}”.")
+
+
+@app.command()
+def star(
+    run: Annotated[str, typer.Argument(help="A run id, or its folder.")],
+    remove: Annotated[bool, typer.Option("--remove", help="Remove the star instead.")] = False,
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Star a run: ★ in `logogram list`, and found first in the app's history."""
+    listing = _annotate(project_dir, run, starred=not remove)
+    name = listing.title or listing.name
+    typer.echo(f"Starred “{name}”." if listing.starred else f"Removed the star from “{name}”.")
+
+
+@app.command()
+def archive(
+    run: Annotated[str, typer.Argument(help="A run id, or its folder.")],
+    restore: Annotated[
+        bool, typer.Option("--restore", help="Bring it back from the archive instead.")
+    ] = False,
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Archive a run: it stays in the project, but out of `logogram list` and the app's history
+    until they are asked to show archived runs. Nothing is deleted."""
+    listing = _annotate(project_dir, run, archived=not restore)
+    name = listing.title or listing.name
+    typer.echo(f"Archived “{name}”." if listing.archived else f"“{name}” is back from the archive.")
+
+
+@app.command()
+def delete(
+    run: Annotated[str, typer.Argument(help="A run id, or its folder.")],
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Delete without asking first.")] = False,
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Delete a finished, failed or cancelled run, or a draft: its folder and everything in it.
+    There is no undo; `logogram archive` keeps a run out of the way instead."""
+    from logogram.history import delete_run, display_name, reason
+
+    project = _open_project(project_dir, Path(run) if Path(run).exists() else None)
+    run_id = _named_run(project, run)
+    listing = project.run_listing(run_id)
+    name = display_name(listing) if listing else run_id
+    if not yes:
+        derived = [
+            r for r in project.list_runs() if r.derived_from and r.derived_from.run == run_id
+        ]
+        typer.echo(
+            f"This deletes {name}: experiments/{run_id} and everything in it (its spec, and any "
+            "results, summary and manifest). It can't be undone."
+        )
+        if derived:
+            n = len(derived)
+            stays, links = ("stays", "links") if n == 1 else ("stay", "link")
+            typer.echo(
+                f"{n} run{'' if n == 1 else 's'} derived from it {stays}, but no longer {links} "
+                "back to it."
+            )
+        if not typer.confirm("Delete it?", default=False):
+            typer.echo("Nothing was deleted.")
+            raise typer.Exit(1)
+    try:
+        delete_run(project, run_id)
+    except ValueError as exc:
+        raise _fail(reason(exc)) from exc
+    typer.echo(f"Deleted {name} (experiments/{run_id}).")
 
 
 @app.command()

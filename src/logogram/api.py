@@ -13,6 +13,8 @@ the app would make, and it lands in the project like any other::
     run.sites()          # one row per site: mean effect, interval, q-value, ...
     run.per_prompt()     # one row per site and prompt: everything the statistics came from
     run                  # in a notebook: the method, the strongest sites and a heatmap
+    run.rename("Name movers").star()   # as the history shows it; the spec never changes
+    lg.delete_run(project, old_run)    # its folder and everything in it, for good
 
 Tables come back as pandas DataFrames when pandas is installed, and as pyarrow Tables otherwise.
 """
@@ -28,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from logogram.project import Project, ProjectError
+from logogram.schema import RunAnnotations
 from logogram.spec import Spec
 
 __all__ = [
@@ -35,6 +38,7 @@ __all__ = [
     "check_robustness",
     "compare_runs",
     "create_project",
+    "delete_run",
     "generate",
     "list_runs",
     "load_model",
@@ -117,8 +121,23 @@ def run(
 
 
 def list_runs(project: Project) -> list[dict[str, Any]]:
-    """Every run and draft in the project, newest first, as the history lists them."""
+    """Every run and draft in the project, newest first, as the history lists them: archived runs
+    too (``archived``), and runs whose spec can't be read (``damaged``, with ``error`` saying why)."""
     return [r.to_dict() for r in project.list_runs()]
+
+
+def delete_run(project: Project, run: Run | str) -> None:
+    """Delete a finished, failed or cancelled run, or a draft (a :class:`Run` or a run id): its
+    folder and everything in it, for good. Archive a run to keep it out of the way instead. A run
+    in progress can't be deleted. Runs derived from it stay, and keep its id in their manifest."""
+    from logogram.history import delete_run as delete
+
+    if isinstance(run, Run) and run.project.root != project.root:
+        raise LogogramError(f"{run.id} belongs to another project.")
+    try:
+        delete(project, run.id if isinstance(run, Run) else run)
+    except ProjectError as exc:
+        raise LogogramError(str(exc)) from exc
 
 
 def load_run(project: Project, run_id: str, *, model: Any = None) -> Run:
@@ -261,6 +280,48 @@ class Run:
     def status(self) -> str:
         return str(self.manifest.get("status") or "draft")
 
+    @property
+    def title(self) -> str:
+        """What the run is called: the title it was given (see :meth:`rename`), or its spec's
+        name."""
+        return self._annotations().title or self.spec.name
+
+    @property
+    def starred(self) -> bool:
+        return self._annotations().starred
+
+    @property
+    def archived(self) -> bool:
+        return self._annotations().archived
+
+    def rename(self, title: str | None) -> Run:
+        """Give the run a title, shown instead of its spec's name (None or "" clears it). The spec
+        never changes: the title is kept beside it, in annotations.json."""
+        return self._annotate(title=title)
+
+    def star(self, starred: bool = True) -> Run:
+        """Star the run, so the history finds it first; ``star(False)`` removes the star."""
+        return self._annotate(starred=starred)
+
+    def archive(self, archived: bool = True) -> Run:
+        """Keep the run out of the history until it is asked to show archived runs; nothing is
+        deleted. ``archive(False)`` brings it back."""
+        return self._annotate(archived=archived)
+
+    def _annotations(self) -> RunAnnotations:
+        from logogram.history import read_annotations
+
+        return read_annotations(self.project, self.folder)[0]
+
+    def _annotate(self, **changes: Any) -> Run:
+        from logogram.history import annotate_run, reason
+
+        try:
+            annotate_run(self.project, self.id, **changes)
+        except ValueError as exc:  # ProjectError, or a title that isn't one line of text
+            raise LogogramError(reason(exc)) from exc
+        return self
+
     def _summary(self) -> dict[str, Any]:
         if self.summary is None:
             raise LogogramError(f"{self.id} has no results ({self.status}).")
@@ -325,7 +386,7 @@ class Run:
 
     def _repr_html_(self) -> str:
         if self.summary is None:
-            return f"<p><b>{html.escape(self.spec.name)}</b> · {html.escape(self.status)}</p>"
+            return f"<p><b>{html.escape(self.title)}</b> · {html.escape(self.status)}</p>"
         s = self.summary
         rows = "".join(
             f"<tr><td>{html.escape(x['label'])}</td><td style='text-align:right'>"
@@ -334,7 +395,7 @@ class Run:
             for x in self.strongest(8)
         )
         return (
-            f"<div style='font-family:sans-serif'><p><b>{html.escape(s['name'])}</b><br>"
+            f"<div style='font-family:sans-serif'><p><b>{html.escape(self.title)}</b><br>"
             f"{html.escape(s['description'])} · n = {s['n_prompts']}</p>"
             f"<p style='color:#555'>{html.escape(s['metric']['normalized_effect'])}</p>"
             f"{heatmap_svg(s)}<table><tr><th>site</th><th>effect</th>"
