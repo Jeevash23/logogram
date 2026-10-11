@@ -40,6 +40,8 @@ export function ResultsView() {
   const runs = useStore((st) => st.runs);
   const job = useStore((st) => st.job);
   const listing = runs.find((x) => x.id === run.id);
+  // A title someone gave the run is shown instead of its spec's name.
+  const title = listing ? listing.title : run.detail?.listing?.title;
 
   const bound = useMemo(() => {
     if (scaleMode === "unit" && metric === "effect") return 1;
@@ -102,7 +104,8 @@ export function ResultsView() {
         />
         <div className={r.heroText}>
           <span className="eyebrow">{provenance}</span>
-          <h1 className={r.title}>{spec?.name ?? run.id}</h1>
+          <h1 className={r.title}>{title || spec?.name || run.id}</h1>
+          {title && spec && title !== spec.name && <p className={r.specName}>Spec name: {spec.name}</p>}
           {spec && <MethodsLine spec={spec} n={summary?.n_prompts ?? run.live?.nPrompts} clusters={summary?.statistics.clusters} />}
         </div>
         <div className={r.heroActions}>

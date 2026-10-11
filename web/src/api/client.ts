@@ -23,6 +23,7 @@ import type {
   PromptRecord,
   RecentProject,
   RobustnessChange,
+  RunAnnotationsChange,
   RunDetail,
   RunListing,
   ServerState,
@@ -238,6 +239,11 @@ export const api = {
   verify: (id: string, top: number) =>
     post<{ run_id: string; job: Job }>(`/api/runs/${encodeURIComponent(id)}/verify`, { top }),
   derived: (id: string) => get<RunListing[]>(`/api/runs/${encodeURIComponent(id)}/derived`),
+  /** Rename, star or archive a run: its annotations.json, never its spec. */
+  annotateRun: (id: string, change: RunAnnotationsChange) =>
+    request<RunListing>("PATCH", `/api/runs/${encodeURIComponent(id)}`, change),
+  /** Delete a finished, failed or cancelled run, or a draft, folder and all. */
+  deleteRun: (id: string) => request<{ ok: boolean }>("DELETE", `/api/runs/${encodeURIComponent(id)}`),
 
   saeSuggestions: (model: string) => get<{ repo: string; detail: string }[]>(`/api/sae/suggestions?model=${encodeURIComponent(model)}`),
   saeFolders: (repo: string) => get<{ repo: string; revision: string; folders: string[] }>(`/api/sae/folders?repo=${encodeURIComponent(repo)}`),

@@ -683,6 +683,26 @@ export interface RunListing {
   error: string | null;
   /** Per layer, the largest normalized effect (signed): writes the run's logogram. */
   profile?: number[] | null;
+  /** The dataset the run read, as it was named when it ran (`dataset` is then its snapshot). */
+  dataset_source?: string | null;
+  /** What a person says about the run, kept beside its spec (annotations.json): a title shown
+   * instead of the spec's name, a star, archived (kept out of the history until shown). */
+  title?: string | null;
+  starred?: boolean;
+  archived?: boolean;
+  /** Why the run's annotations.json was ignored, when it can't be read. */
+  annotations_error?: string | null;
+  /** The run's spec can't be read: `error` says what is wrong and how to fix it. Its folder can
+   * be deleted; it can't be opened. */
+  damaged?: boolean;
+}
+
+/** A change to what is said about a run. What is left out stays; a title of "" or null (or the
+ * spec's own name) shows the spec's name again. */
+export interface RunAnnotationsChange {
+  title?: string | null;
+  starred?: boolean;
+  archived?: boolean;
 }
 
 export interface RunDetail {

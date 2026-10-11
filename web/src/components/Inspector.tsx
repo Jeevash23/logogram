@@ -16,6 +16,7 @@ import {
 } from "../lib/sites";
 import { setWhat, universeText } from "../lib/circuits";
 import { metricWords } from "../lib/metrics";
+import { runTitle } from "../lib/runs";
 import { siteText } from "../lib/spec";
 import { baselineText, experimentText, measureOf, measureWords, positionText } from "../lib/spec";
 import { prefersReducedMotion } from "../lib/motion";
@@ -658,7 +659,7 @@ function AcrossRuns({ selection }: { selection: Selection }) {
               aria-current={run.id === activeRunId ? "true" : undefined}
               onClick={() => void openRun(run.id, "results")}
             >
-              <span className={s.acrossName}>{run.name}</span>
+              <span className={s.acrossName}>{runTitle(run)}</span>
               <span className={s.acrossValue}>{signed(siteValue(site ?? undefined, "effect"), 2)}</span>
               <span className={s.forest} aria-hidden="true">
                 <span className={s.zero} style={{ left: `${x(0)}%` }} />
@@ -707,7 +708,7 @@ function RunOverview() {
   return (
     <div className={s.overview}>
       <span className="eyebrow">Selected run</span>
-      <h2 className={s.overviewTitle}>{run.detail?.spec.name ?? "Run"}</h2>
+      <h2 className={s.overviewTitle}>{(run.detail && run.title) || "Run"}</h2>
       {run.detail?.spec && <p className={s.componentText}>{experimentText(run.detail.spec.experiment)}</p>}
       {summary && (
         <dl className={s.stats}>

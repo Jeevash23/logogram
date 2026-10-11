@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Axe checks every view of the workbench, the inspector and a feature's details for
@@ -99,5 +100,52 @@ test("every view has no accessibility violations", async ({ page }) => {
   for (const view of ["Results", "Compare runs", "Research notes"]) {
     await open(page, view);
     await expectAccessible(page, `Evidence, ${view}`);
+  }
+});
+
+test("the history's states have no accessibility violations", async ({ page }) => {
+  await page.goto("/?token=browser-test-token");
+  await expect(page.getByRole("main").getByRole("heading", { name: "tiny-gpt2", exact: true })).toBeVisible();
+  // A run whose spec can't be read, beside the fixture's run while the test lasts.
+  const state = await (await page.request.get("/api/state")).json();
+  const broken = join(state.project.path, "experiments", "20000101-000000-broken");
+  mkdirSync(broken, { recursive: true });
+  writeFileSync(join(broken, "spec.json"), "{");
+  try {
+    await page.reload();
+    await page.getByRole("button", { name: /^History/ }).click();
+    const history = page.getByRole("dialog", { name: "Experiment history" });
+    await expect(history.getByText("unreadable", { exact: true })).toBeVisible();
+    await expectAccessible(page, "History");
+    const search = history.getByRole("searchbox", { name: "Search runs" });
+    await search.fill("without");
+    await expect(history.getByText("1 run found.")).toBeVisible();
+    await expectAccessible(page, "History, a search");
+    await search.fill("");
+    const run = history.locator("li[data-run]").filter({ hasText: "Without BOS" });
+    // (A menu, like every menu in the app, floats outside the page's landmarks while it is open.)
+    await run.getByRole("button", { name: "Actions for “Without BOS”" }).click();
+    await page.getByRole("menuitem", { name: "Rename…" }).click();
+    await expect(run.getByRole("textbox", { name: "Title of “Without BOS”" })).toBeFocused();
+    await expectAccessible(page, "History, renaming a run");
+    await page.keyboard.press("Escape");
+    // Starred, and shown alone; then the star comes off again, as the fixture had it.
+    await run.getByRole("button", { name: "Star “Without BOS”" }).click();
+    const show = history.getByRole("radiogroup", { name: "Show" });
+    await show.getByRole("radio", { name: /^Starred/ }).click();
+    await expect(run.getByRole("button", { name: "Star “Without BOS”" })).toHaveAttribute("aria-pressed", "true");
+    await expectAccessible(page, "History, starred runs");
+    await run.getByRole("button", { name: "Star “Without BOS”" }).click();
+    await expect(history.getByText("No starred runs.", { exact: false })).toBeVisible();
+    await show.getByRole("radio", { name: /^All/ }).click();
+    await run.getByRole("button", { name: "Actions for “Without BOS”" }).click();
+    await page.getByRole("menuitem", { name: "Delete…" }).click();
+    const question = page.getByRole("alertdialog", { name: "Delete “Without BOS”?" });
+    await expect(question.getByRole("button", { name: "Keep it" })).toBeFocused();
+    await expectAccessible(page, "History, deleting a run");
+    await question.getByRole("button", { name: "Keep it" }).click();
+    await expect(run).toBeVisible();
+  } finally {
+    rmSync(broken, { recursive: true, force: true });
   }
 });

@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
-import type { Comparison, ComparisonChange, Layout, RunDetail, SiteBase, SiteResult, SiteSpec } from "../api/types";
+import type { Comparison, ComparisonChange, Layout, RunDetail, RunListing, SiteBase, SiteResult, SiteSpec } from "../api/types";
 import { Heatmap, type Axis } from "../components/Heatmap/Heatmap";
 import { ScaleBar } from "../components/Heatmap/ScaleBar";
 import { Button, Callout, Empty, Field, Progress, Segmented, Select } from "../components/ui";
 import { divergingScale, niceBound, SCALE_FLOOR, type ColorScale, type ResolvedTheme } from "../lib/color";
 import { ci, count, num, pct, signed } from "../lib/format";
+import { pickerGroups, runTitle } from "../lib/runs";
 import { siteValue } from "../lib/hooks";
 import { findSite, gridKey, isResidKind, partOfKind, selectionOfSite, siteGrid, siteKey, type Selection } from "../lib/sites";
 import { siteText } from "../lib/spec";
@@ -68,6 +69,13 @@ export function CompareView() {
   }, [aId, bId, bothFinished]);
 
   const finished = runs.filter((r) => r.status === "finished" || r.id === aId || r.id === bId);
+  // What each run is called: the title given to it, or its spec's name.
+  const titleOf = (id: string | null, detail: RunDetail | undefined) => {
+    const listed = id ? runs.find((r) => r.id === id) : undefined;
+    return listed ? runTitle(listed) : detail?.listing?.title || detail?.spec.name || id || "";
+  };
+  const titleA = titleOf(aId, da);
+  const titleB = titleOf(bId, db);
   const robust = db?.manifest?.derived_from?.kind === "robustness" && db.manifest.derived_from.run === aId;
   // B patches, for real, the strongest sites that A (attribution patching) estimated.
   const verification = db?.manifest?.derived_from?.kind === "verification" && db.manifest.derived_from.run === aId;
@@ -127,9 +135,9 @@ export function CompareView() {
               : robust
                 ? "Robustness check"
                 : da && db
-                  ? da.spec.name === db.spec.name
-                    ? `Two runs of ${da.spec.name}`
-                    : `${da.spec.name} against ${db.spec.name}`
+                  ? titleA === titleB
+                    ? `Two runs of ${titleA}`
+                    : `${titleA} against ${titleB}`
                   : "Two runs side by side"}
           </h1>
           <p className={s.subtitle}>
@@ -157,21 +165,13 @@ export function CompareView() {
         <Field label="Run A">
           <Select value={aId ?? ""} onChange={(e) => setCompare(e.target.value || null, bId)}>
             <option value="">Choose a run</option>
-            {finished.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.name} · {r.id}
-              </option>
-            ))}
+            <RunOptions runs={finished} />
           </Select>
         </Field>
         <Field label="Run B">
           <Select value={bId ?? ""} onChange={(e) => setCompare(aId, e.target.value || null)}>
             <option value="">Choose a run</option>
-            {finished.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.name} · {r.id}
-              </option>
-            ))}
+            <RunOptions runs={finished} />
           </Select>
         </Field>
       </div>
@@ -241,7 +241,7 @@ export function CompareView() {
                 key={label}
                 label={label}
                 id={id}
-                name={(label === "A" ? da : db)?.spec.name ?? id}
+                name={label === "A" ? titleA : titleB}
                 layout={v.layout ?? layout}
                 measured={!!v.layout}
                 sites={v.sites}
@@ -276,6 +276,29 @@ export function CompareView() {
 
       {comparison && <ChangesTable changes={comparison.changes} topK={comparison.top_k} selected={siteA ?? siteB} />}
     </div>
+  );
+}
+
+/** The runs to choose from, by title (and id, which tells reruns apart): starred first, then the
+ * rest, then archived ones. */
+function RunOptions({ runs }: { runs: RunListing[] }) {
+  const option = (r: RunListing) => (
+    <option key={r.id} value={r.id}>
+      {runTitle(r)} · {r.id}
+    </option>
+  );
+  return (
+    <>
+      {pickerGroups(runs).map((group) =>
+        group.label === null ? (
+          group.runs.map(option)
+        ) : (
+          <optgroup key={group.label} label={group.label}>
+            {group.runs.map(option)}
+          </optgroup>
+        ),
+      )}
+    </>
   );
 }
 
