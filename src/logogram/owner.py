@@ -14,11 +14,12 @@ as those versions did.
 
 from __future__ import annotations
 
-import contextlib
 import functools
 import json
 import os
 import secrets
+import sys
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -77,9 +78,21 @@ def release_run(project: Project, folder: Path, owner: RunOwner) -> None:
 
 
 def remove_owner(folder: Path) -> None:
-    """Remove the owner record in ``folder``, if there is one (a link is removed, never followed)."""
-    with contextlib.suppress(OSError):  # gone already, or a read-only project
-        (folder / OWNER_FILE).unlink()
+    """Remove the owner record in ``folder``, if there is one (a link is removed, never followed).
+
+    On Windows a file can't be removed while another process reads it (the app listing the
+    run), so try again briefly, as ``fileio.replace_file`` does."""
+    path = folder / OWNER_FILE
+    for _ in range(50):
+        try:
+            path.unlink()
+            return
+        except PermissionError:
+            if sys.platform != "win32":
+                return  # a read-only project
+            time.sleep(0.02)
+        except OSError:  # gone already
+            return
 
 
 def read_owner(project: Project, folder: Path) -> RunOwner | None:

@@ -710,7 +710,8 @@ def list_cmd(
     width = max(len(r.id) for r in runs)
     for r in runs:
         typer.echo(f"{r.id:<{width}}  {r.status:<9}  {r.name}")
-        typer.echo(f"{'':<{width}}  {'':<9}  {r.description}")
+        where = " · running in another process" if r.elsewhere else ""
+        typer.echo(f"{'':<{width}}  {'':<9}  {r.description}{where}")
 
 
 @app.command()

@@ -270,7 +270,12 @@ class Run:
 
     @property
     def status(self) -> str:
-        return str(self.manifest.get("status") or "draft")
+        status = str(self.manifest.get("status") or "draft")
+        if status == "running":
+            # Still going, here or in another process, or interrupted: the history knows which.
+            listing = self.project.run_listing(self.id)
+            return listing.status if listing is not None else status
+        return status
 
     @property
     def traceback(self) -> str | None:

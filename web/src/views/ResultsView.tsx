@@ -44,7 +44,7 @@ export function ResultsView() {
   useEffect(() => useStore.getState().loadEnvironment(), []);
   const listing = runs.find((x) => x.id === run.id);
   // Where a finished run ran, against where a rerun here would run.
-  const ranElsewhere = useMemo(
+  const environmentText = useMemo(
     () => (run.detail?.summary ? environmentNote(environmentChanges(run.detail.manifest, run.detail.spec, environment)) : null),
     [run.detail, environment],
   );
@@ -114,10 +114,10 @@ export function ResultsView() {
           <span className="eyebrow">{provenance}</span>
           <h1 className={r.title}>{spec?.name ?? run.id}</h1>
           {spec && <MethodsLine spec={spec} n={summary?.n_prompts ?? run.live?.nPrompts} clusters={summary?.statistics.clusters} />}
-          {ranElsewhere && (
+          {environmentText && (
             <p className={r.environment} role="note">
               <Icon name="info" size={14} />
-              {ranElsewhere}
+              {environmentText}
             </p>
           )}
         </div>
@@ -166,7 +166,7 @@ export function ResultsView() {
       {status === "running" && !elsewhere && <RunningBanner />}
       {elsewhere && (
         <Callout title="This run is running in another process">
-          It was started outside this window, with <code>logogram run</code> or from Python, so its progress isn&rsquo;t shown here.
+          Another process runs it (<code>logogram run</code>, a notebook or another Logogram), so its progress isn&rsquo;t shown here.
           Its results appear here when it finishes.
         </Callout>
       )}

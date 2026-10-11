@@ -215,8 +215,12 @@ def test_a_run_whose_process_is_gone_reads_as_interrupted(server, project, spec_
     run_id = _running_run(project, spec_factory(), psutil.Process(sleeper.pid))
     listing = project.run_listing(run_id)
     assert listing is not None and listing.status == "running" and listing.elsewhere
+    listed = runner.invoke(cli, ["list", "--project", str(project.root)])
+    assert "running in another process" in listed.output
+    assert lg.load_run(project, run_id).status == "running"
     sleeper.kill()
     sleeper.wait()
+    assert lg.load_run(project, run_id).status == "failed"
     listing = project.run_listing(run_id)
     assert listing is not None and listing.status == "failed" and not listing.elsewhere
     assert listing.error == owners.OWNER_STOPPED
