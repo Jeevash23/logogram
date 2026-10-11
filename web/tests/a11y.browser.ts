@@ -6,8 +6,11 @@ import { fileURLToPath } from "node:url";
 // accessibility violations, from those that block people using assistive technology to headings
 // out of order. It runs inside the page; the app's content security policy forbids injected
 // scripts, so this test's browser context sets the policy aside (the app itself is unchanged).
+// Reduced motion makes transitions instant, so axe reads each page as it settles rather than
+// halfway through one (a button fading from disabled to enabled has, for a moment, white text on
+// grey).
 
-test.use({ bypassCSP: true });
+test.use({ bypassCSP: true, reducedMotion: "reduce" });
 
 const AXE = readFileSync(fileURLToPath(new URL("../node_modules/axe-core/axe.min.js", import.meta.url)), "utf8");
 
