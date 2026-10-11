@@ -8,7 +8,7 @@ from typing import Any
 
 import torch
 
-from logogram.backends.base import ModelBackend
+from logogram.backends.base import ModelBackend, float64
 
 # A few paragraphs: enough to look at, small enough to answer at once.
 TEXT_MAX = 4000
@@ -36,7 +36,7 @@ def _top(backend: ModelBackend, logits: torch.Tensor, k: int) -> list[list[dict[
     order so the list never changes between runs."""
     if not torch.isfinite(logits).all():
         raise ValueError("The model produced values that aren't finite numbers here. Try float32.")
-    probs = torch.softmax(logits.double(), dim=-1)
+    probs = torch.softmax(float64(logits), dim=-1)
     order = torch.argsort(logits, dim=-1, descending=True, stable=True)[:, :k]
     return [
         [
@@ -96,7 +96,7 @@ def look_attention(
     if not 0 <= layer < info.n_layers or not 0 <= head < info.n_heads:
         raise ValueError(f"L{layer} H{head} doesn't exist in this model.")
     tokenized, tokens = _tokens(backend, text, prepend_bos)
-    pattern = backend.attention_pattern(tokens, layer)[0, head].double().cpu()
+    pattern = float64(backend.attention_pattern(tokens, layer)[0, head]).cpu()
     return {"tokens": tokenized.tokens, "layer": layer, "head": head, "pattern": pattern.tolist()}
 
 

@@ -16,7 +16,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from logogram.backends.base import ModelBackend
+from logogram.backends.base import ModelBackend, float64
 from logogram.stats import resample_counts
 
 # What each kind of head does, as the app and the Python API say it.
@@ -99,7 +99,7 @@ def head_kind_scores(backend: ModelBackend, settings: HeadKindSettings) -> dict[
         batch = tokens[start : start + settings.batch_size]
         patterns = backend.attention_patterns(batch, layers)
         for layer, pattern in patterns.items():
-            scores = kind_scores_of_pattern(pattern.double().cpu(), settings.length, offset)
+            scores = kind_scores_of_pattern(float64(pattern).cpu(), settings.length, offset)
             for kind, value in scores.items():
                 per[kind][start : start + len(batch), layer] = value.numpy()
     counts = resample_counts(settings.sequences, settings.bootstrap, settings.seed)
