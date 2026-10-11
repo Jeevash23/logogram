@@ -24,7 +24,7 @@ test("a failed run says why, with its traceback behind Show details", async ({ p
   await fakeRuns(page, () => [{ id: "fake-failed", name: "A sweep that failed", status: "failed", error, traceback: TRACEBACK }]);
   await open(page);
   await page.getByRole("button", { name: /^History/ }).click();
-  await history(page).getByRole("button", { name: /A sweep that failed/ }).click();
+  await history(page).getByRole("button", { name: /^A sweep that failed/ }).click();
 
   const main = page.getByRole("main");
   await expect(main.getByRole("heading", { level: 1, name: "A sweep that failed" })).toBeVisible();
@@ -57,7 +57,7 @@ test("a run in another process says so, and its results appear when it ends", as
   await fakeRuns(page, () => [{ id: "fake-elsewhere", name: "A sweep from a notebook", status, elsewhere: status === "running" }]);
   await open(page);
   await page.getByRole("button", { name: /^History/ }).click();
-  const row = history(page).getByRole("button", { name: /A sweep from a notebook/ });
+  const row = history(page).getByRole("button", { name: /^A sweep from a notebook/ });
   await expect(row).toContainText("running in another process");
   await expect(row.getByRole("status", { name: "Running in another process" })).toBeVisible();
   await row.click();

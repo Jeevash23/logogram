@@ -142,9 +142,9 @@ test("runs that failed, run elsewhere or ran with other versions have no accessi
     ["A sweep that failed", "a failed run"],
   ]) {
     await page.getByRole("button", { name: /^History/ }).click();
-    await expect(history.getByRole("button", { name: new RegExp(name) })).toBeVisible();
+    await expect(history.getByRole("button", { name: new RegExp(`^${name}`) })).toBeVisible();
     await expectAccessible(page, `History, ${view}`);
-    await history.getByRole("button", { name: new RegExp(name) }).click();
+    await history.getByRole("button", { name: new RegExp(`^${name}`) }).click();
     await expect(page.getByRole("main").getByRole("heading", { level: 1, name })).toBeVisible();
     await expectAccessible(page, `Results, ${view}`);
   }
