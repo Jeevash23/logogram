@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import sys
 import threading
 import time
@@ -15,6 +16,8 @@ import torch
 from fastapi.testclient import TestClient
 
 from logogram.backends.base import BackendError, Cancelled
+from logogram.datasets import file_sha256
+from logogram.fileio import atomic_output, write_text_atomic
 from logogram.project import Project
 from logogram.server.app import create_app
 from logogram.server.security import SecurityConfig
@@ -163,6 +166,82 @@ def test_a_project_with_a_linked_datasets_folder_is_not_written(client, ready, p
     r = client.post("/api/datasets/ioi", json={"name": "ioi", "n": 4}, headers=HEADERS)
     assert r.status_code == 400 and "outside the project" in r.json()["error"]
     assert list(elsewhere.iterdir()) == []
+
+
+def _edits(project, name: str, dataset: str = "datasets/ioi.jsonl") -> dict:
+    """A request to save ioi.jsonl without its first prompt as a new dataset called ``name``."""
+    sha = file_sha256(project.datasets_dir / "ioi.jsonl")
+    return {"dataset": dataset, "dataset_sha256": sha, "name": name, "remove": [0], "replace": {}}
+
+
+@posix_only
+def test_edited_prompts_are_never_written_through_a_link(client, ready, project, tmp_path):
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text("keep me\n", encoding="utf-8")
+    (project.datasets_dir / "linked.jsonl").symlink_to(outside)
+    (project.datasets_dir / "dangling.jsonl").symlink_to(tmp_path / "nowhere.jsonl")
+    for name in ("linked", "dangling"):
+        r = client.post("/api/datasets/derive", json=_edits(project, name), headers=HEADERS)
+        assert (
+            r.status_code == 400
+            and r.json()["error"] == f"{name}.jsonl already exists. Choose another name."
+        )
+    assert outside.read_text(encoding="utf-8") == "keep me\n"
+    assert not (tmp_path / "nowhere.jsonl").exists()
+    assert (project.datasets_dir / "linked.jsonl").is_symlink()
+    assert (project.datasets_dir / "dangling.jsonl").is_symlink()
+
+    # Prompts linked from outside the project aren't read, so they can't be copied in.
+    shutil.copy(project.datasets_dir / "ioi.jsonl", tmp_path / "theirs.jsonl")
+    (project.datasets_dir / "theirs.jsonl").symlink_to(tmp_path / "theirs.jsonl")
+    body = _edits(project, "mine", dataset="datasets/theirs.jsonl")
+    r = client.post("/api/datasets/derive", json=body, headers=HEADERS)
+    assert r.status_code == 400 and "outside the project" in r.json()["error"]
+    assert not os.path.lexists(project.datasets_dir / "mine.jsonl")
+
+
+@posix_only
+def test_edited_prompts_are_not_written_into_a_linked_folder(client, ready, project, tmp_path):
+    body = _edits(project, "edited")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    for child in project.datasets_dir.iterdir():
+        child.rename(elsewhere / child.name)
+    project.datasets_dir.rmdir()
+    project.datasets_dir.symlink_to(elsewhere, target_is_directory=True)
+    r = client.post("/api/datasets/derive", json=body, headers=HEADERS)
+    assert r.status_code == 400 and "outside the project" in r.json()["error"]
+    assert sorted(p.name for p in elsewhere.iterdir()) == ["ioi.jsonl", "mixed.jsonl"]
+
+
+def test_a_new_file_never_replaces_one_made_meanwhile(tmp_path, monkeypatch):
+    path = tmp_path / "data.jsonl"
+    with pytest.raises(FileExistsError), atomic_output(path, replace=False) as fh:
+        fh.write(b"mine")
+        path.write_bytes(b"theirs")  # another writer gets there first
+    assert path.read_bytes() == b"theirs"
+    assert [p.name for p in tmp_path.iterdir()] == ["data.jsonl"]  # no temporary file is left
+    write_text_atomic(tmp_path / "new.jsonl", "new", replace=False)
+    assert (tmp_path / "new.jsonl").read_text(encoding="utf-8") == "new"
+
+    # A file system without hard links is checked before the move instead.
+    def no_links(*args, **kwargs):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(os, "link", no_links)
+    with pytest.raises(FileExistsError):
+        write_text_atomic(path, "mine", replace=False)
+    assert path.read_bytes() == b"theirs"
+    write_text_atomic(tmp_path / "other.jsonl", "other", replace=False)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["data.jsonl", "new.jsonl", "other.jsonl"]
+
+
+@posix_only
+def test_a_new_file_never_replaces_a_link(tmp_path):
+    (tmp_path / "dangling").symlink_to(tmp_path / "nowhere")
+    with pytest.raises(FileExistsError):
+        write_text_atomic(tmp_path / "dangling", "mine", replace=False)
+    assert (tmp_path / "dangling").is_symlink() and not (tmp_path / "nowhere").exists()
 
 
 @posix_only

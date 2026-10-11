@@ -25,6 +25,7 @@ from logogram.datasets import (
     PromptRecord,
     check_dataset_name,
     decode_dataset,
+    derive_records,
     file_sha256,
     load_dataset,
     parse_jsonl,
@@ -255,6 +256,20 @@ class PairRequest(BaseModel):
     answer: str
     distractor: str
     overwrite: bool = False
+
+
+class DeriveRequest(BaseModel):
+    """A dataset's prompts, some edited and some left out, saved as a new dataset. The dataset
+    they come from never changes: runs record its hash."""
+
+    # The dataset edited, as specs name it (a run's saved copy too), and the version edited.
+    dataset: str
+    dataset_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    # The new dataset's name, checked as is: a name that is really a path is refused.
+    name: str
+    # Indices of the prompts to leave out, and the new value of each edited prompt by index.
+    remove: list[int] = []
+    replace: dict[int, Any] = {}
 
 
 class AnalysisRequest(BaseModel):
@@ -568,12 +583,19 @@ def create_app(
     def _new_dataset_path(project: Project, name: str) -> Path:
         return project.dataset_file(check_dataset_name(Path(name).name))
 
-    def _write_new(path: Path, records: list[PromptRecord], overwrite: bool) -> dict[str, Any]:
+    def _write_new(
+        path: Path,
+        records: list[PromptRecord],
+        overwrite: bool,
+        fix: str = "Choose another name, or replace it explicitly.",
+    ) -> dict[str, Any]:
+        exists = f"{path.name} already exists. {fix}"
         if os.path.lexists(path) and not overwrite:
-            raise DatasetError(
-                f"{path.name} already exists. Choose another name, or replace it explicitly."
-            )
-        write_dataset(path, records)
+            raise DatasetError(exists)
+        try:
+            write_dataset(path, records, replace=overwrite)
+        except FileExistsError:  # created since the check: it is never replaced
+            raise DatasetError(exists) from None
         return {"name": path.name, "path": f"datasets/{path.name}", "n": len(records)}
 
     def _records(
@@ -689,6 +711,26 @@ def create_app(
             clean=body.clean, corrupt=body.corrupt, answer=body.answer, distractor=body.distractor
         )
         return _write_new(_new_dataset_path(project, body.name), [record], body.overwrite)
+
+    @app.post("/api/datasets/derive", response_model=M.DatasetCreated)
+    def derive_dataset(body: DeriveRequest) -> dict[str, Any]:
+        """Save a dataset's prompts, some edited and some left out, as a new dataset. Nothing is
+        ever replaced: neither the dataset edited nor a file already called ``name``."""
+        project = state.require_project()
+        path = project.dataset_file(check_dataset_name(body.name))
+        fix = "Choose another name."
+        if os.path.lexists(path):  # say so before reading the prompts
+            raise DatasetError(f"{path.name} already exists. {fix}")
+        source = project.resolve_dataset(body.dataset)
+        content = read_dataset_bytes(source)
+        if hashlib.sha256(content).hexdigest() != body.dataset_sha256:
+            raise Conflict(
+                f"{source.name} changed since these edits were made, so they no longer match its "
+                "prompts. Discard them and edit the file as it is now."
+            )
+        records = parse_jsonl(decode_dataset(content, body.dataset), source=body.dataset)
+        derived = derive_records(records, remove=body.remove, replace=body.replace)
+        return _write_new(path, derived, overwrite=False, fix=fix)
 
     @app.post("/api/tokenize", response_model=M.TokenStrip)
     def tokenize(body: TokenizeRequest) -> dict[str, Any]:

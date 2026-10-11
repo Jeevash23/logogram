@@ -21,12 +21,13 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from logogram.fileio import DATASET_LIMIT, read_limited, write_text_atomic
+from logogram.fileio import DATASET_LIMIT, read_limited, size_text, write_text_atomic
 
 DATASET_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 
@@ -91,40 +92,79 @@ def parse_jsonl(text: str, *, source: str = "dataset") -> list[PromptRecord]:
                 f"{source}, line {line_no}: not valid JSON ({exc.msg}). "
                 "Each line must be one JSON object."
             ) from exc
-        if not isinstance(raw, dict):
-            raise DatasetError(f"{source}, line {line_no}: expected a JSON object.")
-        missing = [k for k in ("clean", "corrupt", "answer", "distractor") if k not in raw]
-        if missing:
-            raise DatasetError(
-                f"{source}, line {line_no}: missing {', '.join(repr(m) for m in missing)}. "
-                "Each line needs clean, corrupt, answer and distractor."
-            )
-        if isinstance(raw.get("positions"), dict):
-            raw["positions"] = {
-                k: tuple(v) if isinstance(v, list) else v for k, v in raw["positions"].items()
-            }
-        try:
-            record = PromptRecord.model_validate(raw)
-        except ValidationError as exc:
-            first = exc.errors()[0]
-            where = ".".join(str(p) for p in first["loc"])
-            raise DatasetError(f"{source}, line {line_no}: {where}: {first['msg']}.") from exc
-        _check_spans(record, line_no, source)
-        records.append(record)
+        records.append(parse_record(raw, f"{source}, line {line_no}"))
     if not records:
         raise DatasetError(f"{source} has no prompts. Add one JSON object per line.")
     return records
 
 
-def _check_spans(record: PromptRecord, line_no: int, source: str) -> None:
+def parse_record(raw: Any, where: str) -> PromptRecord:
+    """One prompt pair from its JSON value, checked as each line of a dataset file is.
+
+    ``where`` starts each error message, such as ``"ioi.jsonl, line 3"`` or ``"Prompt 3"``.
+    """
+    if not isinstance(raw, dict):
+        raise DatasetError(f"{where}: expected a JSON object.")
+    missing = [k for k in ("clean", "corrupt", "answer", "distractor") if k not in raw]
+    if missing:
+        raise DatasetError(
+            f"{where}: missing {', '.join(repr(m) for m in missing)}. "
+            "Each prompt needs clean, corrupt, answer and distractor."
+        )
+    if isinstance(raw.get("positions"), dict):
+        spans = {k: tuple(v) if isinstance(v, list) else v for k, v in raw["positions"].items()}
+        raw = {**raw, "positions": spans}
+    try:
+        record = PromptRecord.model_validate(raw)
+    except ValidationError as exc:
+        first = exc.errors()[0]
+        field = ".".join(str(p) for p in first["loc"])
+        raise DatasetError(f"{where}: {field}: {first['msg']}.") from exc
+    _check_spans(record, where)
+    return record
+
+
+def _check_spans(record: PromptRecord, where: str) -> None:
     if not record.positions:
         return
     for label, (_start, end) in record.positions.items():
         if end > len(record.clean):
             raise DatasetError(
-                f"{source}, line {line_no}: position {label!r} ends at character {end}, but "
+                f"{where}: position {label!r} ends at character {end}, but "
                 f"the clean prompt has {len(record.clean)} characters."
             )
+
+
+def derive_records(
+    records: list[PromptRecord], *, remove: Iterable[int], replace: Mapping[int, Any]
+) -> list[PromptRecord]:
+    """A dataset's prompts with some left out and some replaced, in their order.
+
+    ``remove`` and the keys of ``replace`` are indices into ``records``; each replacement is the
+    JSON value of the new prompt pair, checked as an imported line is.
+    """
+    n = len(records)
+    removed: set[int] = set()
+    for index in remove:
+        if not 0 <= index < n:
+            raise DatasetError(
+                f"There is no prompt {index} to remove: the prompts are 0 to {n - 1}."
+            )
+        if index in removed:
+            raise DatasetError(f"Prompt {index} is listed twice to remove.")
+        removed.add(index)
+    for index in replace:
+        if not 0 <= index < n:
+            raise DatasetError(f"There is no prompt {index} to edit: the prompts are 0 to {n - 1}.")
+        if index in removed:
+            raise DatasetError(f"Prompt {index} is both edited and removed. Keep one of the two.")
+    if len(removed) == n:
+        raise DatasetError("Removing every prompt would leave an empty dataset. Keep at least one.")
+    return [
+        parse_record(replace[i], f"Prompt {i}") if i in replace else record
+        for i, record in enumerate(records)
+        if i not in removed
+    ]
 
 
 def read_dataset_bytes(path: Path) -> bytes:
@@ -173,10 +213,21 @@ def to_jsonl(records: list[PromptRecord]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def write_dataset(path: Path, records: list[PromptRecord]) -> None:
-    """Write a dataset file. Callers in a project get ``path`` from ``Project.dataset_file``."""
+def write_dataset(path: Path, records: list[PromptRecord], *, replace: bool = True) -> None:
+    """Write a dataset file. Callers in a project get ``path`` from ``Project.dataset_file``.
+
+    A dataset larger than Logogram reads is refused before anything is written. With ``replace``
+    false, a file already at ``path`` (even a dangling link) is left alone and the write fails
+    with ``FileExistsError``.
+    """
+    text = to_jsonl(records)
+    if len(text.encode("utf-8")) > DATASET_LIMIT:
+        raise DatasetError(
+            f"{path.name} would be larger than the {size_text(DATASET_LIMIT)} Logogram reads. "
+            "Split the prompts into smaller files."
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
-    write_text_atomic(path, to_jsonl(records))
+    write_text_atomic(path, text, replace=replace)
 
 
 def check_dataset_name(name: str) -> str:
