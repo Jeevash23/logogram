@@ -31,3 +31,7 @@
   max-width: 460px;
   padding: 24px;
 }
+
+.error h1 {
+  font-size: var(--text-xl);
+}

@@ -61,7 +61,7 @@ export function Projects() {
 
         <div className={s.projectGrid}>
           <section>
-            <h3 className={s.sectionTitle}>Recent</h3>
+            <h2 className={s.sectionTitle}>Recent</h2>
             {recent === null ? null : recent.length === 0 ? (
               <p className={s.muted}>Projects you open will be listed here.</p>
             ) : (
@@ -85,7 +85,7 @@ export function Projects() {
 
           <section className={s.side}>
             <div className={s.block}>
-              <h3 className={s.sectionTitle}>New project</h3>
+              <h2 className={s.sectionTitle}>New project</h2>
               <form
                 className={s.form}
                 onSubmit={(e) => {
@@ -121,7 +121,7 @@ export function Projects() {
             </div>
 
             <div className={s.block}>
-              <h3 className={s.sectionTitle}>Open</h3>
+              <h2 className={s.sectionTitle}>Open</h2>
               <div className={s.stack}>
                 <Button icon="folder" onClick={() => setPicker("open")} disabled={busy}>
                   Open a project folder

@@ -42,7 +42,7 @@ export function PromptsView() {
     <div className={s.view}>
       <div className={s.head}>
         <div className={s.titleBlock}>
-          <h2 className={s.title}>Prompts</h2>
+          <h1 className={s.title}>Prompts</h1>
           <p className={s.subtitle}>
             Each prompt is a pair: a clean prompt where the model shows the behavior, and a corrupt prompt where it
             shouldn't. The experiment's metric compares the answer with a distractor, such as their logit difference at the
@@ -245,7 +245,7 @@ function DatasetTable() {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       <div className={s.row} style={{ alignItems: "baseline" }}>
-        <h3 className={s.panelTitle}>{dataset.name}</h3>
+        <h2 className={s.panelTitle}>{dataset.name}</h2>
         <span className={s.faint}>
           {plural(dataset.n, "prompt")}
           {dataset.lengths && dataset.lengths.length > 0 && (

@@ -65,7 +65,7 @@ export function SpecView() {
     <div className={s.view}>
       <div className={s.head}>
         <div className={s.titleBlock}>
-          <h2 className={s.title}>Spec</h2>
+          <h1 className={s.title}>Spec</h1>
           <p className={s.subtitle}>
             The complete description of an experiment. The app and <code>logogram run</code> execute the same spec,
             so their results are identical on the same machine.
@@ -132,15 +132,15 @@ export function SpecView() {
           <aside className={v.aside}>
             {showing === "run" && folder && (
               <>
-                <h3 className={s.panelTitle}>Rerun from a terminal</h3>
+                <h2 className={s.panelTitle}>Rerun from a terminal</h2>
                 <p className={s.small}>From the project folder:</p>
                 <CopyCommand command={`logogram run ${folder}/spec.json`} />
                 <p className={s.faint}>
                   It writes a new experiment folder and reports whether every per-prompt value matches this run.
                 </p>
-                <h3 className={s.panelTitle} style={{ marginTop: 16 }}>
+                <h2 className={s.panelTitle} style={{ marginTop: 16 }}>
                   Files
-                </h3>
+                </h2>
                 <ul className={v.files}>
                   <li>
                     <strong>spec.json</strong> the experiment
@@ -159,9 +159,9 @@ export function SpecView() {
             )}
             {showing === "run" && manifest?.versions && (
               <>
-                <h3 className={s.panelTitle} style={{ marginTop: 16 }}>
+                <h2 className={s.panelTitle} style={{ marginTop: 16 }}>
                   Manifest
-                </h3>
+                </h2>
                 <dl className={s.kv}>
                   {Object.entries(manifest.versions).map(([k, val]) => (
                     <Fragment key={k}>
@@ -200,7 +200,7 @@ export function SpecView() {
             )}
             {showing === "draft" && (
               <>
-                <h3 className={s.panelTitle}>Run it</h3>
+                <h2 className={s.panelTitle}>Run it</h2>
                 <p className={s.small}>
                   Press Run in the experiment form, or save it and run <code>logogram run</code> on the saved file.
                 </p>

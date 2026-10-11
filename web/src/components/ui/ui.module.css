@@ -321,24 +321,6 @@
   justify-content: center;
 }
 
-.chip {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 5px;
-  height: 22px;
-  padding: 0 8px;
-  border: 1px solid var(--line-soft);
-  border-radius: 11px;
-  background: var(--surface-2);
-  font-size: var(--text-xs);
-  white-space: nowrap;
-  line-height: 20px;
-}
-
-.chipKey {
-  color: var(--faint);
-}
-
 .progress {
   position: relative;
   height: 3px;
@@ -654,21 +636,3 @@
   background: var(--line-soft);
 }
 
-.section {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.sectionHeader {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.sectionTitle {
-  font-size: var(--text-xs);
-  font-weight: 600;
-  color: var(--muted);
-}

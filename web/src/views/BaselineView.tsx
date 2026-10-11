@@ -42,7 +42,7 @@ export function BaselineView() {
       <div className={s.head}>
         <div className={s.titleBlock}>
           <span className="eyebrow">Baseline</span>
-          <h2 className={s.title}>{verdict ?? "Does the model show the behavior?"}</h2>
+          <h1 className={s.title}>{verdict ?? "Does the model show the behavior?"}</h1>
           <p className={s.subtitle}>
             Run the model on the clean and corrupt prompts without intervening, to confirm the behavior exists before
             measuring what carries it.

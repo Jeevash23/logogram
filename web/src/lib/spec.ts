@@ -6,7 +6,6 @@ import type {
   PathReceiverSpec,
   ExperimentSpec,
   Measure,
-  ModelInfo,
   PositionSpec,
   ScopeSpec,
   Side,
@@ -191,41 +190,6 @@ export function scopeShort(s: ScopeSpec): string {
   }
 }
 
-/** Which run receives the intervention and where the replacement comes from. */
-export function directionQuestion(e: ExperimentSpec): string {
-  if (e.kind === "activation_patching") {
-    return e.direction === "clean_to_corrupt" ? "Does this restore the behavior?" : "Does this break it?";
-  }
-  if (e.kind === "direct_logit_attribution") return "How much does this write directly toward the answer?";
-  if (e.kind === "attribution_patching") {
-    return e.direction === "clean_to_corrupt" ? "Would this restore the behavior, to first order?" : "Would this break it, to first order?";
-  }
-  if (e.kind === "steering") return "Does adding this direction move the behavior, more than a random one?";
-  if (e.kind === "path_patching") return "How much of the effect travels through these receivers?";
-  return "Does removing this break the behavior?";
-}
-
-export function receiverText(e: ExperimentSpec): { receiver: string; source: string } {
-  if (e.kind === "activation_patching") {
-    return e.direction === "clean_to_corrupt"
-      ? { receiver: "corrupt prompt", source: "the clean prompt" }
-      : { receiver: "clean prompt", source: "the corrupt prompt" };
-  }
-  if (e.kind === "direct_logit_attribution") return { receiver: `${e.prompts} prompt`, source: "its own forward pass" };
-  if (e.kind === "attribution_patching") {
-    return e.direction === "clean_to_corrupt"
-      ? { receiver: "corrupt prompt", source: "the clean prompt" }
-      : { receiver: "clean prompt", source: "the corrupt prompt" };
-  }
-  if (e.kind === "steering") return { receiver: `${e.apply_to} prompt`, source: "the mean difference of the training pairs" };
-  if (e.kind === "path_patching") {
-    return e.direction === "clean_to_corrupt"
-      ? { receiver: "corrupt prompt", source: "the clean prompt, through the receivers" }
-      : { receiver: "clean prompt", source: "the corrupt prompt, through the receivers" };
-  }
-  return { receiver: "clean prompt", source: baselineText(e.baseline) };
-}
-
 export function siteFromSelection(sel: Selection, residKind: SiteSpec["kind"] = sel.kind ?? "resid_pre"): SiteSpec {
   const kind: SiteSpec["kind"] =
     sel.part === "head" ? "head" : sel.part === "attn" ? "attn_out" : sel.part === "mlp" ? "mlp_out" : sel.part === "feature" ? "sae_feature" : residKind;
@@ -243,34 +207,6 @@ export function siteFromSelection(sel: Selection, residKind: SiteSpec["kind"] = 
     head: sel.part === "head" ? sel.head : null,
     ...(sel.part === "feature" ? { feature: sel.feature } : {}),
     position,
-  };
-}
-
-export function defaultSpec(opts: {
-  model: ModelInfo | null;
-  modelId?: string;
-  dataset: string;
-  name?: string;
-}): Spec {
-  const m = opts.model;
-  return {
-    logogram_spec: 2,
-    name: opts.name ?? "Which heads restore the answer?",
-    notes: "",
-    model: {
-      id: m?.id ?? opts.modelId ?? "openai-community/gpt2",
-      revision: m?.revision ?? null,
-      dtype: m?.dtype ?? "float32",
-      device: "auto",
-      process_weights: m?.process_weights ?? true,
-    },
-    dataset: { path: opts.dataset, sha256: null, limit: null },
-    tokenization: { prepend_bos: true },
-    experiment: { kind: "activation_patching", direction: "clean_to_corrupt" },
-    scope: { kind: "heads", position: { kind: "all" } },
-    metric: { kind: "logit_diff", normalization: "dataset_gap" },
-    statistics: { bootstrap: 1000, ci: 0.95, seed: 0, cluster: null },
-    execution: { batch_size: 64 },
   };
 }
 

@@ -2,10 +2,10 @@ import { test, expect, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-// Axe checks each workspace's main views for accessibility violations that block or seriously
-// hinder people using assistive technology. It runs inside the page; the app's content security
-// policy forbids injected scripts, so this test's browser context sets the policy aside (the app
-// itself is unchanged).
+// Axe checks every view of the workbench, the inspector and a feature's details for
+// accessibility violations, from those that block people using assistive technology to headings
+// out of order. It runs inside the page; the app's content security policy forbids injected
+// scripts, so this test's browser context sets the policy aside (the app itself is unchanged).
 
 test.use({ bypassCSP: true });
 
@@ -32,22 +32,39 @@ async function violations(page: Page): Promise<Violation[]> {
   });
 }
 
-/** Serious and critical violations: what keeps someone from using the view. */
 async function expectAccessible(page: Page, view: string) {
-  const found = (await violations(page)).filter((v) => v.impact === "serious" || v.impact === "critical");
+  const found = await violations(page);
   expect(found, `${view}: ${JSON.stringify(found, null, 2)}`).toEqual([]);
 }
 
-test("the main views have no serious accessibility violations", async ({ page }) => {
+async function open(page: Page, name: string) {
+  await page.getByRole("button", { name, exact: true }).click();
+  await expect(page.getByRole("button", { name, exact: true })).toHaveAttribute("aria-current", "page");
+}
+
+test("every view has no accessibility violations", async ({ page }) => {
   await page.goto("/?token=browser-test-token");
   await expect(page.getByRole("main").getByRole("heading", { name: "tiny-gpt2", exact: true })).toBeVisible();
   await expectAccessible(page, "Explore, model");
+  await page.locator('canvas[aria-label*="Model map"]').focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(page.getByRole("complementary", { name: "Inspector" }).getByRole("heading", { level: 2, name: "L0 H0" })).toBeVisible();
+  await expectAccessible(page, "Explore, a component in the inspector");
+  for (const view of ["Attention", "Head comparison", "Layer predictions", "Features"]) {
+    await open(page, view);
+    await expectAccessible(page, `Explore, ${view}`);
+  }
+  await page.getByLabel("Features on each token").locator("button[aria-pressed]").first().click();
+  await expect(page.getByText("Where it fires most")).toBeVisible();
+  await expectAccessible(page, "Explore, a feature");
   await page.getByRole("button", { name: "Experiment", exact: true }).click();
   for (const view of ["Prompts", "Baseline", "Configure", "Spec"]) {
-    await page.getByRole("button", { name: view, exact: true }).click();
-    await expect(page.getByRole("button", { name: view, exact: true })).toBeVisible();
+    await open(page, view);
     await expectAccessible(page, `Experiment, ${view}`);
   }
   await page.getByRole("button", { name: "Evidence", exact: true }).click();
-  await expectAccessible(page, "Evidence, results");
+  for (const view of ["Results", "Compare runs", "Research notes"]) {
+    await open(page, view);
+    await expectAccessible(page, `Evidence, ${view}`);
+  }
 });
