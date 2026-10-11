@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from logogram.schema import RunListing, SiteSummary
+from logogram.schema import QueuedRunInfo, RunListing, SiteSummary
 from logogram.spec import ModelRef, PredictionSettings
 
 
@@ -76,6 +76,16 @@ class StartedRun(_Out):
 
 class CancelOut(_Out):
     job: JobInfo | None
+
+
+class QueueAdded(_Out):
+    """A run sent to the queue. With nothing running it started at once (``run_id`` and ``job``);
+    otherwise it waits its turn (``queued``). ``queue`` lists every run still waiting."""
+
+    run_id: str | None
+    job: JobInfo | None
+    queued: QueuedRunInfo | None
+    queue: list[QueuedRunInfo]
 
 
 class DraftSaved(_Out):
@@ -148,6 +158,8 @@ class ServerState(_Out):
     projects_parent: str
     update: UpdateStatus
     sae: dict[str, Any] = {"state": "none"}
+    # The runs waiting for the job in progress, first in line first.
+    queue: list[QueuedRunInfo] = []
 
 
 class Settings(BaseModel):

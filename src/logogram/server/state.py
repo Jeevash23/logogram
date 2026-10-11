@@ -1,4 +1,5 @@
-"""Server state: the open project, the loaded model, the running job and the event stream."""
+"""Server state: the open project, the loaded model, the running job, the runs queued behind it
+and the event stream."""
 
 from __future__ import annotations
 
@@ -151,6 +152,33 @@ class Job:
             }
 
 
+@dataclass(frozen=True, eq=False)
+class QueuedRun:
+    """A run waiting for the job in progress to end: what ``run_spec_job`` starts it with."""
+
+    spec: Spec
+    project_session: str
+    draft_id: str | None = None
+    derived_from: dict[str, Any] | None = None
+    id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    queued_at: float = field(default_factory=time.time)
+
+    @property
+    def title(self) -> str:
+        return self.spec.name
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "title": self.title,
+            "spec": self.spec.model_dump(mode="json"),
+            "draft_id": self.draft_id,
+            "derived_from": self.derived_from,
+            "project_session": self.project_session,
+            "queued_at": self.queued_at,
+        }
+
+
 class AppState:
     def __init__(self, hub: EventHub) -> None:
         self.hub = hub
@@ -163,7 +191,12 @@ class AppState:
         self.sae: Any = None
         self.sae_status: dict[str, Any] = {"state": "none"}
         self.job: Job | None = None
-        self._job_lock = threading.Lock()
+        # Re-entrant, so the queue can decide that a run may start and start it in one hold.
+        self._job_lock = threading.RLock()
+        # Runs waiting for the job in progress to end, first in line first (see queue_run). Only
+        # changed under _job_lock. The queue lives in memory, so it doesn't survive a restart of
+        # the server, and it belongs to the open project: switching or closing it empties it.
+        self._queue: list[QueuedRun] = []
         self._stop = threading.Event()
         self._update_lock = threading.Lock()
 
@@ -256,6 +289,7 @@ class AppState:
                     )
                     with contextlib.suppress(OSError):  # read-only projects remain inspectable
                         write_json(project.writable(path), data)
+            self._clear_queue()
             self.project = project
         remember_recent(project)
         self.hub.publish("project", {"session_id": project.session_id})
@@ -274,6 +308,7 @@ class AppState:
                     "The project changed in another tab. Wait for this tab to refresh, then try again."
                 )
             self._check_switch()
+            self._clear_queue()
             self.project = None
         self.hub.publish("project", {"session_id": None})
 
@@ -493,6 +528,8 @@ class AppState:
                 log.exception("job failed")
                 job.update(status="failed", error=str(exc) or type(exc).__name__)
             self.hub.publish("job", job.to_dict())
+            # This job has let go of the server, however it ended: the queue's next run starts.
+            self._start_next()
 
         threading.Thread(target=target, name=f"logogram-{kind}", daemon=True).start()
         return job
@@ -510,12 +547,8 @@ class AppState:
 
         def prepare() -> str:
             self.require_project()  # check again under the switch/job lock
-            project.resolve_dataset(spec.dataset.path)
+            self._check_run(project, spec, draft_id)
             if draft_id is not None:
-                folder = project.run_dir(draft_id)
-                project.readable(folder / "spec.json")
-                if (folder / "manifest.json").exists():
-                    raise Conflict(f"{draft_id} has already run. Start a new run instead.")
                 run_id, folder = draft_id, project.prepare_run_dir(draft_id)
             else:
                 run_id, folder = project.new_run_dir(spec.name)
@@ -558,6 +591,16 @@ class AppState:
 
         return self.start_job("run", spec.name, work, prepare=prepare)
 
+    def _check_run(self, project: Project, spec: Spec, draft_id: str | None) -> None:
+        """What a run needs to start: its dataset, and a draft, whose folder it fills, that
+        hasn't run."""
+        project.resolve_dataset(spec.dataset.path)
+        if draft_id is not None:
+            folder = project.run_dir(draft_id)
+            project.readable(folder / "spec.json")
+            if (folder / "manifest.json").exists():
+                raise Conflict(f"{draft_id} has already run. Start a new run instead.")
+
     def save_draft(self, spec: Spec, draft_id: str | None = None) -> str:
         """Save ``spec`` as a new draft, or over the draft ``draft_id`` if it hasn't run."""
         from logogram.runner import write_json
@@ -577,6 +620,11 @@ class AppState:
                     raise Conflict(
                         f"{draft_id} has run, so its spec stays as it ran. Save a new draft instead."
                     )
+                if any(item.draft_id == draft_id for item in self._queue):
+                    raise Conflict(
+                        f"{draft_id} is queued to run as it was saved. Remove it from the queue "
+                        "to change it, or save a new draft."
+                    )
                 run_id, folder = draft_id, project.prepare_run_dir(draft_id)
             write_json(folder / "spec.json", spec.model_dump(mode="json"))
         return run_id
@@ -588,9 +636,108 @@ class AppState:
         return self.start_job("load_model", f"Load {ref.id}", work)
 
     def cancel_job(self) -> Job | None:
+        """Cancel the job in progress. The queue stays: its next run starts when this one ends."""
         job = self.job
         if job is not None and job.status == "running":
             job.cancel.set()
             job.update()
             self.hub.publish("job", {**job.to_dict(), "cancelling": True})
         return job
+
+    # -- the run queue -----------------------------------------------------------------------
+
+    def queued_runs(self) -> list[dict[str, Any]]:
+        """The runs waiting in the queue, first in line first."""
+        return [item.to_dict() for item in list(self._queue)]
+
+    def queue_run(
+        self,
+        spec: Spec,
+        derived_from: dict[str, Any] | None = None,
+        draft_id: str | None = None,
+    ) -> Job | QueuedRun:
+        """Run ``spec`` after the jobs ahead of it: at once when nothing is running or waiting
+        (the job is returned), otherwise last in the queue (the queued run is returned).
+
+        When its turn comes it starts like any run, through ``run_spec_job``, which checks it
+        again. What can be checked now is checked now, so a run that can't start isn't queued.
+        """
+        project = self.require_project()
+        with self._job_lock:
+            self.require_project()  # check again under the switch/job lock
+            job = self.job
+            running = job is not None and job.status == "running"
+            if not running and not self._queue:
+                return self.run_spec_job(spec, derived_from, draft_id)
+            self._check_run(project, spec, draft_id)
+            if draft_id is not None:
+                if running and job is not None and job.run_id == draft_id:
+                    raise Conflict(f"{draft_id} is running now. Queue a new run instead.")
+                if any(item.draft_id == draft_id for item in self._queue):
+                    raise Conflict(f"{draft_id} is already queued. It runs when its turn comes.")
+            item = QueuedRun(spec, project.session_id, draft_id, derived_from)
+            self._queue.append(item)
+            self._publish_queue(project.session_id)
+        return item
+
+    def remove_queued_run(self, queued_id: str) -> list[dict[str, Any]]:
+        """Take a run out of the queue before it starts. Returns the runs still waiting."""
+        project = self.require_project()
+        with self._job_lock:
+            self.require_project()
+            item = next((q for q in self._queue if q.id == queued_id), None)
+            if item is None:
+                raise Missing("That run isn't queued any more: it has started or was removed.")
+            self._queue.remove(item)
+            self._publish_queue(project.session_id)
+            return self.queued_runs()
+
+    def _start_next(self) -> None:
+        """Start the queue's next run, now that no job is running. A run that can't start (its
+        dataset was deleted, say) leaves the queue, the tabs are told why, and the next one is
+        tried. Called by every job's thread once the job has ended, so never two jobs at once."""
+        with self._job_lock:
+            while self._queue and (self.job is None or self.job.status != "running"):
+                item = self._queue[0]
+                try:
+                    if self.project is None or self.project.session_id != item.project_session:
+                        raise Missing("Its project isn't open any more.")  # cleared on a switch
+                    self.run_spec_job(item.spec, item.derived_from, item.draft_id)
+                except Exception as exc:  # noqa: BLE001 - reported, and the next run is tried
+                    reason = _reason(exc)
+                    log.warning("A queued run couldn't start: %s", reason)
+                    skipped = {
+                        "project_session": item.project_session,
+                        "id": item.id,
+                        "title": item.title,
+                        "error": reason,
+                    }
+                    self.hub.publish("queue.skipped", validate_event("queue.skipped", skipped))
+                finally:
+                    # Only now, once the job has taken its place: the queue and the job never
+                    # both look idle while a run starts.
+                    self._queue.remove(item)
+                    self._publish_queue(item.project_session)
+
+    def _publish_queue(self, session: str | None) -> None:
+        """Tell the tabs the whole queue. Called under _job_lock, so they hear the changes in
+        the order they were made."""
+        payload = {"project_session": session, "runs": self.queued_runs()}
+        self.hub.publish("queue", validate_event("queue", payload))
+
+    def _clear_queue(self) -> None:
+        """The queue belongs to the open project: empty it when another project opens or this
+        one closes (under _job_lock, once the switch is allowed)."""
+        if self._queue:
+            session = self._queue[0].project_session
+            self._queue.clear()
+            self._publish_queue(session)
+
+
+def _reason(exc: Exception) -> str:
+    """Why a queued run couldn't start, in the words the API's error responses use."""
+    if isinstance(exc, OSError):
+        name = Path(exc.filename).name if isinstance(exc.filename, str) else None
+        what = exc.strerror or type(exc).__name__
+        return f"{what}: {name}" if name else what
+    return str(exc) or type(exc).__name__

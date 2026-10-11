@@ -79,7 +79,7 @@ const SECTIONS: { title: string; rows: [ReactNode, string][] }[] = [
   {
     title: "Experiment form (Configure)",
     rows: [
-      [<Keys keys={[MOD, "Enter"]} />, "Run the experiment."],
+      [<Keys keys={[MOD, "Enter"]} />, "Run the experiment, or queue it while another job runs."],
       [<Keys keys={[MOD, "Z"]} />, "Undo the last change to the form. In a text field, this undoes typing first."],
       [<Either>{[<Keys key="a" keys={[MOD, SHIFT, "Z"]} />, <Keys key="b" keys={["Ctrl", "Y"]} />]}</Either>, "Redo the change."],
     ],
