@@ -15,12 +15,13 @@ a diverging cobalt to amber scale, always with its legend, and nothing else does
 * **Model** draws the model map with the model's real dimensions: one row per layer, from layer
   0 at the top, with its residual stream, each attention head, the attention output and the
   MLP. With a run open it is colored by that run's results; **Architecture** shows the structure
-  alone. **One layer** opens a layer's diagram, connected the way the model was measured to add
-  attention and the MLP into the residual stream when it loaded (one after the other, or both
-  from the same input). Choose components and **Add to experiment** to stage them: the
-  experiment form then measures them, each on its own, or tests them together as a circuit.
-  **Save selection** keeps named sites and notes in the project's research notes, and **Pin for
-  comparison** keeps a head for Head comparison.
+  alone. Queries, keys, values, neurons, sets of sites and edges have no cell of their own on the
+  map: the run's results show them. **One layer** opens a layer's diagram, connected the way the
+  model was measured to add attention and the MLP into the residual stream when it loaded (one
+  after the other, or both from the same input). Choose components and **Add to experiment** to
+  stage them: the experiment form then measures them, each on its own, or tests them together as
+  a circuit. **Save selection** keeps named sites and notes in the project's research notes, and
+  **Pin for comparison** keeps a head for Head comparison.
 * **Attention** shows where a head attends on the prompts, as a heatmap of query against key
   tokens. **Find heads by what they attend to** scores every head as a previous-token,
   duplicate-token and induction head on seeded random sequences (see
@@ -31,9 +32,11 @@ a diverging cobalt to amber scale, always with its legend, and nothing else does
 * **Layer predictions** reads what each layer would predict through the model's final
   normalization and unembedding, the [logit lens](concepts/logit-lens-and-model-checks.md), for
   models where that reproduces their output.
-* **Features** loads a published sparse autoencoder or transcoder, measures how well it fits your
-  prompts, and lists the features that fire on each token, with what one feature writes into the
-  logits and the prompts where it fires most (see [SAE features](concepts/sae-features.md)).
+* **Features** finds a published sparse autoencoder or transcoder by its release and id, in the
+  catalogue of SAELens's registry that ships with Logogram, or by its Hugging Face repository and
+  folder, loads it, measures how well it fits your prompts, and lists the features that fire on
+  each token, with what one feature writes into the logits and the prompts where it fires most
+  (see [SAE features](concepts/sae-features.md)).
 * **Your text** reads any text without making a dataset: its tokens and the model's most likely
   next tokens after each, what each layer would predict at a chosen token, where a head attends,
   the SAE's features when one is loaded, and **Continue the text**, which shows what the model
@@ -44,17 +47,20 @@ a diverging cobalt to amber scale, always with its legend, and nothing else does
 ## Experiment: set up what runs
 
 * **Prompts** lists a dataset's prompt pairs token by token, marks the tokens that differ, and
-  says which pairs can't be used, and why. **Generate a task** writes a seeded dataset for one of
-  six classic tasks (IOI, greater-than, docstrings, gendered pronouns, subject-verb agreement,
-  factual recall); **Import JSONL** and **Single pair** add your own. Edits to pairs stay in the
-  tab until they are saved as a new dataset: a dataset file never changes, since runs record its
-  hash.
+  says which pairs can't be used, and why. A pair whose prompts have different lengths can be used
+  when its positions are labelled in both prompts, and the view shows both prompts' labels (see
+  [pairs of different lengths](concepts/activation-patching.md#pairs-of-different-lengths)).
+  **Generate a task** writes a seeded dataset for one of six classic tasks (IOI, greater-than,
+  docstrings, gendered pronouns, subject-verb agreement, factual recall); **Import JSONL** and
+  **Single pair** add your own. Edits to pairs stay in the tab until they are saved as a new
+  dataset: a dataset file never changes, since runs record its hash.
 * **Baseline** runs the model on the clean and corrupt prompts without intervening, to confirm the
   behavior exists before measuring what carries it.
 * **Configure** is the experiment form: the method and its choices, what to sweep, the metric and
   its normalization, the statistics, and the data and model (with the chat template, for models
-  made for chat). Beside it, a summary says what will run, how much work it is, whether a batch
-  fits in memory, whether the baseline was checked, and what is still missing, above **Run**.
+  made for chat). Beside it, a summary says what will run, how much work it is (for edge
+  attribution, the graph's size and the passes and memory a batch needs), whether a batch fits in
+  memory, whether the baseline was checked, and what is still missing, above **Run**.
   While another job runs, **Run** reads **Queue**. Ctrl/⌘ Z and Ctrl/⌘ Shift Z undo and redo
   changes to the form. When an action elsewhere replaces the form (**Patch here**, **Edit and
   rerun**, staged sites), a notice offers to undo it. A form that isn't saved is kept in this
@@ -68,8 +74,12 @@ a diverging cobalt to amber scale, always with its legend, and nothing else does
 * **Results** shows the open run: its title, method and notes, the figures at a glance, the map
   with its scale, a forest plot of the strongest sites with their intervals, and the actions:
   **Check robustness**, **Sweep…**, **Verify top 10 by patching** (for attribution patching),
-  **Test the top sites as a circuit**, and **Export** (the HTML report, figures and CSV; see
-  [share a result](guides/share-results.md)).
+  **Verify top 20 by path patching** (for edge attribution), **Test the top sites as a circuit**,
+  and **Export** (the HTML report, figures and CSV; see [share a result](guides/share-results.md)).
+  A run over queries, keys or values shows a layer × head map, a run over neurons each layer's
+  strongest neurons beside the distribution of all of them, and an
+  [edge attribution](concepts/edge-attribution.md) run its strongest edges drawn between the
+  components, its faithfulness curve and their verification by path patching.
 * **Compare runs** puts two runs side by side, or their difference, with paired differences
   prompt by prompt where they measured the same prompts (see
   [compare two runs](guides/compare-runs.md)).
@@ -86,8 +96,9 @@ a diverging cobalt to amber scale, always with its legend, and nothing else does
   or site: on a run, the exact intervention and metric, the effect with its interval, band and
   q-value, the sign flips, the distribution of per-prompt effects and the strongest and weakest
   prompts. On a window narrower than 1,120 pixels, **Inspector** opens it as a panel.
-* **The token strip**, under most views, shows the current prompt pair token by token. **[** and
-  **]** step through the prompts.
+* **The token strip**, under most views, shows the current prompt pair token by token, lined up
+  by their labels and last tokens when the two prompts have different lengths. **[** and **]**
+  step through the prompts.
 * **History** lists every run in the project, the queue, and drafts: search by title, name, id,
   method, model or dataset; rename (F2), star, archive or delete a run from its menu. A run's
   title, star and archive mark live beside its spec, which never changes. Deleting asks first,
