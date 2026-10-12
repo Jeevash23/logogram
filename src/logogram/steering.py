@@ -563,7 +563,9 @@ def _feature_direction(
     )
     probe = ResolvedSite(0, site, 0, 0, "")
     kind = str(sae.site)
-    kinds = list(dict.fromkeys([kind, str(sae.site_in)]))
+    # The input the SAE reads matters only when it scales what a feature writes.
+    read = str(sae.site_in)
+    kinds = list(dict.fromkeys([kind, read])) if sae.standardizes else [kind]
     sources = _LayerSources(
         backend, test, test_groups, sae.layer, kinds, exp.apply_to, batch_size, cancel
     )
@@ -574,7 +576,11 @@ def _feature_direction(
     vector = typical[0] * unit
     # 1 for each prompt, or for an SAE that standardizes its inputs, the spread of each held-out
     # prompt's own input at the token: what decoding scales a feature's write by.
-    spread = sae.spread(_flat(sae, sources.table(str(sae.site_in), probe)).to(sae.device))
+    spread = (
+        sae.spread(_flat(sae, sources.table(read, probe)).to(sae.device))
+        if sae.standardizes
+        else None
+    )
     scale = float64(torch.ones(n) if spread is None else spread.reshape(n)).cpu()
     scale = scale.reshape(n, *([1] * len(shape)))
     along = scale.to(vector.device) * vector
