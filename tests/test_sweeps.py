@@ -4,7 +4,6 @@ value, and the sweep's table reports the runs' own numbers, with missing values 
 
 from __future__ import annotations
 
-import copy
 import csv
 import dataclasses
 import io
@@ -22,6 +21,7 @@ from typer.testing import CliRunner
 import logogram as lg
 from logogram.backends import hub
 from logogram.backends.base import BackendError
+from logogram.backends.transformer_lens import TransformerLensBackend
 from logogram.cli import app as cli
 from logogram.compare import site_key, spec_differences
 from logogram.datasets import write_dataset
@@ -148,9 +148,12 @@ def test_a_revision_sweep_keeps_the_names_and_each_run_pins_its_commit(
     loaded: list[Any] = []
 
     def provider(ref: Any) -> Any:
-        # The tiny model, as if Hugging Face had resolved the revision to this commit.
-        model = copy.copy(tiny_backend)
-        model.info = dataclasses.replace(tiny_backend.info, revision=commits[ref.revision])
+        # The tiny model, as if Hugging Face had resolved the revision to this commit: a backend of
+        # its own over the same weights, so closing it leaves the shared one loaded. (A copy
+        # wouldn't do: once a test has patched the shared backend's close, its instance holds the
+        # bound method, and a copy's close would close the shared one.)
+        info = dataclasses.replace(tiny_backend.info, revision=commits[ref.revision])
+        model = TransformerLensBackend(tiny_backend.bridge, info)
         loaded.append(model)
         return model
 
