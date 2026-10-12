@@ -784,8 +784,8 @@ but for those between attention and MLP, Pythia-70m's, Gemma 2B's, the matryoshk
 Gemma Scope's NumPy archives, PyTorch pickles (which Logogram never opens), formats it doesn't read
 yet (Llama Scope's, circuit-tracer's transcoders) and cross-layer transcoders. The verdicts come
 from Logogram's own readers run on each SAE's configuration (and, for SAELens's format, its weights
-file's header), and they were checked on the real files, which the catalogue records: 427 SAEs
-across every release Logogram reads by their weights file's header, and 13 on GPT-2 small,
+file's header), and they were checked on the real files, which the catalogue records: 424 SAEs
+across every release Logogram reads by their weights file's header, and 16 on GPT-2 small,
 Pythia-70m and Gemma 3 270M by their weights and their fit to the model. An SAE that SAELens's
 registry reads with settings its own configuration
 doesn't state (Mistral 7B's, which SAELens rescales) is refused before anything downloads, also

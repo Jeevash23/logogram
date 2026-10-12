@@ -43,6 +43,7 @@ without the network unless ``--refresh`` asks for the repositories' current ones
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import hashlib
 import json
 import random
@@ -872,7 +873,15 @@ def verify(args: argparse.Namespace) -> None:
     path = Path(args.out)
     catalogue = json.loads(path.read_text(encoding="utf-8"))
     hub = Hub(Path(args.cache), refresh=False)
-    checks = plan(catalogue, hub, random.Random(args.seed), args.per_release, args.budget_mb)
+    patterns = [p.strip() for p in (args.releases or "*").split(",") if p.strip()]
+    chosen = {
+        "releases": [
+            r
+            for r in catalogue["releases"]
+            if any(fnmatch.fnmatchcase(r["release"], p) for p in patterns)
+        ]
+    }
+    checks = plan(chosen, hub, random.Random(args.seed), args.per_release, args.budget_mb)
     log(f"Checking {len(checks)} SAEs, {sum(c.weights for c in checks)} of them with their weights")
     failures: list[str] = []
     for check in checks:
@@ -1105,6 +1114,9 @@ def main() -> None:
     v.add_argument("--budget-mb", type=int, default=2500, help="Weights to download, in MiB.")
     v.add_argument("--seed", type=int, default=0, help="Seeds the choice of SAEs.")
     v.add_argument("--text", help="A plain-text file to measure fits on.")
+    v.add_argument(
+        "--releases", help="Check only these releases (patterns such as pythia-*, comma-separated)."
+    )
     args = parser.parse_args()
     if args.command == "build":
         build(args)
