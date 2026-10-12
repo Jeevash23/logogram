@@ -120,20 +120,54 @@ export function TokenStrip() {
 
 const ROWS = ["clean", "corrupt"] as const;
 
+/** The grid's columns: in each, a clean token's index and a corrupt token's, null where that
+ * prompt has none. Prompts of equal length line up position by position; the server lines up
+ * prompts of different lengths by their labels and last tokens, which a run matches. */
+function gridColumns(data: TokenStripData): [number | null, number | null][] {
+  if (data.columns) return data.columns;
+  const n = Math.max(data.clean.tokens.length, data.corrupt.tokens.length);
+  return Array.from({ length: n }, (_, i) => [i < data.clean.tokens.length ? i : null, i < data.corrupt.tokens.length ? i : null]);
+}
+
+/** Each column's labels: a label whose tokens share the column once, one on a single prompt's token
+ * there with that prompt named. */
+function columnLabels(data: TokenStripData, columns: [number | null, number | null][]): string[] {
+  const corrupt = data.corrupt_labels ?? data.labels;
+  return columns.map(([ci, di]) => {
+    const names: string[] = [];
+    for (const label of new Set([...Object.keys(data.labels), ...Object.keys(corrupt)])) {
+      const inClean = ci !== null && data.labels[label] === ci;
+      const inCorrupt = di !== null && corrupt[label] === di;
+      if (inClean && inCorrupt) names.push(label);
+      else if (inClean) names.push(`${label} (clean)`);
+      else if (inCorrupt) names.push(`${label} (corrupt)`);
+    }
+    return names.join(" ");
+  });
+}
+
 export function TokenGrid({ data }: { data: TokenStripData }) {
   const selected = useStore(st => st.tokenPosition);
   const select = useStore(st => st.setTokenPosition);
-  const n = Math.max(data.clean.tokens.length, data.corrupt.tokens.length);
+  // Prompts of different lengths: each row keeps its own positions, and a selection its row.
+  const uneven = !!data.columns;
+  const columns = gridColumns(data);
+  const n = columns.length;
+  const [pickedRow, setPickedRow] = useState(0);
   const grid = useRef<HTMLDivElement>(null);
+  const at = (row: number, col: number) => (col >= 0 && col < n ? columns[col][row] : null);
+  const columnOf = (row: number, index: number) => columns.findIndex((c) => c[row] === index);
   // The tokens are one tab stop; the arrow keys move between them. The stop is the token last
   // focused, else the selected position, else the first token.
-  const present = (row: number, col: number) => col >= 0 && col < n && data[ROWS[row]].tokens[col] !== undefined;
+  const present = (row: number, col: number) => at(row, col) !== null;
   const [last, setLast] = useState<{ row: number; col: number } | null>(null);
+  const selectedRow = uneven ? pickedRow : 0;
+  const selectedCol = selected === null ? -1 : columnOf(selectedRow, selected);
   const stop = last && present(last.row, last.col)
     ? last
-    : selected !== null && present(0, selected)
-      ? { row: 0, col: selected }
-      : { row: 0, col: Math.max(0, data.clean.tokens.findIndex((t) => t !== undefined)) };
+    : selectedCol >= 0
+      ? { row: selectedRow, col: selectedCol }
+      : { row: 0, col: Math.max(0, columns.findIndex((c) => c[0] !== null)) };
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     const cell = (e.target as HTMLElement).closest<HTMLElement>("[data-col]");
     if (!cell || e.altKey || e.ctrlKey || e.metaKey) return;
@@ -156,14 +190,27 @@ export function TokenGrid({ data }: { data: TokenStripData }) {
     setLast({ row, col });
     grid.current?.querySelector<HTMLElement>(`[data-row="${row}"][data-col="${col}"]`)?.focus();
   };
-  const differs = new Set(data.differs);
-  // With a chat template, the tokens outside the prompt are the template's.
-  const template = (i: number) => !!data.prompt && (i < data.prompt[0] || i >= data.prompt[1]);
-  const labelAt = new Map<number, string[]>();
-  for (const [label, pos] of Object.entries(data.labels)) {
-    labelAt.set(pos, [...(labelAt.get(pos) ?? []), label]);
-  }
-  const cols = Array.from({ length: n }, (_, i) => i);
+  // A column differs where its two tokens do, or where one prompt has none there.
+  const differs = uneven
+    ? new Set(columns.flatMap(([ci, di], c) => (ci === null || di === null || data.clean.ids[ci] !== data.corrupt.ids[di] ? [c] : [])))
+    : new Set(data.differs);
+  // With a chat template, the tokens outside the prompt are the template's (the clean prompt's
+  // positions say which; the corrupt prompt's are the same when the two line up).
+  const template = (row: number, i: number) =>
+    !!data.prompt && (row === 0 || !uneven) && (i < data.prompt[0] || i >= data.prompt[1]);
+  const labels = columnLabels(data, columns);
+  const cols = Array.from({ length: n }, (_, c) => c);
+  /** A row of positions: each column's token index in one prompt (in both, when they line up). */
+  const positions = (row: number) => (
+    <>
+      <span className={s.rowLabel} />
+      {cols.map((c) => (
+        <span key={`p${row}${c}`} className={`${s.pos} ${row === 1 ? s.posBelow : ""} ${differs.has(c) ? s.diffCol : ""}`}>
+          {columns[c][row] ?? ""}
+        </span>
+      ))}
+    </>
+  );
   return (
     <>
       <div className={s.scroller}>
@@ -172,34 +219,40 @@ export function TokenGrid({ data }: { data: TokenStripData }) {
           className={s.grid}
           style={{ gridTemplateColumns: `auto repeat(${n}, auto)` }}
           role="group"
-          aria-label="Tokens of the clean and corrupt prompt. Arrow keys move between them; Enter selects a position."
+          aria-label={
+            uneven
+              ? "Tokens of the clean and corrupt prompt, lined up by their labels, each prompt with its own positions. Arrow keys move between them; Enter selects a position."
+              : "Tokens of the clean and corrupt prompt. Arrow keys move between them; Enter selects a position."
+          }
           data-arrow-keys
           onKeyDown={onKeyDown}
         >
-          <span className={s.rowLabel} />
-          {cols.map((i) => (
-            <span key={`p${i}`} className={`${s.pos} ${differs.has(i) ? s.diffCol : ""}`}>
-              {i}
-            </span>
-          ))}
+          {positions(0)}
           {ROWS.map((row, r) => (
             <Fragment key={row}>
               <span className={s.rowLabel}>{row}</span>
-              {cols.map((i) => {
-                const token = data[row].tokens[i];
+              {cols.map((c) => {
+                const i = columns[c][r];
+                const token = i === null ? undefined : data[row].tokens[i];
+                const chat = i !== null && template(r, i);
                 return (
                   <button type="button"
-                    key={`${row}${i}`}
-                    className={`${s.cell} ${differs.has(i) ? s.diff : ""} ${token === undefined ? s.missing : ""} ${template(i) ? s.template : ""}`}
-                    title={token === undefined ? "No token at this position" : `${JSON.stringify(token)} · id ${data[row].ids[i]}${template(i) ? " · written by the chat template" : ""}`}
+                    key={`${row}${c}`}
+                    className={`${s.cell} ${differs.has(c) ? s.diff : ""} ${token === undefined ? s.missing : ""} ${chat ? s.template : ""}`}
+                    title={i === null || token === undefined ? `No ${row} token here` : `${JSON.stringify(token)} · id ${data[row].ids[i]}${chat ? " · written by the chat template" : ""}`}
                     disabled={token === undefined}
-                    aria-label={`${row} token ${i}: ${token === undefined ? "missing" : visibleToken(token)}${template(i) ? ", the chat template's" : ""}`}
-                    aria-pressed={selected === i}
+                    aria-label={i === null ? `${row}: no token here` : `${row} token ${i}: ${token === undefined ? "missing" : visibleToken(token)}${chat ? ", the chat template's" : ""}`}
+                    aria-pressed={i !== null && selected === i && (!uneven || pickedRow === r)}
                     data-row={r}
-                    data-col={i}
-                    tabIndex={stop.row === r && stop.col === i ? 0 : -1}
-                    onFocus={() => setLast({ row: r, col: i })}
-                    onClick={() => select(selected === i ? null : i)}
+                    data-col={c}
+                    tabIndex={stop.row === r && stop.col === c ? 0 : -1}
+                    onFocus={() => setLast({ row: r, col: c })}
+                    onClick={() => {
+                      if (i === null) return;
+                      const again = selected === i && (!uneven || pickedRow === r);
+                      setPickedRow(r);
+                      select(again ? null : i);
+                    }}
                   >
                     {token === undefined ? "∅" : visibleToken(token) || "∅"}
                   </button>
@@ -207,18 +260,26 @@ export function TokenGrid({ data }: { data: TokenStripData }) {
               })}
             </Fragment>
           ))}
-          {labelAt.size > 0 && (
+          {uneven && positions(1)}
+          {labels.some(Boolean) && (
             <>
               <span className={s.rowLabel} />
-              {cols.map((i) => (
-                <span key={`l${i}`} className={`${s.labels} ${differs.has(i) ? s.diffCol : ""}`}>
-                  {labelAt.get(i)?.join(" ")}
+              {cols.map((c) => (
+                <span key={`l${c}`} className={`${s.labels} ${differs.has(c) ? s.diffCol : ""}`}>
+                  {labels[c]}
                 </span>
               ))}
             </>
           )}
         </div>
       </div>
+      {uneven && (
+        <p className={s.note}>
+          {data.clean.tokens.length} and {data.corrupt.tokens.length} tokens, lined up by{" "}
+          {data.corrupt_labels ? "their labels and last tokens" : "their last tokens (only the clean prompt is labelled)"}. A run
+          matches the two prompts there, each at its own position.
+        </p>
+      )}
       {data.issues.length > 0 && (
         <div className={s.issues}>
           {data.issues.map((issue) => (

@@ -547,7 +547,8 @@ A dataset is a JSONL file in the project's `datasets/` folder, one prompt pair p
  "positions": {"IO": [5, 9], "S1": [14, 18], "S2": [38, 42], "end": [56, 58]}}
 ```
 
-* `clean` and `corrupt` must tokenize to the same length, so positions line up.
+* `clean` and `corrupt` usually tokenize to the same length, so positions line up. Prompts of
+  different lengths need `corrupt_positions` (below).
 * `answer` and `distractor` are usually single tokens (with a leading space). Either can also be a
   list of single tokens, read as one answer whose probability is their sum (in greater-than, every
   year after the start year), or text of several tokens, a continuation whose probability is the
@@ -556,11 +557,24 @@ A dataset is a JSONL file in the project's `datasets/` folder, one prompt pair p
 * `positions` is optional: named character spans in the clean prompt. A label refers to the last
   token that overlaps its span. Named positions let you patch at, say, `S2` across templates of
   different lengths.
+* `corrupt_positions` gives the same labels as character spans in the corrupt prompt, as in
+  `{"IO": [5, 9], "S1": [14, 18], "S2": [38, 49], "end": [63, 65]}` for a corrupt prompt that
+  names "Bartholomew" where the clean one names "John". With it, the two prompts may tokenize to different lengths: a run
+  matches them label by label, carrying the source prompt's token at a label (or its last token)
+  into the receiver's token there. Every position and token indices have no meaning across
+  different lengths, so a method that carries values between the prompts (patching, attribution
+  patching with one gradient, path patching, mean and resample ablation, steering by the mean
+  difference) refuses them on such pairs, naming the pairs; zero ablation, direct logit
+  attribution and steering along an SAE feature read one prompt at a time and take any position
+  they otherwise take. Integrated gradients, sets that keep their sites and patch the rest, and
+  mean or resample ablation of sets need pairs of equal length. Pairs of equal length may give
+  `corrupt_positions` too.
 * `meta` is optional: anything about the prompt, such as `{"template": "went"}`. The bootstrap can
   resample prompts by one of its fields (see Statistics).
 
 The app shows both prompts token by token, highlights where they differ, and refuses to run on
-prompts that can't be used, saying which and why.
+prompts that can't be used, saying which and why. Prompts of different lengths are lined up by
+their labels, each with its own positions, and the prompts table shows both prompts' labels.
 
 **Editing prompts.** The Prompts view searches a dataset's pairs (both prompts, the answers and
 `meta`), shows them a hundred at a time, and edits or removes pairs, including answer sets and
@@ -582,8 +596,12 @@ records each prompt's template in `meta`:
 | `factual_recall` | a country's capital | another country | logit difference (log-probability difference for capitals of several tokens) |
 
 With a model loaded, the app keeps only words that are single tokens for it. Each task says how
-many distinct prompts its templates allow; a request for more is refused. GPT-2 small does all of
-them but the docstring task, where it prefers the right argument in about half the prompts.
+many distinct prompts its templates allow; a request for more is refused. The `full_vocabulary`
+option keeps every word, also those the model splits, and the pairs whose prompts then differ in
+length, labelling both prompts' positions and recording `"vocabulary": "full"` in each prompt's
+`meta` (IOI's names of several tokens are then read with the log-probability difference). GPT-2
+small does all of them but the docstring task, where it prefers the right argument in about half
+the prompts.
 
 ## Experiments
 
@@ -1198,7 +1216,8 @@ pairs can't be used, and why:
   log-probability or probability metric, which read answers of several tokens. Prompts generated
   in the app with the model loaded use only words that are single tokens for it.
 * *clean has 15 tokens and corrupt has 16, so positions can't be aligned.* Change what differs
-  between the two prompts to words with the same number of tokens.
+  between the two prompts to words with the same number of tokens, or give the pair
+  `corrupt_positions`: its labels in the corrupt prompt, which lets it be patched label by label.
 * *position 'S2' (characters 38–42) doesn't cover any token.* The span's character offsets don't
   reach a token of the clean prompt: correct them.
 * *This model's tokenizer has no beginning-of-sequence token. Set tokenization.prepend_bos to

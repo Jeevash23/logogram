@@ -63,6 +63,9 @@ export interface DatasetFacts {
   /** Fields of the meta every used prompt has (and that can name a cluster), with how many
    * different values each takes. */
   fields: { field: string; clusters: number }[];
+  /** Prompts whose clean and corrupt prompts have different token lengths for the loaded model,
+   * matched label by label; null when no model is loaded. */
+  uneven: number[] | null;
 }
 
 // statistics.cluster in spec.py: a field name, as a key of the prompts' meta.
@@ -88,7 +91,104 @@ export function datasetFacts(dataset: DatasetDetail | null | undefined, limit: n
       fields.push({ field: key, clusters: values.size });
     }
   }
-  return { n, sets, continuations: continued?.length ?? null, notSingle, example, fields };
+  const uneven = dataset.uneven ? dataset.uneven.map((u) => u.index).filter((i) => i < n) : null;
+  return { n, sets, continuations: continued?.length ?? null, notSingle, example, fields, uneven };
+}
+
+// -- pairs of different lengths ---------------------------------------------------------------
+
+/** What carries a value from one prompt into another at a position (src/logogram/sites.py), in a
+ * few words; null for a method that reads one prompt at a time. Between prompts of different
+ * lengths, such a position must be the last token or a label, which are matched from one prompt
+ * to the other. */
+export function carriedBy(form: Pick<FormState, "kind" | "baseline" | "steerDirection">): string | null {
+  switch (form.kind) {
+    case "activation_patching":
+      return "patching";
+    case "attribution_patching":
+      return "attribution patching";
+    case "path_patching":
+      return "path patching";
+    case "ablation":
+      return form.baseline?.kind === "mean" ? "mean ablation" : form.baseline?.kind === "resample" ? "resample ablation" : null;
+    case "steering":
+      return form.steerDirection === "sae_feature" ? null : "steering by the mean difference";
+    default:
+      return null;
+  }
+}
+
+/** Pairs of different lengths in words, to start a sentence: "Pair 3", "Pairs 1, 2, 4, 5, 7 and
+ * 3 more". */
+export function unevenPairsText(indices: readonly number[]): string {
+  if (indices.length === 1) return `Pair ${indices[0]}`;
+  const shown = indices.slice(0, 5).join(", ");
+  return indices.length > 5 ? `Pairs ${shown} and ${count(indices.length - 5)} more` : `Pairs ${shown.replace(/, (\d+)$/, " and $1")}`;
+}
+
+/** Why every position and token indices can't be chosen with this method and these prompts, as a
+ * sentence; null when they can. */
+export function unlinedReason(form: Pick<FormState, "kind" | "baseline" | "steerDirection">, facts: DatasetFacts | null | undefined): string | null {
+  const uneven = facts?.uneven;
+  const method = carriedBy(form);
+  if (!uneven?.length || !method) return null;
+  return `${unevenPairsText(uneven)} ${uneven.length === 1 ? "has" : "have"} prompts of different lengths: ${method} matches them at the last token or a labelled position, not at every position or a token index.`;
+}
+
+/** The scope with every position and token index replaced by the last token, for prompts of
+ * different lengths. */
+export function lastInstead(scope: ScopeSpec): ScopeSpec {
+  const fix = (p: PositionSpec): PositionSpec => (p.kind === "all" || p.kind === "index" ? { kind: "last" } : p);
+  switch (scope.kind) {
+    case "heads":
+    case "layer_components":
+    case "features":
+      return { ...scope, position: fix(scope.position) };
+    case "sites":
+      return { ...scope, sites: scope.sites.map((x) => ({ ...x, position: fix(x.position) })) };
+    case "layer_position":
+      return scope.positions === "each" ? { ...scope, positions: "labels" } : scope;
+    case "site_sets":
+      return { ...scope, sets: scope.sets.map((set) => ({ ...set, sites: set.sites.map((x) => ({ ...x, position: fix(x.position) })) })) };
+  }
+}
+
+/** The first position of a scope that doesn't line up between prompts of different lengths: every
+ * position, or a token index. */
+function unlinedPosition(scope: ScopeSpec): PositionSpec | null {
+  const bad = (p: PositionSpec) => p.kind === "all" || p.kind === "index";
+  const positions: PositionSpec[] =
+    scope.kind === "sites"
+      ? scope.sites.map((x) => x.position)
+      : scope.kind === "site_sets"
+        ? scope.sets.flatMap((set) => set.sites.map((x) => x.position))
+        : scope.kind === "layer_position"
+          ? scope.positions === "each" ? [{ kind: "all" }] : []
+          : [scope.position];
+  return positions.find(bad) ?? null;
+}
+
+/** Why the form can't run on these prompts of different lengths, or null (sites.py, atp.py and
+ * circuits.py refuse the same). */
+function unevenError(form: FormState, experiment: Spec["experiment"], scope: ScopeSpec, uneven: readonly number[]): string | null {
+  const pairs = `${unevenPairsText(uneven)} ${uneven.length === 1 ? "has" : "have"} clean and corrupt prompts of different token lengths`;
+  const instead = "Choose the last token or a labelled position, which are matched from one prompt to the other, or use pairs of equal length.";
+  if (experiment.kind === "attribution_patching" && experiment.method === "integrated_gradients") {
+    return `${pairs}. Integrated gradients run on inputs between the two prompts' embeddings, position by position, which needs their positions to line up. Estimate with one gradient, or use pairs of equal length.`;
+  }
+  if (scope.kind === "site_sets" && experiment.kind === "ablation" && (experiment.baseline.kind === "mean" || experiment.baseline.kind === "resample")) {
+    return `${pairs}. ${experiment.baseline.kind === "mean" ? "Mean" : "Resample"} ablation of a set replaces whole activations position by position with other prompts', which needs the prompts to line up. Patch the sets at labels or the last token, zero-ablate them, or use pairs of equal length.`;
+  }
+  const method = carriedBy(form);
+  if (!method) return null;
+  const kept = scope.kind === "site_sets" ? scope.sets.find((set) => set.complement) : undefined;
+  if (kept) {
+    return `${pairs}. The set “${kept.label}” keeps its sites and patches every other position of the model, which has no meaning across different lengths. Patch sets of sites at labels or the last token, or zero-ablate the rest of the model, or use pairs of equal length.`;
+  }
+  const bad = unlinedPosition(scope);
+  if (!bad) return null;
+  const where = bad.kind === "index" ? `token index ${bad.index}` : "every position";
+  return `${pairs}, so their positions don't line up by index: ${method} at ${where} has no meaning across different lengths. ${instead}`;
 }
 
 /** A prompt with an answer or distractor of several tokens, in words, after "such as". */
@@ -297,6 +397,9 @@ export function buildSpec(
     if (experiment.kind === "ablation" && experiment.baseline.kind === "resample" && facts.n > 0 && experiment.baseline.donors > facts.n - 1) {
       return { error: `Each prompt draws ${plural(experiment.baseline.donors, "donor")} from the other prompts, but there ${facts.n - 1 === 1 ? "is" : "are"} only ${facts.n - 1}. Lower the donor count, or use more prompts.` };
     }
+    // Pairs of different lengths are matched at the last token or a label only.
+    const uneven = facts.uneven?.length ? unevenError(form, experiment, scope, facts.uneven) : null;
+    if (uneven) return { error: uneven };
   }
 
   // Statistics.

@@ -18,7 +18,7 @@ import {
   withRemoved,
   type RecordDraft,
 } from "../src/lib/promptEdits";
-import { PAGE_SIZE, foundByMeta, matchRows, matchText, pageOfRow, pageRows, rangeText, rowAfterKey } from "../src/lib/promptRows";
+import { PAGE_SIZE, foundByMeta, labelsText, matchRows, matchText, pageOfRow, pageRows, rangeText, rowAfterKey, wordDiff } from "../src/lib/promptRows";
 
 const ioi = (i: number, name = "Mary"): PromptRecord => ({
   clean: `When ${name} and John went to the store number ${i}, John gave a drink to`,
@@ -221,4 +221,48 @@ test("the editor's fields hold every field of a prompt pair, and say what to fix
   // Any other label is the dataset's own, even one an object already has.
   const own = recordOf({ ...draft, positions: [{ label: "constructor", start: "0", end: "4" }, { label: "__proto__", start: "5", end: "9" }] });
   expect(JSON.stringify(own.record?.positions)).toBe('{"constructor":[0,4],"__proto__":[5,9]}');
+});
+
+test("prompts of different lengths mark only the words they don't share, and show their labels", () => {
+  const clean = "When Mary and John went to the store, John gave a drink to";
+  const corrupt = "When Mary and John went to the store, Bob Kelly gave a drink to";
+  const marked = (text: string, other: string) => wordDiff(text, other).filter((w) => w.differs).map((w) => w.text);
+  // Compared in place, every word after the extra one would differ.
+  expect(marked(clean, corrupt)).toEqual(["John"]);
+  expect(marked(corrupt, clean)).toEqual(["Bob", "Kelly"]);
+  expect(wordDiff(corrupt, clean).map((w) => w.text).join("")).toBe(corrupt);
+  // Prompts of as many words are compared in place, as they always were.
+  expect(marked("When Mary and John", "When John and Mary")).toEqual(["Mary", "John"]);
+
+  expect(labelsText(corrupt, { end: [61, 63], S2: [38, 47], IO: [5, 9] })).toBe("IO “Mary” · S2 “Bob Kelly” · end “to”");
+  expect(labelsText(clean, undefined)).toBe("");
+});
+
+test("the editor labels the corrupt prompt's positions too, and says what to fix", () => {
+  const clean = "When Mary and John went to the store, John gave a drink to";
+  const corrupt = "When Mary and John went to the store, Bob Kelly gave a drink to";
+  const record: PromptRecord = {
+    clean,
+    corrupt,
+    answer: " Mary",
+    distractor: " John",
+    positions: { S2: [38, 42], end: [56, 58] },
+    corrupt_positions: { S2: [38, 47], end: [61, 63] },
+  };
+  const draft = draftOf(record);
+  expect(draft.labelCorrupt).toBe(true);
+  expect(draft.positions[0]).toMatchObject({ label: "S2", corruptStart: "38", corruptEnd: "47" });
+  expect(recordOf(draft)).toEqual({ record, problem: null });
+  // Unlabelling the corrupt prompt leaves its positions out.
+  const { corrupt_positions: _, ...unlabelled } = record;
+  expect(recordOf({ ...draft, labelCorrupt: false })).toEqual({ record: unlabelled, problem: null });
+  // Labelled with no positions: matched at the last token only.
+  expect(recordOf({ ...draft, positions: [] }).record?.corrupt_positions).toEqual({});
+
+  const problem = (patch: Partial<RecordDraft["positions"][number]>) =>
+    recordOf({ ...draft, positions: [{ ...draft.positions[0], ...patch }] }).problem;
+  expect(problem({ corruptStart: "" })).toContain("needs a start and an end in the corrupt prompt too");
+  expect(problem({ corruptStart: "40", corruptEnd: "40" })).toBe("Position “S2” must end after it starts in the corrupt prompt, at 0 or later.");
+  expect(problem({ corruptEnd: "99" })).toBe(`Position “S2” ends at character 99 of the corrupt prompt, which has ${corrupt.length}.`);
+  expect(spanText(corrupt, { label: "S2", start: "38", end: "47", corruptStart: "", corruptEnd: "" })).toBe("Bob Kelly");
 });

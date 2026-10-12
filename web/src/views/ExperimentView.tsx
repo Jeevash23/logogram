@@ -7,7 +7,7 @@ import { count, plural, shortRevision } from "../lib/format";
 import { modelName } from "../lib/hooks";
 import { EVERYTHING, SET_SITE_KINDS } from "../lib/circuits";
 import { KIND_SHORT, parseHeadQuery } from "../lib/sites";
-import { buildSpec, datasetFacts, parseStrengths, savedDifferences, usesFeatures } from "../lib/buildSpec";
+import { buildSpec, carriedBy, datasetFacts, lastInstead, parseStrengths, savedDifferences, unlinedReason, unevenPairsText, usesFeatures } from "../lib/buildSpec";
 import { receiverLabel, saeWritesText, scopeFor, scopeShort, siteText, steerSiteOf, suggestName, workload } from "../lib/spec";
 import { useStore, type FormState } from "../store/app";
 import { ChatTemplateSettings } from "./ChatTemplateSettings";
@@ -68,6 +68,9 @@ export function ExperimentView() {
   // Steering along an SAE feature adds it where the SAE writes, at one site.
   const steersFeature = form.steerDirection === "sae_feature";
   const facts = useMemo(() => datasetFacts(dataset, form.limit), [dataset, form.limit]);
+  // Pairs of different lengths: the positions a method that carries values between prompts can't use.
+  const unlined = unlinedReason(form, facts);
+  const uneven = facts?.uneven ?? [];
   const built = buildSpec(form, { model, datasetPath, datasetSha: dataset?.sha256 ?? null, sae, facts });
   const differences = savedDifferences(form, model, datasetPath, dataset?.sha256 ?? null, modelName);
   const spec = "spec" in built ? built.spec : null;
@@ -155,7 +158,11 @@ export function ExperimentView() {
           <Choices
             label="Method"
             value={form.kind}
-            onChange={(kind) => setForm({ kind, scope: scopeFor(kind, form.scope, kind === "steering" && steersFeature && saeInfo ? steerSiteOf(saeInfo) : null) })}
+            onChange={(kind) => {
+              const scope = scopeFor(kind, form.scope, kind === "steering" && steersFeature && saeInfo ? steerSiteOf(saeInfo) : null);
+              // Pairs of different lengths are matched at the last token or a label only.
+              setForm({ kind, scope: uneven.length && carriedBy({ ...form, kind }) ? lastInstead(scope) : scope });
+            }}
             columns={2}
             options={METHODS}
           />
@@ -202,7 +209,7 @@ export function ExperimentView() {
                   },
                 ]}
               />
-              {form.kind === "attribution_patching" && <AttributionSettings form={form} onChange={setForm} features={usesFeatures(form.scope)} />}
+              {form.kind === "attribution_patching" && <AttributionSettings form={form} onChange={setForm} features={usesFeatures(form.scope)} uneven={uneven} />}
             </div>
           ) : (
             <BaselineChooser baseline={form.baseline} onChange={(baseline) => setForm({ baseline })} />
@@ -220,6 +227,7 @@ export function ExperimentView() {
             labels={labels}
             uniformLength={uniformLength}
             lengths={lengths}
+            unlined={unlined}
           />
         </section>
 
@@ -414,8 +422,10 @@ function PathSettings({ form, onChange }: { form: FormState; onChange: (patch: P
   );
 }
 
-/** How attribution patching estimates: one gradient, or integrated gradients over some steps. */
-function AttributionSettings({ form, onChange, features }: { form: FormState; onChange: (patch: Partial<FormState>) => void; features: boolean }) {
+/** How attribution patching estimates: one gradient, or integrated gradients over some steps.
+ * `uneven`: the pairs whose prompts have different lengths, which integrated gradients can't
+ * interpolate between. */
+function AttributionSettings({ form, onChange, features, uneven }: { form: FormState; onChange: (patch: Partial<FormState>) => void; features: boolean; uneven: number[] }) {
   const steps = form.atpSteps;
   const valid = Number.isInteger(steps) && steps >= 2 && steps <= 64;
   return (
@@ -436,13 +446,18 @@ function AttributionSettings({ form, onChange, features }: { form: FormState; on
             title: "Integrated gradients",
             detail: features
               ? "SAE features are estimated from one gradient only. Estimate the model's components to use integrated gradients."
-              : "The gradient averaged over runs between the two prompts, which corrects much of that saturation. Each step costs another forward and backward pass.",
-            disabled: features,
+              : uneven.length
+                ? `${unevenPairsText(uneven)} ${uneven.length === 1 ? "has" : "have"} prompts of different lengths, which can't be interpolated between position by position. Estimate with one gradient.`
+                : "The gradient averaged over runs between the two prompts, which corrects much of that saturation. Each step costs another forward and backward pass.",
+            disabled: features || uneven.length > 0,
           },
         ]}
       />
       {features && form.atpMethod === "integrated_gradients" && (
         <p className={e.required}>Required: SAE features are estimated from one gradient. Choose it above.</p>
+      )}
+      {!features && uneven.length > 0 && form.atpMethod === "integrated_gradients" && (
+        <p className={e.required}>Required: prompts of different lengths are estimated from one gradient. Choose it above.</p>
       )}
       {form.atpMethod === "integrated_gradients" && (
         <div className={s.grid3}>
@@ -654,12 +669,15 @@ function PositionPicker({
   onChange,
   labels,
   allowAll = true,
+  unlined = null,
 }: {
   value: PositionSpec;
   onChange: (p: PositionSpec) => void;
   labels: string[];
   /** Steering adds at one token of each prompt, so "all positions" doesn't apply. */
   allowAll?: boolean;
+  /** Why every position and token indices can't be used here (prompts of different lengths). */
+  unlined?: string | null;
 }) {
   return (
     <div className={s.row}>
@@ -673,10 +691,15 @@ function PositionPicker({
           else onChange({ kind: "index", index: -1 });
         }}
         options={[
-          { value: "all", label: "All positions", disabled: !allowAll, reason: "Steering adds the direction at one token of each prompt, so it can't use all positions." },
+          {
+            value: "all",
+            label: "All positions",
+            disabled: !allowAll || !!unlined,
+            reason: !allowAll ? "Steering adds the direction at one token of each prompt, so it can't use all positions." : unlined ?? undefined,
+          },
           { value: "last", label: "Last token" },
           { value: "label", label: "Named position", disabled: labels.length === 0, reason: "This dataset has no named positions." },
-          { value: "index", label: "Token index" },
+          { value: "index", label: "Token index", disabled: !!unlined, reason: unlined ?? undefined },
         ]}
       />
       {value.kind === "label" && (
@@ -706,12 +729,18 @@ const LAST_TOKEN_NOTE = "Read at the last token, where the logit difference is m
 type FeaturesScope = Extract<ScopeSpec, { kind: "features" }>;
 
 /** Sets of sites to start from: the chosen sites as one set, or one set that replaces every head
- * (what a circuit is read against) to add sets beside. */
-function firstSets(scope: ScopeSpec): ScopeSpec {
+ * (what a circuit is read against) to add sets beside. Where every position doesn't line up
+ * (`lined` false: pairs of different lengths), a set to fill with sites at labels or the last
+ * token instead. */
+function firstSets(scope: ScopeSpec, lined: boolean): ScopeSpec {
   if (scope.kind === "sites") {
     const sites = scope.sites.filter((x) => SET_SITE_KINDS.includes(x.kind));
-    if (sites.length) return { kind: "site_sets", universe: null, sets: [{ label: sites.length === 1 ? siteText(sites[0]) : "Chosen sites", sites, complement: false }] };
+    if (sites.length) {
+      const sets: ScopeSpec = { kind: "site_sets", universe: null, sets: [{ label: sites.length === 1 ? siteText(sites[0]) : "Chosen sites", sites, complement: false }] };
+      return lined ? sets : lastInstead(sets);
+    }
   }
+  if (!lined) return { kind: "site_sets", universe: null, sets: [{ label: "Set 1", sites: [], complement: false }] };
   return { kind: "site_sets", universe: ["head"], sets: [{ label: EVERYTHING, sites: [], complement: true }] };
 }
 
@@ -765,6 +794,7 @@ function ScopeEditor({
   labels,
   uniformLength,
   lengths,
+  unlined,
 }: {
   method: ExperimentKind;
   /** The loaded SAE: attribution patching can then estimate every one of its features. */
@@ -776,6 +806,9 @@ function ScopeEditor({
   labels: string[];
   uniformLength: boolean | null;
   lengths: number[] | null;
+  /** Why every position and token indices can't be used with this method (prompts of different
+   * lengths), or null. */
+  unlined: string | null;
 }) {
   const kind = scope.kind;
   // Direct attribution splits what components write, at the last token only.
@@ -797,7 +830,9 @@ function ScopeEditor({
       : paths
         ? "Paths start at heads, attention outputs or MLP outputs, and sets of sites need activation patching or ablation."
         : "Sets of sites need activation patching or ablation.";
-  const position = (p: PositionSpec) => (direct ? { kind: "last" } as PositionSpec : p);
+  // New sweeps start where they can run: at the last token, for direct effects and for prompts of
+  // different lengths.
+  const position = (p: PositionSpec) => (direct || (unlined && (p.kind === "all" || p.kind === "index")) ? ({ kind: "last" } as PositionSpec) : p);
   return (
     <div className={e.stack}>
       <Segmented
@@ -808,9 +843,9 @@ function ScopeEditor({
           else if (k === "layer_components" && steering) onChange({ kind: "layer_components", components: ["resid_pre"], position: { kind: "last" } });
           else if (k === "heads") onChange({ kind: "heads", position: position({ kind: "all" }) });
           else if (k === "layer_position")
-            onChange({ kind: "layer_position", site: "resid_pre", positions: uniformLength === false && labels.length ? "labels" : "each" });
+            onChange({ kind: "layer_position", site: "resid_pre", positions: (uniformLength === false || unlined) && labels.length ? "labels" : "each" });
           else if (k === "layer_components") onChange({ kind: "layer_components", components: ["attn_out", "mlp_out"], position: position({ kind: "all" }) });
-          else if (k === "site_sets") onChange(firstSets(scope));
+          else if (k === "site_sets") onChange(firstSets(scope, !unlined));
         }}
         options={[
           { value: "heads", label: "Layer × head", disabled: steering, reason: unavailable },
@@ -835,14 +870,14 @@ function ScopeEditor({
             result. A set can replace its sites, or keep them and replace the rest of the model: keeping a circuit alone shows how
             much of the behavior it carries.
           </p>
-          <SiteSetsEditor scope={scope} onChange={onChange} labels={labels} />
+          <SiteSetsEditor scope={scope} onChange={onChange} labels={labels} unlined={unlined} />
         </>
       )}
       {scope.kind === "features" && (
         <div className={e.stack}>
           <div className={s.grid2}>
             <Field label="Estimate each feature at">
-              <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} />
+              <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} unlined={unlined} />
             </Field>
             <Field
               label="Keep the strongest"
@@ -861,7 +896,7 @@ function ScopeEditor({
           </Field>
         ) : (
           <Field label={`${verb} each head's output (z) at`}>
-            <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} />
+            <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} unlined={unlined} />
           </Field>
         ))}
       {scope.kind === "layer_components" && steering && (
@@ -877,7 +912,7 @@ function ScopeEditor({
             </Select>
           </Field>
           <Field label="Add the direction at">
-            <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} allowAll={false} />
+            <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} allowAll={false} unlined={unlined} />
           </Field>
         </div>
       )}
@@ -906,7 +941,7 @@ function ScopeEditor({
             {direct ? (
               <p className={s.small}>{LAST_TOKEN_NOTE} Residual stream states aren't written by a component, so they have no direct effect.</p>
             ) : (
-              <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} />
+              <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} unlined={unlined} />
             )}
           </Field>
         </>
@@ -927,7 +962,7 @@ function ScopeEditor({
             help={
               uniformLength === false
                 ? `Prompts have ${lengths?.[0]}–${lengths?.[lengths.length - 1]} tokens, so only named positions line up.`
-                : undefined
+                : unlined ?? undefined
             }
           >
             <Segmented
@@ -935,7 +970,7 @@ function ScopeEditor({
               value={scope.positions}
               onChange={(positions) => onChange({ ...scope, positions })}
               options={[
-                { value: "each", label: "Every token", disabled: uniformLength === false },
+                { value: "each", label: "Every token", disabled: uniformLength === false || !!unlined },
                 { value: "labels", label: "Named positions", disabled: labels.length === 0 },
               ]}
             />
@@ -951,6 +986,7 @@ function ScopeEditor({
                 value={site.position}
                 labels={labels}
                 allowAll={!steering}
+                unlined={unlined}
                 onChange={(position) =>
                   onChange({ kind: "sites", sites: scope.sites.map((x, j) => (j === i ? { ...x, position } : x)) })
                 }
