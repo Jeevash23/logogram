@@ -269,16 +269,17 @@ def run_path_patching(
 # -- edges, one at a time ------------------------------------------------------------------------
 
 
-def edge_rows(scope: EdgesScope) -> tuple[list[ResolvedSite], dict[str, Any]]:
-    """One row per edge, in a senders × receivers layout of the senders and receivers it names."""
+def edge_rows(scope: EdgesScope, n_layers: int) -> tuple[list[ResolvedSite], dict[str, Any]]:
+    """One row per edge, in a senders × receivers layout of the senders and receivers it names.
+    A row stands at its receiver's layer (the logits at the last), as an edge attribution run's
+    rows do."""
     senders = {e.sender.model_dump_json(): e.sender for e in scope.edges}
     receivers = {e.receiver.model_dump_json(): e.receiver for e in scope.edges}
     sender_keys, receiver_keys = list(senders), list(receivers)
     sites = []
     for i, edge in enumerate(scope.edges):
         r = edge.receiver
-        # A row stands at its receiver's layer (an edge into the logits, at its sender's).
-        layer = r.layer if not isinstance(r, LogitsReceiver) else edge.sender.layer or 0
+        layer = n_layers - 1 if isinstance(r, LogitsReceiver) else r.layer
         sites.append(
             ResolvedSite(
                 index=i,
@@ -345,7 +346,7 @@ def run_edge_paths(
     check_receivers(exp, info)
     for edge in scope.edges:
         _check_edge(edge, info)
-    sites, layout = edge_rows(scope)
+    sites, layout = edge_rows(scope, info.n_layers)
     if on_start is not None:
         on_start(sites, layout)
     groups = group_by_length(prompts)

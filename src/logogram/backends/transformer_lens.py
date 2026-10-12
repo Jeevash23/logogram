@@ -151,9 +151,28 @@ def _patch_hooks(patch: Patches) -> list[tuple[str, Callable[..., torch.Tensor]]
     return _combine(hooks)
 
 
-def _scaled(factor: float) -> Callable[..., torch.Tensor]:
+# Lengthening a copy read before its normalization changes the output by about ε / variance times
+# what turning it as far does. Real models' activations are far larger than their normalizations'
+# epsilon; this also allows the small ones of tiny test models.
+SCALE_TOLERANCE = 0.05
+
+
+def _lengthen(share: float) -> Callable[..., torch.Tensor]:
     def fn(act: torch.Tensor, hook: Any = None) -> torch.Tensor:
-        return act * factor
+        return act * (1.0 + share)
+
+    return fn
+
+
+def _turn(share: float) -> Callable[..., torch.Tensor]:
+    """Move every copy, at each position, by ``share`` of its length, in fixed random directions
+    (one seeded stream for the whole pass, so the check is the same every time)."""
+    generator = torch.Generator(device="cpu").manual_seed(0)
+
+    def fn(act: torch.Tensor, hook: Any = None) -> torch.Tensor:
+        noise = torch.randn(act.shape, generator=generator).to(device=act.device, dtype=act.dtype)
+        noise = noise / noise.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+        return act + share * act.norm(dim=-1, keepdim=True) * noise
 
     return fn
 
@@ -832,22 +851,24 @@ class TransformerLensBackend(ModelBackend):
         bridge = self._bridge()
         probe = _probe_tokens(info.d_vocab, str(bridge.cfg.device))
         n = info.n_layers
+        names = [edge_hook(part, layer) for layer in range(n) for part in ("q", "k", "v", "mlp")]
+        names.append(edge_hook("logits", n))
         try:
             with torch.no_grad():
                 plain = bridge(probe, return_type="logits").float()
                 with self._split_inputs():
                     split = bridge(probe, return_type="logits").float()
-                    # Each copy is read before its normalization: scaling every copy (and every
-                    # MLP's and the final normalization's) leaves the output as it was, up to the
-                    # normalizations' epsilon. A copy read after its normalization would change it.
-                    doubled = [
-                        (edge_hook(part, layer), _scaled(2.0))
-                        for layer in range(n)
-                        for part in ("q", "k", "v", "mlp")
-                    ]
-                    doubled.append((edge_hook("logits", n), _scaled(2.0)))
+                    # Each copy is read before its normalization, which ignores the copy's
+                    # length: lengthening every copy (each head's, each MLP's and the final
+                    # normalization's) by 5% changes the output only through the normalizations'
+                    # epsilon, while turning each by as much changes it fully. A copy read after
+                    # its normalization would change as much either way.
+                    longer, turned = _lengthen(0.05), _turn(0.05)
                     scaled = bridge.run_with_hooks(
-                        probe, fwd_hooks=doubled, return_type="logits"
+                        probe, fwd_hooks=[(name, longer) for name in names], return_type="logits"
+                    ).float()
+                    moved = bridge.run_with_hooks(
+                        probe, fwd_hooks=[(name, turned) for name in names], return_type="logits"
                     ).float()
                     separate = self._separate_copies(bridge, probe)
         except BackendError:
@@ -857,9 +878,10 @@ class TransformerLensBackend(ModelBackend):
                 f"TransformerLens can't give {info.id}'s heads their own copies of their inputs "
                 f"({type(exc).__name__}: {exc}), {why}."
             ) from exc
+        change = float((moved - plain).abs().max())
         out = {
             "split": _relative(split, plain),
-            "scale": _relative(scaled, plain),
+            "scale": float((scaled - plain).abs().max()) / change if change > 0 else math.inf,
             "separate": separate,
         }
         if not out["split"] <= tolerance:
@@ -867,7 +889,7 @@ class TransformerLensBackend(ModelBackend):
                 f"With each head reading its own copy of its inputs, {info.id} predicts something "
                 f"else (log-probabilities differ by up to {out['split']:.1%} of their range), {why}."
             )
-        if not out["scale"] <= tolerance:
+        if not out["scale"] <= SCALE_TOLERANCE:
             raise BackendError(
                 f"{info.id}'s heads, MLPs or logits don't normalize the residual stream they read "
                 f"before anything else reads it, {why}."

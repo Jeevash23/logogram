@@ -106,6 +106,7 @@ from logogram.engine import (
 )
 from logogram.metrics import Scorer
 from logogram.prompts import LengthGroup, PreparedPrompt, group_by_length
+from logogram.schema import EDGES_FILE
 from logogram.sites import ResolvedSite, ScopeError
 from logogram.spec import (
     ALL_POSITIONS,
@@ -126,9 +127,9 @@ from logogram.spec import (
 # Every edge keeps its per-prompt values and statistics: these bound what a run holds.
 MAX_EDGES = 100_000
 MAX_VALUES = 10_000_000  # edges × prompts
-# The summary lists this many of the strongest edges; edges.parquet holds every edge.
+# The summary lists this many of the strongest edges; edges.parquet (EDGES_FILE) holds every edge.
 SUMMARY_EDGES = 2_000
-EDGES_FILE = "edges.parquet"
+__all__ = ["EDGES_FILE"]
 # How many of an estimate's strongest edges "Verify by path patching" measures, at most.
 VERIFY_MAX = 50
 
@@ -1125,3 +1126,99 @@ def verification_table(estimated: dict[str, Any], measured: dict[str, Any]) -> d
         "same_sign": int(np.sum(np.sign(a) == np.sign(b))),
         "rows": rows,
     }
+
+
+def latest_verification(
+    project: Any, run_id: str, summary: dict[str, Any]
+) -> dict[str, Any] | None:
+    """An edge attribution run's estimates against its latest finished verification by path
+    patching (:func:`verification_table`), or None when none has finished."""
+    done = [
+        r
+        for r in project.list_runs()
+        if r.derived_from
+        and r.derived_from.run == run_id
+        and r.derived_from.kind == "verification"
+        and r.status == "finished"
+    ]
+    if not done or not summary.get("edges"):
+        return None
+    latest = max(done, key=lambda r: (r.created or "", r.id))
+    measured = project.read_json(project.run_dir(latest.id) / "summary.json", optional=True)
+    return verification_table(summary, measured) if measured else None
+
+
+# -- what a run writes ---------------------------------------------------------------------------
+
+
+def reported_edges(stats: Any) -> list[int]:
+    """The edges a summary lists: the strongest :data:`SUMMARY_EDGES` by the magnitude of their
+    mean effect (ties in the graph's order), in the graph's order."""
+    strongest = _ranking(np.asarray(stats.effect_mean, dtype=np.float64))
+    return sorted(int(e) for e in strongest[:SUMMARY_EDGES])
+
+
+def edge_table(result: EngineResult, stats: Any) -> Any:
+    """Every edge's statistics, one row per edge (edges.parquet): what the summary reports for
+    the strongest, for all of them. ``stats`` rows are the result's edges."""
+    import pyarrow as pa
+
+    def column(values: Any) -> Any:
+        return np.asarray(values, dtype=np.float64)
+
+    sites = result.sites
+    edges = [s.edge for s in sites]
+    assert all(e is not None for e in edges)
+    nan = np.full(len(sites), np.nan)
+    band_lo = nan if stats.band_lo is None else stats.band_lo
+    band_hi = nan if stats.band_hi is None else stats.band_hi
+    q = nan if stats.q is None else stats.q
+    return pa.table(
+        {
+            "edge": np.array([s.index for s in sites], dtype=np.int32),
+            "label": [s.label for s in sites],
+            "sender": [e.sender.kind for e in edges],  # type: ignore[union-attr]
+            "sender_layer": np.array(
+                [-1 if e.sender.layer is None else e.sender.layer for e in edges],  # type: ignore[union-attr]
+                dtype=np.int16,
+            ),
+            "sender_head": np.array(
+                [-1 if e.sender.head is None else e.sender.head for e in edges],  # type: ignore[union-attr]
+                dtype=np.int16,
+            ),
+            "receiver": [
+                "logits"
+                if isinstance(e.receiver, LogitsReceiver)  # type: ignore[union-attr]
+                else "mlp"
+                if isinstance(e.receiver, MlpReceiver)  # type: ignore[union-attr]
+                else e.receiver.input  # type: ignore[union-attr]
+                for e in edges
+            ],
+            "receiver_layer": np.array(
+                [getattr(e.receiver, "layer", -1) for e in edges], dtype=np.int16
+            ),
+            "receiver_head": np.array(
+                [getattr(e.receiver, "head", -1) for e in edges], dtype=np.int16
+            ),
+            "n": np.full(len(sites), stats.n, dtype=np.int32),
+            "effect_mean": column(stats.effect_mean),
+            "effect_sd": column(stats.effect_sd),
+            "effect_lo": column(stats.effect_lo),
+            "effect_hi": column(stats.effect_hi),
+            "delta_mean": column(stats.delta_mean),
+            "delta_sd": column(stats.delta_sd),
+            "delta_lo": column(stats.delta_lo),
+            "delta_hi": column(stats.delta_hi),
+            "band_lo": column(band_lo),
+            "band_hi": column(band_hi),
+            "q": column(q),
+            "opposite_sign": np.asarray(stats.opposite_sign, dtype=np.int32),
+        }
+    )
+
+
+def write_edge_table(path: Any, result: EngineResult, stats: Any) -> None:
+    """edges.parquet for an edge attribution run's result (``stats`` over every edge)."""
+    from logogram.results import write_results
+
+    write_results(path, edge_table(result, stats))

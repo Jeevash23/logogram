@@ -17,6 +17,7 @@ which run is partial (``partial_a``, ``partial_b``), and how far it got.
 
 from __future__ import annotations
 
+import json
 import math
 from typing import Any
 
@@ -32,6 +33,9 @@ class CompareError(ValueError):
 
 
 def site_key(site: dict[str, Any]) -> tuple[Any, ...]:
+    edge = site.get("edge")
+    if edge:  # an edge of the model's graph is its sender and receiver, in any run that names it
+        return ("edge", json.dumps(edge, sort_keys=True))
     return (
         site["kind"],
         site["layer"],

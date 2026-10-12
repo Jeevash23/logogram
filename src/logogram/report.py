@@ -23,6 +23,8 @@ from logogram.spec import (
     ActivationPatching,
     AttributionPatching,
     DirectLogitAttribution,
+    EdgeAttribution,
+    EdgesScope,
     FeatureDirection,
     MeanBaseline,
     PathPatching,
@@ -85,6 +87,16 @@ def _method(spec: Spec, summary: dict[str, Any] | None) -> str:
             )
         return text
     if isinstance(e, PathPatching):
+        if isinstance(spec.scope, EdgesScope):
+            n = len(spec.scope.edges)
+            return (
+                f"Path patching {_arrow(e.direction)}, one edge at a time ({n} edges): each edge's "
+                "sender was patched while every other attention head and every MLP was held at "
+                "its value in the receiver run, so the change reached the edge's receiver only "
+                "directly; the receiver's recorded input (a head's query, key or value, an MLP's "
+                "input before its normalization, or the final residual stream) was then patched "
+                "into an unchanged run."
+            )
         receivers = ", ".join(receiver_text(r) for r in e.receivers)
         held = ", and the MLPs were held too" if e.freeze_mlps else ", with the MLPs recomputed"
         return (
@@ -92,6 +104,8 @@ def _method(spec: Spec, summary: dict[str, Any] | None) -> str:
             f"every other attention head was held at its value in the receiver run{held}; the "
             "receivers' recorded inputs were then patched into an unchanged run."
         )
+    if isinstance(e, EdgeAttribution):
+        return _edge_method(spec, e, summary)
     if isinstance(e, Steering):
         return _steering_method(spec, e, summary)
     assert isinstance(e, AttributionPatching)
@@ -105,6 +119,59 @@ def _method(spec: Spec, summary: dict[str, Any] | None) -> str:
         f"Attribution patching {_arrow(e.direction)}: a first-order estimate of each site's "
         f"patching effect, (source − receiver activation) · {how}, not a patched forward pass."
     )
+
+
+def _edge_method(spec: Spec, e: EdgeAttribution, summary: dict[str, Any] | None) -> str:
+    edges = (summary or {}).get("edges") or {}
+    size = (
+        f"{edges['n_edges']:,} edges ({edges['n_senders']} senders, {edges['n_receivers']} "
+        "receivers)"
+        if edges
+        else "the edges of the scope"
+    )
+    how = (
+        f"the metric's gradient averaged over {e.steps} runs whose input embeddings lie evenly "
+        "between the receiver's and the source's (integrated gradients, EAP-IG)"
+        if e.method == "integrated_gradients"
+        else "the metric's gradient at the receiver run (EAP)"
+    )
+    text = (
+        f"Edge attribution {_arrow(e.direction)} over {size}: the graph's nodes are the "
+        "embeddings, every attention head (its output through its slice of the output "
+        "projection) and every MLP, and an edge runs from a node's output to a later head's "
+        "query, key or value input, a later MLP's input, or the logits. Each edge's estimate is "
+        f"(the sender's output on the source prompt − on the receiver prompt) · {how}, summed "
+        "over positions, where the gradient is taken with respect to the receiver's own copy of "
+        "the residual stream, before its normalization, through that normalization with its "
+        "scale recomputed from the copy (not held), as patching the edge recomputes it. It is a "
+        "first-order estimate, not a patched forward pass."
+    )
+    if e.curve is not None:
+        c = e.curve
+        patched = (
+            "the chosen edges carried the source prompt's values and every other edge the "
+            "receiver run's own"
+            if c.patch == "chosen"
+            else "the chosen edges kept the receiver run's values and every other edge carried "
+            "the source prompt's"
+        )
+        text += (
+            f" A faithfulness curve then patched edges for real: for each k of "
+            f"{', '.join(f'{k:,}' for k in c.counts)}, the receiver prompt ran once with the k "
+            f"strongest edges chosen, where {patched}; each patched edge added its sender's "
+            "difference (source − this pass) into its receiver's own input only. Faithfulness is "
+            "the share of the gap from no edge chosen to every edge chosen that the chosen edges "
+            f"close. The control chose k edges at random ({c.control.draws} draw"
+            f"{'s' if c.control.draws != 1 else ''}, seed {c.control.seed}); the edges were "
+            "chosen and measured on the same prompts."
+        )
+        curve = edges.get("curve") or {}
+        difference = curve.get("source_difference")
+        if difference is not None:
+            text += (
+                f" Patching every edge reproduced the source run's metric within {difference:.2g}."
+            )
+    return text
 
 
 def _steering_method(spec: Spec, e: Steering, summary: dict[str, Any] | None) -> str:
@@ -344,8 +411,11 @@ def heatmap_svg(
 ) -> str:
     """A run's means (the normalized ``effect``, or the change in the metric, ``delta``) as an SVG
     grid in the effect colors on a symmetric scale, fitted to the largest value or fixed at ±1
-    (``unit``, effects only), with a legend, axis labels and each cell's value on hover."""
+    (``unit``, effects only), with a legend, axis labels and each cell's value on hover. An edge
+    attribution run has no grid: its strongest edges are drawn as a graph instead."""
     layout = summary["layout"]
+    if layout.get("kind") == "edges":
+        return edge_graph_svg(summary)
     rows, cols = layout["rows"], layout["cols"]
     # Small maps get bigger cells, so a few heads don't make a postage stamp.
     cell = max(cell, min(36, 480 // max(1, len(cols)), 480 // max(1, len(rows))))
@@ -411,6 +481,257 @@ def heatmap_svg(
         "</svg>"
     )
     return "".join(parts)
+
+
+# -- edges -----------------------------------------------------------------------------------
+
+# How many of the strongest edges the graph drawing shows.
+GRAPH_EDGES = 60
+
+
+def _node_place(node: dict[str, Any], n_layers: int) -> tuple[int, float | None]:
+    """A node's column (the embeddings first, then each layer's heads and MLP, the logits last)
+    and its head (None for a node drawn in the middle of its column)."""
+    kind = node.get("kind")
+    if kind == "embed":
+        return 0, None
+    if kind == "logits":
+        return 2 * n_layers + 1, None
+    layer = int(node.get("layer") or 0)
+    if kind == "mlp":
+        return 2 + 2 * layer, None
+    return 1 + 2 * layer, float(node.get("head") or 0)
+
+
+def edge_graph_svg(summary: dict[str, Any], top: int = GRAPH_EDGES) -> str:
+    """The strongest edges drawn between the model's nodes, layers left to right: each edge in
+    the effect colors on a symmetric scale (with a legend), wider when stronger, the strongest
+    drawn first. A head's query, key and value inputs end at the top, middle and bottom of it."""
+    model = summary.get("model") or {}
+    sites = [s for s in summary["sites"] if s.get("edge") and s["effect"]["mean"] is not None]
+    strongest = sorted(sites, key=lambda s: (-abs(s["effect"]["mean"]), s["index"]))[:top]
+    n_layers = int(model.get("n_layers") or 1)
+    n_heads = int(model.get("n_heads") or 1)
+    columns = 2 * n_layers + 2
+    left, right, top_pad = 40, 24, 16
+    width = max(640, 36 * columns + left + right)
+    rows_h = max(180, 16 * n_heads)
+    height = top_pad + rows_h + 70
+    step = (width - left - right) / max(1, columns - 1)
+    bound = max((abs(s["effect"]["mean"]) for s in strongest), default=1.0) or 1.0
+    esc = html.escape
+
+    def place(node: dict[str, Any], inp: str | None = None) -> tuple[float, float]:
+        col, head = _node_place(node, n_layers)
+        y = top_pad + rows_h / 2 if head is None else top_pad + (head + 0.5) * rows_h / n_heads
+        y += {"q": -3.0, "k": 0.0, "v": 3.0}.get(inp or "", 0.0)
+        return left + col * step, y
+
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}" font-family="system-ui, sans-serif" font-size="10" '
+        f'role="img" aria-label="The {len(strongest)} strongest edges, layers left to right">'
+    ]
+    for s in strongest:
+        e = s["edge"]
+        receiver = e["receiver"]
+        x1, y1 = place(e["sender"])
+        x2, y2 = place(
+            {"kind": "logits"}
+            if receiver["kind"] == "logits"
+            else {"kind": "mlp", "layer": receiver["layer"]}
+            if receiver["kind"] == "mlp"
+            else {"kind": "head", "layer": receiver["layer"], "head": receiver["head"]},
+            receiver.get("input"),
+        )
+        mean = s["effect"]["mean"]
+        bend = (x2 - x1) * 0.45
+        parts.append(
+            f'<path d="M{x1:.1f} {y1:.1f} C{x1 + bend:.1f} {y1:.1f} {x2 - bend:.1f} {y2:.1f} '
+            f'{x2:.1f} {y2:.1f}" fill="none" stroke="{effect_color(mean, bound)}" '
+            f'stroke-width="{1 + 3 * abs(mean) / bound:.2f}" stroke-linecap="round">'
+            f"<title>{esc(s['label'])}: {_fmt(mean)} [{_fmt(s['effect']['lo'])} to "
+            f"{_fmt(s['effect']['hi'])}]</title></path>"
+        )
+    # The nodes, over the edges: heads as dots, MLPs as squares, and the two ends of the model.
+    for layer in range(n_layers):
+        x = left + (1 + 2 * layer) * step
+        for h in range(n_heads):
+            y = top_pad + (h + 0.5) * rows_h / n_heads
+            parts.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="2.2" fill="currentColor"/>')
+        xm, ym = left + (2 + 2 * layer) * step, top_pad + rows_h / 2
+        parts.append(
+            f'<rect x="{xm - 3:.1f}" y="{ym - 3:.1f}" width="6" height="6" fill="currentColor"/>'
+        )
+        parts.append(
+            f'<text x="{(x + xm) / 2:.1f}" y="{top_pad + rows_h + 14}" text-anchor="middle" '
+            f'fill="currentColor">L{layer}</text>'
+        )
+    for col, name in ((0, "embeddings"), (columns - 1, "logits")):
+        x, y = left + col * step, top_pad + rows_h / 2
+        parts.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" fill="currentColor"/>')
+        parts.append(
+            f'<text x="{x:.1f}" y="{top_pad + rows_h + 14}" text-anchor="middle" '
+            f'fill="currentColor">{name}</text>'
+        )
+    ly = top_pad + rows_h + 34
+    parts.append(
+        '<defs><linearGradient id="edge-scale">'
+        f'<stop offset="0" stop-color="{effect_color(-1, 1)}"/>'
+        f'<stop offset="0.5" stop-color="{effect_color(0, 1)}"/>'
+        f'<stop offset="1" stop-color="{effect_color(1, 1)}"/></linearGradient></defs>'
+        f'<rect x="{left}" y="{ly}" width="120" height="8" fill="url(#edge-scale)"/>'
+        f'<text x="{left}" y="{ly + 22}" fill="currentColor">{_fmt(-bound, 2)}</text>'
+        f'<text x="{left + 60}" y="{ly + 22}" text-anchor="middle" fill="currentColor">0</text>'
+        f'<text x="{left + 120}" y="{ly + 22}" text-anchor="end" fill="currentColor">'
+        f"{_fmt(bound, 2)}</text>"
+        f'<text x="{left + 132}" y="{ly + 8}" fill="currentColor">estimated normalized effect '
+        "of patching the edge alone</text></svg>"
+    )
+    return "".join(parts)
+
+
+def curve_svg(curve: dict[str, Any], n_edges: int) -> str:
+    """Faithfulness against the number of edges chosen (on a log scale), for the strongest edges
+    (in ink) and for edges chosen at random (dashed), each with its interval as a band."""
+    points = [(p, q) for p, q in zip(curve["strongest"], curve["random"], strict=True)]
+    if not points:
+        return ""
+    width, height = 640, 300
+    left, right, top, bottom = 48, 20, 14, 46
+    ks = [p["k"] for p, _ in points] + ([n_edges] if curve["patch"] == "chosen" else [])
+    lo_k, hi_k = math.log10(min(ks)), math.log10(max(max(ks), min(ks) * 10))
+    values = [0.0, 1.0]
+    for p, q in points:
+        for f in (p["faithfulness"], q["faithfulness"]):
+            values += [v for v in (f["lo"], f["hi"], f["mean"]) if v is not None]
+    y_lo, y_hi = min(values), max(values)
+    pad = (y_hi - y_lo) * 0.06 or 0.1
+    y_lo, y_hi = y_lo - pad, y_hi + pad
+
+    def x(k: float) -> float:
+        return left + (math.log10(k) - lo_k) / (hi_k - lo_k or 1) * (width - left - right)
+
+    def y(v: float) -> float:
+        return top + (y_hi - v) / (y_hi - y_lo) * (height - top - bottom)
+
+    def series(which: int, dashed: bool, color: str) -> str:
+        pts = [(pq[0]["k"], pq[which]["faithfulness"]) for pq in points]
+        band = [(k, f) for k, f in pts if f["lo"] is not None and f["hi"] is not None]
+        out = ""
+        if len(band) >= 2:
+            upper = " ".join(f"{x(k):.1f},{y(f['hi']):.1f}" for k, f in band)
+            lower = " ".join(f"{x(k):.1f},{y(f['lo']):.1f}" for k, f in reversed(band))
+            out += f'<polygon points="{upper} {lower}" fill="{color}" fill-opacity="0.12"/>'
+        line = " ".join(f"{x(k):.1f},{y(f['mean']):.1f}" for k, f in pts if f["mean"] is not None)
+        dash = ' stroke-dasharray="5 4"' if dashed else ""
+        out += f'<polyline points="{line}" fill="none" stroke="{color}" stroke-width="1.6"{dash}/>'
+        for k, f in pts:
+            if f["mean"] is not None:
+                out += (
+                    f'<circle cx="{x(k):.1f}" cy="{y(f["mean"]):.1f}" r="2.4" fill="{color}">'
+                    f"<title>{k:,} edges: {_fmt(f['mean'])} [{_fmt(f['lo'])} to "
+                    f"{_fmt(f['hi'])}]</title></circle>"
+                )
+        return out
+
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}" font-family="system-ui, sans-serif" font-size="10" '
+        'role="img" aria-label="Faithfulness against the number of edges">'
+    ]
+    for v in (0.0, 1.0):
+        parts.append(
+            f'<line x1="{left}" x2="{width - right}" y1="{y(v):.1f}" y2="{y(v):.1f}" '
+            f'stroke="currentColor" stroke-opacity="0.25"/>'
+            f'<text x="{left - 6}" y="{y(v) + 3:.1f}" text-anchor="end" fill="currentColor">'
+            f"{v:g}</text>"
+        )
+    decade = math.floor(lo_k)
+    while decade <= hi_k:
+        k = 10**decade
+        if lo_k - 1e-9 <= decade:
+            parts.append(
+                f'<text x="{x(k):.1f}" y="{height - bottom + 16}" text-anchor="middle" '
+                f'fill="currentColor">{k:,}</text>'
+            )
+        decade += 1
+    parts.append(series(1, True, "#8e8e96"))
+    parts.append(series(0, False, "currentColor"))
+    every = curve.get("every") or {}
+    if curve["patch"] == "chosen" and (every.get("faithfulness") or {}).get("mean") is not None:
+        mean = every["faithfulness"]["mean"]
+        parts.append(
+            f'<circle cx="{x(n_edges):.1f}" cy="{y(mean):.1f}" r="3.2" fill="none" '
+            f'stroke="currentColor"><title>Every edge: {_fmt(mean)}</title></circle>'
+        )
+    parts.append(
+        f'<text x="{(left + width - right) / 2:.1f}" y="{height - 8}" text-anchor="middle" '
+        'fill="currentColor">edges chosen (log scale)</text></svg>'
+    )
+    return "".join(parts)
+
+
+def _edges_html(summary: dict[str, Any], ci_level: int, verification: dict[str, Any] | None) -> str:
+    """An edge attribution run's graph, its faithfulness curve, and its estimates against path
+    patching when a verification ran."""
+    esc = html.escape
+    edges = summary.get("edges") or {}
+    n_edges = edges.get("n_edges", len(summary["sites"]))
+    out = (
+        f"<section><h2>The strongest edges, layers left to right</h2><figure>"
+        f"{edge_graph_svg(summary)}<figcaption>The {min(GRAPH_EDGES, len(summary['sites']))} "
+        f"strongest of {n_edges:,} edges. Hover an edge for its {ci_level}% interval."
+        "</figcaption></figure></section>"
+    )
+    curve = edges.get("curve")
+    if curve:
+        rows = "".join(
+            f"<tr><td class='num'>{p['k']:,}</td>"
+            f"<td class='num'>{_fmt(p['faithfulness']['mean'])}</td>"
+            f"<td class='num'>{_fmt(p['faithfulness']['lo'])} to "
+            f"{_fmt(p['faithfulness']['hi'])}</td>"
+            f"<td class='num'>{_fmt(q['faithfulness']['mean'])}</td>"
+            f"<td class='num'>{_fmt(q['faithfulness']['lo'])} to "
+            f"{_fmt(q['faithfulness']['hi'])}</td></tr>"
+            for p, q in zip(curve["strongest"], curve["random"], strict=True)
+        )
+        patched = (
+            "the chosen edges carry the source prompt's values"
+            if curve["patch"] == "chosen"
+            else "every edge but the chosen ones carries the source prompt's values"
+        )
+        out += (
+            f"<section><h2>How much of the behavior the strongest edges carry</h2><figure>"
+            f"{curve_svg(curve, n_edges)}<figcaption>Faithfulness of the k strongest edges (ink) "
+            f"and of k edges chosen at random (dashed), with {ci_level}% intervals: {patched}. 0 "
+            "is no edge chosen, 1 every edge.</figcaption></figure>"
+            "<table><thead><tr><th class='num'>Edges</th><th class='num'>Strongest</th>"
+            f"<th class='num'>{ci_level}% interval</th><th class='num'>Random</th>"
+            f"<th class='num'>{ci_level}% interval</th></tr></thead><tbody>{rows}</tbody></table>"
+            "</section>"
+        )
+    if verification and verification.get("rows"):
+        rho = verification.get("spearman")
+        rows = "".join(
+            f"<tr><td>{esc(r['label'])}</td>"
+            f"<td class='num'>{_fmt(r['estimate']['mean'])}</td>"
+            f"<td class='num'>{_fmt(r['measured']['mean'])}</td>"
+            f"<td class='num'>{_fmt(r['measured']['lo'])} to {_fmt(r['measured']['hi'])}</td>"
+            "</tr>"
+            for r in verification["rows"]
+        )
+        out += (
+            "<section><h2>Estimates against path patching</h2><p class='lede'>"
+            f"Run {esc(verification['run'])} path patched the {verification['n']} strongest edges "
+            "one at a time. Spearman's rank correlation of estimate and measurement: "
+            f"{'—' if rho is None else _fmt(rho, 3, sign=False)}; "
+            f"{verification['same_sign']} of {verification['n']} have the same sign.</p>"
+            "<table><thead><tr><th>Edge</th><th class='num'>Estimate</th>"
+            f"<th class='num'>Path patching</th><th class='num'>{ci_level}% interval</th></tr>"
+            f"</thead><tbody>{rows}</tbody></table></section>"
+        )
+    return out
 
 
 def figure_svg(
@@ -566,9 +887,11 @@ def run_report(
     *,
     hardware: bool = False,
     continuations: dict[str, Any] | None = None,
+    verification: dict[str, Any] | None = None,
 ) -> str:
     """One finished run as a self-contained HTML page. ``continuations`` is the run's
-    continuations.json, for a steering run that recorded what the model says."""
+    continuations.json, for a steering run that recorded what the model says; ``verification``
+    an edge attribution run's estimates against path patching (logogram.edges)."""
     manifest = manifest or {}
     esc = html.escape
     sites = [s for s in summary["sites"] if s["effect"]["mean"] is not None]
@@ -605,7 +928,7 @@ def run_report(
     figure_html = "".join(f"<div><dt>{esc(k)}</dt><dd>{v}</dd></div>" for k, v in figures)
 
     layout = summary.get("layout") or {}
-    has_map = layout.get("kind") not in (None, "sites", "site_sets")
+    has_map = layout.get("kind") not in (None, "sites", "site_sets", "edges")
     map_html = (
         f"<section><h2>{esc(layout.get('row_title', ''))} × {esc(layout.get('col_title') or 'site')}"
         f"</h2><figure>{heatmap_svg(summary)}<figcaption>Each cell is a site's mean normalized "
@@ -613,6 +936,18 @@ def run_report(
         f"{esc(metric.get('normalized_effect', ''))}</figcaption></figure></section>"
         if has_map
         else ""
+    )
+    if layout.get("kind") == "edges":
+        map_html = _edges_html(summary, ci_level, verification)
+    edges = summary.get("edges") or {}
+    unit = "edges" if layout.get("kind") == "edges" else "sites"
+    every = (
+        f"The {len(summary['sites']):,} strongest of {edges['n_edges']:,} edges (edges.parquet "
+        "holds every edge's statistics)"
+        if edges and edges["n_edges"] > len(summary["sites"])
+        else f"The {len(summary['sites'])} {unit} that finished"
+        if partial_of(summary)
+        else f"All {len(summary['sites'])} {unit}"
     )
     methods = "".join(
         f"<p>{esc(p)}</p>" for p in methods_text(spec, summary, manifest, run_id).split("\n\n")
@@ -688,26 +1023,26 @@ def run_report(
         f"{notes}"
         f"<section class='flush'><dl class='figures'>{figure_html}</dl></section>"
         f"{map_html}"
-        f"<section><h2>The strongest sites</h2>{_site_rows(strongest[:STRONGEST], ci_level)}"
+        f"<section><h2>The strongest {unit}</h2>{_site_rows(strongest[:STRONGEST], ci_level)}"
         f"<p class='muted'>Effects are normalized: 1 is as far as switching to the other prompt, "
-        f"0 is no change. The band holds for every site of the sweep at once; the q-value is the "
-        f"share of false findings expected among sites this strong.</p></section>"
+        f"0 is no change. The band holds for every {unit[:-1]} of the sweep at once; the q-value "
+        f"is the share of false findings expected among {unit} this strong.</p></section>"
         f"{_continuations_html(continuations)}"
         f"<section class='methods'><h2>Methods</h2>{methods}</section>"
         + (f"<section><h2>Notes from the run</h2><ul>{warnings}</ul></section>" if warnings else "")
-        + "<section><h2>Every site</h2><details><summary>"
-        + (
-            f"The {len(summary['sites'])} sites that finished"
-            if partial
-            else f"All {len(summary['sites'])} sites"
-        )
-        + f"</summary>{_site_rows(summary['sites'], ci_level)}</details></section>"
+        + f"<section><h2>Every {unit[:-1]}</h2><details><summary>{every}</summary>"
+        + f"{_site_rows(summary['sites'], ci_level)}</details></section>"
         f"<section><h2>Where it came from</h2><dl class='provenance'>{provenance_html}</dl>"
         f"<details><summary>The spec</summary><pre>{esc(spec.to_json())}</pre></details></section>"
         f"<footer>Made with Logogram {esc(__version__)}. The per-prompt values behind every "
-        "number are in the run's results.parquet.</footer>"
-        "</main></body></html>\n"
+        "number are in the run's results.parquet"
+        + (", and every edge's statistics in its edges.parquet" if edges else "")
+        + ".</footer></main></body></html>\n"
     )
+
+
+def partial_of(summary: dict[str, Any]) -> dict[str, Any] | None:
+    return summary.get("partial")
 
 
 def sites_table(summary: dict[str, Any]) -> list[dict[str, Any]]:

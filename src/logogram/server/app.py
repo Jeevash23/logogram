@@ -1518,13 +1518,22 @@ def create_app(
 
     @app.get("/api/runs/{run_id}/sites.csv")
     def export_sites(run_id: str) -> Response:
-        """One row per site: its mean, intervals, q-value and counts."""
-        from logogram.exports import sites_csv
+        """One row per site: its mean, intervals, q-value and counts. For an edge attribution
+        run, one row per edge of the graph (its edges.parquet)."""
+        from logogram.exports import results_csv, sites_csv
         from logogram.report import sites_table
         from logogram.runs import load_summary
+        from logogram.schema import EDGES_FILE
 
         project = state.require_project()
         _finished(project, run_id)
+        edges = project.run_dir(run_id) / EDGES_FILE
+        if edges.is_file():
+            return StreamingResponse(
+                results_csv(project.readable(edges)),
+                media_type="text/csv",
+                headers={"content-disposition": f'attachment; filename="{run_id}-edges.csv"'},
+            )
         return Response(
             sites_csv(sites_table(load_summary(project, run_id))),
             media_type="text/csv",
@@ -1534,6 +1543,7 @@ def create_app(
     @app.get("/api/runs/{run_id}/report.html")
     def report_run(run_id: str, hardware: bool = False) -> Response:
         """The run as one self-contained HTML page, to download and pass on."""
+        from logogram.edges import latest_verification
         from logogram.report import run_report
         from logogram.runs import load_continuations, load_summary
 
@@ -1542,13 +1552,15 @@ def create_app(
         folder = project.run_dir(run_id)
         spec = Spec.from_path(project.readable(folder / "spec.json"))
         manifest = project.read_json(folder / "manifest.json", optional=True) or {}
+        summary = load_summary(project, run_id)
         page = run_report(
             spec,
-            load_summary(project, run_id),
+            summary,
             manifest,
             run_id,
             hardware=hardware,
             continuations=load_continuations(project, run_id),
+            verification=latest_verification(project, run_id, summary),
         )
         return Response(
             page,
@@ -1568,14 +1580,31 @@ def create_app(
         project = state.require_project()
         _finished(project, run_id)
         summary = load_summary(project, run_id)
-        if (summary.get("layout") or {}).get("kind") in ("sites", "site_sets"):
+        kind = (summary.get("layout") or {}).get("kind")
+        if kind in ("sites", "site_sets"):
             raise Conflict("This run has no map to draw: its results are a list. Export a CSV.")
+        if kind == "edges":
+            raise Conflict(
+                "This run's results are edges of the model's graph, which have no map. Download "
+                "the report for the graph and the faithfulness curve, or export a CSV."
+            )
         spec = Spec.from_path(project.readable(project.run_dir(run_id) / "spec.json"))
         return Response(
             figure_svg(spec, summary, value, unit),
             media_type="image/svg+xml",
             headers={"content-disposition": f'attachment; filename="{run_id}.svg"'},
         )
+
+    @app.get("/api/runs/{run_id}/edge-verification", response_model=M.EdgeVerification | None)
+    def edge_verification(run_id: str) -> dict[str, Any] | None:
+        """An edge attribution run's estimates against its latest finished verification by path
+        patching, edge by edge; null when no verification has finished."""
+        from logogram.edges import latest_verification
+        from logogram.runs import load_summary
+
+        project = state.require_project()
+        _finished(project, run_id)
+        return latest_verification(project, run_id, load_summary(project, run_id))
 
     @app.get("/api/runs/{run_id}/methods", response_model=M.MethodsText)
     def run_methods(run_id: str) -> dict[str, Any]:
@@ -1626,9 +1655,10 @@ def create_app(
 
     @app.post("/api/runs/{run_id}/verify", response_model=M.StartedRun)
     def verify(run_id: str, body: VerifyRequest) -> dict[str, Any]:
-        """Patch, for real, the sites an attribution patching run estimated to matter most."""
+        """Patch, for real, the sites an attribution patching run estimated to matter most (an
+        edge attribution run's edges, by path patching one at a time)."""
         from logogram.robustness import require_finished
-        from logogram.verify import verification_spec
+        from logogram.verify import verification_change, verification_spec
 
         project = state.require_project()
         run = _read_run(project, run_id)
@@ -1636,13 +1666,12 @@ def create_app(
         if not run["summary"]:
             raise ValueError("Only a finished run can be verified.")
         spec = verification_spec(Spec.model_validate(run["spec"]), run["summary"], body.top)
-        n = len(spec.scope.sites)  # type: ignore[union-attr]
         job = state.run_spec_job(
             spec,
             derived_from={
                 "run": run_id,
                 "kind": "verification",
-                "change": f"the {n} strongest estimated site{'s' if n != 1 else ''}, patched",
+                "change": verification_change(spec),
             },
         )
         return {"run_id": job.run_id, "job": job.to_dict()}

@@ -120,6 +120,7 @@ def compute_site_stats(
     delta: np.ndarray | None = None,
     gap: np.ndarray | None = None,
     family: bool = False,
+    keep_boot: bool = True,
 ) -> SiteStats:
     """``patched*`` are [S, n]; ``receiver*``/``reference`` are [n]; ``counts`` is [B, n].
 
@@ -127,6 +128,10 @@ def compute_site_stats(
     methods whose per-prompt values aren't patched runs (estimates, and terms of a decomposition).
     Where nothing ran patched, ``patched*`` are NaN and count no sign flips. With ``family``,
     simultaneous bands and q-values over these sites are computed too.
+
+    Without ``keep_boot``, each site's resampled means aren't kept (``effect_boot`` and
+    ``delta_boot`` are None), so many sites go through in chunks of sites: see
+    :func:`_site_stats_in_chunks`.
     """
     patched = np.asarray(patched, dtype=np.float64)
     patched_prob = np.asarray(patched_prob, dtype=np.float64)
@@ -138,16 +143,15 @@ def compute_site_stats(
 
     delta = patched - receiver[None, :] if delta is None else np.asarray(delta, dtype=np.float64)
     gap = reference - receiver if gap is None else np.asarray(gap, dtype=np.float64)
+    if not keep_boot and patched.shape[0] * counts.shape[0] > CHUNK_VALUES:
+        return _site_stats_in_chunks(
+            patched, patched_prob, patched_pref, receiver, reference, receiver_prob,
+            receiver_pref, normalization, counts, ci, delta, gap, family,
+        )  # fmt: skip
     effect, denom = normalize(delta, gap, normalization)
 
     weights = _weights(counts)  # [n, B]
-    with np.errstate(invalid="ignore", divide="ignore"):
-        delta_boot = delta @ weights  # [S, B]
-        if normalization == "dataset_gap":
-            gap_boot = gap @ weights  # [B]
-            effect_boot = delta_boot / gap_boot[None, :]
-        else:
-            effect_boot = effect @ weights
+    delta_boot, effect_boot = _boots(delta, effect, gap, weights, normalization)
     effect_lo, effect_hi = _quantiles(effect_boot, ci)
     delta_lo, delta_hi = _quantiles(delta_boot, ci)
     if n < 2:
@@ -192,6 +196,117 @@ def compute_site_stats(
     return stats
 
 
+def _boots(
+    delta: np.ndarray,
+    effect: np.ndarray,
+    gap: np.ndarray,
+    weights: np.ndarray,
+    normalization: Normalization,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Each resample's mean change in the metric and mean effect, [S, B] each."""
+    with np.errstate(invalid="ignore", divide="ignore"):
+        delta_boot = delta @ weights  # [S, B]
+        if normalization == "dataset_gap":
+            gap_boot = gap @ weights  # [B]
+            effect_boot = delta_boot / gap_boot[None, :]
+        else:
+            effect_boot = effect @ weights
+    return delta_boot, effect_boot
+
+
+# Many sites (an edge attribution run's tens of thousands of edges) go through in chunks, so that
+# no [sites, resamples] array holds more than this many values.
+CHUNK_VALUES = 1 << 22
+
+
+def _site_stats_in_chunks(
+    patched: np.ndarray,
+    patched_prob: np.ndarray,
+    patched_pref: np.ndarray,
+    receiver: np.ndarray,
+    reference: np.ndarray,
+    receiver_prob: np.ndarray,
+    receiver_pref: np.ndarray,
+    normalization: Normalization,
+    counts: np.ndarray,
+    ci: float,
+    delta: np.ndarray,
+    gap: np.ndarray,
+    family: bool,
+) -> SiteStats:
+    """:func:`compute_site_stats` a chunk of sites at a time, without keeping the resampled
+    means. Each site's numbers depend only on its own rows and the shared resamples, and the
+    simultaneous bands' level on each resample's most extreme site over all of them (a minimum,
+    taken chunk by chunk), so the result is what one pass over every site gives."""
+    S, B = patched.shape[0], counts.shape[0]
+    size = max(1, CHUNK_VALUES // max(B, 1))
+    chunks = [slice(start, min(start + size, S)) for start in range(0, S, size)]
+    parts: list[SiteStats] = []
+    extreme: np.ndarray | None = None
+    pvalues: list[np.ndarray] = []
+    for sl in chunks:
+        part = compute_site_stats(
+            patched[sl], patched_prob[sl], patched_pref[sl], receiver, reference,
+            receiver_prob, receiver_pref, normalization, counts, ci, delta[sl], gap,
+        )  # fmt: skip
+        boot = part.effect_boot
+        assert boot is not None
+        if family and part.n >= 2:
+            finite = np.isfinite(boot).all(axis=1)
+            if finite.any():
+                most = _tails(boot[finite]).min(axis=0)
+                extreme = most if extreme is None else np.minimum(extreme, most)
+            pvalues.append(bootstrap_pvalues(boot))
+        part.effect_boot = part.delta_boot = None
+        parts.append(part)
+    fields = (
+        "effect", "effect_mean", "effect_sd", "effect_lo", "effect_hi", "delta", "delta_mean",
+        "delta_sd", "delta_lo", "delta_hi", "patched_mean", "pref_mean", "prob_mean",
+        "prob_delta_mean", "sign_flips", "opposite_sign",
+    )  # fmt: skip
+    stats = SiteStats(
+        n=parts[0].n,
+        denominator=parts[0].denominator,
+        **{name: np.concatenate([getattr(p, name) for p in parts]) for name in fields},
+    )
+    if family and stats.n >= 2:
+        stats.band_lo = np.full(S, np.nan)
+        stats.band_hi = np.full(S, np.nan)
+        stats.band_level = None
+        if extreme is not None and B >= 2:
+            level = _band_level(extreme, ci, B)
+            weights = _weights(counts)
+            for sl in chunks:
+                _, boot = _boots(delta[sl], stats.effect[sl], gap, weights, normalization)
+                finite = np.isfinite(boot).all(axis=1)
+                lo, hi = np.quantile(boot[finite], [level, 1.0 - level], axis=1)
+                stats.band_lo[sl][finite], stats.band_hi[sl][finite] = lo, hi
+            stats.band_level = level
+        stats.q = bh_qvalues(np.concatenate(pvalues))
+    return stats
+
+
+def _tails(values: np.ndarray) -> np.ndarray:
+    """How far into the nearer tail each resample of each site is: 0 at the extremes, 0.5 in the
+    middle. Ties share their average rank, so constant sites are never the extreme one."""
+    B = values.shape[1]
+    order = np.argsort(values, axis=1, kind="mergesort")
+    ranks = np.empty_like(order, dtype=np.float64)
+    rows = np.arange(values.shape[0])[:, None]
+    ranks[rows, order] = np.arange(B, dtype=np.float64)[None, :]
+    sorted_values = np.take_along_axis(values, order, axis=1)
+    tied = (np.diff(sorted_values, axis=1) == 0).any(axis=1)
+    for r in np.flatnonzero(tied):
+        ranks[r] = _average_ties(sorted_values[r], order[r], B)
+    return np.minimum(ranks + 1.0, B - ranks) / B
+
+
+def _band_level(extreme: np.ndarray, ci: float, B: int) -> float:
+    """The two-sided tail each band keeps, from each resample's most extreme site."""
+    level = float(np.quantile(extreme, 1.0 - ci, method="lower"))
+    return max(level, 1.0 / B)
+
+
 def simultaneous_band(boot: np.ndarray, ci: float) -> tuple[np.ndarray, np.ndarray, float | None]:
     """Percentile bands that hold for every site at once with probability ``ci``.
 
@@ -207,21 +322,8 @@ def simultaneous_band(boot: np.ndarray, ci: float) -> tuple[np.ndarray, np.ndarr
     if not finite.any() or B < 2:
         return lo, hi, None
     values = boot[finite]
-    order = np.argsort(values, axis=1, kind="mergesort")
-    ranks = np.empty_like(order, dtype=np.float64)
-    rows = np.arange(values.shape[0])[:, None]
-    ranks[rows, order] = np.arange(B, dtype=np.float64)[None, :]
-    # Ties share their average rank, so constant sites are never the extreme one.
-    sorted_values = np.take_along_axis(values, order, axis=1)
-    for r in range(values.shape[0]):
-        same = np.diff(sorted_values[r]) == 0
-        if same.any():
-            ranks[r] = _average_ties(sorted_values[r], order[r], B)
-    # How far into the nearer tail each value is (0 at the extremes, 0.5 in the middle).
-    tail = np.minimum(ranks + 1.0, B - ranks) / B
-    extreme = tail.min(axis=0)  # per resample: its most extreme site
-    level = float(np.quantile(extreme, 1.0 - ci, method="lower"))
-    level = max(level, 1.0 / B)
+    extreme = _tails(values).min(axis=0)  # per resample: its most extreme site
+    level = _band_level(extreme, ci, B)
     q_lo, q_hi = np.quantile(values, [level, 1.0 - level], axis=1)
     lo[finite], hi[finite] = q_lo, q_hi
     return lo, hi, level

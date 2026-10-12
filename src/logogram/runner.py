@@ -45,8 +45,8 @@ from logogram.results import (
     site_payload,
     write_results,
 )
-from logogram.schema import CONTINUATIONS_FILE, ContinuationsFile, Manifest
-from logogram.spec import SINGLE_POSITION_METRICS, ModelRef, SAERef, Spec
+from logogram.schema import CONTINUATIONS_FILE, EDGES_FILE, ContinuationsFile, Manifest
+from logogram.spec import SINGLE_POSITION_METRICS, EdgeAttribution, ModelRef, SAERef, Spec
 
 EventFn = Callable[[str, dict[str, Any]], None]
 ModelProvider = Callable[[ModelRef], ModelBackend]
@@ -386,7 +386,11 @@ def run_spec(
         kept = keep(status, again)
         # A run that kept what finished keeps the predictions it measured before the sweep too.
         # Continuations come after the sweep, so a run that stopped never has them.
-        names = ("results.parquet", "summary.json", "predictions.json") if kept is None else ()
+        names = (
+            ("results.parquet", "summary.json", "predictions.json", EDGES_FILE)
+            if kept is None
+            else ()
+        )
         for name in (*names, CONTINUATIONS_FILE):
             (folder / name).unlink(missing_ok=True)
         if detail is not None:
@@ -592,7 +596,11 @@ def run_spec(
                     "n_prompts": len(prompts),
                     "model": model_shape,
                     "layout": layout,
-                    "sites": [s.to_dict() for s in sites],
+                    # An edge attribution run's edges (tens of thousands) arrive with its
+                    # summary, which lists the strongest.
+                    "sites": []
+                    if isinstance(spec.experiment, EdgeAttribution)
+                    else [s.to_dict() for s in sites],
                 },
             )
 
@@ -643,6 +651,10 @@ def run_spec(
             chat_template=chat.to_dict() if chat is not None else None,
         )
         write_results(folder / "results.parquet", results_table(result, stats))
+        if "edges" in result.extra:
+            from logogram.edges import write_edge_table
+
+            write_edge_table(folder / EDGES_FILE, result, stats)
         if continuations is not None:
             record = ContinuationsFile.model_validate({"run_id": run_id, **continuations})
             write_json(folder / CONTINUATIONS_FILE, record.model_dump(mode="json"))

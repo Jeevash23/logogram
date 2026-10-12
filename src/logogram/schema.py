@@ -517,6 +517,11 @@ class Manifest(_Model):
     chat_template: ChatTemplateProvenance | None = None
 
 
+# -- edges.parquet -----------------------------------------------------------------------------
+
+# Every edge's statistics, beside an edge attribution run's summary (logogram.edges.edge_table).
+EDGES_FILE = "edges.parquet"
+
 # -- continuations.json ------------------------------------------------------------------------
 
 CONTINUATIONS_FILE = "continuations.json"
