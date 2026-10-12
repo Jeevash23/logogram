@@ -40,6 +40,7 @@ Commands that read runs use the project in the current folder or above it, or `-
 | [`logogram star`](#logogram-star) | Star a run: ★ in `logogram list`, and found first in the app's history. |
 | [`logogram sweep`](#logogram-sweep) | Run one spec across several values of one choice (seeds, datasets or revisions), one run after another, and show which of its strongest sites keep their sign and size across them. |
 | [`logogram tasks`](#logogram-tasks) | List the tasks Logogram generates prompts for, with their options and metric. |
+| [`logogram toy`](#logogram-toy) | Write a model whose circuit is known, with its datasets and experiments that say what each method should find, add it to the local models, and check that it does what it was built to. |
 | [`logogram validate`](#logogram-validate) | Check a spec without running it, and say what it describes and what it left out. |
 | [`logogram verify`](#logogram-verify) | Patch, for real, the sites an attribution patching run estimated to matter most (or path patch, one at a time, the edges an edge attribution run estimated), and compare the measurement with the estimate. |
 
@@ -527,6 +528,19 @@ List the tasks Logogram generates prompts for, with their options and metric.
 ```text
 logogram tasks
 ```
+
+## logogram toy
+
+Write a model whose circuit is known, with its datasets and experiments that say what each method should find, add it to the local models, and check that it does what it was built to.
+
+```text
+logogram toy [NAME] [FOLDER]
+```
+
+| Argument | Takes | Description |
+|---|---|---|
+| `NAME` | text | induction or ioi. Leave it out to list the toys. |
+| `FOLDER` | path | Where its project goes (default: toy-NAME in the projects folder). |
 
 ## logogram validate
 

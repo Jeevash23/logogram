@@ -19,6 +19,8 @@ the app would make, and it lands in the project like any other::
     seeds.table()        # the strongest sites at every value: do they keep their sign and size?
     lg.list_saes(model, "layer 8")    # published SAEs for the model, and what Logogram reads of them
     sae = lg.load_sae(release="gpt2-small-res-jb", sae_id="blocks.8.hook_resid_pre", model=model)
+    toy = lg.toy_model("induction")   # a model whose circuit is known, with experiments to run
+    toy.run("which-heads").sites()    # the planted heads at 1, every other head at 0
 
 Tables come back as pandas DataFrames when pandas is installed, and as pyarrow Tables otherwise.
 """
@@ -63,6 +65,7 @@ __all__ = [
     "remove_local_model",
     "run",
     "sweep",
+    "toy_model",
     "verify_run",
     "write_dataset",
 ]
@@ -165,6 +168,69 @@ def remove_local_model(name: str) -> None:
     from logogram.local_models import remove_model
 
     remove_model(name)
+
+
+def toy_model(
+    name: str,
+    folder: str | Path | None = None,
+    *,
+    device: str = "cpu",
+    dtype: str = "float32",
+) -> ToyModel:
+    """A model whose circuit is known, to learn the methods on and to check them against:
+    ``"induction"`` (a previous-token head and an induction head) or ``"ioi"`` (GPT-2 small's
+    indirect-object circuit, one head per step), with weights set by hand (see
+    :mod:`logogram.toys`). Writes its project into ``folder`` (by default ``toy-NAME`` in the
+    projects folder): the model's files in ``model/``, added to this machine's local models as
+    ``toy-NAME`` so specs name it by the hash of its files, its datasets, and experiments whose
+    notes say what each method should find. Then loads it, checked as any model is, and checks
+    that it does its task and that its planted heads attend where they were built to; a toy that
+    doesn't is refused. Run its experiments with ``toy.run("which-heads")``."""
+    from logogram.backends.base import BackendError
+    from logogram.toys import ToyError, load_toy, write_toy
+
+    try:
+        made = write_toy(name, folder)
+        model, check = load_toy(made.toy.name, made.local_name, device=device, dtype=dtype)
+    except (ToyError, BackendError) as exc:
+        raise LogogramError(str(exc)) from exc
+    specs = {
+        Path(path).parent.name: load_spec(made.project.root / path) for path in made.experiments
+    }
+    return ToyModel(
+        name=made.toy.name,
+        project=made.project,
+        model=model,
+        specs=specs,
+        heads=[h.to_dict() for h in made.toy.heads],
+        compositions=[c.to_dict() for c in made.toy.compositions],
+        check=check,
+    )
+
+
+@dataclass
+class ToyModel:
+    """A toy model, written and loaded by :func:`toy_model`: its project, the loaded model, its
+    experiments' specs (by their folder in experiments/, each saying in its notes what it should
+    find), the heads that were planted and the compositions between them (which head's output
+    reaches which input of which head), and what the check at load found."""
+
+    name: str
+    project: Project
+    model: Any = field(repr=False)
+    specs: dict[str, Spec] = field(repr=False)
+    heads: list[dict[str, Any]] = field(repr=False)
+    compositions: list[dict[str, Any]] = field(repr=False)
+    check: dict[str, Any] = field(repr=False)
+
+    def run(self, experiment: str) -> Run:
+        """Run one of the toy's experiments (``"which-heads"``, ...) on the loaded toy."""
+        if experiment not in self.specs:
+            raise LogogramError(
+                f"The {self.name} toy has no experiment {experiment!r}. Its experiments are "
+                f"{', '.join(self.specs)}."
+            )
+        return run(self.specs[experiment], self.project, model=self.model)
 
 
 def _chat_template(value: Any) -> Any:

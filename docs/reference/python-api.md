@@ -24,6 +24,8 @@ seeds = lg.sweep(run, field="statistics.seed", values=[0, 1, 2, 3])  # one run p
 seeds.table()        # the strongest sites at every value: do they keep their sign and size?
 lg.list_saes(model, "layer 8")    # published SAEs for the model, and what Logogram reads of them
 sae = lg.load_sae(release="gpt2-small-res-jb", sae_id="blocks.8.hook_resid_pre", model=model)
+toy = lg.toy_model("induction")   # a model whose circuit is known, with experiments to run
+toy.run("which-heads").sites()    # the planted heads at 1, every other head at 0
 ```
 
 Tables come back as pandas DataFrames when pandas is installed, and as pyarrow Tables otherwise.
@@ -58,6 +60,7 @@ Every public name of `import logogram as lg`, from the docstrings in [`src/logog
 | [`lg.remove_local_model`](#lgremove_local_model) | Forget a local model. |
 | [`lg.run`](#lgrun) | Run a spec and write its experiment folder into `project`, as the app does. |
 | [`lg.sweep`](#lgsweep) | Run a run's spec (or a spec, into `project`) across `values` of one `field`, one run after another, as `logogram sweep` does: a seed the spec states (`statistics.seed`, `experiment.baseline.seed`, `experiment.seed` or `scope.seed`), the dataset (`dataset.path`: dataset files of the project) or the model's revision (`model.revision`: commits, tags or branches, each run pinning its commit). |
+| [`lg.toy_model`](#lgtoy_model) | A model whose circuit is known, to learn the methods on and to check them against: `"induction"` (a previous-token head and an induction head) or `"ioi"` (GPT-2 small's indirect-object circuit, one head per step), with weights set by hand (see `logogram.toys`). |
 | [`lg.verify_run`](#lgverify_run) | Patch, for real, the `top` sites an attribution patching run estimated to matter most; for an edge attribution run, path patch its `top` strongest edges one at a time (compare the two with [`edge_verification()`](#lgedge_verification)). |
 | [`lg.write_dataset`](#lgwrite_dataset) | Write prompt pairs into the project's datasets/ folder; returns its path in the project. |
 
@@ -411,6 +414,28 @@ after another, as `logogram sweep` does: a seed the spec states (`statistics.see
 commits, tags or branches, each run pinning its commit). A finished run stands in for its own
 value, which isn't run again. Returns the runs, one per value in the order given; a run that
 doesn't finish is kept with its status, and the next value runs.
+
+### lg.toy_model
+
+```python
+lg.toy_model(
+    name: str,
+    folder: str | Path | None = None,
+    *,
+    device: str = 'cpu',
+    dtype: str = 'float32',
+) -> ToyModel
+```
+
+A model whose circuit is known, to learn the methods on and to check them against:
+`"induction"` (a previous-token head and an induction head) or `"ioi"` (GPT-2 small's
+indirect-object circuit, one head per step), with weights set by hand (see
+`logogram.toys`). Writes its project into `folder` (by default `toy-NAME` in the
+projects folder): the model's files in `model/`, added to this machine's local models as
+`toy-NAME` so specs name it by the hash of its files, its datasets, and experiments whose
+notes say what each method should find. Then loads it, checked as any model is, and checks
+that it does its task and that its planted heads attend where they were built to; a toy that
+doesn't is refused. Run its experiments with `toy.run("which-heads")`.
 
 ### lg.verify_run
 

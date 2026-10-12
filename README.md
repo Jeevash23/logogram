@@ -135,6 +135,46 @@ small (revision `607a30d`), and the results show them under the run's title.
 Once a week, the Golden workflow runs every example on GPT-2 small's real weights and checks these
 findings (see Development).
 
+## Toy models
+
+Two small models come with Logogram whose circuits are known, because their weights were set by
+hand: learn the methods on a model whose answer you know, or check that a method finds what is
+there. `logogram toy induction` (or `lg.toy_model("induction")`) writes a project, by default
+`Documents/Logogram/toy-induction`, holding the model's files (a GPT-2 checkpoint in safetensors,
+which loads through the same code as any model), its datasets, and experiments whose notes say
+what each should find. It adds the model to this machine's local models as `toy-induction`, so
+specs name it by the hash of its files, the same on every machine, then loads it and checks that
+it solves every prompt and that each planted head attends where it was built to.
+
+| Toy | What is planted | Task |
+|---|---|---|
+| `induction` | Two layers of four heads, attention only. L0 H2 is a previous-token head; L1 H1 an induction head, whose key reads L0 H2 | “… A B … F C … A” → “ B”; the corrupt prompt swaps A and F, → “ C” |
+| `ioi` | Four layers of four heads: GPT-2 small's circuit, one head per step. L0 H2 previous-token; L1 H1 induction (finds the repeated name, copies which slot it was in); L2 H3 S-inhibition (moves the slot to the last token through its value); L3 H0 name mover (its query turns away from that slot) | “Once Mary and John reached the store, John threw a drink to” → “ Mary”; the flipped prompt → “ John” |
+
+What each method finds, as normalized effects (every other head 0):
+
+| Method | Induction toy | IOI toy |
+|---|---|---|
+| Head finder | L0 H2 previous-token (1.0), L1 H1 induction (1.0); on sequences of 32 tokens no other head scores above 0.06 | the same heads |
+| Patching each head | L0 H2 and L1 H1, 1.0 each | L1 H1, L2 H3 and L3 H0, 1.0 each; L0 H2 0, since it writes the same in both prompts |
+| Patching queries, keys, values | L0 H2's value and L1 H1's key | L1 H1's query, L2 H3's value, L3 H0's query |
+| Path patching | L0 H2 → L1 H1's key 1.0 (its query and value 0) | L1 H1 → L2 H3's value, L2 H3 → L3 H0's query, 1.0 each |
+| Sets of sites | the planted heads alone: faithfulness 1.0; the other heads alone: 0 | the same |
+| Direct logit attribution | L1 H1 writes all of the logit difference | L3 H0 writes all of it |
+| Attribution patching | L1 H1 1.0, exact; L0 H2 0, though patching gives 1.0: it acts through saturated attention, whose gradient is about e⁻²⁰. Integrated gradients: 0.47 with 8 steps, 0.92 with 16, 0.999 with 32 | L3 H0 1.0; the upstream heads stay near 0, even with 64 steps of integrated gradients |
+| Steering | none: the difference is a token's identity, not a direction | on ABBA prompts, the mean difference after layer 2 at the last token flips the answer (1.0 at ×1, 2/3 at ×0.5) and beats a random direction; with ABBA and BABA mixed it cancels to 0 |
+
+How the weights do it: every direction of the residual stream is one named feature (a token's
+identity, the previous token's, the token to predict, the position p/128 and its square, a few
+flags), and every attention score is a sum of a query feature times a key feature, set so that a
+planted head's target wins by 20 nats: it gets all but 10⁻⁸ of the attention. The layer norms'
+epsilon is 2²⁰, so they divide by a fixed 2¹⁰ to within a part in a million, and the circuit's
+arithmetic is exact: patching, path patching, sets and direct effects come out within 10⁻⁶ of the
+designed values. The other heads attend to the first token, to themselves or evenly, and write
+where nothing reads; the MLPs write nothing. `logogram.toys` holds each toy's planted heads and
+the compositions between them (which head writes what which input of which head reads), and makes
+prompts whose corruption reaches the induction head through its key, its value or its query.
+
 ## Explore, experiment, evidence
 
 The workbench has three workspaces, described view by view in [the workbench](docs/workbench.md):
@@ -186,6 +226,7 @@ logogram generate TASK        a seeded dataset for a task (-n N --seed S, --opti
 logogram models add PATH --name NAME   add a model folder on this machine (its files are hashed)
 logogram models list          the model folders added here, with their hashes
 logogram models remove NAME   forget a model folder (its files stay)
+logogram toy [NAME [FOLDER]]  a model whose circuit is known, with experiments that say what each finds
 logogram doctor               environment and hardware report, with fixes (each GPU by its cuda:N)
 logogram env                  the versions and devices results depend on, as JSON (--requirements pins them)
 logogram doctor --report      a short report to paste into an issue (--hardware adds the hardware)
@@ -294,6 +335,8 @@ lg.feature_writes(model, sae, 1234, "When Mary and John went to the store, John 
 
 lg.add_local_model("~/models/my-fine-tune", "my-fine-tune")   # hash a model folder, once
 tuned = lg.load_model("my-fine-tune", device="cuda:1")         # a local model, on the second GPU
+toy = lg.toy_model("ioi")        # a model whose circuit is known: project, datasets, experiments
+toy.run("which-heads").sites()   # L1 H1, L2 H3 and L3 H0 at 1.0, every other head at 0
 chat = lg.load_model("Qwen/Qwen2.5-0.5B-Instruct")
 lg.look(chat, "The capital of France is", prepend_bos=False,
         chat_template={"kind": "user_turn", "system": None})   # read in its own chat template

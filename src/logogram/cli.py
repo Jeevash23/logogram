@@ -3,8 +3,9 @@ commands that read and check runs without the app: ``list``, ``show``, ``compare
 ``verify``, ``robustness``, ``sweep``, ``export``, ``validate``, ``tasks`` and ``generate``;
 ``saes``, the published SAEs for a model and what Logogram reads of them;
 commands that manage them: ``rename``, ``star``, ``archive`` and ``delete``; ``models add``,
-``models list`` and ``models remove`` for model folders on this machine; and the project's run
-queue: ``queue add``, ``queue list``, ``queue clear`` and ``queue run``."""
+``models list`` and ``models remove`` for model folders on this machine; ``toy``, a model whose
+circuit is known; and the project's run queue: ``queue add``, ``queue list``, ``queue clear`` and
+``queue run``."""
 
 from __future__ import annotations
 
@@ -1896,6 +1897,70 @@ def models_remove(
     except BackendError as exc:
         raise _fail(str(exc)) from exc
     typer.echo(f"Removed {model.name} from the local models. Its folder is untouched.")
+
+
+# -- toy models --------------------------------------------------------------------------------
+
+
+@app.command()
+def toy(
+    name: Annotated[
+        str | None, typer.Argument(help="induction or ioi. Leave it out to list the toys.")
+    ] = None,
+    folder: Annotated[
+        Path | None,
+        typer.Argument(help="Where its project goes (default: toy-NAME in the projects folder)."),
+    ] = None,
+) -> None:
+    """Write a model whose circuit is known, with its datasets and experiments that say what each
+    method should find, add it to the local models, and check that it does what it was built
+    to."""
+    from logogram.backends.base import BackendError
+    from logogram.toys import TOYS, ToyError, load_toy, write_toy
+
+    if name is None:
+        for t in TOYS.values():
+            typer.echo(f"{t.name}: {t.title}")
+            typer.echo(f"  {t.summary}")
+        typer.echo("\nWrite one with: logogram toy NAME [FOLDER]")
+        return
+    _quiet_environment()
+    try:
+        made = write_toy(name, folder)
+    except (ToyError, BackendError, OSError) as exc:
+        raise _fail(str(exc)) from exc
+    root = made.project.root
+    added = (
+        f"added to the local models as {made.local_name}"
+        if made.registered == "added"
+        else f"already added to the local models, as {made.local_name}"
+    )
+    typer.echo(f"Wrote the {made.toy.name} toy to {root} (a project):")
+    typer.echo(f"  model/  the model's files, {added}")
+    typer.echo(f"          (SHA-256 of its files: {made.toy.sha256})")
+    for path in made.datasets:
+        typer.echo(f"  {path}")
+    typer.echo(
+        f"  experiments/  {len(made.experiments)} experiments, each saying what it should find"
+    )
+    typer.echo("Loading and checking it…")
+    try:
+        model, check = load_toy(made.toy.name, made.local_name)
+    except (ToyError, BackendError) as exc:
+        raise _fail(str(exc)) from exc
+    model.close()
+    n, solved, diff = check["n_prompts"], check["solved"], check["logit_diff"]
+    typer.echo(
+        f"It prefers the answer on {solved['clean']} of {n} clean prompts and the distractor on "
+        f"{solved['corrupt']} of {n} corrupt ones, each by {check['margin']:g} or more (mean "
+        f"logit differences {diff['clean']:+.2f} and {diff['corrupt']:+.2f})."
+    )
+    for h in check["heads"]:
+        kind = h["kind"].replace("_", "-")
+        typer.echo(f"  {h['label']} {kind} head: attends {h['least']:.3f} {h['where']}")
+    first = root / made.experiments[0]
+    typer.echo(f"\nRun an experiment: logogram run {first}")
+    typer.echo(f"Or open the project in the app: logogram open {root}")
 
 
 # -- the run queue -----------------------------------------------------------------------------
