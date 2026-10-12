@@ -6,18 +6,25 @@ the earlier copy of the current token (duplicate-token), or to the token after i
 so by position and identity alone. Scores are attention probabilities averaged over the second
 copy's queries (over every query after the first, for previous-token heads), kept per sequence,
 and reported as their mean with a seeded percentile bootstrap interval over sequences.
+
+With a chat template (logogram.chat), each sequence sits where a prompt would: after the tokens of
+the template's text before the prompt and before those of its text after it, each tokenized on its
+own (the random tokens are no text to tokenize with them).
 """
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
 
 from logogram.backends.base import ModelBackend, float64
 from logogram.stats import resample_counts
+
+if TYPE_CHECKING:
+    from logogram.chat import ChatWrapper
 
 # What each kind of head does, as the app and the Python API say it.
 HEAD_KINDS: dict[str, str] = {
@@ -40,11 +47,42 @@ class HeadKindSettings:
     batch_size: int
     bootstrap: int = 1000
     ci: float = 0.95
+    # A spec's tokenization.chat_template, as JSON: the template the sequences are wrapped in.
+    chat_template: dict[str, Any] | None = None
 
 
-def repeated_random_tokens(backend: ModelBackend, settings: HeadKindSettings) -> torch.Tensor:
+def _wrapper(backend: ModelBackend, settings: HeadKindSettings) -> ChatWrapper | None:
+    if settings.chat_template is None:
+        return None
+    from pydantic import TypeAdapter
+
+    from logogram.chat import chat_wrapper
+    from logogram.spec import ChatTemplate
+
+    return chat_wrapper(backend, TypeAdapter(ChatTemplate).validate_python(settings.chat_template))
+
+
+def _around(backend: ModelBackend, settings: HeadKindSettings) -> tuple[list[int], list[int]]:
+    """The tokens before and after each sequence: the beginning-of-sequence token if asked, or
+    a chat template's text before and after a prompt."""
+    chat = _wrapper(backend, settings)
+    if chat is not None:
+        before = backend.tokenize(chat.before, prepend_bos=False).ids if chat.before else []
+        after = backend.tokenize(chat.after, prepend_bos=False).ids if chat.after else []
+        return before, after
+    if settings.prepend_bos:
+        return backend.tokenize("", prepend_bos=True).ids, []
+    return [], []
+
+
+def repeated_random_tokens(
+    backend: ModelBackend,
+    settings: HeadKindSettings,
+    around: tuple[list[int], list[int]] | None = None,
+) -> torch.Tensor:
     """``[sequences, (1 +) 2 × length]`` token ids: ``length`` distinct, non-special tokens drawn
-    with the seed, then the same tokens again, after the beginning-of-sequence token if asked."""
+    with the seed, then the same tokens again, after the beginning-of-sequence token if asked (or
+    between a chat template's tokens, ``around``)."""
     count, special = backend.token_space()
     allowed = torch.tensor([i for i in range(count) if i not in special], dtype=torch.long)
     if len(allowed) < settings.length:
@@ -52,14 +90,21 @@ def repeated_random_tokens(backend: ModelBackend, settings: HeadKindSettings) ->
             f"The tokenizer has only {len(allowed)} ordinary tokens, fewer than the {settings.length} "
             "a sequence needs. Choose a shorter length."
         )
-    prefix: list[int] = []
-    if settings.prepend_bos:
-        prefix = backend.tokenize("", prepend_bos=True).ids
+    prefix, suffix = around if around is not None else _around(backend, settings)
     generator = torch.Generator().manual_seed(settings.seed)
     rows = []
     for _ in range(settings.sequences):
         drawn = allowed[torch.randperm(len(allowed), generator=generator)[: settings.length]]
-        rows.append(torch.cat([torch.tensor(prefix, dtype=torch.long), drawn, drawn]))
+        rows.append(
+            torch.cat(
+                [
+                    torch.tensor(prefix, dtype=torch.long),
+                    drawn,
+                    drawn,
+                    torch.tensor(suffix, dtype=torch.long),
+                ]
+            )
+        )
     return torch.stack(rows)
 
 
@@ -86,13 +131,15 @@ def head_kind_scores(backend: ModelBackend, settings: HeadKindSettings) -> dict[
         raise ValueError("Use at least 2 sequences, so the scores have an interval.")
     if settings.length < 2:
         raise ValueError("Use sequences of at least 2 tokens.")
-    offset = 1 if settings.prepend_bos else 0
-    if offset + 2 * settings.length > info.n_ctx:
+    prefix, suffix = _around(backend, settings)
+    offset = len(prefix)
+    if offset + 2 * settings.length + len(suffix) > info.n_ctx:
         raise ValueError(
             f"Two copies of {settings.length} tokens don't fit in this model's context of "
-            f"{info.n_ctx} tokens. Choose a length up to {(info.n_ctx - offset) // 2}."
+            f"{info.n_ctx} tokens. Choose a length up to "
+            f"{(info.n_ctx - offset - len(suffix)) // 2}."
         )
-    tokens = repeated_random_tokens(backend, settings)
+    tokens = repeated_random_tokens(backend, settings, (prefix, suffix))
     layers = list(range(info.n_layers))
     per = {kind: np.zeros((settings.sequences, info.n_layers, info.n_heads)) for kind in HEAD_KINDS}
     for start in range(0, settings.sequences, settings.batch_size):

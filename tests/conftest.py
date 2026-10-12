@@ -165,6 +165,25 @@ def _build_tiny_model(folder: Path) -> None:
     model.save_pretrained(folder)
 
 
+# A small chat template for the tiny model, written with words of its vocabulary: it writes the
+# beginning-of-sequence token, then each message (the person's after "Hello", the model's after
+# "world"), and opens the model's reply with "world".
+TINY_CHAT_TEMPLATE = (
+    "{{ bos_token }}{% for m in messages %}{% if m.role == 'system' %}{{ m.content }},"
+    "{% elif m.role == 'user' %} Hello {{ m.content }}.{% else %} world {{ m.content }}."
+    "{% endif %}{% endfor %}{% if add_generation_prompt %} world{% endif %}"
+)
+
+
+def give_chat_template(folder: Path, template: str = TINY_CHAT_TEMPLATE) -> None:
+    """Ship ``template`` with the tokenizer saved in ``folder``, as an instruct model does."""
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(folder)
+    tokenizer.chat_template = template
+    tokenizer.save_pretrained(folder)
+
+
 @pytest.fixture(scope="session")
 def tiny_model_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     folder = tmp_path_factory.mktemp("tiny-gpt2")

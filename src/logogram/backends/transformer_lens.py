@@ -29,6 +29,7 @@ from logogram.backends.base import (
     Patches,
     ScoreFn,
     Tokenized,
+    device_type,
     float64,
 )
 
@@ -315,6 +316,7 @@ class TransformerLensBackend(ModelBackend):
         self.info = info
         self.tokenizer = bridge.tokenizer
         self.bos_token_id = own_bos_token_id(bridge)
+        self._chat_template, self._chat_tokens = own_chat_template(bridge)
         self._logits_to_keep = self._supports_logits_to_keep()
 
     # -- construction ------------------------------------------------------------------------
@@ -329,6 +331,8 @@ class TransformerLensBackend(ModelBackend):
         dtype: str,
         process_weights: bool,
         n_params: int | None = None,
+        source: str = "hub",
+        sha256: str | None = None,
     ) -> TransformerLensBackend:
         bridge.eval()
         # Gradients are only ever taken with respect to activations (attribution patching, direct
@@ -350,7 +354,7 @@ class TransformerLensBackend(ModelBackend):
             bridge.enable_compatibility_mode(
                 disable_warnings=True, no_processing=not process_weights
             )
-        device = torch.device(str(cfg.device)).type
+        device = full_device(str(cfg.device))
         kinds = tuple(k for k in ALL_KINDS if hook_name(k, 0) in bridge.hook_dict)
         if "head" not in kinds or PATTERN_HOOK.format(layer=0) not in bridge.hook_dict:
             raise BackendError(
@@ -396,6 +400,9 @@ class TransformerLensBackend(ModelBackend):
         # bridge's tokenizer could change them.
         recorded: tuple[str | None, list[str]] | None = bridge.__dict__.get(_CHAT)
         template, ends = recorded or chat_facts(bridge.tokenizer, bridge.original_model)
+        default_template, _ = own_chat_template(bridge)
+        from logogram.chat import template_sha256
+
         info = ModelInfo(
             id=model_id,
             revision=revision,
@@ -429,10 +436,17 @@ class TransformerLensBackend(ModelBackend):
                 "bos": own_bos_token_id(bridge) is not None,
                 # Whether it is made for chat: prompts run as plain text, without its template.
                 "chat": chat_format(model_id, template, ends),
+                # The template a spec's tokenization.chat_template wraps prompts in (the one its
+                # tokenizer uses by default), by its SHA-256; None when it has none.
+                "chat_template_sha256": None
+                if default_template is None
+                else template_sha256(default_template),
                 # TransformerLens marks "no soft-cap" with a value of zero or below.
                 "logit_soft_cap": _soft_cap(cfg),
                 "checks": checks.to_dict(),
             },
+            source=source,
+            sha256=sha256,
         )
         return cls(bridge, info)
 
@@ -465,6 +479,45 @@ class TransformerLensBackend(ModelBackend):
             offsets = [(0, 0), *offsets]
         tokens = [self.token_str(i) for i in ids]
         return Tokenized(ids=ids, tokens=tokens, offsets=offsets)  # type: ignore[arg-type]
+
+    @property
+    def chat_template(self) -> str | None:
+        return self._chat_template
+
+    def render_chat(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        add_generation_prompt: bool,
+        continue_final_message: bool,
+    ) -> str:
+        if self._chat_template is None:
+            return super().render_chat(
+                messages,
+                add_generation_prompt=add_generation_prompt,
+                continue_final_message=continue_final_message,
+            )
+        import jinja2
+
+        # The special tokens the template reads are the model's own, as its tokenizer had them
+        # before the bridge gave it substitutes: one the model lacks is undefined, as it is to
+        # the model's own tokenizer.
+        context: dict[str, Any] = {
+            key: jinja2.Undefined(name=key) for key in self.tokenizer.special_tokens_map
+        }
+        context.update(self._chat_tokens)
+        # No clock: a template that writes today's date uses its own fallback, or can't run, so
+        # the same spec reads the same text on any day (see logogram.chat).
+        context["strftime_now"] = jinja2.Undefined(name="strftime_now")
+        text = self.tokenizer.apply_chat_template(
+            messages,
+            chat_template=self._chat_template,
+            tokenize=False,
+            add_generation_prompt=add_generation_prompt,
+            continue_final_message=continue_final_message,
+            **context,
+        )
+        return str(text)
 
     def single_token_id(self, text: str) -> int | None:
         ids = self.tokenizer(text, add_special_tokens=False)["input_ids"]
@@ -931,8 +984,9 @@ def architecture_support(architecture: str) -> str | None:
 
 
 def _device_name(device: str) -> str:
-    if device == "cuda" and torch.cuda.is_available():
-        return torch.cuda.get_device_name(torch.cuda.current_device())
+    """The name of the device a model runs on: the GPU it is on, by its index."""
+    if device_type(device) == "cuda" and torch.cuda.is_available():
+        return torch.cuda.get_device_name(torch.device(device))
     if device == "mps":
         return "Apple GPU (Metal)"
     from logogram.system import cpu_name
@@ -940,16 +994,40 @@ def _device_name(device: str) -> str:
     return cpu_name()
 
 
+def full_device(device: str) -> str:
+    """A device as a model on it runs: a GPU always by its index ("cuda" is the default GPU,
+    the one torch's current device names)."""
+    if device == "cuda":
+        return f"cuda:{torch.cuda.current_device()}"
+    return device
+
+
 def resolve_device(device: str) -> str:
+    """What a spec's model.device runs on here: "cpu", "mps", or one GPU by its index. "cuda" is
+    the default GPU (as torch's current device names it, normally GPU 0), so "cuda" and "cuda:0"
+    resolve alike there and a model loaded with either matches a spec that asks for the other."""
     if device == "auto":
         # Apple's MPS only when asked for: TransformerLens reports that it can give silently wrong
         # results, and Logogram hasn't been checked on it yet (see system.MPS_NOTE).
-        return "cuda" if torch.cuda.is_available() else "cpu"
-    if device == "cuda" and not torch.cuda.is_available():
-        raise BackendError(
-            "The spec asks for CUDA, but PyTorch can't see a CUDA GPU here. Run `logogram doctor` "
-            "for the fix, or set model.device to auto or cpu."
-        )
+        return full_device("cuda") if torch.cuda.is_available() else "cpu"
+    if device_type(device) == "cuda":
+        if not torch.cuda.is_available():
+            raise BackendError(
+                "The spec asks for CUDA, but PyTorch can't see a CUDA GPU here. Run "
+                "`logogram doctor` for the fix, or set model.device to auto or cpu."
+            )
+        if device == "cuda":
+            return full_device(device)
+        index = int(device.split(":", 1)[1])
+        count = torch.cuda.device_count()
+        if index >= count:
+            have = "one GPU, cuda:0" if count == 1 else f"{count} GPUs, cuda:0 to cuda:{count - 1}"
+            raise BackendError(
+                f"The spec asks for GPU {index} ({device}), but this machine has {have}. Set "
+                "model.device to one of them, or to cuda for the default GPU; `logogram doctor` "
+                "lists them."
+            )
+        return f"cuda:{index}"
     if device == "mps" and not (
         getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()
     ):
@@ -969,8 +1047,12 @@ def load_model(
     process_weights: bool = True,
     on_progress: Callable[[dict[str, Any]], None] | None = None,
     cancel: threading.Event | None = None,
+    source: str = "hub",
+    sha256: str | None = None,
 ) -> TransformerLensBackend:
-    """Resolve, download (with progress) and load a model from the Hugging Face Hub.
+    """Resolve, download (with progress) and load a model from the Hugging Face Hub, or, with
+    ``source="local"``, load the local model whose files hash to ``sha256`` (added under the name
+    ``model_id``; see :mod:`logogram.local_models`), once its files are checked.
 
     ``cancel`` stops a download promptly and a load at the next step; it raises ``Cancelled``.
     """
@@ -985,15 +1067,32 @@ def load_model(
     if dtype not in DTYPES:
         raise BackendError(f"Unknown dtype {dtype!r}; use float32, float16 or bfloat16.")
     resolved_device = resolve_device(device)
-    emit("resolving", model_id=model_id)
-    repo = hub.resolve(model_id, revision)
-    emit("downloading", done=0, total=sum(s for _, s in repo.files), file="")
+    if source == "local":
+        from logogram import local_models
 
-    def on_download(done: int, total: int, file: str) -> None:
-        emit("downloading", done=done, total=total, file=file)
+        if revision is not None:
+            raise BackendError(
+                "A local model has no revisions: its files are pinned by their hash."
+            )
+        emit("checking", model_id=model_id, done=0, total=0, file="")
 
-    folder = hub.download(model_id, repo, on_download, cancel=cancel)
-    emit("loading", revision=repo.revision)
+        def on_check(done: int, total: int, file: str) -> None:
+            emit("checking", model_id=model_id, done=done, total=total, file=file)
+
+        folder = local_models.checked_folder(model_id, sha256, on_progress=on_check, cancel=cancel)
+        pinned: str | None = None
+    else:
+        emit("resolving", model_id=model_id)
+        repo = hub.resolve(model_id, revision)
+        emit("downloading", done=0, total=sum(s for _, s in repo.files), file="")
+
+        def on_download(done: int, total: int, file: str) -> None:
+            emit("downloading", done=done, total=total, file=file)
+
+        folder = hub.download(model_id, repo, on_download, cancel=cancel)
+        pinned = repo.revision
+        sha256 = None
+    emit("loading", revision=pinned)
 
     def boot_and_check() -> TransformerLensBackend:
         bridge = boot_local(folder, device=resolved_device, dtype=dtype)
@@ -1001,9 +1100,11 @@ def load_model(
         return TransformerLensBackend.from_bridge(
             bridge,
             model_id=model_id,
-            revision=repo.revision,
+            revision=pinned,
             dtype=dtype,
             process_weights=process_weights,
+            source=source,
+            sha256=sha256,
         )
 
     release_memory()  # what an earlier attempt that failed may still hold
@@ -1047,7 +1148,7 @@ def release_memory() -> None:
 
 
 def out_of_memory_message(device: str, process_weights: bool) -> str:
-    where = {"cuda": "GPU memory", "mps": "unified memory"}.get(device, "memory")
+    where = {"cuda": "GPU memory", "mps": "unified memory"}.get(device_type(device), "memory")
     if process_weights:
         return (
             f"The model doesn't fit in {where} while its weights are processed: processing works "
@@ -1124,6 +1225,30 @@ def chat_format(model_id: str, template: str | None, ends: list[str]) -> dict[st
     return {"instruct": reason is not None, "template": template is not None, "reason": reason}
 
 
+# Where boot_local records the template a tokenizer uses by default, and its special tokens.
+_CHAT_TEMPLATE = "_logogram_chat_template"
+
+
+def default_chat_template(tokenizer: Any) -> tuple[str | None, dict[str, Any]]:
+    """The chat template a tokenizer uses when none is named (of several named ones, "default"),
+    or None; and its special tokens (bos_token, eos_token, ...), which templates read."""
+    template = None
+    if getattr(tokenizer, "chat_template", None):
+        try:
+            template = tokenizer.get_chat_template()
+        except Exception:  # noqa: BLE001 - named templates without a default: none to use
+            template = None
+    tokens = dict(getattr(tokenizer, "special_tokens_map", None) or {})
+    return (template if isinstance(template, str) and template else None), tokens
+
+
+def own_chat_template(bridge: Any) -> tuple[str | None, dict[str, Any]]:
+    """The model's own default chat template and special tokens, as :func:`boot_local` read them
+    before the bridge's tokenizer could change them (a bridge booted elsewhere: its tokenizer's)."""
+    recorded = bridge.__dict__.get(_CHAT_TEMPLATE)
+    return recorded if recorded is not None else default_chat_template(bridge.tokenizer)
+
+
 def boot_local(folder: Path, *, device: str, dtype: str) -> Any:
     from transformer_lens.model_bridge import TransformerBridge
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -1153,6 +1278,7 @@ def boot_local(folder: Path, *, device: str, dtype: str) -> Any:
             )
             own_bos = tokenizer.bos_token_id  # read first: booting gives the tokenizer a substitute
             chat = chat_facts(tokenizer, model)
+            template = default_chat_template(tokenizer)
             bridge = TransformerBridge.boot_transformers(
                 str(folder),
                 device=device,
@@ -1163,6 +1289,7 @@ def boot_local(folder: Path, *, device: str, dtype: str) -> Any:
             )
             bridge.__dict__[_OWN_BOS] = own_bos
             bridge.__dict__[_CHAT] = chat
+            bridge.__dict__[_CHAT_TEMPLATE] = template
             return bridge
     except BackendError:
         raise

@@ -44,13 +44,18 @@ class ModelInfo:
     n_ctx: int
     n_params: int | None
     dtype: str
-    device: str  # "cpu", "cuda" or "mps"
+    device: str  # "cpu", "mps", or "cuda:N": the one GPU it is on (see device_type)
     device_name: str
     process_weights: bool
     site_kinds: tuple[str, ...]
     backend: str
     backend_version: str
     extra: dict[str, Any] = field(default_factory=dict)
+    # Where the weights came from: Hugging Face ("hub", pinned by the revision), or a folder on
+    # this machine added to Logogram's local models ("local", pinned by sha256, the hash of its
+    # files; see logogram.local_models).
+    source: str = "hub"
+    sha256: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -58,11 +63,19 @@ class ModelInfo:
         return data
 
 
+def device_type(device: str) -> str:
+    """The kind of a device as torch names it: "cuda" for "cuda:1", "cpu", "mps"."""
+    return device.split(":", 1)[0]
+
+
 @dataclass
 class Tokenized:
     ids: list[int]
     tokens: list[str]
     offsets: list[tuple[int, int]]  # character span of each token; (0, 0) for added BOS
+    # Where the prompt begins in the text the offsets count in: after what a chat template wrote
+    # before it (logogram.chat), 0 for a prompt read as it is.
+    start: int = 0
 
 
 @dataclass
@@ -105,6 +118,8 @@ class Cancelled(Exception):
 
 class ModelBackend(ABC):
     info: ModelInfo
+    # The model's own beginning-of-sequence token, if it has one.
+    bos_token_id: int | None = None
 
     def __init__(self) -> None:
         # All model use goes through this lock, one forward pass at a time, so interactive
@@ -113,6 +128,24 @@ class ModelBackend(ABC):
 
     @abstractmethod
     def tokenize(self, text: str, prepend_bos: bool) -> Tokenized: ...
+
+    @property
+    def chat_template(self) -> str | None:
+        """The chat template the model's tokenizer ships (at the model's revision), as its
+        tokenizer chooses it by default; None when it has none."""
+        return None
+
+    def render_chat(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        add_generation_prompt: bool,
+        continue_final_message: bool,
+    ) -> str:
+        """``messages`` as text, in the model's own chat template (see :mod:`logogram.chat`)."""
+        raise BackendError(
+            f"{self.info.id} has no chat template. Set tokenization.chat_template to null."
+        )
 
     @abstractmethod
     def single_token_id(self, text: str) -> int | None:
@@ -259,8 +292,8 @@ class ModelBackend(ABC):
     def memory_in_use(self) -> int | None:
         """Bytes in use: accelerator memory on a GPU, this process's resident memory on a CPU."""
         dev = self.info.device
-        if dev == "cuda" and torch.cuda.is_available():
-            return int(torch.cuda.memory_allocated())
+        if device_type(dev) == "cuda" and torch.cuda.is_available():
+            return int(torch.cuda.memory_allocated(torch.device(dev)))
         if dev == "mps" and hasattr(torch, "mps"):
             try:
                 return int(torch.mps.current_allocated_memory())

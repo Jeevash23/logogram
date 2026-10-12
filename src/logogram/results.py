@@ -151,7 +151,10 @@ def build_summary(
     stats: SiteStats,
     run_id: str,
     model: dict[str, Any] | None = None,
+    chat_template: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """summary.json. ``chat_template``: how the prompts were wrapped (logogram.chat), if they
+    were, for the methods text to say."""
     b = result.baselines
     normalization = spec.metric.normalization
     label = METRIC_LABELS[spec.metric.kind]
@@ -267,6 +270,7 @@ def build_summary(
         **({"features": result.extra["features"]} if "features" in result.extra else {}),
         **({"circuit": result.extra["circuit"]} if "circuit" in result.extra else {}),
         **({"attribution": result.extra["attribution"]} if "attribution" in result.extra else {}),
+        **({"chat_template": chat_template} if chat_template is not None else {}),
     }
     return Summary.model_validate(summary).model_dump(mode="json")
 

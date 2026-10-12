@@ -1040,4 +1040,12 @@ def describe_experiment(spec: Spec) -> str:
     else:
         where = f"{len(scope.sites)} chosen site{'s' if len(scope.sites) != 1 else ''}"
     metric = "" if spec.metric.kind == "logit_diff" else f" · {METRIC_LABELS[spec.metric.kind]}"
-    return f"{what} · {where}{metric}"
+    chat = spec.tokenization.chat_template
+    wrapped = (
+        ""
+        if chat is None
+        else " · in the chat template, as the person's message"
+        if chat.kind == "user_turn"
+        else " · in the chat template, as the start of the reply"
+    )
+    return f"{what} · {where}{metric}{wrapped}"

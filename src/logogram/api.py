@@ -7,7 +7,7 @@ the app would make, and it lands in the project like any other::
     import logogram as lg
 
     project = lg.open_project("~/Documents/Logogram/ioi-example")
-    model = lg.load_model("openai-community/gpt2")
+    model = lg.load_model("openai-community/gpt2")   # or a local model, by the name it was added under
     spec = lg.load_spec(project.root / "experiments/ioi-head-patching/spec.json")
     run = lg.run(spec, project, model=model)
     run.sites()          # one row per site: mean effect, interval, q-value, ...
@@ -34,6 +34,7 @@ from logogram.spec import Spec
 
 __all__ = [
     "Run",
+    "add_local_model",
     "check_robustness",
     "compare_runs",
     "create_project",
@@ -41,6 +42,7 @@ __all__ = [
     "feature_writes",
     "generate",
     "head_kinds",
+    "list_local_models",
     "list_runs",
     "load_model",
     "load_run",
@@ -48,6 +50,7 @@ __all__ = [
     "load_spec",
     "look",
     "open_project",
+    "remove_local_model",
     "run",
     "verify_run",
     "write_dataset",
@@ -76,12 +79,30 @@ def load_model(
     device: str = "auto",
     process_weights: bool = True,
     on_progress: Callable[[dict[str, Any]], None] | None = None,
+    source: str | None = None,
 ) -> Any:
     """Download (once) and load a model, checked as the app checks it. Pass it to :func:`run` to
-    reuse it across runs; every choice it was loaded with is recorded in each run's spec."""
+    reuse it across runs; every choice it was loaded with is recorded in each run's spec.
+
+    ``model_id`` is a Hugging Face id, or the name a local model was added under (see
+    :func:`add_local_model`): ``source`` says which ("hub" or "local"); by default a name this
+    machine's local models have (it has no slash) is that local model. ``device`` is "auto",
+    "cpu", "cuda" (the default GPU), "cuda:N" (one GPU of several) or "mps"."""
     from logogram.backends.transformer_lens import load_model as load
+    from logogram.local_models import find_model
     from logogram.runner import configure_determinism
 
+    sha256 = None
+    if source is None:
+        source = "local" if "/" not in model_id and find_model(name=model_id) else "hub"
+    if source == "local":
+        local = find_model(name=model_id)
+        if local is None:
+            raise LogogramError(
+                f"No local model is called {model_id} on this machine. Add its folder first, "
+                f"with add_local_model(path, {model_id!r})."
+            )
+        sha256 = local.sha256
     configure_determinism()
     return load(
         model_id,
@@ -90,7 +111,46 @@ def load_model(
         device=device,
         process_weights=process_weights,
         on_progress=on_progress,
+        source=source,
+        sha256=sha256,
     )
+
+
+def add_local_model(
+    path: str | Path, name: str, *, on_progress: Callable[[int, int, str], None] | None = None
+) -> dict[str, Any]:
+    """Add a model folder on this machine (config.json, the tokenizer's files and safetensors
+    weights) under ``name``: its files are hashed (``on_progress(bytes done, bytes in all,
+    file)``), and specs then name it by ``name`` and that hash, never by its folder. Load it with
+    ``load_model(name)``. See :mod:`logogram.local_models` for how the hash is defined."""
+    from logogram.local_models import add_model
+
+    return add_model(path, name, on_progress).to_dict()
+
+
+def list_local_models() -> list[dict[str, Any]]:
+    """The models added from folders on this machine: name, folder, hash and size."""
+    from logogram.local_models import list_models
+
+    return [m.to_dict() for m in list_models()]
+
+
+def remove_local_model(name: str) -> None:
+    """Forget a local model. Its folder and files are left as they are."""
+    from logogram.local_models import remove_model
+
+    remove_model(name)
+
+
+def _chat_template(value: Any) -> Any:
+    """A spec's tokenization.chat_template from a dict (as a spec writes it), or None."""
+    if value is None or not isinstance(value, dict):
+        return value
+    from pydantic import TypeAdapter
+
+    from logogram.spec import ChatTemplate
+
+    return TypeAdapter(ChatTemplate).validate_python(value)
 
 
 def load_sae(repo: str, path: str = "", *, model: Any, revision: str | None = None) -> Any:
@@ -116,6 +176,7 @@ def feature_writes(
     prepend_bos: bool,
     position: int | None = None,
     top: int = 10,
+    chat_template: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The tokens a feature promotes and suppresses directly, as the app's Features view shows
     them: one unit of the feature's decoder direction, added to the residual stream entering the
@@ -123,18 +184,23 @@ def feature_writes(
     scale held at its value there and through the unembedding, skipping every later layer. Each
     token's logit change per unit of the feature, relative to the mean change over the
     vocabulary. ``position`` is the token (negative counts from the end); by default, where the
-    feature fires most in the prompt. See :func:`logogram.features.feature_writes`."""
+    feature fires most in the prompt. ``chat_template`` wraps the prompt in the model's own
+    template, as a spec's tokenization.chat_template does (with ``prepend_bos`` false). See
+    :func:`logogram.features.feature_writes`."""
+    from logogram.chat import chat_wrapper
     from logogram.features import feature_writes as writes
+    from logogram.prompts import first_real_token, tokenize_prompt
 
-    tokenized = model.tokenize(prompt, prepend_bos)
+    template = _chat_template(chat_template)
     with model.lock:
+        tokenized = tokenize_prompt(model, prompt, prepend_bos, chat_wrapper(model, template))
         report = writes(
             model,
             sae,
             feature,
             tokenized.ids,
             position=position,
-            first=1 if prepend_bos else 0,
+            first=first_real_token(model, tokenized.ids, prepend_bos, template is not None),
             top=top,
         )
     return {**report, "tokens": tokenized.tokens}
@@ -180,14 +246,17 @@ def head_kinds(
     batch_size: int = 16,
     bootstrap: int = 1000,
     ci: float = 0.95,
+    chat_template: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Score every head of ``model`` (from :func:`load_model`) as a previous-token,
     duplicate-token and induction head, on ``sequences`` seeded random sequences of ``length``
     tokens repeated twice. Returns, per kind, each head's mean score with its bootstrap interval
     over sequences, the per-sequence values, and the strongest heads; the app shows the same in
-    the Attention view."""
+    the Attention view. ``chat_template`` (as a spec writes it, with ``prepend_bos`` false) puts
+    each sequence where a prompt goes in the model's own chat template."""
     from logogram.heads import HeadKindSettings, head_kind_scores
 
+    template = _chat_template(chat_template)
     settings = HeadKindSettings(
         seed=seed,
         sequences=sequences,
@@ -196,6 +265,7 @@ def head_kinds(
         batch_size=batch_size,
         bootstrap=bootstrap,
         ci=ci,
+        chat_template=None if template is None else template.model_dump(mode="json"),
     )
     with model.lock:
         return head_kind_scores(model, settings)
@@ -208,14 +278,24 @@ def look(
     prepend_bos: bool = True,
     top_k: int = 5,
     position: int | None = None,
+    chat_template: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Read any text with ``model`` (from :func:`load_model`), without making a dataset: its
     tokens, the ``top_k`` most likely next tokens after each, and at ``position`` (the last token
-    by default) what each layer would predict, as the app's Your text view shows."""
+    by default) what each layer would predict, as the app's Your text view shows. With
+    ``chat_template`` (as a spec writes it, such as ``{"kind": "user_turn", "system": None}``,
+    with ``prepend_bos`` false), the text is wrapped in the model's own chat template."""
     from logogram.inside import look_report
 
     with model.lock:
-        return look_report(model, text, prepend_bos=prepend_bos, top_k=top_k, position=position)
+        return look_report(
+            model,
+            text,
+            prepend_bos=prepend_bos,
+            top_k=top_k,
+            position=position,
+            chat_template=_chat_template(chat_template),
+        )
 
 
 def _ended(outcome: Any, what: str) -> str:
