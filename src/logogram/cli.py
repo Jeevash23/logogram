@@ -1,6 +1,7 @@
 """Command line: ``logogram`` (start the app), ``open``, ``run``, ``doctor``, ``env``, ``serve``,
 commands that read and check runs without the app: ``list``, ``show``, ``compare``, ``diff``,
 ``verify``, ``robustness``, ``sweep``, ``export``, ``validate``, ``tasks`` and ``generate``;
+``saes``, the published SAEs for a model and what Logogram reads of them;
 commands that manage them: ``rename``, ``star``, ``archive`` and ``delete``; ``models add``,
 ``models list`` and ``models remove`` for model folders on this machine; and the project's run
 queue: ``queue add``, ``queue list``, ``queue clear`` and ``queue run``."""
@@ -1568,6 +1569,96 @@ def tasks() -> None:
             allowed = f" ({', '.join(option.allowed)})" if option.allowed else ""
             typer.echo(f"  --option {option.name}={default}{allowed}")
             typer.echo(f"      {option.description}")
+
+
+@app.command()
+def saes(
+    model: Annotated[
+        str, typer.Argument(help="The model's Hugging Face id, such as openai-community/gpt2.")
+    ],
+    search: Annotated[
+        list[str] | None,
+        typer.Argument(
+            help="Words to search for: a release, a hook, layer 8, a width such as 16k."
+        ),
+    ] = None,
+    exact: Annotated[
+        bool, typer.Option("--exact", help="List only the SAEs Logogram reads exactly.")
+    ] = False,
+    as_json: Annotated[bool, typer.Option("--json", help="Print them as JSON.")] = False,
+) -> None:
+    """List the published SAEs trained on MODEL, from SAELens's registry as the catalogue that
+    ships with Logogram records it (nothing is fetched), and whether Logogram reads each exactly
+    or why not."""
+    import json
+
+    from logogram.backends.catalogue import load_catalogue, order
+    from logogram.backends.catalogue import search as matching
+
+    catalogue = load_catalogue()
+    source = f"SAELens {catalogue.source.version}'s registry"
+    entries = catalogue.for_model(model)
+    if not entries:
+        close = sorted(
+            {
+                e.hf_models[0]
+                for e in catalogue.entries
+                if model.casefold() in e.hf_models[0].casefold()
+            }
+        )
+        hint = f" Did you mean {' or '.join(close[:4])}?" if close else ""
+        raise _fail(
+            f"{source} has no SAEs for {model}.{hint} It names models by their Hugging Face id, "
+            "such as openai-community/gpt2 or google/gemma-2-2b."
+        )
+    query = " ".join(search or [])
+    found = order(matching(entries, query) if query else entries)
+    if exact:
+        found = [e for e in found if e.exact]
+    if as_json:
+        typer.echo(json.dumps([e.to_dict() for e in found], indent=2))
+        return
+    n_exact = sum(e.exact for e in entries)
+    typer.echo(
+        f"{count_text(len(entries), 'SAE')} for {model} in {source}; Logogram reads "
+        f"{n_exact} exactly."
+    )
+    if query or exact:
+        typer.echo(f"{count_text(len(found), 'matches', 'match')} {_shown_filter(query, exact)}.")
+    by_release: dict[str, list[Any]] = {}
+    for e in found:
+        by_release.setdefault(e.release, []).append(e)
+    for release, rows in by_release.items():
+        first = rows[0]
+        typer.echo(f"\n{release}  ({first.repo})")
+        width = max(len(e.id) for e in rows)
+        for e in rows:
+            where = f"layer {e.layer}" if e.layer is not None else "layer ?"
+            size = f"{e.width:,}" if e.width else "?"
+            status = {"exact": "reads exactly", "refused": "refused", "unknown": "unknown"}
+            typer.echo(
+                f"  {e.id:<{width}}  {where:<9}  {e.site or '?':<10}  {size:>9}  "
+                f"{e.architecture or '?':<12}  {status[e.reads]}"
+            )
+        for reason in dict.fromkeys(e.reason for e in rows if e.reason):
+            typer.echo(f"  Why: {reason}")
+    typer.echo(
+        "\nLoad one in the app (Explore, Features), or from Python with "
+        "load_sae(release=..., sae_id=..., model=...). Specs record its repository and folder."
+    )
+
+
+def count_text(n: int, noun: str, singular: str | None = None) -> str:
+    """A count and its noun: "1 SAE", "3 SAEs", "1 match", "2 matches"."""
+    one = singular or noun
+    return f"{n:,} {one if n == 1 else noun if singular else noun + 's'}"
+
+
+def _shown_filter(query: str, exact: bool) -> str:
+    parts = [f"“{query}”"] if query else []
+    if exact:
+        parts.append("read exactly")
+    return " and ".join(parts)
 
 
 def _task_options(task_id: str, given: list[str]) -> dict[str, Any]:

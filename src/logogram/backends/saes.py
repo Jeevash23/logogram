@@ -17,10 +17,14 @@ Three safetensors formats are read:
   ``model.layers.12.output``.
 
 Hook and module names are library details, so they are mapped to abstract sites here. Parameters
-are read only from safetensors; Gemma Scope's NumPy archives are refused rather than loaded with a
-different reader. Anything a file does that Logogram can't reproduce exactly (a learned scaling, a
-gated encoder, a skip connection on an SAE, a transcoder across layers, settings or tensors that
-sparsify's releases don't define) is refused with the reason.
+are read only from safetensors; Gemma Scope's NumPy archives and PyTorch pickles are refused rather
+than loaded with a different reader. Anything a file does that Logogram can't reproduce exactly (a
+learned scaling, a gated encoder, a skip connection on an SAE, a transcoder across layers, settings
+or tensors that sparsify's releases don't define) is refused with the reason.
+
+:func:`read_config` runs the same checks on an SAE's configuration alone, on parameters of the
+shapes it states, so the bundled catalogue of published SAEs (:mod:`logogram.backends.catalogue`)
+says what Logogram makes of each one without downloading its weights.
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ from __future__ import annotations
 import fnmatch
 import json
 import re
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -206,41 +211,169 @@ def site_of_hf_point(name: str) -> tuple[str, int]:
     )
 
 
+_NPZ = (
+    "This SAE is published as a NumPy archive (params.npz), as Gemma Scope's first release is. "
+    "Logogram reads SAE parameters only from safetensors files; Gemma Scope 2 is published as "
+    "safetensors."
+)
+_CROSS_LAYER = (
+    "This is a cross-layer transcoder or crosscoder (its parameters are split by layer): it reads "
+    "or writes several layers at once, which Logogram doesn't support yet. Choose an SAE or a "
+    "single-layer transcoder."
+)
+_NO_FORMAT = (
+    "This folder has no SAE in a format Logogram reads: it needs cfg.json with "
+    "sae_weights.safetensors (SAELens) or sae.safetensors (EleutherAI), or config.json with "
+    "params.safetensors (Gemma Scope 2)."
+)
+# PyTorch's own file types, all pickles: loading one can run any code it holds.
+_PICKLES = (".pt", ".pth", ".pkl", ".pickle", ".ckpt", ".bin")
+_LAYER_FILE = re.compile(r"(?:params_layer|W_enc|W_dec)_\d+\.safetensors")
+
+
+def weights_file(names: Iterable[str]) -> str | None:
+    """The weights file of the format these files (names in an SAE's folder) hold, when it is one
+    Logogram reads: sae_weights.safetensors, sae.safetensors or params.safetensors, each beside
+    its configuration."""
+    present = {n.strip("/") for n in names}
+    return next((w for w in WEIGHT_FILES if w in present and CONFIG_FILES[w] in present), None)
+
+
+def unreadable_files(names: Iterable[str]) -> str | None:
+    """Why an SAE published as these files (their names in its folder, or the one file its
+    publisher names) can't be read exactly, or None when they hold a format Logogram reads."""
+    present = {n.strip("/") for n in names}
+    if weights_file(present) is not None:
+        return None
+    leaves = {n.rsplit("/", 1)[-1] for n in present}
+    if "params.npz" in leaves:
+        return _NPZ
+    if any(_LAYER_FILE.fullmatch(n) for n in leaves):
+        return _CROSS_LAYER
+    pickles = sorted(n for n in leaves if n.lower().endswith(_PICKLES))
+    if pickles:
+        kind = pickles[0].rsplit(".", 1)[-1].lower()
+        return (
+            f"Its weights are a PyTorch pickle (a .{kind} file), which Logogram never opens: "
+            "loading a pickle can run code hidden in it. Logogram reads SAEs only from "
+            "safetensors files."
+        )
+    if "hyperparams.json" in leaves:
+        return (
+            "This SAE is in Llama Scope's format (hyperparams.json and "
+            "checkpoints/final.safetensors), which Logogram doesn't read yet."
+        )
+    if "conf.yaml" in leaves:
+        return (
+            "This is a temporal SAE (conf.yaml): its features also read earlier tokens through "
+            "attention, so it isn't an SAE of one activation, which is what Logogram reproduces."
+        )
+    if "sae_weights.safetensors" in leaves and "config.json" in leaves:
+        return (
+            "This SAE is in OpenMOSS's format (config.json beside sae_weights.safetensors, as in "
+            "Llama Scope R1), which Logogram doesn't read yet."
+        )
+    return _NO_FORMAT
+
+
 def read_sae(folder: Path, path: str = "") -> SAEParams:
     """Read an SAE (or transcoder) from a local folder holding its config and safetensors
     weights. ``path`` is the folder's path in its repository, whose top may hold the training
     run's configuration (EleutherAI's sparsify writes it there)."""
     from safetensors.torch import load_file
 
-    if (folder / "params.npz").exists():
-        raise BackendError(
-            "This SAE is published as a NumPy archive (params.npz), as Gemma Scope's first release "
-            "is. Logogram reads SAE parameters only from safetensors files; Gemma Scope 2 is "
-            "published as safetensors."
-        )
-    weights = next((folder / name for name in WEIGHT_FILES if (folder / name).is_file()), None)
-    cfg_path = folder / CONFIG_FILES[weights.name] if weights is not None else folder / "cfg.json"
-    if not cfg_path.is_file() or weights is None:
-        if (folder / "params_layer_0.safetensors").is_file():
-            raise BackendError(
-                "This is a cross-layer transcoder or crosscoder (its parameters are split by "
-                "layer): it reads or writes several layers at once, which Logogram doesn't "
-                "support yet. Choose an SAE or a single-layer transcoder."
-            )
-        raise BackendError(
-            "This folder has no SAE in a format Logogram reads: it needs cfg.json with "
-            "sae_weights.safetensors (SAELens) or sae.safetensors (EleutherAI), or config.json "
-            "with params.safetensors (Gemma Scope 2)."
-        )
-    cfg = _read_json(cfg_path, "The SAE's")
-    tensors = load_file(str(weights), device="cpu")
-    if weights.name == "sae_weights.safetensors":
-        return _saelens(cfg, tensors)
-    if weights.name == "params.safetensors":
-        return _gemma_scope_2(cfg, tensors)
+    names = [p.name for p in folder.iterdir() if p.is_file()] if folder.is_dir() else []
+    weights = weights_file(names)
+    if weights is None:
+        raise BackendError(unreadable_files(names) or _NO_FORMAT)
+    cfg = _read_json(folder / CONFIG_FILES[weights], "The SAE's")
+    tensors = load_file(str(folder / weights), device="cpu")
     # Only files from before sparsify recorded transcoders need the training run's configuration.
-    training = _training_config(folder, path) if "transcode" not in cfg else None
-    return _eleuther(cfg, tensors, path or folder.name, training)
+    training = (
+        _training_config(folder, path)
+        if weights == "sae.safetensors" and "transcode" not in cfg
+        else None
+    )
+    return _read(weights, cfg, tensors, path or folder.name, training)
+
+
+def _read(
+    weights: str,
+    cfg: dict[str, Any],
+    tensors: Mapping[str, torch.Tensor],
+    path: str,
+    training: dict[str, Any] | None,
+) -> SAEParams:
+    if weights == "sae_weights.safetensors":
+        return _saelens(cfg, tensors)
+    if weights == "params.safetensors":
+        return _gemma_scope_2(cfg, tensors)
+    return _eleuther(cfg, tensors, path, training)
+
+
+def read_config(
+    weights: str,
+    cfg: dict[str, Any],
+    path: str = "",
+    training: dict[str, Any] | None = None,
+    tensors: Mapping[str, Sequence[int] | torch.Tensor] | None = None,
+) -> SAEParams:
+    """What :func:`read_sae` makes of an SAE from its configuration alone, without its weights:
+    the same checks, site and sizes, run on parameters that hold no values, of the shapes its
+    configuration states (or, given ``tensors``, of the names and shapes its weights file's header
+    lists, and the values of any given as tensors). ``weights`` names the weights file beside the
+    configuration, which says the format; ``path`` and ``training`` are as for :func:`read_sae`.
+    Raises :class:`BackendError` with the reason it can't be read exactly, as reading its files
+    would, or saying that the values it wasn't given decide it.
+
+    A Gemma Scope 2 configuration doesn't state the model's width, so the parameters it reads and
+    writes are given width 0: ``d_in`` and ``d_out`` mean nothing then."""
+    if weights not in CONFIG_FILES:
+        raise BackendError(_NO_FORMAT)
+    given = dict(tensors) if tensors is not None else dict(_config_shapes(weights, cfg))
+    empty = {
+        name: value if isinstance(value, torch.Tensor) else torch.empty(tuple(value), device="meta")
+        for name, value in given.items()
+    }
+    return _read(weights, cfg, empty, path, training)
+
+
+def values_decide(reason: str) -> bool:
+    """Whether a refusal from :func:`read_config` only says that values it wasn't given decide."""
+    return reason == _SCALING_UNREAD
+
+
+def _size(cfg: dict[str, Any], *keys: str) -> int:
+    for key in keys:
+        value = cfg.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    raise BackendError(f"The SAE's configuration doesn't state its size ({keys[0]}).")
+
+
+def _config_shapes(weights: str, cfg: dict[str, Any]) -> dict[str, tuple[int, ...]]:
+    """The parameters a configuration says its weights file holds, by name and shape."""
+    if weights == "sae_weights.safetensors":
+        d_in, d_sae = _size(cfg, "d_in"), _size(cfg, "d_sae")
+        shapes = {"W_enc": (d_in, d_sae), "b_enc": (d_sae,), "W_dec": (d_sae, d_in)}
+        shapes["b_dec"] = (d_in,)
+        if cfg.get("architecture") == "jumprelu":
+            shapes["threshold"] = (d_sae,)
+        return shapes
+    if weights == "params.safetensors":
+        width = _size(cfg, "width")
+        shapes = {"w_enc": (0, width), "b_enc": (width,), "w_dec": (width, 0), "b_dec": (0,)}
+        shapes["threshold"] = (width,)
+        if cfg.get("affine_connection"):
+            shapes["affine_skip_connection"] = (0, 0)
+        return shapes
+    d_in = _size(cfg, "d_in")
+    latents = cfg.get("num_latents") or d_in * _size(cfg, "expansion_factor")
+    shapes = {"encoder.weight": (latents, d_in), "encoder.bias": (latents,)}
+    shapes |= {"W_dec": (latents, d_in), "b_dec": (d_in,)}
+    if _on(cfg.get("skip_connection")):
+        shapes["W_skip"] = (d_in, d_in)
+    return shapes
 
 
 def _read_json(path: Path, whose: str) -> dict[str, Any]:
@@ -273,7 +406,7 @@ def _names(names: list[str]) -> str:
     return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
 
 
-def _extra_tensors(tensors: dict[str, torch.Tensor], known: frozenset[str], what: str) -> None:
+def _extra_tensors(tensors: Mapping[str, torch.Tensor], known: frozenset[str], what: str) -> None:
     extra = _unknown(set(tensors), known)
     if extra:
         raise BackendError(
@@ -282,7 +415,7 @@ def _extra_tensors(tensors: dict[str, torch.Tensor], known: frozenset[str], what
         )
 
 
-def _gemma_scope_2(cfg: dict[str, Any], tensors: dict[str, torch.Tensor]) -> SAEParams:
+def _gemma_scope_2(cfg: dict[str, Any], tensors: Mapping[str, torch.Tensor]) -> SAEParams:
     kind = cfg.get("type", "sae")
     if kind in ("clt", "crosscoder"):
         raise BackendError(
@@ -349,6 +482,12 @@ def _gemma_scope_2(cfg: dict[str, Any], tensors: dict[str, torch.Tensor]) -> SAE
     )
 
 
+_SCALING_UNREAD = (
+    "Whether Logogram reads this SAE exactly depends on the values of the scaling_factor its "
+    "weights file holds (it does if they are all one), which only its weights say: Logogram "
+    "checks them when it loads it."
+)
+
 _SKIP_ON_SAE = (
     "This SAE has a skip connection: it rebuilds the activation partly from the activation "
     "itself, so its features don't add up to it and one can't be changed alone. Logogram reads "
@@ -356,14 +495,14 @@ _SKIP_ON_SAE = (
 )
 
 
-def _need(tensors: dict[str, torch.Tensor], *names: str) -> list[torch.Tensor]:
+def _need(tensors: Mapping[str, torch.Tensor], *names: str) -> list[torch.Tensor]:
     missing = [n for n in names if n not in tensors]
     if missing:
         raise BackendError(f"The SAE's weights are missing {_names(missing)}.")
     return [tensors[n].float() for n in names]
 
 
-def _saelens(cfg: dict[str, Any], tensors: dict[str, torch.Tensor]) -> SAEParams:
+def _saelens(cfg: dict[str, Any], tensors: Mapping[str, torch.Tensor]) -> SAEParams:
     # SAELens 6 keeps where the SAE reads under "metadata"; earlier versions at the top.
     meta: dict[str, Any] = cfg["metadata"] if isinstance(cfg.get("metadata"), dict) else {}
     hook = cfg.get("hook_name") or cfg.get("hook_point") or meta.get("hook_name")
@@ -386,17 +525,39 @@ def _saelens(cfg: dict[str, Any], tensors: dict[str, torch.Tensor]) -> SAEParams
     if architecture not in ("standard", "jumprelu", "topk"):
         raise BackendError(f"SAELens {architecture} SAEs aren't supported yet.")
     normalize = cfg.get("normalize_activations") or "none"
+    if normalize is True:
+        # SAELens's configurations before version 6 said only whether: this kind.
+        normalize = "expected_average_only_in"
+    if normalize == "expected_average_only_in":
+        raise BackendError(
+            "This SAE rescales its inputs by a factor measured on its training data "
+            "(normalize_activations: expected_average_only_in), which its files don't hold, so "
+            "Logogram can't reproduce it exactly."
+        )
     if normalize not in ("none", "layer_norm"):
         raise BackendError(
-            f"This SAE rescales its inputs ({normalize}) with a factor measured on its training "
-            "data, which Logogram can't reproduce exactly."
+            f"This SAE rescales its inputs (normalize_activations: {normalize}), which Logogram "
+            "doesn't reproduce yet."
         )
     if cfg.get("finetuning_scaling_factor") or "finetuning_scaling_factor" in tensors:
         raise BackendError(
             "This SAE scales its features by a factor fitted after training "
             "(finetuning_scaling_factor), which Logogram doesn't reproduce yet."
         )
-    _extra_tensors(tensors, _SAELENS_TENSORS, "SAELens")
+    # SAELens's earlier files hold a scaling_factor of ones whatever their configuration says, and
+    # SAELens drops it then: multiplying the features by one changes nothing. Any other value
+    # would scale them, which their configuration says they don't.
+    scaling = tensors.get("scaling_factor")
+    if scaling is not None:
+        if scaling.is_meta:
+            raise BackendError(_SCALING_UNREAD)
+        if not bool((scaling == 1).all()):
+            raise BackendError(
+                "This SAE's file holds a scaling_factor other than one, which would scale its "
+                "features although its configuration says they aren't scaled, so Logogram can't "
+                "tell what it computes."
+            )
+    _extra_tensors(tensors, _SAELENS_TENSORS | {"scaling_factor"}, "SAELens")
     W_enc, b_enc, W_dec, b_dec = _need(tensors, "W_enc", "b_enc", "W_dec", "b_dec")
     activation, k, threshold = "relu", None, None
     fn = cfg.get("activation_fn_str") or cfg.get("activation_fn") or "relu"
@@ -443,7 +604,7 @@ def _on(value: Any) -> bool:
 
 def _eleuther(
     cfg: dict[str, Any],
-    tensors: dict[str, torch.Tensor],
+    tensors: Mapping[str, torch.Tensor],
     folder: str,
     training: dict[str, Any] | None,
 ) -> SAEParams:
@@ -607,25 +768,22 @@ def download_sae(
                 return cached
         raise hub._friendly_hub_error(repo, exc) from exc
     sizes = {s.rfilename: int(s.size or 0) for s in info.siblings or []}
-    if f"{prefix}params.npz" in sizes:
-        raise BackendError(
-            "This SAE is published as a NumPy archive (params.npz), as Gemma Scope's first release "
-            "is. Logogram reads SAE parameters only from safetensors files; Gemma Scope 2 is "
-            "published as safetensors."
-        )
-    if f"{prefix}params_layer_0.safetensors" in sizes:
-        raise BackendError(
-            "This is a cross-layer transcoder or crosscoder: it reads or writes several layers at "
-            "once, which Logogram doesn't support yet. Choose an SAE or a single-layer transcoder."
-        )
-    weights = next((w for w in WEIGHT_FILES if f"{prefix}{w}" in sizes), None)
-    config = CONFIG_FILES[weights] if weights is not None else "cfg.json"
-    if weights is None or f"{prefix}{config}" not in sizes:
-        raise BackendError(
-            f"{repo} has no SAE at {path or 'its top level'}: Logogram needs cfg.json with "
-            "sae_weights.safetensors or sae.safetensors, or config.json with params.safetensors, "
-            "there."
-        )
+    # The files in the SAE's folder (at the top level, only the top level's own files), or the one
+    # file the path names, as some publishers name an SAE.
+    inside = [
+        n[len(prefix) :] for n in sizes if n.startswith(prefix) and (prefix or "/" not in n)
+    ] or ([path.strip("/")] if path.strip("/") in sizes else [])
+    weights = weights_file(inside)
+    if weights is None:
+        reason = unreadable_files(inside) if inside else None
+        if reason is None or reason == _NO_FORMAT:
+            reason = (
+                f"{repo} has no SAE at {path or 'its top level'}: Logogram needs cfg.json with "
+                "sae_weights.safetensors or sae.safetensors, or config.json with "
+                "params.safetensors, there."
+            )
+        raise BackendError(reason)
+    config = CONFIG_FILES[weights]
     wanted = [
         (f"{prefix}{config}", sizes[f"{prefix}{config}"]),
         (f"{prefix}{weights}", sizes[f"{prefix}{weights}"]),

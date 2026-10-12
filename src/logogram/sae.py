@@ -237,9 +237,17 @@ def load_sae(
     progress: Any = None,
     cancel: Any = None,
 ) -> SAE:
-    """Download (once) and read a published SAE at an exact revision, on ``device``."""
+    """Download (once) and read a published SAE at an exact revision, on ``device``. An SAE that
+    SAELens's registry reads with settings its own configuration doesn't state (as the bundled
+    catalogue records) is refused before anything is downloaded: its files alone don't say what
+    it computes."""
+    from logogram.backends.base import BackendError
+    from logogram.backends.catalogue import registry_refusal
     from logogram.backends.saes import download_sae, read_sae
 
+    reason = registry_refusal(ref.repo, ref.path)
+    if reason is not None:
+        raise BackendError(reason)
     revision, folder = download_sae(ref.repo, ref.path, ref.revision, progress, cancel)
     params = read_sae(folder, ref.path)
     return SAE(repo=ref.repo, path=ref.path, revision=revision, params=params).to(device)

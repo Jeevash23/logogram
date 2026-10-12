@@ -26,6 +26,7 @@ _API = (
     "head_kinds",
     "list_local_models",
     "list_runs",
+    "list_saes",
     "load_model",
     "load_run",
     "load_sae",

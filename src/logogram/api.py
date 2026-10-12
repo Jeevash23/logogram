@@ -17,6 +17,8 @@ the app would make, and it lands in the project like any other::
     lg.delete_run(project, old_run)    # its folder and everything in it, for good
     seeds = lg.sweep(run, field="statistics.seed", values=[0, 1, 2, 3])  # one run per value
     seeds.table()        # the strongest sites at every value: do they keep their sign and size?
+    lg.list_saes(model, "layer 8")    # published SAEs for the model, and what Logogram reads of them
+    sae = lg.load_sae(release="gpt2-small-res-jb", sae_id="blocks.8.hook_resid_pre", model=model)
 
 Tables come back as pandas DataFrames when pandas is installed, and as pyarrow Tables otherwise.
 """
@@ -48,6 +50,7 @@ __all__ = [
     "head_kinds",
     "list_local_models",
     "list_runs",
+    "list_saes",
     "load_model",
     "load_run",
     "load_sae",
@@ -159,18 +162,66 @@ def _chat_template(value: Any) -> Any:
     return TypeAdapter(ChatTemplate).validate_python(value)
 
 
-def load_sae(repo: str, path: str = "", *, model: Any, revision: str | None = None) -> Any:
+def load_sae(
+    repo: str | None = None,
+    path: str = "",
+    *,
+    model: Any,
+    revision: str | None = None,
+    release: str | None = None,
+    sae_id: str | None = None,
+) -> Any:
     """Download (once) and read a published SAE or transcoder at an exact revision, onto
-    ``model``'s device. It is refused if it was made for another model's sizes or reads a site the
-    model doesn't have. Pass it to :func:`run` with a spec that names it, or explore its features
-    with :func:`feature_writes`."""
+    ``model``'s device: by its Hugging Face repository and folder, or by its SAELens release and
+    id (``release="gpt2-small-res-jb", sae_id="blocks.8.hook_resid_pre"``), found in the
+    catalogue of SAELens's registry that ships with Logogram (see :func:`list_saes`). Either way
+    the SAE is its repository, folder and revision, which is what a spec records; without a
+    revision, the repository's current commit is pinned. It is refused if Logogram can't read it
+    exactly, was made for another model's sizes or reads a site the model doesn't have. Pass it to
+    :func:`run` with a spec that names it, or explore its features with :func:`feature_writes`."""
     from logogram.features import check_sae_fits
     from logogram.sae import load_sae as load
     from logogram.spec import SAERef
 
+    if release is not None or sae_id is not None:
+        if repo is not None or path:
+            raise LogogramError(
+                "Name the SAE either by its repository and folder or by its release and id."
+            )
+        if release is None or sae_id is None:
+            raise LogogramError("Name an SAE by its release and its id: give both.")
+        from logogram.backends.catalogue import load_catalogue
+
+        entry = load_catalogue().find(release, sae_id)
+        if entry.reads == "refused":
+            raise LogogramError(f"Logogram can't read {release} {sae_id} exactly. {entry.reason}")
+        repo, path = entry.repo, entry.folder
+    elif repo is None:
+        raise LogogramError(
+            "Name the SAE: its Hugging Face repository (and folder), or release= and sae_id= as "
+            "SAELens names it."
+        )
     sae = load(SAERef(repo=repo, path=path, revision=revision), model.info.device)
     check_sae_fits(sae, model.info)
     return sae
+
+
+def list_saes(model: Any, search: str = "") -> Any:
+    """The published SAEs trained on a model (a loaded model, or its Hugging Face id), from the
+    catalogue of SAELens's registry that ships with Logogram (nothing is fetched): one row per SAE,
+    those Logogram reads exactly first, with its release and id, repository and folder, the hook
+    it reads, its site, layer and width, its architecture, whether Logogram reads it exactly
+    (``reads``: exact, refused or unknown) and if not why (``reason``), and how it was checked on
+    its files if it was (``verified``). ``search`` keeps the ones it matches, as the app's search
+    does: ``"layer 8"``, ``"16k"``, ``"resid_post"``, a release's name. Load one with
+    :func:`load_sae` (``release=``, ``sae_id=``)."""
+    from logogram.backends.catalogue import load_catalogue, order
+    from logogram.backends.catalogue import search as matching
+
+    model_id = model if isinstance(model, str) else model.info.id
+    entries = load_catalogue().for_model(model_id)
+    found = order(matching(entries, search) if search.strip() else entries)
+    return _table([e.to_dict() for e in found])
 
 
 def feature_writes(
