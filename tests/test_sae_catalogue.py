@@ -39,12 +39,22 @@ SHIPPED = ROOT / "src" / "logogram" / "backends" / "sae_catalogue.json"
 
 @pytest.fixture
 def offline(monkeypatch):
-    """No connection can be opened: anything that reaches for the network fails the test."""
+    """No connection can be opened: anything that reaches for the network fails the test. A
+    connection to this machine's loopback address never leaves it, and is let through: on Windows,
+    asyncio makes each event loop's socket pair with one (the test client starts event loops)."""
 
     def refuse(*args: Any, **kwargs: Any) -> Any:
         raise AssertionError(f"Logogram reached for the network: {args!r}")
 
-    monkeypatch.setattr(socket.socket, "connect", refuse)
+    loopback = ("127.0.0.1", "::1")
+    connect = socket.socket.connect
+
+    def connect_locally(self: socket.socket, address: Any, *args: Any, **kwargs: Any) -> Any:
+        if isinstance(address, tuple) and address[0] in loopback:
+            return connect(self, address, *args, **kwargs)
+        return refuse(self, address)
+
+    monkeypatch.setattr(socket.socket, "connect", connect_locally)
     monkeypatch.setattr(socket.socket, "connect_ex", refuse)
     monkeypatch.setattr(socket, "getaddrinfo", refuse)
     monkeypatch.setattr(socket, "create_connection", refuse)
