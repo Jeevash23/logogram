@@ -41,7 +41,7 @@ function siteOf(info: SAEInfo): string {
 export function FeaturesView() {
   const model = useStore((st) => st.model);
   const sae = useStore((st) => st.sae);
-  // Choosing another SAE while one is loaded; it stays loaded until another replaces it.
+  // Choosing another SAE while one is loaded: it stays loaded until loading another begins.
   const [choosing, setChoosing] = useState(false);
   const loadedKey = sae.info ? `${sae.info.repo}/${sae.info.path}@${sae.info.revision}` : null;
   useEffect(() => setChoosing(false), [loadedKey]);
@@ -135,8 +135,8 @@ function Loader({ onKeep }: { onKeep?: () => void }) {
       {onKeep && (
         <div className={f.keep}>
           <span className={s.small}>
-            The loaded SAE, {sae.info?.repo}
-            {sae.info?.path ? `/${sae.info.path}` : ""}, stays loaded until another replaces it.
+            Loading another SAE replaces {sae.info?.repo}
+            {sae.info?.path ? `/${sae.info.path}` : ""}.
           </span>
           <Button size="small" variant="ghost" onClick={onKeep}>
             Keep the loaded SAE
