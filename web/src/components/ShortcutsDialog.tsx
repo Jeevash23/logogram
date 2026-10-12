@@ -85,6 +85,13 @@ const SECTIONS: { title: string; rows: [ReactNode, string][] }[] = [
     ],
   },
   {
+    title: "History",
+    rows: [
+      [<Keys keys={["F2"]} />, "On a run, rename it. Enter keeps the new title; Esc leaves it as it was."],
+      [<Keys keys={["Esc"]} />, "In the search, clear it. Pressed again, close the history."],
+    ],
+  },
+  {
     title: "Choices",
     rows: [
       [<Keys keys={["←", "→", "↑", "↓"]} />, "Choose the next or previous option in a group of choices."],

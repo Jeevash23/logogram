@@ -1,0 +1,48 @@
+{
+  "logogram_spec": 3,
+  "name": "Which heads write the pronoun?",
+  "notes": "Expect heads 10.9 and 9.7 to write the most toward the right pronoun, about a third and a fifth of the logit difference, and every other head a tenth or less.\n\nThe question: GPT-2 small completes \u201cSo John is a really great friend, isn't\u201d with \u201c he\u201d, and the same sentence about Mary with \u201c she\u201d. Which attention heads write the pronoun into the prediction?\n\nPublished: Mathwin et al. 2023, \u201cIdentifying a preliminary circuit for predicting gendered pronouns in GPT-2 small\u201d, found with automatic circuit discovery, as Conmy et al. 2023 (\u201cTowards automated circuit discovery for mechanistic interpretability\u201d, NeurIPS 2023, appendix K) describe it, that heads 10.9 and 9.7 output the gendered pronoun. They read it from the \u201c is\u201d token after the name, where heads 4.3 and 6.0 had brought the name's gender. MLPs 10 and 11 wrote most directly to the output.\n\nHow it is measured: direct logit attribution on the clean prompts. At the last token, the logit difference between the right pronoun and the other is split into what each head writes directly, with the final normalization's scale held at its value in the run, as a share of the mean clean logit difference. It is a decomposition of one forward pass, not an intervention: it leaves out what a head does through later layers. The 64 prompt pairs come from Logogram's gendered pronoun task, seed 0, with its three default templates (this method doesn't use the corrupt prompts, which name someone who takes the other pronoun).\n\nMeasured on GPT-2 small at revision 607a30d: the logit difference is 4.27, and every clean prompt prefers the right pronoun. Heads 10.9 (0.35) and 9.7 (0.22) write the most, then 11.8 (0.10), 11.7 (0.06) and 11.1 (0.05); no head writes against it by more than 0.03. This matches the heads the paper found. Split by layer instead, MLPs write 15% of the logit difference: MLP 11 writes 0.17, but MLP 10 almost nothing (0.004), unlike the paper (which measured edges by patching against prompts about \u201cThat person\u201d, not by splitting the logit difference). The pathway through \u201c is\u201d shows when the residual stream is patched instead, clean \u2192 corrupt, at every layer and position of the first 32 pairs: the name carries the gender through layer 4 (0.84), the verb after it (\u201c is\u201d or \u201c was\u201d) carries 0.34 to 0.41 of it in layers 5 to 9, and the last token takes it in layers 10 and 11 (0.32 and 0.81).",
+  "model": {
+    "id": "openai-community/gpt2",
+    "source": "hub",
+    "revision": "607a30d783dfa663caf39e06633721c8d4cfcd7e",
+    "sha256": null,
+    "dtype": "float32",
+    "device": "auto",
+    "process_weights": true
+  },
+  "dataset": {
+    "path": "datasets/gendered-pronoun.jsonl",
+    "sha256": "20512d452e5c3c7f482d160bcd85a6d22850c0184a2fa6ff15691e55afecc8d9",
+    "limit": null
+  },
+  "tokenization": {
+    "prepend_bos": true,
+    "chat_template": null
+  },
+  "experiment": {
+    "kind": "direct_logit_attribution",
+    "prompts": "clean"
+  },
+  "scope": {
+    "kind": "heads",
+    "position": {
+      "kind": "last"
+    }
+  },
+  "metric": {
+    "kind": "logit_diff",
+    "normalization": "dataset_gap"
+  },
+  "statistics": {
+    "bootstrap": 1000,
+    "ci": 0.95,
+    "seed": 0,
+    "cluster": null
+  },
+  "execution": {
+    "batch_size": 64
+  },
+  "predictions": null,
+  "sae": null
+}

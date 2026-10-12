@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { api } from "../api/client";
 import type { Device, Dtype, EstimateResponse, ModelPreset } from "../api/types";
+import { CHAT_ADVICE, chatReason } from "../lib/chat";
 import { bytes, params, pct, shortRevision } from "../lib/format";
 import { modelName } from "../lib/hooks";
 import { useStore } from "../store/app";
@@ -275,6 +276,13 @@ export function ModelDialog() {
         <p className={s.fine}>
           Loaded: {modelName(model.info.id)} @ {shortRevision(model.info.revision)} on {model.info.device_name} ({model.info.dtype}).
         </p>
+      )}
+      {model.state === "ready" && chatReason(model.info) && (
+        <Callout title={`${modelName(model.info?.id)} is made for chat, and runs here on plain text`}>
+          {chatReason(model.info)} Logogram feeds every prompt as plain text, without the chat template the model was
+          trained to read, so it can behave differently here than in a chat: a behavior can be weaker, missing or
+          different. {CHAT_ADVICE}
+        </Callout>
       )}
     </Dialog>
   );

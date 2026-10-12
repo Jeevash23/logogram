@@ -37,6 +37,16 @@ def test_the_methods_paragraph_says_every_choice_in_words(finished):
     assert text == methods_text(finished.spec, finished.summary, finished.manifest, finished.id)
 
 
+def test_the_methods_paragraph_carries_the_specs_notes(
+    finished, tiny_backend, project, spec_factory
+):
+    text = finished.methods()
+    assert "Notes saved with the spec: Heads in layer 1 should carry it." in text
+    assert text.index("Notes saved") < text.index(f"The run is {finished.id}.")
+    plain = lg.run(spec_factory(notes="  \n"), project, model=tiny_backend)
+    assert "Notes saved" not in plain.methods()
+
+
 def test_an_ablation_names_its_baseline(tiny_backend, project, spec_factory):
     spec = spec_factory(
         experiment={"kind": "ablation", "baseline": {"kind": "mean", "reference": "clean"}}

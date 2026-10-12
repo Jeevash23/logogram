@@ -7,6 +7,7 @@ import { analysisContext, analysisSourceFor } from "../lib/analysis";
 import type {
   BaselineReport,
   DatasetDetail,
+  Environment,
   Job,
   SAEStatus,
   Layout,
@@ -15,6 +16,7 @@ import type {
   ProjectInfo,
   QueuedRun,
   RobustnessChange,
+  RunAnnotationsChange,
   RunDetail,
   MetricKind,
   RunListing,
@@ -151,6 +153,10 @@ export interface NoticeOptions {
 /** How long a plain confirmation stays on screen. */
 export const NOTICE_MS = 5000;
 
+/** How often the history is read again while a run runs in another process, whose progress
+ * isn't streamed here: often enough to see it end, rarely enough to cost nothing. */
+export const ELSEWHERE_POLL_MS = 4000;
+
 /** How an action from elsewhere replaces the experiment form. */
 export interface ReplaceFormOptions {
   /** The notice that offers to undo it: "Experiment form replaced" unless given; null for none. */
@@ -195,6 +201,8 @@ interface Store {
   /** Runs waiting for the job in progress to end, first in line first (the server's queue). */
   queue: QueuedRun[];
   runs: RunListing[];
+  /** The versions and devices a rerun here would use, to compare with a run's manifest. */
+  environment: Environment | null;
 
   view: View;
   datasetPath: string | null;
@@ -235,6 +243,11 @@ interface Store {
   cancelConfirmOpen: boolean;
   /** The sheet of keyboard shortcuts (? or the command palette). */
   shortcutsOpen: boolean;
+  /** A dialog from the Help menu or the palette: the problem report, or About. */
+  helpDialog: "report" | "about" | null;
+  /** The last error the app showed (a notice, a view that stopped, or a failed start), for the
+   * problem report. */
+  lastError: string | null;
   notices: Notice[];
 
   // actions
@@ -262,6 +275,8 @@ interface Store {
   /** Keep a dataset's unsaved edits, or drop them (null, or edits that change nothing). */
   setDatasetEdits: (path: string, edits: PromptEdits | null) => void;
   applyJob: (job: Job) => void;
+  /** Read the server's environment, once, to compare runs' manifests with it. */
+  loadEnvironment: () => void;
   checkUpdates: () => Promise<void>;
   setUpdateConsent: (allowed: boolean) => Promise<void>;
   fitSelection: () => void;
@@ -288,6 +303,12 @@ interface Store {
   startRobustness: (runId: string, change: RobustnessChange) => Promise<void>;
   /** Patch, for real, the strongest sites an attribution patching run estimated. */
   startVerification: (runId: string, top: number) => Promise<void>;
+  /** Rename, star or archive a run: what is said about it, kept beside its spec, which never
+   * changes. Returns whether it was saved. */
+  annotateRun: (id: string, change: RunAnnotationsChange) => Promise<boolean>;
+  /** Delete a run or a draft, folder and all, and forget it wherever this tab shows it. Returns
+   * whether it was deleted. */
+  deleteRun: (id: string) => Promise<boolean>;
   cancelJob: () => Promise<void>;
   setCompare: (a: string | null, b: string | null) => void;
   /** A change made in the form. Rapid edits to the same fields are one undo step; with record
@@ -326,6 +347,7 @@ let datasetSeq = 0;
 // One request per run detail at a time, however many components ask for it.
 const inflight = new Map<string, Promise<RunDetail | undefined>>();
 let starting = false;
+let environmentRequest: Promise<void> | null = null;
 
 function emptyLive(runId: string): LiveRun {
   return { runId, layout: null, sites: [], cells: {}, layersDone: [], progress: null, status: "running" };
@@ -364,6 +386,7 @@ export const useStore = create<Store>((set, get) => ({
   job: null,
   queue: [],
   runs: [],
+  environment: null,
 
   view: "prompts",
   datasetPath: null,
@@ -395,6 +418,8 @@ export const useStore = create<Store>((set, get) => ({
   robustnessDialogOpen: false,
   cancelConfirmOpen: false,
   shortcutsOpen: false,
+  helpDialog: null,
+  lastError: null,
   notices: [],
 
   boot: async () => {
@@ -406,7 +431,8 @@ export const useStore = create<Store>((set, get) => ({
       else if (state.project) await get().enterProject(state.project);
       else set({ screen: "projects", pendingRoute: null });
     } catch (err) {
-      set({ screen: "error", bootError: err instanceof Error ? err.message : String(err) });
+      const message = err instanceof Error ? err.message : String(err);
+      set({ screen: "error", bootError: message, lastError: message });
     }
   },
 
@@ -429,6 +455,17 @@ export const useStore = create<Store>((set, get) => ({
       if (s.project) void get().enterProject(s.project);
       else get().leaveProject();
     }
+  },
+
+  loadEnvironment: () => {
+    // Static while the server runs: read once, when a view first compares a run with it.
+    if (get().environment || environmentRequest) return;
+    environmentRequest = api.environment().then(
+      (environment) => set({ environment }),
+      () => {
+        environmentRequest = null; // try again next time
+      },
+    );
   },
 
   checkUpdates: async () => {
@@ -486,7 +523,7 @@ export const useStore = create<Store>((set, get) => ({
     const notice: Notice = { id, tone, text, ...options };
     set((s) => {
       const others = notice.key ? s.notices.filter((n) => n.key !== notice.key) : s.notices;
-      return { notices: [...others.slice(-3), notice] };
+      return { notices: [...others.slice(-3), notice], ...(tone === "error" ? { lastError: text } : {}) };
     });
     // Errors, notices with an action and important ones stay until dismissed (WCAG 2.2.1).
     if (tone === "info" && !notice.action && !notice.persist) globalThis.setTimeout(() => get().dismiss(id), NOTICE_MS);
@@ -557,7 +594,8 @@ export const useStore = create<Store>((set, get) => ({
     const wanted = route?.screen === "workbench" ? route : null;
     const runOf = (id: string | undefined) => (id ? runs.find((r) => r.id === id) : undefined);
     const asked = wanted && runOf(wanted.compare?.[0] ?? wanted.run);
-    const running = runs.find((r) => r.status === "running");
+    // This server's run, which streams here; one in another process doesn't.
+    const running = runs.find((r) => r.status === "running" && !r.elsewhere);
     const finished = runs.find((r) => r.status === "finished");
     const draft = runs.find((r) => r.status === "draft");
     if (running) set((s) => ({ live: { ...s.live, [running.id]: s.live[running.id] ?? emptyLive(running.id) } }));
@@ -609,7 +647,18 @@ export const useStore = create<Store>((set, get) => ({
     const seq = projectSeq;
     const runs = await get().guard(() => api.runs());
     if (!runs || seq !== projectSeq) return;
+    const before = get().runs;
     set({ runs });
+    // A run in another process has ended: say so, and read it again where it is shown.
+    for (const run of runs) {
+      const was = before.find((r) => r.id === run.id);
+      if (!was?.elsewhere || was.status !== "running" || run.status === "running") continue;
+      const ended = run.status === "finished" ? "finished" : run.status === "cancelled" ? "was cancelled" : "failed";
+      get().notify(`“${run.name}”, running in another process, ${ended}.`, "info", {
+        action: { label: run.status === "finished" ? "Show results" : "Show the run", run: () => void get().openRun(run.id, "results") },
+      });
+      if (get().runDetails[run.id] || get().activeRunId === run.id) void get().loadRun(run.id, true).then(() => get().fitSelection());
+    }
     // A run this tab still shows as running may have ended while the event stream was down.
     for (const [id, live] of Object.entries(get().live)) {
       const listed = runs.find((r) => r.id === id);
@@ -652,6 +701,12 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   openRun: async (id, view) => {
+    // A run whose spec can't be read has nothing to show: say why, as the history does.
+    const listed = id ? get().runs.find((r) => r.id === id) : undefined;
+    if (listed?.damaged) {
+      get().notify(listed.error ?? "This run's spec can't be read.", "error");
+      return;
+    }
     const seq = ++openSeq;
     const previous = get().activeRunId ? get().runDetails[get().activeRunId as string]?.spec.model : get().model.info;
     set({ activeRunId: id });
@@ -833,6 +888,25 @@ export const useStore = create<Store>((set, get) => ({
       live: { ...s.live, [out.run_id]: s.live[out.run_id] ?? emptyLive(out.run_id) },
     }));
     await get().refreshRuns();
+  },
+
+  annotateRun: async (id, change) => {
+    const seq = projectSeq;
+    const listing = await get().guard(() => api.annotateRun(id, change));
+    if (!listing || seq !== projectSeq) return false;
+    applyAnnotations(listing);
+    return true;
+  },
+
+  deleteRun: async (id) => {
+    const seq = projectSeq;
+    const run = get().runs.find((r) => r.id === id);
+    const out = await get().guard(() => api.deleteRun(id));
+    if (!out || seq !== projectSeq) return false;
+    forgetRun(id);
+    get().notify(`Deleted “${run?.title || run?.name || id}”.`);
+    void get().refreshRuns();
+    return true;
   },
 
   cancelJob: async () => {
@@ -1041,6 +1115,11 @@ export const useStore = create<Store>((set, get) => ({
       case "queue":
         set({ queue: (data.runs as QueuedRun[] | undefined) ?? [] });
         break;
+      case "runs.changed":
+        // A run renamed, starred, archived or deleted, here or in another tab.
+        if (data.deleted) forgetRun(String(data.run_id));
+        void get().refreshRuns();
+        break;
       case "queue.skipped":
         get().notify(`“${String(data.title)}” couldn't start and was taken out of the queue. ${String(data.error)}`, "error");
         break;
@@ -1075,6 +1154,20 @@ useStore.subscribe((state, prev) => {
   if (state.form === prev.form || !state.project || state.project.session_id !== prev.project?.session_id) return;
   if (sameForm(state.form, savedForm) || sameForm(state.form, DEFAULT_FORM)) clearStoredForm(state.project.path);
   else writeStoredForm(state.project.path, state.form);
+});
+
+// While a run runs in another process (logogram run, a notebook), nothing streams its end here:
+// read the history again on a slow timer until no such run is left.
+let elsewherePoll: ReturnType<typeof setInterval> | null = null;
+useStore.subscribe((state, prev) => {
+  if (state.runs === prev.runs) return;
+  const watching = state.runs.some((r) => r.status === "running" && r.elsewhere);
+  if (watching && elsewherePoll === null) {
+    elsewherePoll = globalThis.setInterval(() => void useStore.getState().refreshRuns(), ELSEWHERE_POLL_MS);
+  } else if (!watching && elsewherePoll !== null) {
+    globalThis.clearInterval(elsewherePoll);
+    elsewherePoll = null;
+  }
 });
 
 /** Put back the form left unsaved when the project was last open, offering to undo that. */
@@ -1127,6 +1220,53 @@ function formSent(ran: FormState): void {
     form: { ...s.form, draftId: null },
     formHistory: draftId ? forgetDraft(s.formHistory, draftId) : s.formHistory,
   }));
+}
+
+/** What is said about a run, as the server now has it, wherever this tab keeps its listing. */
+function applyAnnotations(listing: RunListing): void {
+  const said = {
+    title: listing.title ?? null,
+    starred: !!listing.starred,
+    archived: !!listing.archived,
+    annotations_error: listing.annotations_error ?? null,
+  };
+  useStore.setState((s) => {
+    const detail = s.runDetails[listing.id];
+    return {
+      runs: s.runs.map((r) => (r.id === listing.id ? { ...r, ...said } : r)),
+      ...(detail?.listing ? { runDetails: { ...s.runDetails, [listing.id]: { ...detail, listing: { ...detail.listing, ...said } } } } : {}),
+    };
+  });
+}
+
+/**
+ * A run deleted, in this tab or another: forget it wherever it was shown. Runs derived from it
+ * stay (the history shows they came from a deleted run); a comparison with it is left half chosen;
+ * a form that was saved as this draft keeps its contents, now unsaved.
+ */
+function forgetRun(id: string): void {
+  const st = useStore.getState();
+  const bos = analysisContext(st).options.prepend_bos;
+  const { [id]: _detail, ...runDetails } = st.runDetails;
+  const { [id]: _live, ...live } = st.live;
+  const [a, b] = st.compareIds;
+  const draft = st.form.draftId === id;
+  if (draft) savedForm = DEFAULT_FORM; // its folder is gone: the form is kept in the browser instead
+  inflight.delete(id);
+  if (st.activeRunId === id) openSeq += 1; // whatever was opening it has nothing to show
+  useStore.setState({
+    runs: st.runs.filter((r) => r.id !== id),
+    runDetails,
+    live,
+    flags: Object.fromEntries(Object.entries(st.flags).filter(([run, flag]) => run !== id && flag.against !== id)),
+    compareIds: a === id || b === id ? [a === id ? null : a, b === id ? null : b] : st.compareIds,
+    ...(st.activeRunId === id ? { activeRunId: null, analysisSource: "form" as const } : {}),
+    ...(st.pendingRunId === id ? { pendingRunId: null } : {}),
+    ...(draft ? { form: { ...st.form, draftId: null } } : {}),
+    formHistory: forgetDraft(st.formHistory, id),
+  });
+  // The analyses read the form's prompts now, if they read the run's.
+  if (st.activeRunId === id) analysisChanged(bos);
 }
 
 /** Show a run of the form `ran` that has just started, its results filling in as they stream. */

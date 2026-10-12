@@ -1,6 +1,7 @@
-"""Command line: ``logogram`` (start the app), ``open``, ``run``, ``doctor``, ``serve``, and
+"""Command line: ``logogram`` (start the app), ``open``, ``run``, ``doctor``, ``env``, ``serve``,
 commands that read and check runs without the app: ``list``, ``show``, ``compare``, ``diff``,
-``verify``, ``robustness``, ``export``, ``validate``, ``tasks`` and ``generate``."""
+``verify``, ``robustness``, ``export``, ``validate``, ``tasks`` and ``generate``, and commands
+that manage them: ``rename``, ``star``, ``archive`` and ``delete``."""
 
 from __future__ import annotations
 
@@ -78,15 +79,59 @@ def _open_when_started(server: Any, security: Any) -> None:
     threading.Thread(target=wait_and_open, daemon=True).start()
 
 
+def _configure_logging(verbose: bool, log_file: Path | None) -> None:
+    """Where the server's log goes: errors and warnings to the terminal, as uvicorn's own
+    defaults did, and with ``verbose`` also what the server does (jobs, runs and their
+    tracebacks). ``log_file`` gets the same, appended. Requests aren't logged: the address a
+    browser opens carries a launch code."""
+    import logging
+
+    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stderr)]
+    if log_file is not None:
+        try:
+            handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
+        except OSError as exc:
+            raise _fail(
+                f"Logogram can't write its log to {log_file}: {exc.strerror or exc}. Choose a "
+                "file in a folder you can write to."
+            ) from exc
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    for handler in handlers:
+        handler.setFormatter(formatter)
+    root = logging.getLogger()
+    for old in list(root.handlers):
+        root.removeHandler(old)
+    for handler in handlers:
+        root.addHandler(handler)
+    root.setLevel(logging.INFO if verbose else logging.WARNING)
+    logging.getLogger("logogram").setLevel(logging.DEBUG if verbose else logging.WARNING)
+
+
+def _forwarded_ports(given: list[int] | None) -> list[int]:
+    """The ports from --forwarded-port and LOGOGRAM_FORWARDED_PORTS, each once."""
+    from logogram.server.security import FORWARDED_PORTS_ENV, parse_ports
+
+    try:
+        listed = parse_ports(os.environ.get(FORWARDED_PORTS_ENV))
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
+    return list(dict.fromkeys([*(given or []), *listed]))
+
+
 def _serve(
     *,
     port: int,
     open_browser: bool,
     project: Path | None = None,
     dev: bool = False,
+    verbose: bool = False,
+    log_file: Path | None = None,
+    forwarded_ports: list[int] | None = None,
 ) -> None:
     from logogram.server.security import SecurityConfig, new_token
 
+    _configure_logging(verbose, log_file)
+    forwarded = _forwarded_ports(forwarded_ports)
     sock = _bind(port)
     port = int(sock.getsockname()[1])
     token = os.environ.get("LOGOGRAM_TOKEN") if dev else None
@@ -96,10 +141,19 @@ def _serve(
         if dev
         else []
     )
-    security = SecurityConfig(token=token or new_token(), port=port, dev_origins=dev_list)
+    security = SecurityConfig(
+        token=token or new_token(), port=port, dev_origins=dev_list, forwarded_ports=forwarded
+    )
     url = f"http://127.0.0.1:{port}/?token={security.token}"
     # Print the address first: loading PyTorch takes a few seconds.
     typer.echo(f"Logogram {__version__} is running at:\n\n  {url}\n")
+    others = [p for p in forwarded if p != port]
+    if others:
+        where = "the forwarded port" if len(others) == 1 else "the forwarded ports"
+        typer.echo(f"Through {where}, open:\n")
+        for other in others:
+            typer.echo(f"  http://127.0.0.1:{other}/?token={security.token}")
+        typer.echo("")
     if dev:
         typer.echo(
             f"Development UI (npm run dev):\n\n  {dev_list[0]}/api/session?token={security.token}\n"
@@ -120,7 +174,10 @@ def _serve(
         application,
         host="127.0.0.1",
         port=port,
-        log_level="warning",
+        # Uvicorn's messages go through the handlers set up above.
+        log_config=None,
+        log_level="info" if verbose else "warning",
+        access_log=False,
         ws="auto",
         # Open event streams (browser tabs) must not keep Ctrl+C from stopping the server.
         timeout_graceful_shutdown=2,
@@ -134,6 +191,23 @@ def _serve(
 
 PortOption = typer.Option(
     min=0, max=65535, help="Port to listen on (127.0.0.1 only; 0 picks any free port)."
+)
+VerboseOption = typer.Option(
+    "--verbose", "-v", help="Log what the server does, with the traceback of each error."
+)
+LogFileOption = typer.Option(
+    "--log-file",
+    metavar="PATH",
+    dir_okay=False,
+    help="Also append the log to this file.",
+)
+ForwardedPortOption = typer.Option(
+    "--forwarded-port",
+    min=1,
+    max=65535,
+    help="A port on the browser's computer that forwards to this server, such as an SSH "
+    "tunnel's local end (ssh -L 9000:127.0.0.1:8765 HOST): addresses on it are accepted too. "
+    "Repeat it for several, or list them in LOGOGRAM_FORWARDED_PORTS.",
 )
 
 
@@ -179,11 +253,20 @@ def main_callback(
     ] = False,
     port: Annotated[int, PortOption] = 8765,
     no_browser: Annotated[bool, typer.Option("--no-browser", help="Don't open a browser.")] = False,
+    verbose: Annotated[bool, VerboseOption] = False,
+    log_file: Annotated[Path | None, LogFileOption] = None,
+    forwarded_port: Annotated[list[int] | None, ForwardedPortOption] = None,
 ) -> None:
     """Start Logogram and open it in your browser."""
     _quiet_environment()
     if ctx.invoked_subcommand is None:
-        _serve(port=port, open_browser=not no_browser)
+        _serve(
+            port=port,
+            open_browser=not no_browser,
+            verbose=verbose,
+            log_file=log_file,
+            forwarded_ports=forwarded_port,
+        )
 
 
 @app.command("open")
@@ -191,6 +274,9 @@ def open_cmd(
     path: Annotated[Path, typer.Argument(help="A project folder.")],
     port: Annotated[int, PortOption] = 8765,
     no_browser: Annotated[bool, typer.Option("--no-browser")] = False,
+    verbose: Annotated[bool, VerboseOption] = False,
+    log_file: Annotated[Path | None, LogFileOption] = None,
+    forwarded_port: Annotated[list[int] | None, ForwardedPortOption] = None,
 ) -> None:
     """Start Logogram with a project open."""
     from logogram.project import Project, ProjectError
@@ -200,7 +286,14 @@ def open_cmd(
     except ProjectError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1) from exc
-    _serve(port=port, open_browser=not no_browser, project=project.root)
+    _serve(
+        port=port,
+        open_browser=not no_browser,
+        project=project.root,
+        verbose=verbose,
+        log_file=log_file,
+        forwarded_ports=forwarded_port,
+    )
 
 
 @app.command()
@@ -211,9 +304,20 @@ def serve(
     ] = False,
     no_browser: Annotated[bool, typer.Option("--no-browser")] = False,
     project: Annotated[Path | None, typer.Option(help="Open this project.")] = None,
+    verbose: Annotated[bool, VerboseOption] = False,
+    log_file: Annotated[Path | None, LogFileOption] = None,
+    forwarded_port: Annotated[list[int] | None, ForwardedPortOption] = None,
 ) -> None:
     """Run the server (use --dev with `npm run dev` when working on the web app)."""
-    _serve(port=port, open_browser=not (no_browser or dev), project=project, dev=dev)
+    _serve(
+        port=port,
+        open_browser=not (no_browser or dev),
+        project=project,
+        dev=dev,
+        verbose=verbose,
+        log_file=log_file,
+        forwarded_ports=forwarded_port,
+    )
 
 
 @app.command("check-updates")
@@ -238,11 +342,39 @@ def check_updates_cmd() -> None:
 
 
 @app.command()
-def doctor() -> None:
+def doctor(
+    report_only: Annotated[
+        bool,
+        typer.Option(
+            "--report",
+            help="Print only a short report to paste into an issue: versions, the operating "
+            "system's family and the device, without names, paths or hardware models.",
+        ),
+    ] = False,
+    hardware: Annotated[
+        bool,
+        typer.Option(
+            "--hardware", help="With --report, add the processor, GPUs, memory and OS version."
+        ),
+    ] = False,
+) -> None:
     """Report the environment and hardware, with fixes for common problems."""
     from logogram.system import format_bytes, system_report
 
+    if hardware and not report_only:
+        raise _fail("--hardware adds to the report: use it with --report.")
     report = system_report()
+    if report_only:
+        from logogram.support import NEW_ISSUE_URL, build_report
+
+        # The report alone on stdout, so it can be piped to the clipboard; the advice on stderr.
+        typer.echo(build_report(include_hardware=hardware, system=report).text, nl=False)
+        typer.echo(
+            "\nNothing was sent. To report a problem, paste this into a new issue:\n"
+            f"  {NEW_ISSUE_URL}",
+            err=True,
+        )
+        return
     rows = [
         ("Logogram", __version__),
         ("Operating system", f"{report.os} ({report.machine})"),
@@ -287,6 +419,33 @@ def doctor() -> None:
         typer.echo("")
 
 
+@app.command()
+def env(
+    hardware: Annotated[
+        bool, typer.Option("--hardware", help="Also name the processor, the GPUs and the memory.")
+    ] = False,
+    requirements: Annotated[
+        bool,
+        typer.Option(
+            "--requirements", help="Print pinned requirements that install these versions instead."
+        ),
+    ] = False,
+) -> None:
+    """Print what results depend on beyond the spec, as JSON: Logogram's, Python's and the
+    libraries' versions, the operating system's family and the devices PyTorch can use. The same
+    spec, on the same machine with the same versions, gives bit-identical results; other versions
+    or devices may differ in the last digits. Nothing names you or this machine: no user or host
+    names, no paths, and no hardware models unless --hardware is given."""
+    import json
+
+    from logogram import system
+
+    if requirements:
+        typer.echo(system.requirements(), nl=False)
+        return
+    typer.echo(json.dumps(system.environment(hardware=hardware), indent=2))
+
+
 def _updates_row() -> str:
     from logogram import updates
     from logogram.project import config_dir
@@ -313,10 +472,12 @@ def run(
         typer.Option("--project", help="Project folder (default: the one containing the spec)."),
     ] = None,
     top: Annotated[int, typer.Option(help="How many sites to list.")] = 10,
+    verbose: Annotated[
+        bool, typer.Option("--verbose", "-v", help="If the run fails, print its traceback.")
+    ] = False,
 ) -> None:
     """Run an experiment headlessly and print a summary."""
     from logogram.project import Project, ProjectError
-    from logogram.runner import run_spec
     from logogram.spec import Spec, describe_experiment
 
     if not spec_path.exists():
@@ -344,17 +505,39 @@ def run(
     typer.echo(f"{spec.name}")
     typer.echo(f"  {describe_experiment(spec)}")
     typer.echo(f"  model {spec.model.id} · dataset {spec.dataset.path}")
-    printer = _ProgressPrinter()
-    outcome = run_spec(spec, project, on_event=printer)
-    printer.close()
-    if outcome.status != "finished":
-        typer.echo(f"Run {outcome.status}: {outcome.manifest.get('error')}", err=True)
-        raise typer.Exit(1)
+    outcome = _run_spec(project, spec, verbose=verbose)
     _print_summary(outcome.summary or {}, top)
     rel = outcome.folder.relative_to(project.root)
     typer.echo(f"\nSaved to {rel} ({outcome.manifest.get('wall_time_s')} s)")
     if compare_to is not None:
         _report_reproduction(compare_to, outcome.folder / "results.parquet", original.name)
+
+
+def _run_spec(
+    project: Any, spec: Any, *, verbose: bool = False, derived: dict[str, Any] | None = None
+) -> Any:
+    """Run ``spec``, showing its progress. A run that doesn't finish ends the command: it says
+    why, and where the traceback is (printing it with ``verbose``). Ctrl+C records the run as
+    cancelled first."""
+    from logogram.runner import run_spec
+
+    printer = _ProgressPrinter()
+    try:
+        outcome = run_spec(spec, project, on_event=printer, derived_from=derived)
+    except KeyboardInterrupt:
+        printer.close()
+        typer.echo("\nInterrupted. The run is recorded as cancelled; its spec was kept.", err=True)
+        raise typer.Exit(130) from None
+    printer.close()
+    if outcome.status != "finished":
+        typer.echo(f"The run {outcome.status}: {outcome.manifest.get('error')}", err=True)
+        if outcome.traceback and verbose:
+            typer.echo(f"\n{outcome.traceback.rstrip()}", err=True)
+        elif outcome.traceback:
+            rel = (outcome.folder / "traceback.txt").relative_to(project.root).as_posix()
+            typer.echo(f"Its traceback is in {rel}; --verbose prints it.", err=True)
+        raise typer.Exit(1)
+    return outcome
 
 
 class _ProgressPrinter:
@@ -587,17 +770,142 @@ def _run_id(project: Any, run: str) -> str:
 @app.command("list")
 def list_cmd(
     project_dir: Annotated[Path | None, ProjectOption] = None,
+    archived: Annotated[bool, typer.Option("--archived", help="List archived runs too.")] = False,
 ) -> None:
-    """List the project's runs and drafts, newest first."""
+    """List the project's runs and drafts, newest first, by their titles (★ starred). Archived
+    runs are left out unless --archived is given."""
     project = _open_project(project_dir)
     runs = project.list_runs()
     if not runs:
         typer.echo("No runs yet. Run a spec with `logogram run SPEC.json`.")
         return
+    shown = runs if archived else [r for r in runs if not r.archived]
     width = max(len(r.id) for r in runs)
-    for r in runs:
-        typer.echo(f"{r.id:<{width}}  {r.status:<9}  {r.name}")
-        typer.echo(f"{'':<{width}}  {'':<9}  {r.description}")
+    for r in shown:
+        name = f"{'★ ' if r.starred else ''}{r.title or r.name}"
+        typer.echo(f"{r.id:<{width}}  {r.status:<9}  {name}{' (archived)' if r.archived else ''}")
+        where = " · running in another process" if r.elsewhere else ""
+        typer.echo(f"{'':<{width}}  {'':<9}  {r.error if r.damaged else r.description}{where}")
+        if r.annotations_error:
+            typer.echo(f"{'':<{width}}  {'':<9}  Note: {r.annotations_error}")
+    hidden = len(runs) - len(shown)
+    if hidden:
+        them = "it" if hidden == 1 else "them"
+        typer.echo(
+            f"\n{hidden} archived run{'' if hidden == 1 else 's'} not listed: list {them} with --archived."
+        )
+
+
+def _named_run(project: Any, run: str) -> str:
+    """A run to change, given by its id or by its folder. Its spec may be unreadable (a damaged
+    run can still be renamed or deleted), and a folder is taken as it is named, never resolved
+    through a link to the run it points at."""
+    if os.sep in run or (os.altsep and os.altsep in run) or run in (".", ".."):
+        path = Path(os.path.abspath(run))
+        if path.parent.resolve() != project.experiments_dir.resolve():
+            raise _fail(
+                f"{run} isn't a run folder of {project.meta.name} (they are in experiments/)."
+            )
+        run = path.name
+    try:
+        if not project.run_dir(run).is_dir():
+            raise _fail(f"there is no run {run} in {project.meta.name}.")
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
+    return run
+
+
+def _annotate(project_dir: Path | None, run: str, **changes: Any) -> Any:
+    from logogram.history import annotate_run, reason
+
+    project = _open_project(project_dir, Path(run) if Path(run).exists() else None)
+    try:
+        return annotate_run(project, _named_run(project, run), **changes)
+    except ValueError as exc:
+        raise _fail(reason(exc)) from exc
+
+
+@app.command()
+def rename(
+    run: Annotated[str, typer.Argument(help="A run id, or its folder.")],
+    title: Annotated[
+        str, typer.Argument(help='The title to show instead of the spec\'s name ("" clears it).')
+    ],
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Give a run a title, shown instead of its spec's name. The spec never changes: the title is
+    kept beside it, in annotations.json."""
+    listing = _annotate(project_dir, run, title=title)
+    if listing.title:
+        typer.echo(f"{listing.id} is now called “{listing.title}”.")
+    else:
+        typer.echo(f"{listing.id} shows its spec's name again: “{listing.name}”.")
+
+
+@app.command()
+def star(
+    run: Annotated[str, typer.Argument(help="A run id, or its folder.")],
+    remove: Annotated[bool, typer.Option("--remove", help="Remove the star instead.")] = False,
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Star a run: ★ in `logogram list`, and found first in the app's history."""
+    listing = _annotate(project_dir, run, starred=not remove)
+    name = listing.title or listing.name
+    typer.echo(f"Starred “{name}”." if listing.starred else f"Removed the star from “{name}”.")
+
+
+@app.command()
+def archive(
+    run: Annotated[str, typer.Argument(help="A run id, or its folder.")],
+    restore: Annotated[
+        bool, typer.Option("--restore", help="Bring it back from the archive instead.")
+    ] = False,
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Archive a run: it stays in the project, but out of `logogram list` and the app's history
+    until they are asked to show archived runs. Nothing is deleted."""
+    listing = _annotate(project_dir, run, archived=not restore)
+    name = listing.title or listing.name
+    typer.echo(f"Archived “{name}”." if listing.archived else f"“{name}” is back from the archive.")
+
+
+@app.command()
+def delete(
+    run: Annotated[str, typer.Argument(help="A run id, or its folder.")],
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Delete without asking first.")] = False,
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Delete a finished, failed or cancelled run, or a draft: its folder and everything in it.
+    There is no undo; `logogram archive` keeps a run out of the way instead."""
+    from logogram.history import delete_run, display_name, reason
+
+    project = _open_project(project_dir, Path(run) if Path(run).exists() else None)
+    run_id = _named_run(project, run)
+    listing = project.run_listing(run_id)
+    name = display_name(listing) if listing else run_id
+    if not yes:
+        derived = [
+            r for r in project.list_runs() if r.derived_from and r.derived_from.run == run_id
+        ]
+        typer.echo(
+            f"This deletes {name}: experiments/{run_id} and everything in it (its spec, and any "
+            "results, summary and manifest). It can't be undone."
+        )
+        if derived:
+            n = len(derived)
+            stays, links = ("stays", "links") if n == 1 else ("stay", "link")
+            typer.echo(
+                f"{n} run{'' if n == 1 else 's'} derived from it {stays}, but no longer {links} "
+                "back to it."
+            )
+        if not typer.confirm("Delete it?", default=False):
+            typer.echo("Nothing was deleted.")
+            raise typer.Exit(1)
+    try:
+        delete_run(project, run_id)
+    except ValueError as exc:
+        raise _fail(reason(exc)) from exc
+    typer.echo(f"Deleted {name} (experiments/{run_id}).")
 
 
 @app.command()
@@ -606,15 +914,36 @@ def show(
     project_dir: Annotated[Path | None, ProjectOption] = None,
     top: Annotated[int, typer.Option(help="How many sites to list.")] = 10,
 ) -> None:
-    """Print a finished run's method, baseline and strongest sites."""
+    """Print a finished run's method, baseline and strongest sites, or why a run failed, with
+    the traceback it kept."""
     project = _open_project(project_dir, Path(run) if Path(run).exists() else None)
     run_id = _run_id(project, run)
     summary = project.read_json(project.run_dir(run_id) / "summary.json", optional=True)
     if summary is None:
         listing = project.run_listing(run_id)
-        raise _fail(f"{run_id} has no results ({listing.status if listing else 'unreadable'}).")
+        if listing is not None and listing.status in ("failed", "cancelled"):
+            _print_failure(project, listing)
+            raise typer.Exit(1)
+        status = "unreadable" if listing is None else listing.status
+        if listing is not None and listing.elsewhere:
+            status = "running in another process"
+        raise _fail(f"{run_id} has no results ({status}).")
     typer.echo(f"{summary['name']}\n  {summary['description']}")
     _print_summary(summary, top)
+
+
+def _print_failure(project: Any, listing: Any) -> None:
+    """Why a run failed or was cancelled, and the traceback a failed run kept."""
+    typer.echo(f"{listing.name}\n  {listing.description}")
+    reason = listing.error or "No reason was recorded."
+    typer.echo(f"\n{'Failed' if listing.status == 'failed' else 'Cancelled'}: {reason}")
+    try:
+        detail = project.run_traceback(listing.id)
+    except (ValueError, OSError) as exc:
+        detail = None
+        typer.echo(f"Its traceback can't be read: {exc}", err=True)
+    if detail:
+        typer.echo(f"\n{detail.rstrip()}")
 
 
 @app.command()
@@ -645,6 +974,14 @@ def _print_comparison(result: dict[str, Any]) -> None:
     )
     for difference in result["spec_differences"]:
         typer.echo(f"  {difference['path']}: {difference['a']!r} → {difference['b']!r}")
+    environment = result.get("environment_differences") or []
+    if environment:
+        typer.echo(
+            "They ran with other versions or devices, which alone can change results in the last "
+            "digits:"
+        )
+        for difference in environment:
+            typer.echo(f"  {difference['label']}: {difference['a']} → {difference['b']}")
     if result["paired"]:
         typer.echo(
             f"Paired prompt by prompt: {result['n_differs']} site(s) differ (interval of b − a "
@@ -691,13 +1028,7 @@ def diff(
 
 
 def _run_and_report(project: Any, spec: Any, derived: dict[str, Any], top: int) -> Any:
-    from logogram.runner import run_spec
-
-    printer = _ProgressPrinter()
-    outcome = run_spec(spec, project, on_event=printer, derived_from=derived)
-    printer.close()
-    if outcome.status != "finished":
-        raise _fail(f"the run {outcome.status}: {outcome.manifest.get('error')}")
+    outcome = _run_spec(project, spec, derived=derived)
     _print_summary(outcome.summary or {}, top)
     typer.echo(f"\nSaved to {outcome.folder.relative_to(project.root)}")
     return outcome

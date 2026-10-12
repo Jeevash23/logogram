@@ -7,7 +7,9 @@ import type {
   DatasetCreated,
   DatasetDetail,
   DeriveRequest,
+  Environment,
   EstimateResponse,
+  ExampleInfo,
   FolderListing,
   Job,
   MetricSpec,
@@ -20,10 +22,14 @@ import type {
   SAEStatus,
   TokenFeatures,
   FeatureReport,
+  FeatureWrites,
+  PositionSpec,
   ProjectInfo,
   PromptRecord,
+  ProblemReport,
   RecentProject,
   RobustnessChange,
+  RunAnnotationsChange,
   RunDetail,
   RunListing,
   ServerState,
@@ -98,6 +104,7 @@ export const PROJECT_SCOPED = [
   "/api/sae/fit",
   "/api/sae/tokens",
   "/api/sae/feature",
+  "/api/sae/writes",
   "/api/runs",
   "/api/drafts",
   "/api/compare",
@@ -165,6 +172,11 @@ export const api = {
   settings: (values: { system_check_seen?: boolean; theme?: ThemeSetting; update_check?: boolean; single_key_shortcuts?: boolean }) =>
     post<Record<string, unknown>>("/api/settings", values),
   system: () => get<SystemReport>("/api/system"),
+  /** The versions and devices a rerun here would use, to compare with a run's manifest. */
+  environment: () => get<Environment>("/api/environment"),
+  /** A problem report, built by the server (which scrubs paths and names from the error) and
+   * sent nowhere. */
+  report: (body: { include_hardware: boolean; last_error: string | null }) => post<ProblemReport>("/api/report", body),
 
   folders: (path?: string) =>
     get<FolderListing>(`/api/fs${path ? `?path=${encodeURIComponent(path)}` : ""}`),
@@ -172,7 +184,9 @@ export const api = {
   createProject: (name: string, parent: string | null) =>
     post<ProjectInfo>("/api/projects", { name, parent }),
   openProject: (path: string) => post<ProjectInfo>("/api/projects/open", { path }),
-  openExample: () => post<ProjectInfo>("/api/projects/example"),
+  examples: () => get<ExampleInfo[]>("/api/examples"),
+  /** Copy a bundled example into the projects folder, once, and open it (a copy is never replaced). */
+  openExample: (example: string) => post<ProjectInfo>("/api/projects/example", { example }),
   closeProject: () => post<{ ok: boolean }>("/api/projects/close"),
   project: () => get<ProjectInfo>("/api/project"),
 
@@ -249,6 +263,11 @@ export const api = {
   verify: (id: string, top: number) =>
     post<{ run_id: string; job: Job }>(`/api/runs/${encodeURIComponent(id)}/verify`, { top }),
   derived: (id: string) => get<RunListing[]>(`/api/runs/${encodeURIComponent(id)}/derived`),
+  /** Rename, star or archive a run: its annotations.json, never its spec. */
+  annotateRun: (id: string, change: RunAnnotationsChange) =>
+    request<RunListing>("PATCH", `/api/runs/${encodeURIComponent(id)}`, change),
+  /** Delete a finished, failed or cancelled run, or a draft, folder and all. */
+  deleteRun: (id: string) => request<{ ok: boolean }>("DELETE", `/api/runs/${encodeURIComponent(id)}`),
 
   saeSuggestions: (model: string) => get<{ repo: string; detail: string }[]>(`/api/sae/suggestions?model=${encodeURIComponent(model)}`),
   saeFolders: (repo: string) => get<{ repo: string; revision: string; folders: string[] }>(`/api/sae/folders?repo=${encodeURIComponent(repo)}`),
@@ -259,6 +278,10 @@ export const api = {
     post<TokenFeatures>("/api/sae/tokens", { dataset, index, which, ...options }),
   saeFeature: (dataset: string, index: number, which: "clean" | "corrupt", feature: number, options: Partial<AnalysisOptions>) =>
     post<FeatureReport>("/api/sae/feature", { dataset, index, which, feature, ...options }),
+  /** The tokens a feature promotes and suppresses directly, read at one token of one prompt: the
+   * position given, or where the feature fires most in the prompt. */
+  saeWrites: (body: { dataset: string; index: number; which: "clean" | "corrupt"; feature: number; position: PositionSpec | null; top: number } & Partial<AnalysisOptions>) =>
+    post<FeatureWrites>("/api/sae/writes", body),
   siteDetail: (id: string, site: number) =>
     get<SiteDetail>(`/api/runs/${encodeURIComponent(id)}/sites/${site}`),
   compare: (a: string, b: string) =>

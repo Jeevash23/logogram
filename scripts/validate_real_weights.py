@@ -25,9 +25,15 @@ name movers 9.9 and 10.0, the S-inhibition heads 7.3, 7.9, 8.6 and 8.10, or the 
 against it, on the normalized scale; and the name movers 9.9, 9.6 and 10.0 have the largest
 direct effects on the answer, 10.7 and 11.10 the most negative. The bounds leave room for
 differences between machines and library versions, and still catch a sign error, heads mapped to
-the wrong layer or index, positions left out, or a broken normalization. --golden-only runs just
-the runs these need (a few minutes on a CPU). The weekly Golden workflow
-(.github/workflows/golden.yml) runs --golden.
+the wrong layer or index, positions left out, or a broken normalization.
+
+--golden also runs the gallery's other examples as they ship, each checked against the finding its
+notes cite: in greater-than (Hanna et al. 2023), MLPs 8 to 11 carry the largest effects, MLPs 9
+and 10 the most, after attention in layers 5 to 9; in factual recall (Meng et al. 2022), the
+country's last token restores the capital through the early layers and the last token only in
+the last ones; and in gendered pronouns (Mathwin et al. 2023), heads 10.9 and 9.7 write the
+pronoun most directly. --golden-only runs just the runs these need (a few minutes on a CPU). The
+weekly Golden workflow (.github/workflows/golden.yml) runs --golden.
 
     uv run python scripts/validate_real_weights.py
     uv run python scripts/validate_real_weights.py --golden
@@ -71,6 +77,9 @@ class Check:
     passed: bool | None  # None: skipped
     detail: str
     exact: bool  # holds for any model, not only a trained one
+
+
+MARKS = {True: "PASS", False: "FAIL", None: "SKIP"}
 
 
 # --golden: GPT-2 small's indirect-object circuit as Wang et al. (2022) found it, as (layer, head).
@@ -205,6 +214,266 @@ def golden_checks(sweep: dict[str, Any], direct: dict[str, Any] | None) -> list[
     return checks
 
 
+# --golden also runs the gallery's other examples as they ship (logogram.gallery), each checked
+# against the finding its notes cite. The bounds sit around what GPT-2 small gives (in the
+# comments), wide enough for other machines and library versions.
+GREATER_THAN_CLEAN = (0.6, 0.95)  # 0.82; Hanna et al. report 81.7% on their own prompts
+GREATER_THAN_MLP = 0.03  # MLP 8 0.20, 9 0.36, 10 0.34, 11 0.09; the next MLP 0.01
+GREATER_THAN_ATTENTION = 0.15  # attention in layers 5 to 9 together: 0.39, each 0.03 or more
+QUIET = 0.02  # layers 0 to 4 at the last token: 0.004 at most
+CAPITAL_CLEAN = 3.0  # logit difference 5.8 clean, -5.7 corrupt
+CAPITAL_EARLY = 0.8  # the country's last token, layers 0 to 8: 0.90 to 0.95
+CAPITAL_LATE = 0.5  # the last token at layer 11: 0.78; it first leads at layer 10
+CAPITAL_QUIET = 0.05  # the last token, layers 0 to 5: 0.015 at most
+PRONOUN_CLEAN = 2.0  # logit difference 4.3 clean
+PRONOUN_HEADS = ((10, 9), (9, 7))  # direct effects 0.35 and 0.22; the next 0.10
+PRONOUN_DIRECT = 0.1
+
+
+def _by_layer(summary: dict[str, Any], kind: str, position: str) -> dict[int, float] | None:
+    """Each layer's mean effect at ``kind`` sites at ``position``, if every layer of GPT-2 small
+    is there."""
+    effects = {
+        s["layer"]: s["effect"]["mean"]
+        for s in summary.get("sites", [])
+        if s.get("kind") == kind
+        and s.get("position_key") == position
+        and s["effect"]["mean"] is not None
+    }
+    return effects if set(effects) == set(range(12)) else None
+
+
+def _clean_metric(summary: dict[str, Any]) -> tuple[float, float, int, int]:
+    """The clean and corrupt runs' mean metric, the prompts each prefers the answer on, and n."""
+    clean, corrupt = summary["baseline"]["clean"], summary["baseline"]["corrupt"]
+    return (
+        (clean.get("metric") or clean["logit_diff"])["mean"],
+        (corrupt.get("metric") or corrupt["logit_diff"])["mean"],
+        clean["prefers_answer"],
+        summary["n_prompts"],
+    )
+
+
+def greater_than_checks(summary: dict[str, Any]) -> list[Check]:
+    """The greater-than example against Hanna et al. (2023), "How does GPT-2 compute
+    greater-than?": with the start year replaced by 01, MLPs 8 to 11 compute the answer, MLPs 9
+    and 10 most, after attention in layers 5 to 9 brings the start year to the last token.
+
+    ``summary`` patches each layer's attention and MLP output at the last token from the 01
+    prompt into the clean one, measured by the probability difference. A sign error, layers
+    counted from the wrong end or off by one, or a broken normalization fails these checks.
+    """
+    checks: list[Check] = []
+
+    def check(name: str, passed: bool | None, detail: str) -> None:
+        checks.append(Check(f"Greater-than: {name}", passed, detail, exact=False))
+
+    mlp, attn = _by_layer(summary, "mlp_out", "last"), _by_layer(summary, "attn_out", "last")
+    setup = (summary.get("reference"), summary.get("receiver"), summary.get("measure"))
+    if (
+        mlp is None
+        or attn is None
+        or setup != ("corrupt", "clean", "intervention")
+        or summary.get("metric", {}).get("kind") != "prob_diff"
+    ):
+        check(
+            "the run patches attention and MLP outputs at the last token",
+            False,
+            "expected each layer's attention and MLP output of GPT-2 small patched from the 01 "
+            "prompt into the clean one at the last token, measured by the probability difference",
+        )
+        return checks
+    clean, corrupt, prefers, n = _clean_metric(summary)
+    lo, hi = GREATER_THAN_CLEAN
+    check(
+        "GPT-2 small prefers a later year by its usual margin",
+        lo <= clean <= hi and corrupt < 0 and prefers >= 0.75 * n,
+        f"probability difference {clean:.3f} clean (expected {lo} to {hi}) and {corrupt:.3f} "
+        f"with the start year 01; {prefers} of {n} clean prompts prefer a later year",
+    )
+    ranked = sorted(mlp, key=lambda layer: -mlp[layer])
+    shown = ", ".join(f"MLP {layer} {mlp[layer]:+.3f}" for layer in ranked[:5])
+    check(
+        "MLPs 8 to 11 carry the largest effects",
+        set(ranked[:4]) == {8, 9, 10, 11} and all(mlp[k] >= GREATER_THAN_MLP for k in ranked[:4]),
+        f"{shown}; expected MLPs 8 to 11 first, each at least {GREATER_THAN_MLP}",
+    )
+    sites = {
+        **{("MLP", k): v for k, v in mlp.items()},
+        **{("attention", k): v for k, v in attn.items()},
+    }
+    top = sorted(sites, key=lambda key: -sites[key])[:2]
+    check(
+        "MLPs 9 and 10 the most",
+        set(top) == {("MLP", 9), ("MLP", 10)} and all(sites[k] <= 1.0 for k in top),
+        ", ".join(f"{a} {b} {sites[a, b]:+.3f}" for a, b in top) + "; expected MLPs 9 and 10, "
+        "each a fraction of the gap",
+    )
+    middle = sum(attn[layer] for layer in range(5, 10))
+    check(
+        "attention in layers 5 to 9 brings the start year",
+        all(attn[layer] > 0 for layer in range(5, 10)) and middle >= GREATER_THAN_ATTENTION,
+        ", ".join(f"{layer} {attn[layer]:+.3f}" for layer in range(5, 10))
+        + f" (together {middle:+.3f}); expected each above zero, together at least "
+        f"{GREATER_THAN_ATTENTION}",
+    )
+    early = max(abs(v) for k, v in sites.items() if k[1] < 5)
+    check(
+        "layers 0 to 4 do nothing at the last token",
+        early <= QUIET,
+        f"the largest effect there {early:.4f}; expected at most {QUIET}",
+    )
+    return checks
+
+
+def factual_recall_checks(summary: dict[str, Any]) -> list[Check]:
+    """The factual recall example against Meng et al. (2022), "Locating and editing factual
+    associations in GPT": restoring the residual stream at the subject's last token restores the
+    fact through the early and middle layers (the early site), and at the last token only in the
+    last layers (the late site).
+
+    ``summary`` patches the residual stream before each layer at the country's last token and at
+    the last token, from the clean prompt into the one naming another country, measured by the
+    logit difference between the two capitals.
+    """
+    checks: list[Check] = []
+
+    def check(name: str, passed: bool | None, detail: str) -> None:
+        checks.append(Check(f"Factual recall: {name}", passed, detail, exact=False))
+
+    country = _by_layer(summary, "resid_pre", "country")
+    end = _by_layer(summary, "resid_pre", "end")
+    setup = (summary.get("reference"), summary.get("receiver"), summary.get("measure"))
+    if country is None or end is None or setup != ("clean", "corrupt", "intervention"):
+        check(
+            "the run traces the residual stream at the country and at the last token",
+            False,
+            "expected the residual stream before every layer of GPT-2 small, at the positions "
+            "named country and end, patched from the clean prompt into the corrupt one",
+        )
+        return checks
+    clean, corrupt, prefers, n = _clean_metric(summary)
+    check(
+        "GPT-2 small names the right capital",
+        clean >= CAPITAL_CLEAN and corrupt <= -CAPITAL_CLEAN and prefers >= 0.9 * n,
+        f"logit difference {clean:.2f} clean and {corrupt:.2f} corrupt (expected beyond "
+        f"±{CAPITAL_CLEAN}); {prefers} of {n} clean prompts prefer the right capital",
+    )
+    early = min(country[layer] for layer in range(9))
+    check(
+        "the country's last token restores the capital through the early layers",
+        early >= CAPITAL_EARLY and all(country[k] <= 1.05 for k in country),
+        f"layers 0 to 8: {', '.join(f'{country[k]:.3f}' for k in range(9))}; expected each at "
+        f"least {CAPITAL_EARLY}",
+    )
+    quiet = max(abs(end[layer]) for layer in range(6))
+    check(
+        "the last token restores nothing in the early layers",
+        quiet <= CAPITAL_QUIET,
+        f"the largest effect at the last token in layers 0 to 5 is {quiet:.3f}; expected at most "
+        f"{CAPITAL_QUIET}",
+    )
+    handover = next((layer for layer in range(12) if end[layer] > country[layer]), None)
+    check(
+        "the last token takes over in the last layers",
+        end[11] >= CAPITAL_LATE and handover in (9, 10, 11),
+        f"layer 11: {end[11]:.3f} at the last token and {country[11]:.3f} at the country; the last "
+        f"token leads from layer {handover} (expected 9 to 11, and at least {CAPITAL_LATE} at "
+        "layer 11)",
+    )
+    return checks
+
+
+def pronoun_checks(summary: dict[str, Any]) -> list[Check]:
+    """The gendered pronoun example against Mathwin et al. (2023), as Conmy et al. (2023)
+    describe it: heads 10.9 and 9.7 write the gendered pronoun into the output.
+
+    ``summary`` holds each head's direct effect on the clean logit difference at the last token.
+    """
+    checks: list[Check] = []
+
+    def check(name: str, passed: bool | None, detail: str) -> None:
+        checks.append(Check(f"Gendered pronoun: {name}", passed, detail, exact=False))
+
+    direct = _head_effects(summary, "last")
+    if direct is None or summary.get("measure") != "attribution":
+        check(
+            "the run splits the clean logit difference between GPT-2 small's heads",
+            False,
+            "expected the direct effect of every head of GPT-2 small at the last token",
+        )
+        return checks
+    clean, _, prefers, n = _clean_metric(summary)
+    check(
+        "GPT-2 small chooses the pronoun the name takes",
+        clean >= PRONOUN_CLEAN and prefers >= 0.9 * n,
+        f"logit difference {clean:.2f} clean (expected at least {PRONOUN_CLEAN}); {prefers} of "
+        f"{n} clean prompts prefer it",
+    )
+    order = sorted(direct, key=lambda k: -direct[k])
+    shown = ", ".join(f"{a}.{b} {direct[a, b]:+.3f}" for a, b in order[:3])
+    check(
+        "heads 10.9 and 9.7 write the pronoun most directly",
+        set(order[:2]) == set(PRONOUN_HEADS)
+        and all(PRONOUN_DIRECT <= direct[k] <= 1.0 for k in PRONOUN_HEADS),
+        f"the largest: {shown}; expected 10.9 and 9.7, each between {PRONOUN_DIRECT} and 1",
+    )
+    return checks
+
+
+GALLERY_CHECKS: dict[str, Callable[[dict[str, Any]], list[Check]]] = {
+    "greater-than-gpt2": greater_than_checks,
+    "factual-recall-gpt2": factual_recall_checks,
+    "gendered-pronoun-gpt2": pronoun_checks,
+}
+
+
+def validate_examples(
+    backend: Any, folder: Path, log: Callable[[str], None] = print
+) -> list[Check]:
+    """Run each example of the gallery but the IOI one (which golden_checks covers) as it ships,
+    in a copy inside ``folder``, and check it against the finding its notes cite."""
+    from logogram.gallery import EXAMPLES, example_spec
+    from logogram.project import open_example
+    from logogram.runner import model_matches, run_spec
+
+    checks: list[Check] = []
+    for example in EXAMPLES:
+        if example.id not in GALLERY_CHECKS:
+            continue
+        _, spec = example_spec(example.id)
+        # On the backend's device ("auto" in the spec); the rest of the model as the spec pins it.
+        ref = spec.model.model_copy(update={"device": backend.info.device})
+        name = f"The {example.id} example runs as it ships"
+        info = backend.info
+        if not model_matches(backend, ref):
+            found = [
+                Check(
+                    name,
+                    False,
+                    f"it pins {ref.id} at {ref.revision} in {ref.dtype} (processed weights: "
+                    f"{ref.process_weights}), and the model loaded is {info.id} at "
+                    f"{info.revision} in {info.dtype} (processed weights: "
+                    f"{info.process_weights})",
+                    exact=False,
+                )
+            ]
+        else:
+            project = open_example(folder, example=example.id)
+            started = time.perf_counter()
+            outcome = run_spec(spec.model_copy(update={"model": ref}), project, backend=backend)
+            log(f"      {example.id}: {time.perf_counter() - started:.1f} s")
+            found = (
+                GALLERY_CHECKS[example.id](outcome.summary)
+                if outcome.status == "finished" and outcome.summary
+                else [Check(name, False, str(outcome.manifest.get("error")), exact=False)]
+            )
+        for c in found:
+            log(f"{MARKS[c.passed]}  {c.name}: {c.detail}")
+        checks += found
+    return checks
+
+
 def validate(
     backend: Any,
     project: Any,
@@ -238,8 +507,7 @@ def validate(
 
     def check(name: str, passed: bool | None, detail: str, exact: bool = True) -> None:
         checks.append(Check(name, passed, detail, exact))
-        mark = {True: "PASS", False: "FAIL", None: "SKIP"}[passed]
-        log(f"{mark}  {name}: {detail}")
+        log(f"{MARKS[passed]}  {name}: {detail}")
 
     def spec(experiment: dict, scope: dict, model: Any = None, **extra: Any) -> Spec:
         m = (model or backend).info
@@ -631,6 +899,8 @@ def main() -> int:
             golden=golden,
             golden_only=args.golden_only,
         )
+        if golden:
+            checks += validate_examples(backend, folder)
     finally:
         shutil.rmtree(folder, ignore_errors=True)
     failed = [c for c in checks if c.passed is False]

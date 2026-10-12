@@ -211,10 +211,20 @@ test("an SAE's features are read, estimated and verified by patching", async ({ 
   await expect(card.getByText("100%")).toBeVisible();
   await page.getByLabel("Features on each token").locator("button[aria-pressed]").first().click();
   await expect(page.getByText("Where it fires most")).toBeVisible();
+  // What the feature writes: the tokens it promotes and suppresses, read where it fires most.
+  const promotes = page.getByRole("list", { name: "Promotes, logit change per unit of the feature" });
+  await expect(promotes.getByRole("listitem")).toHaveCount(8);
+  await expect(page.getByRole("list", { name: "Suppresses, logit change per unit of the feature" }).getByRole("listitem")).toHaveCount(8);
+  await expect(page.getByText(/the feature's strongest in this prompt/)).toBeVisible();
   await page.getByRole("button", { name: "Estimate every feature" }).click();
   await expect(page.getByRole("radio", { name: /Attribution patching/ })).toHaveAttribute("aria-checked", "true");
   await page.getByRole("button", { name: "Run", exact: true }).click();
   await expect(page.getByText("SAE variance explained")).toBeVisible({ timeout: 60_000 });
+  // A feature site in the inspector: what it writes, at the site's position, with the run's SAE.
+  const inspector = page.getByRole("complementary", { name: "Inspector" });
+  await inspector.getByRole("button", { name: /F\d+/ }).first().click();
+  await expect(inspector.getByRole("heading", { name: "Tokens it promotes and suppresses directly" })).toBeVisible();
+  await expect(inspector.getByRole("list", { name: "Promotes, logit change per unit of the feature" }).getByRole("listitem")).toHaveCount(8);
   await page.getByRole("button", { name: "Verify top 10 by patching" }).click();
   await expect(page.getByText("No estimate has the wrong sign.")).toBeVisible({ timeout: 60_000 });
   expect(errors).toEqual([]);

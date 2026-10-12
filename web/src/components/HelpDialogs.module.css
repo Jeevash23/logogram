@@ -1,0 +1,133 @@
+/* Report a problem and About: facts in two columns, separated by hairlines. */
+
+.rows {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.32fr) minmax(0, 1fr);
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+
+.row:last-child {
+  border-bottom: 0;
+}
+
+.row dt {
+  color: var(--muted);
+}
+
+.row dd {
+  margin: 0;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  /* Revisions and long messages wrap rather than widen the dialog. */
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 560px) {
+  .row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+}
+
+.option {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.note {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.option .note {
+  padding-left: 21px;
+}
+
+.loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.status {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+
+/* A link that leaves the app, shaped like a secondary button. */
+.linkButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: var(--control-h);
+  padding: 0 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--bg);
+  color: var(--text);
+  font-size: var(--text-sm);
+  font-weight: 520;
+  text-decoration: none;
+  white-space: nowrap;
+  margin-right: auto;
+}
+
+.linkButton:hover {
+  border-color: var(--text);
+}
+
+.linkButton:focus-visible,
+.link:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+.link {
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.about {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.glyph {
+  color: var(--text);
+  margin-top: 4px;
+}
+
+.updates {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.heading {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}

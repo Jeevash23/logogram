@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { api } from "../api/client";
 import type { RecentProject } from "../api/types";
+import { ExampleGallery } from "../components/ExampleGallery";
 import { FolderPicker } from "../components/FolderPicker";
 import { Logogram } from "../components/Logogram";
 import { Button, Field, Icon, Input } from "../components/ui";
@@ -42,13 +43,6 @@ export function Projects() {
   const create = async () => {
     setBusy(true);
     const project = await guard(() => api.createProject(name.trim(), parent || null));
-    setBusy(false);
-    if (project) await enter(project);
-  };
-
-  const example = async () => {
-    setBusy(true);
-    const project = await guard(() => api.openExample());
     setBusy(false);
     if (project) await enter(project);
   };
@@ -137,13 +131,6 @@ export function Projects() {
                 <Button icon="folder" onClick={() => setPicker("open")} disabled={busy}>
                   Open a project folder
                 </Button>
-                <Button icon="layers" onClick={() => void example()} disabled={busy}>
-                  Open the example project
-                </Button>
-                <p className={s.muted}>
-                  The example measures which GPT-2 heads carry the answer in indirect object identification. It
-                  runs in about a minute on a CPU.
-                </p>
               </div>
             </div>
             <button type="button" className={s.textLink} onClick={() => useStore.getState().goto("system")}>
@@ -151,6 +138,13 @@ export function Projects() {
             </button>
           </section>
         </div>
+
+        <section className={s.examples} aria-labelledby="examples-title">
+          <h2 id="examples-title" className={s.sectionTitle}>
+            Examples
+          </h2>
+          <ExampleGallery disabled={busy} />
+        </section>
       </div>
       <FolderPicker
         open={picker === "parent"}

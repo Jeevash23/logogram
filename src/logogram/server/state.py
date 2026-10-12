@@ -18,7 +18,7 @@ from typing import Any
 
 from logogram.backends.base import Cancelled, ModelBackend
 from logogram.project import Project, config_dir, remember_recent
-from logogram.schema import validate_event
+from logogram.schema import RunListing, validate_event
 from logogram.spec import ModelRef, Spec
 
 log = logging.getLogger(__name__)
@@ -272,26 +272,13 @@ class AppState:
     # -- project -----------------------------------------------------------------------------
 
     def open_project(self, project: Project) -> None:
-        from logogram.runner import write_json
-
         with self._job_lock:
             self._check_switch()
-            # A running manifest from an earlier process is an interrupted run, never a draft.
-            for listing in project.list_runs():
-                if listing.status == "running":
-                    project.interrupted_runs.add(listing.id)
-                    path = project.run_dir(listing.id) / "manifest.json"
-                    data = project.read_json(path)
-                    assert data is not None
-                    data.update(
-                        status="failed",
-                        error="The server stopped before this run finished. Rerun its saved spec.",
-                    )
-                    with contextlib.suppress(OSError):  # read-only projects remain inspectable
-                        write_json(project.writable(path), data)
+            mark_interrupted_runs(project)
             self._clear_queue()
             self.project = project
         remember_recent(project)
+        log.info("Opened the project %s", project.root)
         self.hub.publish("project", {"session_id": project.session_id})
 
     def _check_switch(self) -> None:
@@ -449,20 +436,9 @@ class AppState:
 
         try:
             sae = load_sae(ref, backend.info.device, progress, cancel)
-            info = backend.info
-            from logogram.features import check_dimensions
+            from logogram.features import check_sae_fits
 
-            check_dimensions(sae, info)
-            readable = set(info.site_kinds) | set(info.extra.get("sae_sites") or [])
-            if (
-                sae.layer >= info.n_layers
-                or sae.site not in info.site_kinds
-                or sae.site_in not in readable
-            ):
-                raise ValueError(
-                    f"This SAE reads {sae.site_in} in layer {sae.layer}, which {info.id} doesn't "
-                    "have."
-                )
+            check_sae_fits(sae, backend.info)
         except Cancelled:
             self._set_sae_status(state="none")
             raise
@@ -518,6 +494,7 @@ class AppState:
         self.hub.publish("job", job.to_dict())
 
         def target() -> None:
+            log.info("Started the job %s (%s): %s", job.id, kind, title)
             try:
                 work(job)
                 if job.status == "running":
@@ -527,6 +504,8 @@ class AppState:
             except Exception as exc:
                 log.exception("job failed")
                 job.update(status="failed", error=str(exc) or type(exc).__name__)
+            reason = f" ({job.error})" if job.error else ""
+            log.info("The job %s ended: %s%s", job.id, job.status, reason)
             self.hub.publish("job", job.to_dict())
             # This job has let go of the server, however it ended: the queue's next run starts.
             self._start_next()
@@ -732,6 +711,77 @@ class AppState:
             session = self._queue[0].project_session
             self._queue.clear()
             self._publish_queue(session)
+
+    # -- managing runs -----------------------------------------------------------------------
+
+    def annotate_run(self, run_id: str, changes: dict[str, Any]) -> RunListing:
+        """Rename, star or archive a run: its annotations.json, never its spec."""
+        from logogram.history import annotate_run
+
+        project = self.require_project()
+        with self._job_lock:  # never while the run's folder is being deleted
+            self.require_project()
+            listing = annotate_run(project, run_id, **changes)
+        self._runs_changed(project, run_id)
+        return listing
+
+    def delete_run(self, run_id: str) -> None:
+        """Delete a finished, failed or cancelled run, or a draft. Not one that is running or
+        queued: under the job lock, so none can start in its folder meanwhile."""
+        from logogram.history import RunInUse, delete_run, display_name
+
+        project = self.require_project()
+        with self._job_lock:
+            self.require_project()
+            listing = project.run_listing(run_id)
+            name = display_name(listing) if listing else run_id
+            job = self.job
+            if job is not None and job.status == "running" and job.run_id == run_id:
+                raise RunInUse(
+                    f"{name} is running. Wait for it to end, or cancel it, then delete it."
+                )
+            if any(item.draft_id == run_id for item in self._queue):
+                raise RunInUse(
+                    f"{name} is waiting in the queue to run. Take it out of the queue first, then "
+                    "delete it."
+                )
+            delete_run(project, run_id)
+        self._runs_changed(project, run_id, deleted=True)
+
+    def _runs_changed(self, project: Project, run_id: str, deleted: bool = False) -> None:
+        payload = {"project_session": project.session_id, "run_id": run_id, "deleted": deleted}
+        self.hub.publish("runs.changed", validate_event("runs.changed", payload))
+
+
+def mark_interrupted_runs(project: Project) -> None:
+    """Record as failed the runs whose manifest says they are running but whose process is gone,
+    so they read as interrupted, never as drafts or as still going. A run still going in another
+    process (``logogram run``, a notebook, another server) is left alone. A run with no owner
+    record, from before Logogram kept one, is taken to be interrupted, as it always was."""
+    from logogram.owner import OWNER_STOPPED, SERVER_STOPPED, owner_state, read_owner, remove_owner
+    from logogram.runner import write_json
+
+    for listing in project.list_runs():
+        if listing.status not in ("running", "failed") or listing.elsewhere:
+            continue
+        folder = project.run_dir(listing.id)
+        path = folder / "manifest.json"
+        try:
+            data = project.read_json(path, optional=True)
+        except (ValueError, OSError):  # unreadable: its listing already says so
+            continue
+        if not data or data.get("status") != "running":
+            continue
+        state = owner_state(read_owner(project, folder))
+        if state in ("here", "elsewhere"):
+            continue  # still going
+        if state == "unknown":
+            project.interrupted_runs.add(listing.id)
+        data.update(status="failed", error=SERVER_STOPPED if state == "unknown" else OWNER_STOPPED)
+        log.info("The run %s was interrupted: %s", listing.id, data["error"])
+        with contextlib.suppress(OSError):  # read-only projects remain inspectable
+            write_json(project.writable(path), data)
+            remove_owner(project, folder)
 
 
 def _reason(exc: Exception) -> str:

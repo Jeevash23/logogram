@@ -37,7 +37,7 @@ export async function exportFigure(run: RunDetail, metric: "effect" | "delta", u
   ctx.fillStyle = "#1c2226";
   const font = '"Instrument Sans Variable", "Instrument Sans", sans-serif';
   ctx.font = `600 23px ${font}`;
-  ctx.fillText(run.spec.name, 28, 38, width - 56);
+  ctx.fillText(run.listing?.title || run.spec.name, 28, 38, width - 56); // a title given to the run, or its spec's name
   ctx.font = `14px ${font}`;
   ctx.fillText(`${experimentText(run.spec.experiment)} · ${scopeText(run.spec.scope)}`, 28, 66, width - 56);
   ctx.fillText(`${run.spec.model.id} @ ${run.spec.model.revision ?? "unpinned"} · ${run.spec.model.dtype} · n = ${summary.n_prompts}`, 28, 88, width - 56);

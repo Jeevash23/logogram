@@ -3,7 +3,10 @@
 Patching a feature runs the receiver prompt, encodes the activation the SAE reads, and changes
 only that feature, to its value in the source prompt (or to zero, for zero ablation): the
 activation moves by (new - old) · the feature's decoder direction, and the SAE's error is kept as
-it was. Attribution patching estimates, to first order, what patching each feature would do:
+it was. For an SAE on attention heads' outputs (z), that direction spans every head of the layer,
+and the change reaches the residual stream through the attention's output projection. A
+transcoder's skip connection (input · W_skip) doesn't change, since its input doesn't.
+Attribution patching estimates, to first order, what patching each feature would do:
 (source - receiver feature activation) · (decoder direction · the gradient of the logit
 difference). It covers every feature from one gradient and keeps the strongest as sites.
 
@@ -88,6 +91,114 @@ def check_dimensions(sae: SAE, info: Any) -> None:
             )
 
 
+def check_sae_fits(sae: SAE, info: Any) -> None:
+    """Refuse an SAE the loaded model can't run: one made for another model's sizes, or one that
+    reads or writes a site the model doesn't have."""
+    check_dimensions(sae, info)
+    readable = set(info.site_kinds) | set(info.extra.get("sae_sites") or [])
+    if sae.layer >= info.n_layers or sae.site not in info.site_kinds or sae.site_in not in readable:
+        raise ScopeError(
+            f"This SAE reads {sae.site_in} in layer {sae.layer}, which {info.id} doesn't have."
+        )
+
+
+def feature_writes(
+    backend: ModelBackend,
+    sae: SAE,
+    feature: int,
+    ids: list[int],
+    *,
+    position: int | None = None,
+    first: int = 0,
+    top: int = 10,
+) -> dict[str, Any]:
+    """The tokens one feature promotes and suppresses directly: what one unit of it writes, read
+    straight into the logits at one token of one prompt (``ids``).
+
+    One unit of the feature adds its decoder direction to the activation the SAE writes (times
+    the input's standard deviation, for an SAE that standardizes its inputs). For an SAE on
+    attention heads' outputs (z), that direction passes through each head's slice of the
+    attention's output projection, without its bias. The result is added to the residual stream
+    entering the final normalization at the token, skipping every later layer, and read through
+    the final normalization, with its scale held at its value at that token (as direct logit
+    attribution reads components), and the unembedding, before any soft cap on the logits. With
+    the scale held this is linear, so the numbers are each token's logit change per unit of the
+    feature. The scale is one positive number per token: tokens rank the same at every token, and
+    only the sizes change. Adding the same amount to every logit changes no probability, so each
+    change is given relative to the mean change over the vocabulary, which also makes it the same
+    with TransformerLens's weight processing (which centers the unembedding) or without.
+
+    ``position`` is the token; by default where the feature fires most from ``first`` on (the
+    first real token), or the last token if it fires nowhere.
+    """
+    info = backend.info
+    if not 0 <= feature < sae.d_sae:
+        raise ValueError(f"The SAE has {sae.d_sae} features; there is no feature {feature}.")
+    if not str(info.extra.get("block_structure", "")).startswith(("sequential", "parallel")):
+        raise ScopeError(
+            "When this model loaded, its residual stream couldn't be verified to be the sum of "
+            "its layers' outputs, so what a feature writes has no fixed path to the logits."
+        )
+    if sae.site == "head":
+        checks = info.extra.get("checks") or {}
+        heads = checks.get("heads")
+        if heads is None or heads > checks.get("tolerance", 0):
+            raise ScopeError(
+                "In this model the attention output isn't the sum of its heads' writes (it is "
+                "normalized after they are combined), so a direction in the heads' outputs "
+                "writes nothing fixed into the residual stream, and what these features write "
+                "can't be read out directly. Patching them is exact."
+            )
+    length = len(ids)
+    if position is not None and position < 0:
+        position += length
+    if position is not None and not 0 <= position < length:
+        raise ValueError(f"Token {position} is outside this prompt, which has {length} tokens.")
+    key, final = (sae.site_in, sae.layer), ("resid_post", info.n_layers - 1)
+    captured = backend.capture(
+        torch.tensor([ids], dtype=torch.long), list(dict.fromkeys([key, final]))
+    )
+    f, stats = sae.encode(sae.reads(captured[key].float())[0])  # [pos, d_sae]
+    column = f[:, feature]
+    if position is not None:
+        at, chosen = position, "given"
+    elif length > first and float(column[first:].max()) > 0:
+        at, chosen = first + int(column[first:].argmax()), "fires_most"
+    else:
+        at, chosen = length - 1, "last"
+    unit = sae.feature_direction(feature, None if stats is None else (stats[0][at], stats[1][at]))
+    if sae.site == "head":
+        z = unit.reshape(1, info.n_heads, info.d_head)
+        written = backend.head_writes(sae.layer, z)[0]
+    else:
+        written = float64(unit).cpu()
+    per_unit = float64(backend.unembed_directions(captured[final][0, at], written[None])[0])
+    change = per_unit - per_unit.mean()
+    top = min(top, change.shape[0])
+
+    def listing(order: torch.Tensor) -> list[dict[str, Any]]:
+        return [
+            {"id": int(t), "token": backend.token_str(int(t)), "logit": float(change[t])}
+            for t in order
+        ]
+
+    return {
+        "feature": feature,
+        "site": sae.site,
+        "layer": sae.layer,
+        "position": at,
+        "token": backend.token_str(ids[at]),
+        "chosen": chosen,
+        "activation": float(column[at]),
+        # Ties keep the vocabulary's order, so the lists are the same every time.
+        "promoted": listing(torch.argsort(change, descending=True, stable=True)[:top]),
+        "suppressed": listing(torch.argsort(change, stable=True)[:top]),
+        # How long a unit of the feature is in the residual stream.
+        "norm": float(written.norm()),
+        "soft_cap": info.extra.get("logit_soft_cap"),
+    }
+
+
 def _directions(
     exp: ActivationPatching | Ablation | AttributionPatching,
 ) -> tuple[str, str, str]:
@@ -158,11 +269,13 @@ def _fit(
 
 
 def _write_direction(sae: SAE, feature: int, stats: Any, like: torch.Tensor) -> torch.Tensor:
-    """What one unit of a feature adds to the activation it writes, shaped like ``like``'s last
-    dimensions (heads' outputs are written side by side)."""
+    """What one unit of a feature adds to the activation it writes at one position, shaped like
+    ``like`` (heads' outputs are written side by side, head after head). For an SAE that
+    standardizes its inputs a unit depends on each input's spread, so there is one per position
+    (``[pos, *like.shape]``)."""
     direction = sae.feature_direction(feature, stats)
-    if like.dim() >= 2 and sae.site == "head":
-        return direction.reshape(like.shape[-2], like.shape[-1])
+    if sae.site == "head":
+        return direction.reshape(*direction.shape[:-1], like.shape[-2], like.shape[-1])
     return direction
 
 
@@ -268,9 +381,10 @@ def _patching(
                         keep[at] = change[at]
                         change = keep
                     row_stats = None if stats is None else (stats[0][b], stats[1][b])
-                    direction = _write_direction(sae, i, row_stats, out[b, 0])
-                    shape = (-1,) + (1,) * direction.dim()
-                    out[b, :length] = out[b, :length] + change.reshape(shape) * direction
+                    like = out[b, 0]
+                    direction = _write_direction(sae, i, row_stats, like)
+                    step = change.reshape((-1,) + (1,) * like.dim())  # [pos, 1, ...]
+                    out[b, :length] = out[b, :length] + step * direction
                 return out
 
             def forward(toks: torch.Tensor, keep: int, edit: Any = edit) -> torch.Tensor:
@@ -363,6 +477,16 @@ def _attribution(
     # position), and the whole site's estimate, to see how much of it the features account for.
     estimates = np.zeros((n, d_sae)) if every else np.zeros((len(chosen), n))
     site_total = np.zeros(n)
+    # A transcoder's skip connection: the part of the site's estimate that flows through it.
+    skip_total = np.zeros(n)
+    # The position the whole site is estimated at: the features' own, when they share one;
+    # otherwise every position, summed.
+    if every:
+        spot = None if isinstance(position, AllPositions) else position
+    else:
+        shared = {rs.site.position.model_dump_json() for rs in chosen}
+        single = len(shared) == 1 and not isinstance(chosen[0].site.position, AllPositions)
+        spot = chosen[0].site.position if single else None
     receiver_acts: list[torch.Tensor] = []
     receiver_outs: list[torch.Tensor] = []
     done = 0
@@ -390,6 +514,18 @@ def _attribution(
             positions = range(x_rec.shape[1])
             # The whole site's estimate, to see how much of it the features account for.
             per_position = ((out_src - out_rec) * grad).sum(-1)  # [B, pos]
+
+            def whole(values: torch.Tensor, idx: list[int] = idx) -> np.ndarray:
+                """``[B, pos]`` values at the estimate's position (or summed over all)."""
+                if spot is None:
+                    return float64(values.sum(1)).cpu().numpy()
+                at = [resolve_position(spot, prompts[p]) for p in idx]
+                return float64(values[torch.arange(len(idx)), at]).cpu().numpy()
+
+            site_total[idx] = whole(per_position)
+            if sae.skip:
+                skip = sae.skip_write(x_src) - sae.skip_write(x_rec)
+                skip_total[idx] = whole((skip * grad).sum(-1))
             if every:
                 rows = float64(torch.zeros(len(idx), d_sae, device=x_rec.device))
                 for pos in positions:
@@ -410,13 +546,6 @@ def _attribution(
                         term = term * mask[:, None].to(term.device)
                     rows += term
                 estimates[idx] = rows.cpu().numpy()
-                if position is None or isinstance(position, AllPositions):
-                    site_total[idx] = float64(per_position.sum(1)).cpu().numpy()
-                else:
-                    at = [resolve_position(position, prompts[p]) for p in idx]
-                    site_total[idx] = (
-                        float64(per_position[torch.arange(len(idx)), at]).cpu().numpy()
-                    )
             else:
                 f_src, _ = sae.encode(x_src)
                 f_rec, stats = sae.encode(x_rec)
@@ -430,15 +559,6 @@ def _attribution(
                         at = [resolve_position(rs.site.position, prompts[p]) for p in idx]
                         values = term[torch.arange(len(idx)), at]
                     estimates[rs.index, idx] = float64(values).cpu().numpy()
-                # The whole site at the chosen sites' position, when they share one.
-                shared = {rs.site.position.model_dump_json() for rs in chosen}
-                if len(shared) == 1 and not isinstance(chosen[0].site.position, AllPositions):
-                    at = [resolve_position(chosen[0].site.position, prompts[p]) for p in idx]
-                    site_total[idx] = (
-                        float64(per_position[torch.arange(len(idx)), at]).cpu().numpy()
-                    )
-                else:
-                    site_total[idx] = float64(per_position.sum(1)).cpu().numpy()
             done += len(idx)
             if on_progress is not None:
                 on_progress(done, n, sae.layer)
@@ -463,6 +583,7 @@ def _attribution(
         delta = estimates[report_at][:, order].T.copy()
         features_sum = estimates[report_at].sum(1)
         site_total = site_total[report_at]
+        skip_total = skip_total[report_at]
     else:
         sites = chosen
         delta = estimates
@@ -493,6 +614,9 @@ def _attribution(
                 ),
                 "site_estimate": float(site_total.mean()),
                 "features_estimate": None if features_sum is None else float(features_sum.mean()),
+                # Through a transcoder's skip connection: the site's estimate is the features',
+                # this, and what the transcoder misses.
+                "skip_estimate": float(skip_total.mean()) if sae.skip else None,
                 "evaluated": d_sae if every else len(chosen),
                 # With a held-out split: the prompts that chose the features, and those that
                 # report them (the run's prompts).

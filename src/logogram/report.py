@@ -186,6 +186,9 @@ def methods_text(
         f"Prompts ran in batches of {spec.execution.batch_size}. {_statistics(spec, summary)}",
         _method(spec, summary),
     ]
+    # What was expected, as the spec that ran states it, so the result can be read against it.
+    if spec.notes.strip():
+        paragraphs.append(f"Notes saved with the spec: {spec.notes.strip()}")
     versions = manifest.get("versions") or {}
     software = ", ".join(f"{k} {v}" for k, v in versions.items() if v)
     paragraphs.append(f"The run is {run_id}." + (f" Software: {software}." if software else ""))

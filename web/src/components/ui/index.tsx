@@ -383,6 +383,16 @@ export function Tip({ text, children, side = "top" }: { text: ReactNode; childre
 
 export const TooltipProvider = RadixTooltip.Provider;
 
+/**
+ * For a dialog's onEscapeKeyDown: Escape in a field that uses it itself, marked
+ * data-owns-escape (a search it clears, a title being edited that it leaves as it was), stays
+ * with the field instead of closing the dialog.
+ */
+export function escapeStaysInFields(event: globalThis.KeyboardEvent): void {
+  const target = event.target;
+  if (target instanceof Element && target.closest("[data-owns-escape]")) event.preventDefault();
+}
+
 export function Dialog({
   open,
   onOpenChange,
@@ -391,6 +401,7 @@ export function Dialog({
   children,
   footer,
   wide,
+  onEscapeKeyDown,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -399,12 +410,14 @@ export function Dialog({
   children: ReactNode;
   footer?: ReactNode;
   wide?: boolean;
+  /** Called before Escape closes the dialog; preventing its default keeps it open. */
+  onEscapeKeyDown?: (event: globalThis.KeyboardEvent) => void;
 }) {
   return (
     <RadixDialog.Root open={open} onOpenChange={onOpenChange}>
       <RadixDialog.Portal>
         <RadixDialog.Overlay className={s.overlay} />
-        <RadixDialog.Content className={cx(s.dialog, wide && s.dialogWide)}>
+        <RadixDialog.Content className={cx(s.dialog, wide && s.dialogWide)} onEscapeKeyDown={onEscapeKeyDown}>
           <div className={s.dialogHeader}>
             <div>
               <RadixDialog.Title className={s.dialogTitle}>{title}</RadixDialog.Title>
@@ -438,6 +451,7 @@ export function ConfirmDialog({
   keepLabel,
   confirmLabel,
   onConfirm,
+  returnFocus,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -446,18 +460,25 @@ export function ConfirmDialog({
   keepLabel: string;
   confirmLabel: string;
   onConfirm: () => void;
+  /** Where the keyboard goes when the question closes, for one asked from a menu or a list. */
+  returnFocus?: () => void;
 }) {
   const keep = useRef<HTMLButtonElement>(null);
   return (
     <RadixDialog.Root open={open} onOpenChange={onOpenChange}>
       <RadixDialog.Portal>
-        <RadixDialog.Overlay className={s.overlay} />
+        <RadixDialog.Overlay className={cx(s.overlay, s.confirmOverlay)} />
         <RadixDialog.Content
           role="alertdialog"
           className={cx(s.dialog, s.confirm)}
           onOpenAutoFocus={(e) => {
             e.preventDefault();
             keep.current?.focus();
+          }}
+          onCloseAutoFocus={(e) => {
+            if (!returnFocus) return;
+            e.preventDefault();
+            returnFocus();
           }}
         >
           <div className={s.dialogHeader}>

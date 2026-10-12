@@ -1,0 +1,52 @@
+{
+  "logogram_spec": 3,
+  "name": "Which layers compute a later year?",
+  "notes": "Expect MLPs 9 and 10 to carry the largest effects, about a third of the gap each, then MLP 8, attention in layer 9 and MLP 11; attention in layers 5 to 8 adds a little, and layers 0 to 4 nothing.\n\nThe question: GPT-2 small continues \u201cThe war lasted from the year 1732 to the year 17\u201d with a year after 32. Which layers compute that the end year comes after the start?\n\nPublished: Hanna et al. 2023, \u201cHow does GPT-2 compute greater-than?\u201d (NeurIPS 2023), found by path patching, with the start year replaced by 01, that MLPs 8 to 11 compute it, MLPs 9 and 10 most, after attention heads 5.1, 5.5, 6.9, 7.10, 8.8, 8.11 and 9.1 bring the start year to the last token. On their prompts GPT-2 small's probability difference was 81.7%.\n\nHow it is measured: each clean prompt runs with one layer's attention or MLP output at the last token taken from the same prompt with the start year 01 (corrupt \u2192 clean), one at a time. The metric is the probability difference, P(a later year) \u2212 P(the start year or an earlier one), each summed over the two-digit years; an effect of 1 means the patch breaks the prediction as completely as the start year 01 does. The 96 prompt pairs come from Logogram's greater-than task, seed 0, with its three default templates (the paper used the first, \u201clasted\u201d).\n\nMeasured on GPT-2 small at revision 607a30d: the probability difference is 0.82 (the paper's 81.7%), and \u22120.50 with the start year 01. MLP 9 (0.36) and MLP 10 (0.34) have the largest effects, then MLP 8 (0.20), attention in layer 9 (0.16) and MLP 11 (0.09), and attention in layers 7, 8, 5 and 6 (0.08 to 0.03); no attention or MLP output of layers 0 to 4 moves it by more than 0.004. This matches the paper. These are total effects of whole layers, not the paper's paths or single heads: to see heads 9.1, 8.11, 8.8 and 7.10, patch every head at the last token instead.",
+  "model": {
+    "id": "openai-community/gpt2",
+    "source": "hub",
+    "revision": "607a30d783dfa663caf39e06633721c8d4cfcd7e",
+    "sha256": null,
+    "dtype": "float32",
+    "device": "auto",
+    "process_weights": true
+  },
+  "dataset": {
+    "path": "datasets/greater-than.jsonl",
+    "sha256": "bd076d2e8dfa004db457b2b741f664bc28ef56fa8773af18d8b441568f3384c1",
+    "limit": null
+  },
+  "tokenization": {
+    "prepend_bos": true,
+    "chat_template": null
+  },
+  "experiment": {
+    "kind": "activation_patching",
+    "direction": "corrupt_to_clean"
+  },
+  "scope": {
+    "kind": "layer_components",
+    "components": [
+      "attn_out",
+      "mlp_out"
+    ],
+    "position": {
+      "kind": "last"
+    }
+  },
+  "metric": {
+    "kind": "prob_diff",
+    "normalization": "dataset_gap"
+  },
+  "statistics": {
+    "bootstrap": 1000,
+    "ci": 0.95,
+    "seed": 0,
+    "cluster": null
+  },
+  "execution": {
+    "batch_size": 64
+  },
+  "predictions": null,
+  "sae": null
+}

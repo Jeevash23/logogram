@@ -11,7 +11,7 @@ import { Splitter } from "../components/Splitter";
 import { StatusLine } from "../components/StatusLine";
 import { TokenStrip } from "../components/TokenStrip";
 import { TopBar } from "../components/TopBar";
-import { Button, Dialog, Icon, Tip } from "../components/ui";
+import { Button, Dialog, escapeStaysInFields, Icon, Tip } from "../components/ui";
 import { useAnalysisContext } from "../lib/hooks";
 import { useStore, workspaceFor, WORKSPACE_VIEWS, type View, type Workspace } from "../store/app";
 import { AttentionView } from "../views/AttentionView";
@@ -96,7 +96,7 @@ export function Workbench() {
     <ModelDialog />
     <RobustnessDialog />
     <NoteEditorDialog />
-    <Dialog open={drawer !== null} onOpenChange={open => { if (!open) setDrawer(null); }} title={drawer === "history" ? "Experiment history" : "Inspector"} wide><div className={s.drawer}>{drawer === "history" ? <ErrorBoundary name="The history"><History onOpen={() => setDrawer(null)} /></ErrorBoundary> : <SafeInspector />}</div></Dialog>
+    <Dialog open={drawer !== null} onOpenChange={open => { if (!open) setDrawer(null); }} title={drawer === "history" ? "Experiment history" : "Inspector"} wide onEscapeKeyDown={escapeStaysInFields}><div className={s.drawer}>{drawer === "history" ? <ErrorBoundary name="The history"><History onOpen={() => setDrawer(null)} /></ErrorBoundary> : <SafeInspector />}</div></Dialog>
   </div>;
 }
 

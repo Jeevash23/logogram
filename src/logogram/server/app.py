@@ -16,7 +16,7 @@ from typing import Any, Literal
 import anyio
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from logogram import __version__
 from logogram.backends.base import BackendError
@@ -32,6 +32,8 @@ from logogram.datasets import (
     read_dataset_bytes,
     write_dataset,
 )
+from logogram.gallery import DEFAULT_EXAMPLE, list_examples
+from logogram.history import RunInUse, RunNotFound
 from logogram.project import (
     Project,
     ProjectError,
@@ -56,6 +58,7 @@ from logogram.spec import (
     SINGLE_POSITION_METRICS,
     Metric,
     ModelRef,
+    Position,
     PredictionSettings,
     Spec,
 )
@@ -224,6 +227,11 @@ class OpenProject(BaseModel):
     path: str
 
 
+class OpenExample(BaseModel):
+    # One of logogram.gallery.EXAMPLES; without it, the example there was before the gallery.
+    example: str = Field(default=DEFAULT_EXAMPLE, max_length=100)
+
+
 class IOIRequest(BaseModel):
     name: str = "ioi"
     n: int = Field(default=32, ge=1, le=100_000)
@@ -385,6 +393,12 @@ class FeatureRequest(SAEAnalysisRequest):
     feature: int = Field(ge=0)
 
 
+class FeatureWritesRequest(FeatureRequest):
+    # The token to read it at, as a spec names positions; by default where it fires most.
+    position: Position | None = None
+    top: int = Field(default=10, ge=1, le=50)
+
+
 class NoteUpdate(NoteInput):
     revision: int = Field(ge=1)
 
@@ -411,6 +425,17 @@ class VerifyRequest(BaseModel):
     top: int = Field(default=10, ge=1, le=200)
 
 
+class AnnotateRequest(BaseModel):
+    """What to change in what is said about a run (its annotations.json: the spec never changes).
+    Fields left out stay as they are; a title of null or "", or the spec's own name, clears it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = Field(default=None, max_length=10_000)  # 200 once on one line
+    starred: bool | None = None
+    archived: bool | None = None
+
+
 class SettingsRequest(BaseModel):
     system_check_seen: bool | None = None
     theme: Literal["light", "dark", "system"] | None = None
@@ -419,6 +444,14 @@ class SettingsRequest(BaseModel):
     # Whether single keys (1 to 5, [ and ], P, B, A, C and ?) act as shortcuts. On until turned
     # off, for someone who uses speech input or presses keys by accident.
     single_key_shortcuts: bool | None = None
+
+
+class ReportRequest(BaseModel):
+    """A problem report: with the hardware's details or without, and the last error the app
+    showed, as it showed it (paths and names are scrubbed from it here)."""
+
+    include_hardware: bool = False
+    last_error: str | None = Field(default=None, max_length=20_000)
 
 
 # -- app factory -------------------------------------------------------------------------------
@@ -456,11 +489,13 @@ def create_app(
         state.open_project(Project.open(initial_project))
 
     @app.exception_handler(Missing)
+    @app.exception_handler(RunNotFound)
     async def _missing(_: Request, exc: Missing) -> JSONResponse:
         return JSONResponse({"error": str(exc)}, status_code=409)
 
     @app.exception_handler(Conflict)
     @app.exception_handler(NoteConflict)
+    @app.exception_handler(RunInUse)
     async def _conflict(_: Request, exc: Conflict) -> JSONResponse:
         return JSONResponse({"error": str(exc)}, status_code=409)
 
@@ -533,6 +568,28 @@ def create_app(
 
         return system_report().to_dict()
 
+    @app.get("/api/environment", response_model=M.EnvironmentOut)
+    def get_environment() -> dict[str, Any]:
+        """The versions and devices a rerun here would use, to compare with a run's manifest."""
+        from logogram.system import environment
+
+        return environment()
+
+    @app.post("/api/report", response_model=M.ProblemReport)
+    def problem_report(body: ReportRequest) -> dict[str, Any]:
+        """A report to paste into an issue, built from what this server knows. Nothing is sent:
+        the app shows it to copy."""
+        from logogram.support import build_report
+
+        project = state.project
+        return build_report(
+            model=state.model_payload(),
+            last_error=body.last_error,
+            include_hardware=body.include_hardware,
+            roots=[project.root] if project else [],
+            secrets=[security.token],
+        ).to_dict()
+
     # -- files and projects -----------------------------------------------------------------
 
     def _is_project(folder: Path) -> bool:
@@ -586,9 +643,17 @@ def create_app(
     def open_project(body: OpenProject) -> dict[str, Any]:
         return _enter(Project.open(body.path))
 
+    @app.get("/api/examples", response_model=list[M.ExampleInfo])
+    def examples() -> list[dict[str, Any]]:
+        """The bundled examples, and whether each has been copied into the projects folder."""
+        return list_examples(default_projects_parent())
+
     @app.post("/api/projects/example", response_model=M.ProjectInfo)
-    def example() -> dict[str, Any]:
-        return _enter(open_example())
+    def example(body: OpenExample | None = None) -> dict[str, Any]:
+        """Copy an example into the projects folder (once) and open it; a copy is never
+        overwritten."""
+        chosen = (body or OpenExample()).example
+        return _enter(open_example(default_projects_parent(), example=chosen))
 
     @app.post("/api/projects/close", response_model=M.OkOut)
     def close_project() -> dict[str, Any]:
@@ -1089,6 +1154,26 @@ def create_app(
                 batch_size=body.batch_size,
             )
 
+    @app.post("/api/sae/writes")
+    def sae_writes(body: FeatureWritesRequest) -> dict[str, Any]:
+        """The tokens a feature promotes and suppresses directly, at one token of one prompt."""
+        from logogram.analysis import feature_writes_report
+
+        backend, sae = _analysis_backend(body), _sae()
+        records = _records(body.dataset, body.limit, body.dataset_sha256)
+        with backend.lock:
+            return feature_writes_report(
+                backend,
+                sae,
+                records,
+                feature=body.feature,
+                index=body.index,
+                which=body.which,
+                prepend_bos=body.prepend_bos,
+                position=body.position,
+                top=body.top,
+            )
+
     # -- runs --------------------------------------------------------------------------------
 
     def _read_run(project: Project, run_id: str) -> dict[str, Any]:
@@ -1120,6 +1205,10 @@ def create_app(
         listing = project.run_listing(run_id)
         out["listing"] = listing.to_dict() if listing else None
         out["folder"] = f"experiments/{run_id}"
+        try:
+            out["traceback"] = project.run_traceback(run_id)
+        except (ValueError, OSError):  # not a regular file in the project, or far too large
+            out["traceback"] = None
         return out
 
     @app.get("/api/runs", response_model=list[RunListing])
@@ -1300,6 +1389,20 @@ def create_app(
             if r.derived_from and r.derived_from.run == run_id
         ]
 
+    @app.patch("/api/runs/{run_id}", response_model=RunListing)
+    def annotate_run(run_id: str, body: AnnotateRequest) -> dict[str, Any]:
+        """Rename, star or archive a run (or a draft, or a damaged run)."""
+        given = body.model_dump(exclude_unset=True)
+        changes = {k: v for k, v in given.items() if k == "title" or v is not None}
+        return state.annotate_run(run_id, changes).to_dict()
+
+    @app.delete("/api/runs/{run_id}", response_model=M.OkOut)
+    def delete_run(run_id: str) -> dict[str, bool]:
+        """Delete a finished, failed or cancelled run, or a draft, folder and all (there is no
+        trash: see logogram.history). Refused while it runs or waits in the queue."""
+        state.delete_run(run_id)
+        return {"ok": True}
+
     @app.get("/api/runs/{run_id}/sites/{site}", response_model=M.SiteDetail)
     def site_detail(run_id: str, site: int) -> dict[str, Any]:
         from logogram.runs import site_detail as detail
@@ -1465,6 +1568,7 @@ PROJECT_SCOPED = (
     "/api/sae/fit",
     "/api/sae/tokens",
     "/api/sae/feature",
+    "/api/sae/writes",
     "/api/runs",
     "/api/drafts",
     "/api/compare",
