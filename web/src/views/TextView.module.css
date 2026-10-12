@@ -50,8 +50,13 @@
   text-align: left;
 }
 
-.token:hover:not(:disabled) {
+.token:hover:not([aria-disabled="true"]) {
   border-color: var(--text);
+}
+
+/* While a token is read, the others wait: they keep the keyboard, but choosing one does nothing. */
+.token[aria-disabled="true"] {
+  cursor: progress;
 }
 
 .token[aria-pressed="true"] {

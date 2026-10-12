@@ -118,6 +118,12 @@ export function analysisContext(state: {
   };
 }
 
+/** The options for a view that reads text of its own (Your text) or random tokens (the head
+ * finder): the loaded model reads them, whichever model the run or the form shown names. */
+export function withLoadedModel(options: AnalysisOptions, info: ModelInfo | undefined): AnalysisOptions {
+  return { ...options, model: info ? modelRefOf(info) : undefined };
+}
+
 /** The form's metric for tokenizing, while its KL divergence has no target yet: tokenizing reads
  * only the metric's kind, so the target it stands in with changes nothing. */
 function readingOnly(form: FormState): MetricSpec {

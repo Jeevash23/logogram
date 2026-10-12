@@ -11,11 +11,12 @@ import { ago, capitalize, ci, count, duration, num, pct, plural, qText, shortRev
 import { modelName, siteValue, useActiveRun, useRunProfile } from "../lib/hooks";
 import { findSite, gridKey, layoutTitle, selectionOfSite, siteGrid, type Selection } from "../lib/sites";
 import { metricWords } from "../lib/metrics";
-import { baselineText, experimentText, measureOf, measureWords, positionText, saeWritesText } from "../lib/spec";
+import { baselineText, chatTemplateText, experimentText, measureOf, measureWords, positionText, saeWritesText } from "../lib/spec";
 import { useStore } from "../store/app";
 import { Distribution } from "../components/Distribution";
 import { api } from "../api/client";
 import { copyText } from "../components/CopyCommand";
+import { usesFeatures } from "../lib/buildSpec";
 import { downloadBlob, exportFigure } from "../lib/export";
 import { environmentChanges, environmentNote } from "../lib/environment";
 import { CircuitDialog } from "../components/CircuitDialog";
@@ -212,9 +213,10 @@ export function ResultsView() {
       )}
       {status === "cancelled" && !partial && (
         <Callout title="This run was cancelled">
-          {manifest?.error ? `${manifest.error} ` : ""}Its spec and any dataset snapshot were kept. It has no results: either
-          nothing had finished when it stopped, or it ran on a version of Logogram before 0.5, which didn't keep what
-          finished.
+          {manifest?.error ? `${manifest.error} ` : ""}Its spec and any dataset snapshot were kept.{" "}
+          {spec && usesFeatures(spec.scope)
+            ? "It has no results: a run of SAE features reports nothing before it ends, so it keeps none."
+            : "It has no results: either nothing had finished when it stopped, or it ran on a version of Logogram before 0.5, which didn't keep what finished."}
         </Callout>
       )}
       {status === "draft" && !run.live && (
@@ -631,8 +633,9 @@ function MethodsLine({ spec, n, clusters }: { spec: Spec; n: number | undefined;
         ? `logit difference, as a share of ${spec.metric.normalization === "dataset_gap" ? "the mean" : "each prompt's"}`
         : `${metricWords(spec.metric).label}, normalized by ${spec.metric.normalization === "dataset_gap" ? "the dataset gap" : "each prompt's gap"}`}
       {n !== undefined && <><span className={r.sep}>·</span>n = {count(n)}</>}
+      {spec.tokenization.chat_template && <><span className={r.sep}>·</span>prompts {chatTemplateText(spec.tokenization.chat_template)}</>}
       <span className={r.sep}>·</span>{Math.round(spec.statistics.ci * 100)}% CI{spec.statistics.cluster ? `, resampling ${clusters ? `${count(clusters)} clusters` : "clusters"} of prompts with the same ${spec.statistics.cluster}` : ""}, {count(spec.statistics.bootstrap)} resamples, seed {spec.statistics.seed}
-      <span className={r.sep}>·</span>{modelName(spec.model.id)}{spec.model.revision ? ` @ ${shortRevision(spec.model.revision)}` : ""}, {spec.model.dtype}
+      <span className={r.sep}>·</span>{modelName(spec.model.id)}{spec.model.source === "local" ? `, local files ${(spec.model.sha256 ?? "").slice(0, 12)}` : spec.model.revision ? ` @ ${shortRevision(spec.model.revision)}` : ""}, {spec.model.dtype}
     </p>
   );
 }

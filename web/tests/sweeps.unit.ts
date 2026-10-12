@@ -1,8 +1,10 @@
 import { test, expect } from "@playwright/test";
 
-import type { QueuedRun, RunListing, SweepMember } from "../src/api/types";
+import type { ProjectInfo, QueuedRun, RunDetail, RunListing, Spec, SweepMember } from "../src/api/types";
 import { deleteWarning, historyLabel, historyRows } from "../src/lib/runs";
+import { selectionOfSite } from "../src/lib/sites";
 import { membershipText, parseValues, queuedValues, statusText, sweepsOf, sweepsOfRun, valueLabel, valueName } from "../src/lib/sweeps";
+import { useStore } from "../src/store/app";
 
 /** A finished run of GPT-2 small: activation patching over heads. */
 function listing(id: string, overrides: Partial<RunListing> = {}): RunListing {
@@ -121,4 +123,37 @@ test("values still waiting in the queue, and values without results, say so", ()
   expect(statusText("failed", false)).toBe("failed");
   expect(statusText("deleted", false)).toBe("deleted");
   expect(statusText("finished", false)).toBeNull();
+});
+
+test("a revision's run opened at a site keeps the site, though the run shown before was another revision's", async () => {
+  const spec = (revision: string): Spec => ({
+    logogram_spec: 3, name: `Pythia heads · revision ${revision}`, notes: "",
+    model: { id: "EleutherAI/pythia-70m", source: "hub", revision, sha256: null, device: "auto", dtype: "float32", process_weights: true },
+    dataset: { path: "datasets/ioi.jsonl", sha256: "abc", limit: null }, tokenization: { prepend_bos: true, chat_template: null },
+    experiment: { kind: "activation_patching", direction: "clean_to_corrupt" }, scope: { kind: "heads", position: { kind: "all" } },
+    metric: { kind: "logit_diff", normalization: "dataset_gap" }, statistics: { bootstrap: 1000, seed: 0, ci: 0.95, cluster: null }, execution: { batch_size: 64 },
+  });
+  const site = { index: 5, row: 3, col: 2, layer: 3, head: 2, kind: "head", position_key: "all", variant_key: null, feature: null, label: "L3 H2",
+    effect: { mean: 0.5, lo: 0.4, hi: 0.6 }, delta: { mean: 1, lo: 0.9, hi: 1.1 } };
+  const detail = (revision: string) => ({ id: revision, spec: spec(revision), manifest: null, listing: null, folder: `experiments/${revision}`,
+    summary: { layout: { kind: "heads", rows: [], cols: [] }, sites: [site], model: null, statistics: { ci: 0.95 } } }) as unknown as RunDetail;
+  const project: ProjectInfo = { session_id: "p", name: "p", path: "p", datasets: [], description: "" };
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () => new Response("[]")) as typeof fetch;
+  const store = useStore.getState();
+  try {
+    store.leaveProject();
+    useStore.setState({ project, screen: "workbench", view: "sweep", datasetPath: "datasets/ioi.jsonl", activeRunId: "step1000",
+      runDetails: { step1000: detail("step1000"), step2000: detail("step2000") } });
+    // The sweep's chart: Enter on L3 H2 at revision step2000 opens that revision's run there.
+    const at = selectionOfSite(site as never);
+    await store.openRun("step2000", "results", at);
+    expect(useStore.getState()).toMatchObject({ activeRunId: "step2000", view: "results", selection: at });
+    // Opened without a site, a run of another revision drops the selection.
+    await store.openRun("step1000", "results");
+    expect(useStore.getState().selection).toBeNull();
+  } finally {
+    globalThis.fetch = original;
+    store.leaveProject();
+  }
 });

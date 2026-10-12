@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-import type { Job, ProjectInfo, QueuedRun, QueueStatus, Spec } from "../src/api/types";
+import type { Job, ProjectInfo, QueuedRun, QueueStatus, Spec, SweepPlan, SweepStarted } from "../src/api/types";
 import { runnerName, runWouldQueue, useStore } from "../src/store/app";
 
 const project = (id: string): ProjectInfo => ({ session_id: id, name: id, path: `projects/${id}`, datasets: [], description: "" });
@@ -178,6 +178,60 @@ test("the queue says how it stands, and a paused one holds no new run back", asy
     expect(titles()).toEqual(["Second look"]);
     store.leaveProject();
     expect(useStore.getState()).toMatchObject({ queue: [], queueState: "idle", queueRunner: null, queueError: null });
+  } finally {
+    restore();
+    store.leaveProject();
+  }
+});
+
+test("a sweep started while the queue is paused says its runs wait until the queue is started", async () => {
+  const before = queued("q0", "From before", "one");
+  const second = queued("q2", "Donors · donor seed 2", "one");
+  // Donor seeds 0, 1 and 2 of a run, which stands in for seed 0.
+  const plan: SweepPlan = {
+    sweep: "s1", field: "experiment.baseline.seed", kind: "seed", label: "donor seed", plural: "donor seeds", values: [0, 1, 2], labels: ["0", "1", "2"],
+    original: "orig", stands_in: 0,
+    runs: [0, 1, 2].map((i) => ({ index: i, value: i, label: String(i), name: i ? `Donors · donor seed ${i}` : null, original: i === 0 })),
+  };
+  let reply: SweepStarted = { sweep: "s1", plan, run_id: "r1", job: running("Donors · donor seed 1", "r1", "one"), queue: [before, second] };
+  let state: QueueStatus["state"] = "paused";
+  const started: string[] = [];
+  const restore = stubApi({
+    "POST /api/sweeps": () => reply,
+    "GET /api/queue/state": () => ({ project_session: "one", runs: reply.queue, state, runner: null, error: null }),
+    "POST /api/queue/start": () => {
+      started.push("queue");
+      return { project_session: "one", runs: [second], state: "running", runner: null, error: null };
+    },
+  });
+  const store = useStore.getState();
+  try {
+    store.leaveProject();
+    await store.enterProject(project("one"));
+    // Nothing was running, so the first run started; the other waits in the paused queue.
+    expect(await store.startSweep({ run: "orig", field: "experiment.baseline.seed", values: [0, 1, 2] })).toBe(true);
+    let notice = lastNotice();
+    expect(notice?.text).toBe(
+      "Queued 2 runs of the sweep over donor seeds; this run stands in for donor seed 0. The first has started; the other waits in the queue, which is paused: nothing in it starts until you start it.",
+    );
+    expect(notice?.action?.label).toBe("Start the queue");
+    notice?.action?.run();
+    await expect.poll(() => started).toEqual(["queue"]);
+
+    // A run in progress: both wait.
+    reply = { ...reply, run_id: null, job: null, queue: [before, queued("q1", "Donors · donor seed 1", "one"), second] };
+    await store.startSweep({ run: "orig", field: "experiment.baseline.seed", values: [0, 1, 2] });
+    notice = lastNotice();
+    expect(notice?.text).toBe(
+      "Queued 2 runs of the sweep over donor seeds; this run stands in for donor seed 0. They wait in the queue, which is paused: nothing in it starts until you start it.",
+    );
+    expect(notice?.action?.label).toBe("Start the queue");
+
+    // A queue that runs here: one after another.
+    state = "waiting";
+    await store.startSweep({ run: "orig", field: "experiment.baseline.seed", values: [0, 1, 2] });
+    expect(lastNotice()?.text).toBe("Queued 2 runs of the sweep over donor seeds; this run stands in for donor seed 0. They run one after another.");
+    expect(lastNotice()?.action).toBeUndefined();
   } finally {
     restore();
     store.leaveProject();

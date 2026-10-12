@@ -84,6 +84,10 @@ export function SweepView() {
 
   const shown = table && table.sweep === sweepId ? table : null;
   const queued = useMemo(() => queuedValues(queue, sweepId ?? ""), [queue, sweepId]);
+  // The server knows a sweep by its runs: until one of them starts, there is no table, only runs
+  // waiting in the queue.
+  const waiting = !shown && !current && queued.size > 0;
+  const paused = useStore((st) => st.queueState === "paused");
   const values: ChartValue[] = useMemo(
     () => (shown?.values ?? []).map((v) => ({ label: v.label, note: statusText(v.status, queued.has(v.index)) })),
     [shown, queued],
@@ -132,9 +136,8 @@ export function SweepView() {
       const row = shown?.values[value];
       const s0 = shown?.sites[site];
       if (!row?.run || !s0) return;
-      const st = useStore.getState();
-      st.select(selectionOfSite(s0));
-      await st.openRun(row.run, "results");
+      // At the site, chosen once the run is open: a run of another revision drops the selection.
+      await useStore.getState().openRun(row.run, "results", selectionOfSite(s0));
     },
     [shown],
   );
@@ -166,11 +169,20 @@ export function SweepView() {
     <div className={s.view}>
       <div className={s.head}>
         <div className={s.titleBlock}>
-          <h1 className={s.title}>{shown ? shown.headline : error ? "This sweep can't be shown" : "Reading the sweep…"}</h1>
+          <h1 className={s.title}>
+            {shown ? shown.headline : waiting ? "This sweep's runs are waiting in the queue" : error ? "This sweep can't be shown" : "Reading the sweep…"}
+          </h1>
           {shown && (
             <p className={s.subtitle}>
               {shown.name}, run once for each of {plural(shown.values.length, words.label, words.plural)}:{" "}
               {listText(shown.values.map((v) => v.label))}. {shown.description}
+            </p>
+          )}
+          {waiting && (
+            <p className={s.subtitle}>
+              {queued.size === 1 ? "Its run waits" : `Its ${count(queued.size)} runs wait`} in the queue
+              {paused ? ", which is paused: nothing in it starts until you start it" : ""}. The sweep is shown here once its
+              first run starts.
             </p>
           )}
         </div>
@@ -185,12 +197,13 @@ export function SweepView() {
               ))}
             </Select>
           )}
+          {waiting && paused && <Button onClick={() => void useStore.getState().startQueue()}>Start the queue</Button>}
           <Button icon="download" disabled={!shown || shown.sites.length === 0} onClick={exportTable}>
             Export CSV
           </Button>
         </div>
       </div>
-      {error && <Callout tone="error">{error}</Callout>}
+      {error && !waiting && <Callout tone="error">{error}</Callout>}
       {shown && <ValueRuns table={shown} queued={queued} />}
       {shown && (
         <div className={w.controls}>

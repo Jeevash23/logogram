@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 
+import type { ContinuationsFile } from "../src/api/types";
 import { comparedAcrossMachines, fakeRuns, otherVersions, TRACEBACK, type FakeRun } from "./fakeRuns";
 
 // What a run that didn't finish here says: why it failed (with its traceback), that it runs in
@@ -101,4 +102,85 @@ test("results say when a run ran with other versions, and Compare says which", a
   const where = main.getByRole("region", { name: "Where the runs ran" });
   await expect(where).toContainText("They ran with other versions or on other devices, which alone can change results in the last digits");
   for (const text of ["PyTorch", "2.5.1", "2.6.0", "Device", "CPU", "CUDA"]) await expect(where).toContainText(text);
+});
+
+test("a run's methods line names the chat template its prompts were read in and its local model's files", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await fakeRuns(page, () => [
+    {
+      id: "fake-chat",
+      name: "Heads in a chat",
+      status: "finished",
+      spec: {
+        model: { id: "tiny-gpt2", source: "local", revision: null, sha256: "a".repeat(64), device: "cpu", dtype: "float32", process_weights: true },
+        tokenization: { prepend_bos: false, chat_template: { kind: "user_turn", system: null } },
+      },
+    },
+  ]);
+  await open(page);
+  await page.getByRole("button", { name: /^History/ }).click();
+  await history(page).getByRole("button", { name: /^Heads in a chat/ }).click();
+  const main = page.getByRole("main");
+  await expect(main.getByRole("heading", { level: 1, name: "Heads in a chat" })).toBeVisible();
+  const methods = main.locator("p").filter({ hasText: "resamples, seed" }).first();
+  await expect(methods).toContainText("prompts in the chat template, as the person's message");
+  await expect(methods).toContainText("tiny-gpt2, local files aaaaaaaaaaaa, float32");
+  expect(errors).toEqual([]);
+});
+
+test("a cancelled run of SAE features says why it kept nothing", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await fakeRuns(page, () => [
+    {
+      id: "fake-features",
+      name: "Chosen features",
+      status: "cancelled",
+      spec: { scope: { kind: "sites", sites: [{ kind: "sae_feature", layer: 1, head: null, feature: 3, position: { kind: "last" } }] } },
+    },
+  ]);
+  await open(page);
+  await page.getByRole("button", { name: /^History/ }).click();
+  await history(page).getByRole("button", { name: /^Chosen features/ }).click();
+  const main = page.getByRole("main");
+  await expect(main.getByRole("heading", { level: 1, name: "Chosen features" })).toBeVisible();
+  const callout = main.getByRole("note").filter({ hasText: "This run was cancelled" });
+  await expect(callout).toContainText("It has no results: a run of SAE features reports nothing before it ends, so it keeps none.");
+  expect(errors).toEqual([]);
+});
+
+test("what the steered model says follows the run shown, not the site chosen in another", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  const said = (tokens: string[]) => ({ ids: tokens.map((_, i) => i), tokens });
+  const continuations = (run: string, rows: ContinuationsFile["rows"]): ContinuationsFile => ({
+    logogram_continuations: 1, run_id: run, receiver: "corrupt", tokens: 2, decoding: "greedy", rows,
+    prompts: [{
+      index: 3, text: "When Mary and John went to the store, John gave a drink to", prompt: ["When"], unsteered: said([" Mary", "."]),
+      steered: rows.map((r) => ({ ...said([` ${r.label}`, "!"]), row: r.row, coefficient: 1, control: false, key: `×1 at ${r.label}` })),
+    }],
+  });
+  await fakeRuns(page, () => [
+    { id: "fake-layers", name: "Steered in every layer", status: "finished", continuations: continuations("fake-layers", [{ row: 0, label: "L0" }, { row: 1, label: "L1" }]) },
+    { id: "fake-site", name: "Steered at one site", status: "finished", continuations: continuations("fake-site", [{ row: 0, label: "L1 resid pre" }]) },
+  ]);
+  await open(page);
+  const main = page.getByRole("main");
+  const lines = main.getByRole("region", { name: "What the steered model says" });
+  const show = async (name: string) => {
+    await page.getByRole("button", { name: /^History/ }).click();
+    await history(page).getByRole("button", { name: new RegExp(`^${name}`) }).click();
+    await expect(main.getByRole("heading", { level: 1, name })).toBeVisible();
+  };
+  // Both runs read once already, as after running them.
+  await show("Steered at one site");
+  await expect(lines.getByRole("rowheader")).toHaveText(["Without steering", "×1 at L1 resid pre"]);
+  await show("Steered in every layer");
+  await lines.getByRole("combobox", { name: "Steered site" }).selectOption("1");
+  await expect(lines.getByRole("rowheader")).toHaveText(["Without steering", "×1 at L1"]);
+  // A run of one steered site shows its lines, whichever layer was chosen in the other.
+  await show("Steered at one site");
+  await expect(lines.getByRole("rowheader")).toHaveText(["Without steering", "×1 at L1 resid pre"]);
+  expect(errors).toEqual([]);
 });

@@ -2,6 +2,7 @@
 // filter shows, and the order and nesting of the history's rows.
 
 import type { DerivedFrom, RunListing } from "../api/types";
+import { usesFeatures } from "./buildSpec";
 import { modelName } from "./hooks";
 import { experimentShort, scopeShort } from "./spec";
 import { fieldWords, membershipText, sweepsOf, sweepsOfRun, valueName } from "./sweeps";
@@ -142,6 +143,24 @@ const DERIVED_WORDS: Record<DerivedFrom["kind"], [string, string]> = {
   verification: ["verification by patching", "verifications by patching"],
   sweep: ["run of a sweep", "runs of a sweep"],
 };
+
+/** What a run keeps when it is cancelled, by how it measures (src/logogram/partial.py). SAE
+ * features, every one or chosen ones, are reported only when the run ends. */
+export function keptText(run: RunListing | undefined): string {
+  const kept = "What it has finished is kept and marked as partial";
+  if (!run) return `${kept}. What is in progress isn't kept.`;
+  if (usesFeatures(run.scope)) return "A run of SAE features reports nothing before it ends, so it keeps no results.";
+  if (run.experiment.kind === "attribution_patching" || run.experiment.kind === "direct_logit_attribution") {
+    return `${kept}: every site, over the prompts that finished. The prompts in progress aren't kept.`;
+  }
+  if (run.scope.kind === "site_sets") return `${kept}: the sets that finished. The set in progress isn't kept.`;
+  if (run.experiment.kind === "steering") {
+    const control = run.experiment.control ? ", each with its random control" : "";
+    return `${kept}: the sites that finished${control}. The site in progress isn't kept.`;
+  }
+  if (run.scope.kind === "sites") return `${kept}: the sites that finished. The site in progress isn't kept.`;
+  return `${kept}: the layers that finished. The layer in progress isn't kept.`;
+}
 
 /** What deleting a run takes with it, and what stays: said before it is deleted. */
 export function deleteWarning(run: RunListing, runs: RunListing[]): string {

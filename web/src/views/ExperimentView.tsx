@@ -69,7 +69,7 @@ export function ExperimentView() {
   const steersFeature = form.steerDirection === "sae_feature";
   const facts = useMemo(() => datasetFacts(dataset, form.limit), [dataset, form.limit]);
   const built = buildSpec(form, { model, datasetPath, datasetSha: dataset?.sha256 ?? null, sae, facts });
-  const differences = savedDifferences(form, model, datasetPath, dataset?.sha256 ?? null, modelName);
+  const differences = savedDifferences(form, model, datasetPath, dataset?.sha256 ?? null, modelName, sae);
   const spec = "spec" in built ? built.spec : null;
 
   const suggested = spec

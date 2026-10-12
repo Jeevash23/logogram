@@ -6,6 +6,7 @@ import {
   filterCounts,
   historyLabel,
   historyRows,
+  keptText,
   matchesRun,
   paletteRuns,
   pickerGroups,
@@ -149,6 +150,28 @@ test("deleting says what goes and what stays", () => {
   );
 });
 
+/** Chosen features of an SAE on layer 6, at the last token. */
+const features: RunListing["scope"] = { kind: "sites", sites: [{ kind: "sae_feature", layer: 6, head: null, feature: 123, position: { kind: "last" } }] };
+const estimate: RunListing["experiment"] = { kind: "attribution_patching", direction: "clean_to_corrupt", method: "gradient", steps: null };
+
+test("cancelling says what a run keeps: SAE features, every one or chosen ones, keep nothing", () => {
+  const nothing = "A run of SAE features reports nothing before it ends, so it keeps no results.";
+  const every: RunListing["scope"] = { kind: "features", position: { kind: "last" }, top: 50, choose_on: null, seed: null };
+  expect(keptText(listing("every", { experiment: estimate, scope: every }))).toBe(nothing);
+  // Patched, zero-ablated or estimated, chosen features are reported only when the run ends too.
+  expect(keptText(listing("patched", { scope: features }))).toBe(nothing);
+  expect(keptText(listing("ablated", { experiment: { kind: "ablation", baseline: { kind: "zero" } }, scope: features }))).toBe(nothing);
+  expect(keptText(listing("estimated", { experiment: estimate, scope: features }))).toBe(nothing);
+  // The model's own components keep what finished.
+  expect(keptText(listing("heads"))).toBe("What it has finished is kept and marked as partial: the layers that finished. The layer in progress isn't kept.");
+  expect(keptText(listing("head", { scope: { kind: "sites", sites: [{ kind: "head", layer: 1, head: 2, position: { kind: "last" } }] } }))).toBe(
+    "What it has finished is kept and marked as partial: the sites that finished. The site in progress isn't kept.",
+  );
+  expect(keptText(listing("estimate", { experiment: estimate }))).toBe(
+    "What it has finished is kept and marked as partial: every site, over the prompts that finished. The prompts in progress aren't kept.",
+  );
+});
+
 // -- the store -------------------------------------------------------------------------------
 
 const project = (id: string): ProjectInfo => ({ session_id: id, name: id, path: `projects/${id}`, datasets: [], description: "" });
@@ -285,6 +308,31 @@ test("a run whose spec can't be read isn't opened: the tab says why", async () =
     expect(st.activeRunId).not.toBe(broken.id);
     expect(st.notices.at(-1)).toMatchObject({ tone: "error", text: broken.error });
     expect(api.seen).not.toContain(`GET /api/runs/${broken.id}`);
+  } finally {
+    api.restore();
+    store.leaveProject();
+  }
+});
+
+test("a cancelled run of SAE features says it kept nothing, though some of it had finished", async () => {
+  const chosen = listing("chosen", { status: "running", scope: features });
+  const heads = listing("heads", { status: "running" });
+  const api = stubApi(() => [chosen, heads], {
+    "GET /api/runs/chosen": () => detail({ ...chosen, status: "cancelled" }),
+    "GET /api/runs/heads": () => detail({ ...heads, status: "cancelled" }),
+  });
+  const store = useStore.getState();
+  const said = () => useStore.getState().notices.map((n) => n.text);
+  try {
+    store.leaveProject();
+    await store.enterProject(project("one"));
+    store.handleEvent({ type: "run.cancelled", project_session: "one", run_id: "chosen", partial: null });
+    expect(said()).toContain(
+      "Run cancelled. A run of SAE features reports nothing before it ends, so it kept no results. Its spec and any dataset snapshot remain.",
+    );
+    // A run of the model's components that kept nothing had nothing finished.
+    store.handleEvent({ type: "run.cancelled", project_session: "one", run_id: "heads", partial: null });
+    expect(said()).toContain("Run cancelled before anything finished. Its spec and any dataset snapshot remain.");
   } finally {
     api.restore();
     store.leaveProject();

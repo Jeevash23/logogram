@@ -2,7 +2,7 @@ import { test, expect, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import type { ProjectInfo, RunDetail, RunListing, Spec } from "../src/api/types";
+import type { ProjectInfo, RunDetail, RunListing, Spec, SweepStarted } from "../src/api/types";
 
 // A sweep: a run swept over its donor seed from its results, then read in the sweep view, which
 // is reached from the run, the history, a comparison and the command palette, and works with the
@@ -193,5 +193,43 @@ test("a sweep over a seed: started from a run, read across its values, reached f
   await expect(title).toHaveText(/across 2 donor seeds$/);
   await expect(main.getByText("1 of 3 values have no results", { exact: false })).toBeVisible();
   expect(await violations(page)).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+test("a sweep whose runs all wait in the queue says so", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  const state = await (await page.request.get("/api/state")).json();
+  const fixture = { ...ORIGIN, "x-logogram-project": state.project.session_id };
+  const runs = (await (await page.request.get("/api/runs", { headers: fixture })).json()) as RunListing[];
+  const base = runs.find((r) => r.status === "finished");
+  expect(base).toBeTruthy();
+  const detail = (await (await page.request.get(`/api/runs/${encodeURIComponent(base!.id)}`, { headers: fixture })).json()) as RunDetail;
+  const created = await page.request.post("/api/projects", { data: { name: `Waiting sweep ${Date.now()}`, parent: state.projects_parent }, headers: ORIGIN });
+  expect(created.ok()).toBe(true);
+  const project = (await created.json()) as ProjectInfo;
+  const scoped = { ...ORIGIN, "x-logogram-project": project.session_id };
+  expect((await page.request.post("/api/datasets/ioi", { data: { name: "ioi", n: 4, seed: 0 }, headers: scoped })).ok()).toBe(true);
+  const spec: Spec = { ...detail.spec, name: "Seeds", notes: "", dataset: { path: "datasets/ioi.jsonl", sha256: null, limit: null } };
+  // The fixture server holds a run named "Held run" until it is cancelled: the sweep waits behind it.
+  expect((await page.request.post("/api/runs", { data: { spec: { ...spec, name: "Held run" } }, headers: scoped })).ok()).toBe(true);
+  const started = await page.request.post("/api/sweeps", { data: { spec, field: "statistics.seed", values: [1, 2] }, headers: scoped });
+  expect(started.ok()).toBe(true);
+  const sweep = (await started.json()) as SweepStarted;
+  expect(sweep.job).toBeNull();
+  expect(sweep.queue).toHaveLength(2);
+  try {
+    await page.goto(`/?token=browser-test-token#/sweep/${encodeURIComponent(sweep.sweep)}`);
+    const main = page.getByRole("main");
+    await expect(main.getByRole("heading", { level: 1, name: "This sweep's runs are waiting in the queue" })).toBeVisible();
+    await expect(main.getByText("Its 2 runs wait in the queue. The sweep is shown here once its first run starts.")).toBeVisible();
+    await expect(main.getByText("This sweep can't be shown")).toHaveCount(0);
+    expect(await violations(page)).toEqual([]);
+  } finally {
+    // Nothing of it runs: the queue is cleared, then the held run cancelled.
+    expect((await page.request.delete("/api/queue", { headers: scoped })).ok()).toBe(true);
+    expect((await page.request.post("/api/jobs/cancel", { headers: ORIGIN })).ok()).toBe(true);
+    await expect.poll(async () => (await (await page.request.get("/api/state")).json()).job?.status, { timeout: 60_000 }).not.toBe("running");
+  }
   expect(errors).toEqual([]);
 });
