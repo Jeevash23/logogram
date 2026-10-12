@@ -292,13 +292,144 @@ class SiteSetsScope(_Strict):
         return self
 
 
+class HeadReceiver(_Strict):
+    """A later attention head whose query, key or value input receives the path."""
+
+    kind: Literal["head"] = "head"
+    layer: int = Field(ge=0)
+    head: int = Field(ge=0)
+    input: Literal["q", "k", "v"]
+
+
+class LogitsReceiver(_Strict):
+    """The residual stream at the end of the model, read directly by the unembedding."""
+
+    kind: Literal["logits"] = "logits"
+
+
+class MlpReceiver(_Strict):
+    """A later MLP's input: the residual stream as that MLP reads it, before its normalization."""
+
+    kind: Literal["mlp"] = "mlp"
+    layer: int = Field(ge=0)
+
+
+PathReceiver = Annotated[HeadReceiver | LogitsReceiver | MlpReceiver, Field(discriminator="kind")]
+
+
+def receiver_text(receiver: HeadReceiver | LogitsReceiver | MlpReceiver) -> str:
+    if isinstance(receiver, LogitsReceiver):
+        return "logits"
+    if isinstance(receiver, MlpReceiver):
+        return f"L{receiver.layer} MLP"
+    return f"L{receiver.layer} H{receiver.head} {receiver.input}"
+
+
+class GraphScope(_Strict):
+    """The edges of the model's graph, for edge attribution.
+
+    The graph's nodes are the embeddings, every attention head (its output, z through its slice of
+    the output projection), every MLP and the logits. An edge runs from a node's output to a later
+    node's input: a head's query, key or value input (each its own edge), an MLP's input, or the
+    logits. ``layers`` chooses the heads and MLPs whose inputs receive the edges (from every
+    earlier node), None for every layer; ``logits`` adds the edges into the logits.
+    """
+
+    kind: Literal["graph"] = "graph"
+    layers: list[Annotated[int, Field(ge=0)]] | None
+    logits: bool
+
+    @model_validator(mode="after")
+    def _receives(self) -> GraphScope:
+        if self.layers is not None:
+            if not self.layers:
+                raise ValueError("choose at least one layer, or null for every layer")
+            if len(set(self.layers)) != len(self.layers):
+                raise ValueError("layers must not repeat")
+            if self.layers != sorted(self.layers):
+                raise ValueError("list the layers in order")
+        return self
+
+
+class EdgeSender(_Strict):
+    """The node an edge starts from: the embeddings, an attention head's output, or an MLP's."""
+
+    kind: Literal["embed", "head", "mlp"]
+    layer: int | None = Field(default=None, ge=0)
+    head: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _fields_match_kind(self) -> EdgeSender:
+        if self.kind == "embed" and (self.layer is not None or self.head is not None):
+            raise ValueError("the embeddings have no layer or head")
+        if self.kind != "embed" and self.layer is None:
+            raise ValueError(f"a {self.kind} sender needs its layer")
+        if (self.kind == "head") != (self.head is not None):
+            raise ValueError("a head sender needs its head index, and only a head has one")
+        return self
+
+
+class Edge(_Strict):
+    """A sender's output read directly by one receiver's input, through the residual stream."""
+
+    sender: EdgeSender
+    receiver: PathReceiver
+
+    @model_validator(mode="after")
+    def _forward(self) -> Edge:
+        r = self.receiver
+        s = self.sender
+        if s.kind == "embed" or isinstance(r, LogitsReceiver):
+            return self
+        assert s.layer is not None
+        # A head reads its layer's input; an MLP also reads its own layer's heads, where layers
+        # add attention before the MLP (checked against the model when it runs).
+        if isinstance(r, HeadReceiver) and s.layer >= r.layer:
+            raise ValueError("an edge into a head starts in an earlier layer")
+        if isinstance(r, MlpReceiver) and (
+            s.layer > r.layer or (s.layer == r.layer and s.kind == "mlp")
+        ):
+            raise ValueError("an edge into an MLP starts before it")
+        return self
+
+
+def sender_text(sender: EdgeSender) -> str:
+    if sender.kind == "embed":
+        return "embeddings"
+    if sender.kind == "head":
+        return f"L{sender.layer} H{sender.head}"
+    return f"L{sender.layer} MLP"
+
+
+def edge_text(edge: Edge) -> str:
+    """An edge as Logogram names it, for example "L5 H5 → L9 H6 q"."""
+    return f"{sender_text(edge.sender)} → {receiver_text(edge.receiver)}"
+
+
+class EdgesScope(_Strict):
+    """Edges measured one at a time, each its own result: path patching from the edge's sender
+    into its receiver alone, with every head and MLP held (see PathPatching)."""
+
+    kind: Literal["edges"] = "edges"
+    edges: list[Edge] = Field(min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def _distinct(self) -> EdgesScope:
+        keys = [e.model_dump_json() for e in self.edges]
+        if len(set(keys)) != len(keys):
+            raise ValueError("edges must not repeat")
+        return self
+
+
 Scope = Annotated[
     HeadsScope
     | LayerPositionScope
     | LayerComponentsScope
     | SitesScope
     | FeaturesScope
-    | SiteSetsScope,
+    | SiteSetsScope
+    | GraphScope
+    | EdgesScope,
     Field(discriminator="kind"),
 ]
 
@@ -405,6 +536,66 @@ class AttributionPatching(_Strict):
         return self
 
 
+class RandomEdges(_Strict):
+    """The control: edges chosen at random, ``draws`` times. Each draw orders every edge of the
+    graph by a seeded shuffle and takes the first k, as the strongest are taken from the
+    estimates."""
+
+    seed: Seed
+    draws: int = Field(ge=1, le=16)
+
+
+class FaithfulnessCurve(_Strict):
+    """The k strongest edges as a circuit, for each k of ``counts``.
+
+    ``patch`` says which edges carry the source prompt's values in the receiver run: with
+    ``"chosen"``, the chosen edges do and every other edge keeps the receiver's own; with
+    ``"rest"``, the chosen edges keep the receiver's and every other edge carries the source's.
+    Faithfulness is the share of the gap between the run with no edge chosen and the run with
+    every edge chosen that the chosen edges close: 0 with none, 1 with every edge of the graph.
+    """
+
+    counts: list[Annotated[int, Field(ge=1)]] = Field(min_length=1, max_length=24)
+    patch: Literal["chosen", "rest"]
+    control: RandomEdges
+
+    @model_validator(mode="after")
+    def _increasing(self) -> FaithfulnessCurve:
+        if any(b <= a for a, b in zip(self.counts, self.counts[1:], strict=False)):
+            raise ValueError("the curve's edge counts must increase")
+        return self
+
+
+class EdgeAttribution(_Strict):
+    """Estimate the effect of every edge of the model's graph from gradients (edge attribution
+    patching, EAP, as in Syed et al. 2023; with integrated gradients, EAP-IG, as in Hanna et al.
+    2024).
+
+    The estimate for the edge from u to v is (u's output on the source prompt − on the receiver
+    prompt) · the gradient of the metric with respect to v's own input, summed over positions.
+    v's own input is the copy of the residual stream that only v reads, before v's normalization;
+    the gradient goes through that normalization as the model computes it, its scale recomputed
+    from the input (see logogram.edges). With ``method="integrated_gradients"`` the gradient is
+    averaged over ``steps`` runs whose input embeddings lie evenly between the receiver's and the
+    source's, as in attribution patching. With ``curve``, the strongest edges are then patched
+    together, edge by edge, for a faithfulness curve beside edges chosen at random.
+    """
+
+    kind: Literal["edge_attribution"] = "edge_attribution"
+    direction: Direction
+    method: Literal["gradient", "integrated_gradients"]
+    steps: int | None = Field(ge=2, le=64)
+    curve: FaithfulnessCurve | None
+
+    @model_validator(mode="after")
+    def _steps_match_method(self) -> EdgeAttribution:
+        if self.method == "integrated_gradients" and self.steps is None:
+            raise ValueError("integrated gradients need a number of steps (2 to 64)")
+        if self.method == "gradient" and self.steps is not None:
+            raise ValueError("a single gradient takes no steps; set steps to null")
+        return self
+
+
 class MeanDifference(_Strict):
     """At each steered site, the mean difference between the two prompts of each training pair,
     from the receiver toward the other prompt. A strength of 1 adds the whole mean difference."""
@@ -458,24 +649,6 @@ class Steering(_Strict):
         return self
 
 
-class HeadReceiver(_Strict):
-    """A later attention head whose query, key or value input receives the path."""
-
-    kind: Literal["head"] = "head"
-    layer: int = Field(ge=0)
-    head: int = Field(ge=0)
-    input: Literal["q", "k", "v"]
-
-
-class LogitsReceiver(_Strict):
-    """The residual stream at the end of the model, read directly by the unembedding."""
-
-    kind: Literal["logits"] = "logits"
-
-
-PathReceiver = Annotated[HeadReceiver | LogitsReceiver, Field(discriminator="kind")]
-
-
 class PathPatching(_Strict):
     """Patch a component's effect along chosen paths only (path patching).
 
@@ -485,6 +658,10 @@ class PathPatching(_Strict):
     receivers' inputs from that run are recorded, then patched into an otherwise unchanged
     receiver run, and the metric is read there. The result is the sender's effect through those
     receivers alone. Senders must come before at least one receiver.
+
+    With an ``edges`` scope, each edge is its own result: its sender's effect through its own
+    receiver alone, with every head and MLP held (``freeze_mlps``), so the change reaches the
+    receiver only directly, as the edge carries it. ``receivers`` then lists each edge's receiver.
     """
 
     kind: Literal["path_patching"] = "path_patching"
@@ -500,19 +677,14 @@ class PathPatching(_Strict):
         return self
 
 
-def receiver_text(receiver: HeadReceiver | LogitsReceiver) -> str:
-    if isinstance(receiver, LogitsReceiver):
-        return "logits"
-    return f"L{receiver.layer} H{receiver.head} {receiver.input}"
-
-
 Experiment = Annotated[
     ActivationPatching
     | Ablation
     | DirectLogitAttribution
     | AttributionPatching
     | Steering
-    | PathPatching,
+    | PathPatching
+    | EdgeAttribution,
     Field(discriminator="kind"),
 ]
 
@@ -857,6 +1029,30 @@ class Spec(_Strict):
             raise ValueError("SAE features need the spec's sae: the SAE they belong to")
         return self
 
+    @model_validator(mode="after")
+    def _edges_fit(self) -> Spec:
+        exp, scope = self.experiment, self.scope
+        if isinstance(exp, EdgeAttribution) != isinstance(scope, GraphScope):
+            raise ValueError(
+                "edge attribution estimates the edges of the model's graph: use the graph scope "
+                "with it, and the graph scope with it alone"
+            )
+        if isinstance(scope, EdgesScope):
+            if not isinstance(exp, PathPatching):
+                raise ValueError("edges are measured one at a time by path patching: choose it")
+            if not exp.freeze_mlps:
+                raise ValueError(
+                    "an edge reaches its receiver directly, so path patching it holds every head "
+                    "and MLP: set freeze_mlps to true"
+                )
+            receivers = list(dict.fromkeys(e.receiver.model_dump_json() for e in scope.edges))
+            if [r.model_dump_json() for r in exp.receivers] != receivers:
+                raise ValueError(
+                    "with an edges scope, experiment.receivers lists each edge's receiver once, "
+                    "in the order the edges first name them"
+                )
+        return self
+
     def to_json(self) -> str:
         return json.dumps(self.model_dump(mode="json"), indent=2) + "\n"
 
@@ -983,13 +1179,24 @@ def _show(value: Any) -> str:
 # Descriptions
 
 
+def describe_curve(curve: FaithfulnessCurve) -> str:
+    """The faithfulness curve in words, for example 'curve over the 1 to 500 strongest edges'."""
+    counts = curve.counts
+    span = f"{counts[0]:,}" if len(counts) == 1 else f"{counts[0]:,} to {counts[-1]:,}"
+    patched = "patching them" if curve.patch == "chosen" else "patching every other edge"
+    draws = curve.control.draws
+    control = f"{draws} random draw{'s' if draws != 1 else ''}, seed {curve.control.seed}"
+    return f"faithfulness of the {span} strongest edges, {patched} ({control})"
+
+
 def describe_intervention(
     exp: ActivationPatching
     | Ablation
     | DirectLogitAttribution
     | AttributionPatching
     | Steering
-    | PathPatching,
+    | PathPatching
+    | EdgeAttribution,
 ) -> str:
     """The intervention in a few words, for example 'Resample-ablate (10 corrupt donors, seed 0)'."""
     if isinstance(exp, ActivationPatching):
@@ -1000,6 +1207,15 @@ def describe_intervention(
         )
     if isinstance(exp, DirectLogitAttribution):
         return f"Direct logit attribution ({exp.prompts} prompts)"
+    if isinstance(exp, EdgeAttribution):
+        arrow = "clean → corrupt" if exp.direction == "clean_to_corrupt" else "corrupt → clean"
+        how = (
+            f"integrated gradients, {exp.steps} steps"
+            if exp.method == "integrated_gradients"
+            else "one gradient"
+        )
+        curve = "" if exp.curve is None else f"; {describe_curve(exp.curve)}"
+        return f"Edge attribution, estimated with {how} ({arrow}{curve})"
     if isinstance(exp, AttributionPatching):
         arrow = "clean → corrupt" if exp.direction == "clean_to_corrupt" else "corrupt → clean"
         if exp.method == "integrated_gradients":
@@ -1033,6 +1249,27 @@ def describe_intervention(
     return f"Resample-ablate ({b.donors} {b.pool} donors, seed {b.seed})"
 
 
+def layers_text(layers: list[int]) -> str:
+    """Layers as runs, for example "0–3, 7"."""
+    runs: list[list[int]] = []
+    for layer in layers:
+        if runs and layer == runs[-1][-1] + 1:
+            runs[-1].append(layer)
+        else:
+            runs.append([layer])
+    return ", ".join(f"{r[0]}" if len(r) == 1 else f"{r[0]}–{r[-1]}" for r in runs)
+
+
+def graph_text(scope: GraphScope) -> str:
+    """A graph scope in words: 'every edge of the graph', or the edges into some layers."""
+    if scope.layers is None:
+        return "every edge of the graph" if scope.logits else "every edge but those into the logits"
+    one = len(scope.layers) == 1
+    where = f"layer{'' if one else 's'} {layers_text(scope.layers)}"
+    logits = " and the logits" if scope.logits else ""
+    return f"the edges into {where}{logits}"
+
+
 def describe_experiment(spec: Spec) -> str:
     """A one-line plain-language description, used in history and summaries."""
     what = describe_intervention(spec.experiment)
@@ -1056,6 +1293,11 @@ def describe_experiment(spec: Spec) -> str:
     elif isinstance(scope, SiteSetsScope):
         n = len(scope.sets)
         where = f"{n} set{'s' if n != 1 else ''} of sites, each at once"
+    elif isinstance(scope, GraphScope):
+        where = graph_text(scope)
+    elif isinstance(scope, EdgesScope):
+        n = len(scope.edges)
+        where = f"{n} edge{'s' if n != 1 else ''}, one at a time"
     else:
         where = f"{len(scope.sites)} chosen site{'s' if len(scope.sites) != 1 else ''}"
     metric = "" if spec.metric.kind == "logit_diff" else f" · {METRIC_LABELS[spec.metric.kind]}"

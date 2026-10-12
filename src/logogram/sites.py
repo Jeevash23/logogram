@@ -13,7 +13,10 @@ from logogram.backends.base import ModelInfo
 from logogram.prompts import PreparedPrompt, common_labels
 from logogram.spec import (
     AllPositions,
+    Edge,
+    EdgesScope,
     FeaturesScope,
+    GraphScope,
     HeadsScope,
     IndexPosition,
     LabelPosition,
@@ -54,9 +57,14 @@ class ResolvedSite:
     # A set of sites intervened on together (a row of a site_sets scope); ``site`` is then its
     # first site, and the row reads as the whole set.
     site_set: SiteSet | None = None
+    # An edge of the model's graph (logogram.edges); ``site`` then stands at its receiver's
+    # layer, at every position.
+    edge: Edge | None = None
 
     @property
     def kind(self) -> str:
+        if self.edge is not None:
+            return "edge"
         return "site_set" if self.site_set is not None else self.site.kind
 
     @property
@@ -88,6 +96,7 @@ class ResolvedSite:
             "variant": self.variant,
             "variant_key": self.variant_key,
             "members": members,
+            **({} if self.edge is None else {"edge": self.edge.model_dump(mode="json")}),
         }
 
 
@@ -248,6 +257,11 @@ def expand_scope(
         raise ScopeError(
             "Sweeping every SAE feature needs attribution patching, which estimates them all at "
             "once. To patch features for real, choose them as sites."
+        )
+    elif isinstance(scope, GraphScope | EdgesScope):
+        raise ScopeError(
+            "The edges of the graph are estimated by edge attribution and measured one at a time "
+            "by path patching. Choose one of those."
         )
     else:  # pragma: no cover - exhaustive
         raise ScopeError(f"Unknown scope {scope!r}")

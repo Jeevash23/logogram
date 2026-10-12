@@ -107,6 +107,44 @@ Patches = Patch | list[Patch] | None
 # score(logits [B, keep, vocab]) -> [B]: what a gradient is taken of, row by row.
 ScoreFn = Callable[[torch.Tensor], torch.Tensor]
 
+# The inputs of the model's graph (see logogram.edges): a head's query, key or value input, an
+# MLP's input, and the logits.
+EDGE_INPUTS = ("q", "k", "v", "mlp", "logits")
+
+
+@dataclass
+class InputGradients:
+    """The gradient of a score with respect to each receiver's own input: the copy of the residual
+    stream that only that receiver reads, before its normalization, which recomputes its scale
+    from the copy as the model does.
+
+    ``q``, ``k`` and ``v`` hold one tensor per layer, ``[B, pos, H, d_model]`` (keys and values
+    per key-value head), ``mlp`` one per layer ``[B, pos, d_model]``, and ``logits`` the final
+    residual stream's ``[B, pos, d_model]``. Layers that weren't asked for are None."""
+
+    q: list[torch.Tensor | None]
+    k: list[torch.Tensor | None]
+    v: list[torch.Tensor | None]
+    mlp: list[torch.Tensor | None]
+    logits: torch.Tensor | None
+
+
+class EdgePatcher:
+    """What an edge-patched forward pass asks as it goes (see :meth:`ModelBackend.edge_patch`).
+
+    ``sent`` gets each node's output as the pass computes it, in the order of the pass: the
+    embeddings (``"embed"``, layer -1, ``[B, pos, d_model]``), a layer's heads (``"head"``, their
+    outputs z, ``[B, pos, H, d_head]``) and a layer's MLP (``"mlp"``, ``[B, pos, d_model]``).
+    ``update`` returns what to add to a receiver's own input before it is read (``"q"``, ``"k"``
+    or ``"v"`` of a layer, ``[B, pos, H, d_model]``; ``"mlp"`` of a layer or ``"logits"``,
+    ``[B, pos, d_model]``), or None to leave it as it is."""
+
+    def sent(self, node: str, layer: int, output: torch.Tensor) -> None:  # pragma: no cover
+        raise NotImplementedError
+
+    def update(self, receiver: str, layer: int) -> torch.Tensor | None:  # pragma: no cover
+        raise NotImplementedError
+
 
 class BackendError(RuntimeError):
     """A model can't be loaded or run. The message says what went wrong and how to fix it."""
@@ -217,9 +255,44 @@ class ModelBackend(ABC):
         ``frozen_heads`` (the receiver run's own values, ``[B, pos, H, d_head]`` per layer) except
         the sender's, and so are MLP outputs when ``frozen_mlps`` is given; the receivers' inputs
         are recorded. Second pass: only those inputs are patched in. Receivers are
-        ``("head", layer, head, "q" | "k" | "v")`` or ``("logits", -1, -1, "")``.
+        ``("head", layer, head, "q" | "k" | "v")``, ``("mlp", layer, -1, "")`` (the MLP's own
+        input, before its normalization) or ``("logits", -1, -1, "")``. A sender of kind
+        ``resid_pre`` at layer 0 is the embeddings.
         """
         raise BackendError("Path patching isn't supported by this model backend.")
+
+    def edge_checks(self) -> dict[str, float]:
+        """Measure, once, what edge attribution relies on, and raise BackendError when the model
+        doesn't have it: that each head reads its own copy of the residual stream for its query,
+        key and value, before its normalization, without changing what the model computes; that
+        MLPs and the logits read theirs before their normalization; and that heads and MLPs add
+        into the residual stream (measured when the model loaded). Returns the measured errors."""
+        raise BackendError("Edge attribution isn't supported by this model backend.")
+
+    def head_output_weights(self, layer: int) -> torch.Tensor:
+        """``[H, d_head, d_model]`` in float64: each head's slice of the attention's output
+        projection at ``layer``, which writes its output z into the residual stream."""
+        raise BackendError("Reading heads' writes isn't supported by this model backend.")
+
+    def input_gradients(
+        self,
+        tokens: torch.Tensor,
+        score: ScoreFn,
+        layers: list[int],
+        logits: bool,
+        embeddings: torch.Tensor | None = None,
+    ) -> InputGradients:
+        """The gradient of ``score`` (summed over rows, read at the last position) with respect
+        to each receiver's own input in ``layers`` (and the logits', with ``logits``), in one
+        forward and backward pass. ``embeddings`` replaces the residual stream entering the first
+        layer, as in :meth:`gradients`."""
+        raise BackendError("Edge attribution isn't supported by this model backend.")
+
+    def edge_patch(self, tokens: torch.Tensor, patcher: EdgePatcher) -> torch.Tensor:
+        """Logits at the last position, ``[B, vocab]`` in float32, from a forward pass in which
+        each receiver's own input (before its normalization) gets what ``patcher`` adds, while the
+        residual stream itself runs on unchanged."""
+        raise BackendError("Edge patching isn't supported by this model backend.")
 
     def gradients(
         self,
