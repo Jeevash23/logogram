@@ -60,6 +60,9 @@ async function open(page: Page, name: string) {
 }
 
 test("every view has no accessibility violations", async ({ page }) => {
+  // Every view in turn, each scanned: about 25 seconds on a busy machine, more than the default
+  // 30 leaves room for.
+  test.setTimeout(90_000);
   await page.goto("/?token=browser-test-token");
   await expect(page.getByRole("main").getByRole("heading", { name: "tiny-gpt2", exact: true })).toBeVisible();
   await expectAccessible(page, "Explore, model");
