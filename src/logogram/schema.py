@@ -290,6 +290,37 @@ class ChatTemplateInfo(_Model):
     after: str
 
 
+class PartialRun(_Model):
+    """What a run that stopped before the end (cancelled, or failed mid-sweep) kept.
+
+    A sweep that goes layer by layer (or site by site, or set by set) keeps the sites at which
+    every prompt ran: ``unit`` is layers, sites or sets. A method that measures every site in one
+    pass per batch of prompts keeps every site, over the prompts that finished: ``unit`` is
+    prompts. Statistics come from the kept rows exactly as for a finished run (see
+    logogram.partial)."""
+
+    status: Literal["cancelled", "failed"]
+    unit: Literal["layers", "sites", "sets", "prompts"]
+    done: int = Field(ge=1)
+    total: int = Field(ge=1)
+    # The sites the summary reports and the sites the sweep has; the prompts measured at each.
+    sites: int = Field(ge=1)
+    sites_total: int = Field(ge=1)
+    prompts: int = Field(ge=1)
+    prompts_total: int = Field(ge=1)
+    # "Stopped after 7 of 12 layers: these are the layers that finished."
+    note: str
+    # What the run doesn't keep, or keeps over the finished part only, in sentences.
+    left_out: list[str] = []
+
+
+def stopped_text(partial: PartialRun | dict[str, Any]) -> str:
+    """How far a run that stopped early got, in words: "stopped after 7 of 12 layers"."""
+    data = partial.model_dump() if isinstance(partial, PartialRun) else partial
+    total, unit = int(data["total"]), str(data["unit"])
+    return f"stopped after {int(data['done']):,} of {total:,} {unit if total != 1 else unit[:-1]}"
+
+
 class Summary(_Model):
     logogram_summary: Literal[1] = 1
     run_id: str
@@ -316,6 +347,8 @@ class Summary(_Model):
     circuit: CircuitInfo | None = None
     attribution: AttributionInfo | None = None
     chat_template: ChatTemplateInfo | None = None
+    # A run that stopped before the end: what it kept. None for a finished run.
+    partial: PartialRun | None = None
 
 
 # -- manifest.json -----------------------------------------------------------------------------
@@ -455,6 +488,40 @@ class RunOwner(_Model):
     token: str = Field(pattern=r"^[0-9a-f]{32}$")
 
 
+# -- .logogram/queue.json and queue-runner.json ------------------------------------------------
+
+
+class QueueEntry(_Model):
+    """A run waiting in a project's queue (see logogram.runqueue)."""
+
+    id: str = Field(pattern=r"^[0-9a-f]{12}$")
+    # When it was added, in UTC (ISO 8601).
+    queued_at: str = Field(pattern=r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+    # The spec as it was queued; checked again when its turn comes.
+    spec: dict[str, Any]
+    # A saved draft it runs in (its folder), and the run it derives from (a rerun or a check).
+    draft_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+    derived_from: DerivedFrom | None = None
+
+
+class QueueFile(_Model):
+    """A project's run queue, first in line first."""
+
+    logogram_queue: Literal[1] = 1
+    runs: list[QueueEntry] = Field(default_factory=list, max_length=10_000)
+
+
+class QueueRunner(_Model):
+    """The process running a project's queue: the app, or ``logogram queue run``. Like a run's
+    owner record (RunOwner): a record whose process has ended holds nothing."""
+
+    logogram_queue_runner: Literal[1] = 1
+    program: Literal["app", "cli"]
+    pid: int = Field(ge=1, lt=2**32, strict=True)
+    started: float = Field(gt=0, allow_inf_nan=False)
+    token: str = Field(pattern=r"^[0-9a-f]{32}$")
+
+
 # -- annotations.json --------------------------------------------------------------------------
 
 
@@ -509,6 +576,8 @@ class RunProgress(_Model):
 class RunEnded(_Model):
     run_id: str
     error: str | None = None
+    # A cancelled or failed run that kept what finished.
+    partial: PartialRun | None = None
 
 
 class QueuedRunInfo(_Model):
@@ -525,11 +594,22 @@ class QueuedRunInfo(_Model):
     queued_at: float
 
 
+QueueState = Literal["idle", "waiting", "running", "paused"]
+
+
 class QueueChanged(_Model):
-    """The whole queue, first in line first, after any change."""
+    """The whole queue, first in line first, after any change, and how it stands: ``waiting``
+    (its next run starts when the job in progress ends), ``running`` (one of its runs is in
+    progress, here or in another process, and the next follows), ``paused`` (nothing starts until
+    it is started: a queue that comes back with its project is paused) or ``idle`` (empty)."""
 
     project_session: str | None
     runs: list[QueuedRunInfo]
+    state: QueueState = "idle"
+    # Who runs it, when another process does: "`logogram queue run` (process 1234)".
+    runner: str | None = None
+    # Why the project's saved queue can't be read, and how to fix it.
+    error: str | None = None
 
 
 class QueueSkipped(_Model):
@@ -605,6 +685,8 @@ class RunListing(_Model):
     annotations_error: str | None = None
     # The run's spec can't be read: error says what is wrong and how to fix it. It can be deleted.
     damaged: bool = False
+    # A cancelled or failed run that kept what finished (its summary's partial).
+    partial: PartialRun | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json")

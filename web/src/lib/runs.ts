@@ -146,7 +146,9 @@ export function deleteWarning(run: RunListing, runs: RunListing[]): string {
       ? "its saved spec"
       : run.status === "finished"
         ? "the spec it ran, its per-prompt results, its summary and its manifest"
-        : "the spec it ran and its manifest";
+        : run.partial
+          ? "the spec it ran, what it kept of what finished (per-prompt results and a summary) and its manifest"
+          : "the spec it ran and its manifest";
   const parts = [`This deletes its folder, experiments/${run.id}, with ${what}. It can't be undone.`];
   const derived = runs.filter((r) => r.derived_from?.run === run.id);
   if (derived.length > 0) {

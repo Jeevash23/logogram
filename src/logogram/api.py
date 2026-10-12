@@ -333,8 +333,11 @@ def continue_text(
 
 
 def _ended(outcome: Any, what: str) -> str:
-    """Why a run didn't finish, and where its traceback is."""
+    """Why a run didn't finish, what it kept of what finished, and where its traceback is."""
     message = f"{what} {outcome.status}: {outcome.manifest.get('error')}"
+    partial = (outcome.summary or {}).get("partial")
+    if partial:
+        message += f" {partial['note']} load_run(project, {outcome.run_id!r}) reads them."
     if outcome.traceback:
         message += (
             f" Its traceback is in experiments/{outcome.run_id}/traceback.txt "
@@ -394,9 +397,14 @@ def compare_runs(a: Run, b: Run) -> dict[str, Any]:
 
 def verify_run(estimated: Run, top: int = 10, *, model: Any = None) -> Run:
     """Patch, for real, the ``top`` sites an attribution patching run estimated to matter most."""
+    from logogram.robustness import require_finished
     from logogram.runner import run_spec
     from logogram.verify import verification_spec
 
+    try:
+        require_finished(estimated.project, estimated.id, "Verifying by patching")
+    except ValueError as exc:
+        raise LogogramError(str(exc)) from exc
     if estimated.summary is None:
         raise LogogramError("Only a finished run can be verified.")
     variant = verification_spec(estimated.spec, estimated.summary, top)
@@ -424,9 +432,13 @@ def check_robustness(
     model: Any = None,
 ) -> Run:
     """Rerun with one choice changed (the experiment, or the dtype), as Check robustness does."""
-    from logogram.robustness import robustness_spec
+    from logogram.robustness import require_finished, robustness_spec
     from logogram.runner import run_spec
 
+    try:
+        require_finished(original.project, original.id, "Checking robustness")
+    except ValueError as exc:
+        raise LogogramError(str(exc)) from exc
     variant, change = robustness_spec(original.spec, experiment=experiment, dtype=dtype)
     outcome = run_spec(
         variant,
@@ -512,6 +524,14 @@ class Run:
     def traceback(self) -> str | None:
         """What a failed run kept of the error that stopped it (this machine's paths scrubbed)."""
         return self.project.run_traceback(self.id)
+
+    @property
+    def partial(self) -> dict[str, Any] | None:
+        """For a run that was cancelled or failed mid-sweep and kept what finished: how far it
+        got (``note``, such as "Stopped after 7 of 12 layers: these are the layers that
+        finished.") and what it doesn't keep (``left_out``). Its sites, statistics and per-prompt
+        values are those of what finished, as a finished run's are. None for a finished run."""
+        return (self.summary or {}).get("partial")
 
     @property
     def title(self) -> str:
@@ -635,9 +655,15 @@ class Run:
             f"{_num(x['effect']['hi'])}]</td></tr>"
             for x in self.strongest(8)
         )
+        partial = self.partial
+        stopped = (
+            f"<p><b>{html.escape(self.status.capitalize())}.</b> {html.escape(partial['note'])}</p>"
+            if partial
+            else ""
+        )
         return (
             f"<div style='font-family:sans-serif'><p><b>{html.escape(self.title)}</b><br>"
-            f"{html.escape(s['description'])} · n = {s['n_prompts']}</p>"
+            f"{html.escape(s['description'])} · n = {s['n_prompts']}</p>{stopped}"
             f"<p style='color:#555'>{html.escape(s['metric']['normalized_effect'])}</p>"
             f"{heatmap_svg(s)}<table><tr><th>site</th><th>effect</th>"
             f"<th>{round(s['statistics']['ci'] * 100)}% CI</th></tr>{rows}</table></div>"

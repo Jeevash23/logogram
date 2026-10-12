@@ -14,7 +14,10 @@ import type {
   ModelShape,
   ModelStatus,
   ProjectInfo,
+  PartialRun,
   QueuedRun,
+  QueueState,
+  QueueStatus,
   RobustnessChange,
   RunAnnotationsChange,
   RunDetail,
@@ -31,6 +34,7 @@ import type {
   UpdateStatus,
 } from "../api/types";
 import type { ResolvedTheme } from "../lib/color";
+import { count } from "../lib/format";
 import { METRICS } from "../lib/metrics";
 import { siteFromSelection } from "../lib/spec";
 import { DEFAULT_FORM, formFromSpec, type FormState } from "../lib/formState";
@@ -200,6 +204,13 @@ interface Store {
   job: Job | null;
   /** Runs waiting for the job in progress to end, first in line first (the server's queue). */
   queue: QueuedRun[];
+  /** How the queue stands (it is kept in the project, so it outlives the server): waiting for
+   * the job in progress, running, paused (as it comes back with its project) or idle. */
+  queueState: QueueState;
+  /** Who runs the queue when another process does, such as `logogram queue run`. */
+  queueRunner: string | null;
+  /** Why the project's saved queue can't be read, and how to fix it. */
+  queueError: string | null;
   runs: RunListing[];
   /** The versions and devices a rerun here would use, to compare with a run's manifest. */
   environment: Environment | null;
@@ -239,7 +250,7 @@ interface Store {
   paletteOpen: boolean;
   modelDialogOpen: boolean;
   robustnessDialogOpen: boolean;
-  /** Asking whether to cancel the running job, which discards its partial results. */
+  /** Asking whether to cancel the running job (it keeps what finished). */
   cancelConfirmOpen: boolean;
   /** The sheet of keyboard shortcuts (? or the command palette). */
   shortcutsOpen: boolean;
@@ -300,6 +311,16 @@ interface Store {
   queueRun: (spec: Spec) => Promise<void>;
   /** Take a run out of the queue before it starts. */
   removeQueuedRun: (id: string) => Promise<void>;
+  /** The queue and how it stands, from the server (or from an event). */
+  applyQueue: (status: QueueStatus) => void;
+  /** Read the queue again as the project keeps it: another process may have changed it. */
+  refreshQueue: () => Promise<void>;
+  /** Run the queue here (a paused one, say): its next run starts when nothing is running. */
+  startQueue: () => Promise<void>;
+  /** Start no more of the queue's runs; the run in progress goes on. */
+  pauseQueue: () => Promise<void>;
+  /** Take every run out of the queue. Returns whether it was cleared. */
+  clearQueue: () => Promise<boolean>;
   startRobustness: (runId: string, change: RobustnessChange) => Promise<void>;
   /** Patch, for real, the strongest sites an attribution patching run estimated. */
   startVerification: (runId: string, top: number) => Promise<void>;
@@ -337,6 +358,8 @@ let noticeId = 0;
 // The last edit made in the form, so that typing makes one undo step rather than one per key.
 let lastEdit: LastEdit | null = null;
 const FORM_NOTICE = "form-replaced";
+// The notice that offers to start a queue that came back paused.
+const QUEUE_NOTICE = "queue-paused";
 // The form as the open project last saved or ran it (an empty form when the project opens). A
 // form that differs from it is unsaved, and is kept in the browser in case of a reload.
 let savedForm: FormState = DEFAULT_FORM;
@@ -348,6 +371,20 @@ let datasetSeq = 0;
 const inflight = new Map<string, Promise<RunDetail | undefined>>();
 let starting = false;
 let environmentRequest: Promise<void> | null = null;
+// The project whose queue the store shows (a queue's status names its project's session).
+let queueSession: string | null = null;
+
+/** Who runs the queue, as the server names it, for the middle of a sentence: "logogram queue run
+ * (process 1234)" or "the Logogram app (process 1234)". */
+export function runnerName(runner: string): string {
+  return runner.replace(/`/g, "");
+}
+
+/** Whether a run started now waits in the queue: a job is running here, the queue is about to
+ * start runs, or another process runs the queue. A paused queue doesn't hold a new run back. */
+export function runWouldQueue(st: Pick<Store, "job" | "queue" | "queueState" | "queueRunner">): boolean {
+  return st.job?.status === "running" || st.queueRunner !== null || (st.queue.length > 0 && st.queueState !== "paused");
+}
 
 function emptyLive(runId: string): LiveRun {
   return { runId, layout: null, sites: [], cells: {}, layersDone: [], progress: null, status: "running" };
@@ -385,6 +422,9 @@ export const useStore = create<Store>((set, get) => ({
   sae: { state: "none" },
   job: null,
   queue: [],
+  queueState: "idle",
+  queueRunner: null,
+  queueError: null,
   runs: [],
   environment: null,
 
@@ -447,6 +487,7 @@ export const useStore = create<Store>((set, get) => ({
       sae: s.sae ?? { state: "none" },
       queue: s.queue ?? [],
     });
+    if (s.queue_status) get().applyQueue(s.queue_status);
     get().handleEvent({ type: "model", ...s.model });
     if (s.job) get().applyJob(s.job);
     else set({ job: null });
@@ -557,6 +598,7 @@ export const useStore = create<Store>((set, get) => ({
       tokenPosition: null, stagedSites: [], headPins: [], noteEditor: null, researchVersion: 0,
       job: get().job?.project_session && get().job?.project_session !== project.session_id ? null : get().job,
       queue: get().queue.filter((q) => q.project_session === project.session_id),
+      ...(queueSession === project.session_id ? {} : { queueState: "idle" as const, queueRunner: null, queueError: null }),
       datasetPath: null,
       dataset: null,
       promptIndex: 0,
@@ -587,6 +629,8 @@ export const useStore = create<Store>((set, get) => ({
     if (seq !== projectSeq) return;
     await get().refreshRuns();
     if (seq !== projectSeq) return;
+    await get().refreshQueue();
+    if (seq !== projectSeq) return;
     const runs = get().runs;
     // The page's URL (after a reload, or a kept link) names the view and run to open, where they
     // still exist. Otherwise a run in progress comes first: its map fills in as it streams.
@@ -616,6 +660,16 @@ export const useStore = create<Store>((set, get) => ({
     } else set({ view: chosen ?? wanted?.view ?? (project.datasets.length ? "baseline" : "prompts") });
     if (stored && seq === projectSeq) restoreForm(stored);
     if (seq === projectSeq) set({ entering: false, pendingRoute: null, ...(route?.screen === "projects" ? { screen: "projects" as const } : {}) });
+    // Runs queued before the project last closed (or the server stopped) wait, paused: nothing
+    // heavy starts on its own.
+    const waiting = get().queue.length;
+    if (seq === projectSeq && get().queueState === "paused" && waiting > 0) {
+      get().notify(
+        `${waiting === 1 ? "A run waits" : `${count(waiting)} runs wait`} in the queue from before. It is paused: nothing starts until you start it. The history lists the queue, where you can clear it.`,
+        "info",
+        { persist: true, key: QUEUE_NOTICE, action: { label: "Start the queue", run: () => void get().startQueue() } },
+      );
+    }
   },
 
   leaveProject: () => {
@@ -628,7 +682,7 @@ export const useStore = create<Store>((set, get) => ({
     setProjectSession(null);
     set({ project: null, screen: "projects", datasetPath: null, dataset: null, promptIndex: 0, datasetEdits: {},
       tokenPosition: null, stagedSites: [], headPins: [], noteEditor: null, researchVersion: 0,
-      job: get().job?.project_session ? null : get().job, queue: [],
+      job: get().job?.project_session ? null : get().job, queue: [], queueState: "idle", queueRunner: null, queueError: null,
       runs: [], runDetails: {}, activeRunId: null, pendingRunId: null, live: {}, selection: null,
       compareIds: [null, null], entering: false, flags: {}, form: DEFAULT_FORM, formHistory: EMPTY_HISTORY, baselines: {}, specSource: "run",
       analysisSource: "form", view: "prompts", inspectorFocus: null, robustnessDialogOpen: false,
@@ -649,6 +703,7 @@ export const useStore = create<Store>((set, get) => ({
     if (!runs || seq !== projectSeq) return;
     const before = get().runs;
     set({ runs });
+    void get().refreshQueue();
     // A run in another process has ended: say so, and read it again where it is shown.
     for (const run of runs) {
       const was = before.find((r) => r.id === run.id);
@@ -845,7 +900,23 @@ export const useStore = create<Store>((set, get) => ({
     // Nothing was running or waiting any more: it started at once, as Run would have.
     if (out.run_id && out.job) return showStartedRun(ran, out.run_id, out.job);
     formSent(ran);
-    // The queue event shows it waiting; the notice says what it waits for.
+    // The queue event shows it waiting; the notice says what it waits for. A paused queue, or one
+    // another process runs, says so.
+    await get().refreshQueue();
+    if (seq !== projectSeq) return;
+    const { queueState, queueRunner } = get();
+    if (queueState === "paused") {
+      get().notify(`Queued “${spec.name}”. The queue is paused: nothing in it starts until you start it.`, "info", {
+        persist: true,
+        key: QUEUE_NOTICE,
+        action: { label: "Start the queue", run: () => void get().startQueue() },
+      });
+      return;
+    }
+    if (queueRunner) {
+      get().notify(`Queued “${spec.name}”. The queue is being run by ${runnerName(queueRunner)}: it starts when its turn comes.`);
+      return;
+    }
     const place = out.queue.findIndex((q) => q.id === out.queued?.id);
     const job = get().job;
     const ahead = place > 0 ? out.queue[place - 1].title : place === 0 && job?.status === "running" ? job.title : null;
@@ -860,6 +931,45 @@ export const useStore = create<Store>((set, get) => ({
     // The queue event says so too; take it out now, so it can't be removed twice.
     set((s) => ({ queue: s.queue.filter((q) => q.id !== id) }));
     get().notify(run ? `Removed “${run.title}” from the queue.` : "Removed the run from the queue.");
+  },
+
+  applyQueue: (status) => {
+    queueSession = status.project_session;
+    set({ queue: status.runs ?? [], queueState: status.state ?? "idle", queueRunner: status.runner ?? null, queueError: status.error ?? null });
+  },
+
+  refreshQueue: async () => {
+    if (!get().project) return;
+    const seq = projectSeq;
+    // Quietly: the history reads it again with the runs, and the server's events say the rest.
+    const status = await api.queueStatus().catch(() => null);
+    if (status && seq === projectSeq && status.project_session === get().project?.session_id) get().applyQueue(status);
+  },
+
+  startQueue: async () => {
+    const seq = projectSeq;
+    const status = await get().guard(() => api.startQueue());
+    if (!status || seq !== projectSeq) return;
+    get().applyQueue(status);
+    get().notify(status.state === "running" ? "Started the queue. Its runs follow one another." : "Started the queue. Its next run starts when the job in progress ends.");
+  },
+
+  pauseQueue: async () => {
+    const seq = projectSeq;
+    const status = await get().guard(() => api.pauseQueue());
+    if (!status || seq !== projectSeq) return;
+    get().applyQueue(status);
+    get().notify("Paused the queue. The run in progress goes on; nothing starts after it until you start the queue.");
+  },
+
+  clearQueue: async () => {
+    const seq = projectSeq;
+    const n = get().queue.length;
+    const status = await get().guard(() => api.clearQueue());
+    if (!status || seq !== projectSeq) return false;
+    get().applyQueue(status);
+    get().notify(n === 1 ? "Cleared the queue: its run won't run." : `Cleared the queue: its ${count(n)} runs won't run.`);
+    return true;
   },
 
   startRobustness: async (runId, change) => {
@@ -1113,11 +1223,24 @@ export const useStore = create<Store>((set, get) => ({
             if (cmp) set((s) => ({ flags: { ...s.flags, [from.run]: { against: runId, sites: cmp.flagged } } }));
           }
         });
-        if (status === "cancelled" && !data.replay) get().notify("Run cancelled. The spec and any dataset snapshot remain; partial results were discarded.", "info", { persist: true });
+        if (status === "cancelled" && !data.replay) {
+          const partial = data.partial as PartialRun | null | undefined;
+          get().notify(
+            partial ? `Run cancelled. ${partial.note} Its spec and any dataset snapshot remain.` : "Run cancelled before anything finished. Its spec and any dataset snapshot remain.",
+            "info",
+            { persist: true },
+          );
+        }
         break;
       }
       case "queue":
-        set({ queue: (data.runs as QueuedRun[] | undefined) ?? [] });
+        get().applyQueue({
+          project_session: (data.project_session as string | null | undefined) ?? null,
+          runs: (data.runs as QueuedRun[] | undefined) ?? [],
+          state: (data.state as QueueState | undefined) ?? "idle",
+          runner: (data.runner as string | null | undefined) ?? null,
+          error: (data.error as string | null | undefined) ?? null,
+        });
         break;
       case "runs.changed":
         // A run renamed, starred, archived or deleted, here or in another tab.
@@ -1164,8 +1287,8 @@ useStore.subscribe((state, prev) => {
 // read the history again on a slow timer until no such run is left.
 let elsewherePoll: ReturnType<typeof setInterval> | null = null;
 useStore.subscribe((state, prev) => {
-  if (state.runs === prev.runs) return;
-  const watching = state.runs.some((r) => r.status === "running" && r.elsewhere);
+  if (state.runs === prev.runs && state.queueRunner === prev.queueRunner) return;
+  const watching = state.runs.some((r) => r.status === "running" && r.elsewhere) || state.queueRunner !== null;
   if (watching && elsewherePoll === null) {
     elsewherePoll = globalThis.setInterval(() => void useStore.getState().refreshRuns(), ELSEWHERE_POLL_MS);
   } else if (!watching && elsewherePoll !== null) {

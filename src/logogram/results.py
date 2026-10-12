@@ -60,7 +60,9 @@ def compute_stats(
     indices: list[int] | None = None,
 ) -> SiteStats:
     """Statistics for all sites (with the corrections for their number), or for ``indices`` only
-    (rows then follow ``indices``)."""
+    (rows then follow ``indices``, and nothing is corrected: the corrections need every site).
+    A site's own statistics depend only on its rows and the resamples, so they are the same
+    either way."""
     if counts is None:
         counts = bootstrap_counts(spec, result)
     rows = slice(None) if indices is None else np.asarray(indices, dtype=np.int64)
@@ -79,6 +81,31 @@ def compute_stats(
         gap=result.gap,
         family=indices is None,
     )
+
+
+def by_site(stats: SiteStats, indices: list[int], n_sites: int) -> SiteStats:
+    """``stats`` for the sites ``indices`` (row i is site indices[i]) laid out by site index, with
+    NaN for the sites they leave out: for what compares sites by their index (a circuit's sets, a
+    steered site and its control), so whatever needs a site that isn't there is undefined."""
+    at = np.asarray(indices, dtype=np.int64)
+
+    def spread(values: np.ndarray | None) -> np.ndarray | None:
+        if values is None:
+            return None
+        out = np.full((n_sites, *values.shape[1:]), np.nan)
+        out[at] = values
+        return out
+
+    arrays = {
+        name: spread(getattr(stats, name))
+        for name in (
+            "effect", "effect_mean", "effect_sd", "effect_lo", "effect_hi", "delta",
+            "delta_mean", "delta_sd", "delta_lo", "delta_hi", "patched_mean", "pref_mean",
+            "prob_mean", "prob_delta_mean", "sign_flips", "opposite_sign", "effect_boot",
+            "delta_boot",
+        )
+    }  # fmt: skip
+    return SiteStats(n=stats.n, denominator=stats.denominator, **arrays)  # type: ignore[arg-type]
 
 
 def _stat(stats: SiteStats, name: str, i: int) -> dict[str, float | None]:
@@ -152,10 +179,18 @@ def build_summary(
     run_id: str,
     model: dict[str, Any] | None = None,
     chat_template: dict[str, Any] | None = None,
+    *,
+    kept: list[int] | None = None,
+    partial: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """summary.json. ``chat_template``: how the prompts were wrapped (logogram.chat), if they
-    were, for the methods text to say."""
+    """The summary of a run. ``chat_template``: how the prompts were wrapped (logogram.chat), if
+    they were, for the methods text to say. With ``kept`` (a run that stopped early), only those
+    sites are reported, and ``stats`` rows follow ``kept``; ``partial`` says what the run kept."""
     b = result.baselines
+    indices = list(range(len(result.sites))) if kept is None else list(kept)
+    # What compares sites by their index reads the statistics laid out by site.
+    aligned = stats if kept is None else by_site(stats, indices, len(result.sites))
+    reported = set(indices)
     normalization = spec.metric.normalization
     label = METRIC_LABELS[spec.metric.kind]
     description = describe_metric(spec.metric)
@@ -188,14 +223,21 @@ def build_summary(
         from logogram.steering import control_comparison, control_warnings
 
         steering = result.extra["steering"]
-        steering["control"] = control_comparison(result, stats, spec.statistics.ci)
+        control = [
+            c
+            for c in control_comparison(result, aligned, spec.statistics.ci)
+            if c["index"] in reported and c["control_index"] in reported
+        ]
+        steering["control"] = control
         warnings += control_warnings(
-            steering["control"], spec.statistics.ci, feature=steering.get("feature") is not None
+            control, spec.statistics.ci, feature=steering.get("feature") is not None
         )
     if "circuit" in result.extra:
         from logogram.circuits import circuit_summary
 
-        result.extra["circuit"].update(circuit_summary(result, stats, spec.statistics.ci))
+        circuit = circuit_summary(result, aligned, spec.statistics.ci)
+        circuit["rows"] = [r for r in circuit["rows"] if r["index"] in reported]
+        result.extra["circuit"].update(circuit)
     if result.measure == "estimate":
         how = (
             "integrated gradients along the way from receiver to source"
@@ -226,7 +268,7 @@ def build_summary(
         "description": describe_experiment(spec),
         "model": model,
         "n_prompts": len(result.prompts),
-        "n_sites": len(result.sites),
+        "n_sites": len(indices),
         "layout": result.layout,
         "receiver": result.receiver,
         "reference": result.reference,
@@ -257,7 +299,7 @@ def build_summary(
             ),
         },
         "baseline": baseline_payload(result),
-        "sites": site_payload(result, stats, list(range(len(result.sites)))),
+        "sites": site_payload(result, stats, indices),
         "per_prompt": {
             "clean_logit_diff": [_f(x) for x in b.clean_pref],
             "corrupt_logit_diff": [_f(x) for x in b.corrupt_pref],
@@ -274,6 +316,7 @@ def build_summary(
         **({"circuit": result.extra["circuit"]} if "circuit" in result.extra else {}),
         **({"attribution": result.extra["attribution"]} if "attribution" in result.extra else {}),
         **({"chat_template": chat_template} if chat_template is not None else {}),
+        **({"partial": partial} if partial is not None else {}),
     }
     return Summary.model_validate(summary).model_dump(mode="json")
 
@@ -289,46 +332,52 @@ def _n_clusters(spec: Spec, result: EngineResult) -> int | None:
     return len({str((p.record.meta or {}).get(key)) for p in result.prompts})
 
 
-def results_table(result: EngineResult, stats: SiteStats) -> pa.Table:
+def results_table(
+    result: EngineResult, stats: SiteStats, kept: list[int] | None = None
+) -> pa.Table:
     """Long format: one row per (site, prompt), with everything needed to recompute effects.
+    With ``kept`` (a run that stopped early), only those sites' rows, and ``stats`` rows follow
+    ``kept``; a site's ``site`` value is its index in the whole sweep either way.
 
     ``*_logit_diff`` columns hold the preference, log P(answer) − log P(distractor) (the logit
     difference for single tokens); ``*_metric`` columns hold the spec's metric."""
-    n_sites, n = result.patched.shape
-    site_idx = np.repeat(np.arange(n_sites, dtype=np.int32), n)
+    at = list(range(len(result.sites))) if kept is None else list(kept)
+    rows = np.asarray(at, dtype=np.int64)
+    n_sites, n = len(at), len(result.prompts)
+    position = np.repeat(np.arange(n_sites), n)
+    sites = [result.sites[i] for i in at]
     # The prompt's index in the dataset (a method may measure only some prompts, as steering
     # measures the held-out ones).
     prompt_idx = np.tile(np.array([p.index for p in result.prompts], dtype=np.int32), n_sites)
-    sites = result.sites
     columns = {
-        "site": site_idx,
+        "site": np.array([sites[i].index for i in position], dtype=np.int32),
         "kind": pa.array(
-            [sites[i].kind for i in site_idx], type=pa.dictionary(pa.int8(), pa.string())
+            [sites[i].kind for i in position], type=pa.dictionary(pa.int8(), pa.string())
         ),
-        "layer": np.array([sites[i].layer for i in site_idx], dtype=np.int16),
+        "layer": np.array([sites[i].layer for i in position], dtype=np.int16),
         "head": np.array(
-            [-1 if sites[i].head is None else sites[i].head for i in site_idx], dtype=np.int16
+            [-1 if sites[i].head is None else sites[i].head for i in position], dtype=np.int16
         ),
         "feature": np.array(
-            [-1 if sites[i].site.feature is None else sites[i].site.feature for i in site_idx],
+            [-1 if sites[i].site.feature is None else sites[i].site.feature for i in position],
             dtype=np.int32,
         ),
         "position": pa.array(
-            [sites[i].position_key() for i in site_idx], type=pa.dictionary(pa.int16(), pa.string())
+            [sites[i].position_key() for i in position], type=pa.dictionary(pa.int16(), pa.string())
         ),
         "variant": pa.array(
-            [sites[i].variant_key or "" for i in site_idx],
+            [sites[i].variant_key or "" for i in position],
             type=pa.dictionary(pa.int16(), pa.string()),
         ),
         "prompt": prompt_idx,
-        "patched_logit_diff": result.patched_pref.ravel(),
-        "patched_answer_prob": result.patched_prob.ravel(),
+        "patched_logit_diff": result.patched_pref[rows].ravel(),
+        "patched_answer_prob": result.patched_prob[rows].ravel(),
         "receiver_logit_diff": np.tile(result.receiver_pref, n_sites),
         "reference_logit_diff": np.tile(result.reference_pref, n_sites),
         "receiver_answer_prob": np.tile(result.receiver_prob, n_sites),
         "delta": stats.delta.ravel(),
         "effect": stats.effect.ravel(),
-        "patched_metric": result.patched.ravel(),
+        "patched_metric": result.patched[rows].ravel(),
         "receiver_metric": np.tile(result.receiver_metric, n_sites),
         "reference_metric": np.tile(result.reference_metric, n_sites),
     }

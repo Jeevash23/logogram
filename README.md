@@ -106,8 +106,20 @@ what is missing, right above **Run**.
 
 While a job runs, **Run** reads **Queue**: the experiment waits in line, listed under **Queued** in
 **History**, and starts when the jobs ahead of it end, whether they finish, fail or are cancelled.
-A queued run can be removed until it starts. The queue belongs to the open project and lives in
-the server's memory: changing projects or restarting `logogram` empties it.
+A queued run can be removed until it starts. The queue is kept in the project (in
+`.logogram/queue.json`, which git ignores), so restarting `logogram` or closing the project keeps
+it. It comes back paused, and nothing starts until you press **Start the queue** (or clear it);
+**Pause the queue** stops it starting more. `logogram queue` adds to the same queue and runs it
+without the app (see [Command line](#command-line)); one process at a time runs a queue, and the
+app says which one does.
+
+A run you cancel, or one that fails partway, keeps what finished: the layers every prompt ran at
+("Stopped after 7 of 12 layers: these are the layers that finished."), or for attribution patching
+and direct logit attribution every site over the prompts that finished. It opens like a finished
+run, with nothing drawn for the rest, and its statistics are those the whole run gives each kept
+site; the summary says what isn't kept, such as the q-values, which correct for every site of the
+sweep together. **History** marks it partial. It can be compared and exported, but a robustness
+check or a verification needs a finished run.
 
 When an action elsewhere replaces the experiment form (**Patch here**, **Edit and rerun**, staged
 sites), a notice offers to undo it. An unsaved form is kept in this browser for each project and
@@ -283,6 +295,10 @@ logogram robustness RUN       rerun with one choice changed (--experiment JSON, 
 logogram export RUN           a run's per-prompt values as CSV (-o FILE; --sites, --prompt-text)
 logogram report RUN           a run as one HTML page anyone can open (-o FILE, --hardware)
 logogram methods RUN          a run's methods paragraph
+logogram queue add SPEC.json  add a spec to the project's queue (the app shows the same queue)
+logogram queue list           the queued runs, and whether the queue is paused or who runs it
+logogram queue clear          take every run out of the queue, after asking (--yes doesn't ask)
+logogram queue run            run the queue to the end, one run at a time, without the app
 logogram tasks                the tasks Logogram writes prompts for, with their options
 logogram generate TASK        a seeded dataset for a task (-n N --seed S, --option NAME=VALUE)
 logogram models add PATH --name NAME   add a model folder on this machine (its files are hashed)
@@ -306,7 +322,16 @@ above it, or `--project PATH`; a run is its id or its folder.
 
 A failed run keeps its traceback in `traceback.txt`, without this machine's paths or names:
 `logogram show RUN` prints it, `logogram run --verbose` prints it as the run fails, and the app
-shows it under **Show details**. Ctrl+C during `logogram run` records the run as cancelled.
+shows it under **Show details**. Ctrl+C during `logogram run` records the run as cancelled, and
+keeps what finished; `logogram show RUN` prints a partial run with what it kept and what it
+doesn't, and `logogram list` marks it.
+
+`logogram queue run` works through the project's queue, overnight on a remote GPU say: each run's
+progress, then how it ended. A run that fails doesn't stop the queue, one that can't start (its
+dataset is gone) leaves it, and runs added meanwhile, here or in the app, run too. Ctrl+C stops
+the run in progress (it keeps what finished) and leaves the rest queued. While it runs the queue,
+the app shows the queue as running in another process and won't start it too; while the app runs
+it, `logogram queue run` says so and stops.
 
 `logogram run` writes a new experiment folder next to the original. When the spec came from a
 finished run, it also checks the new results against the old ones:
@@ -377,7 +402,8 @@ steered.continuations()   # what the steered model said, prompt by prompt and st
 Tables come back as pandas DataFrames when pandas is installed, and as pyarrow Tables otherwise.
 `lg.list_runs(project)` and `lg.load_run(project, run_id)` read runs made anywhere. A run that
 fails raises `lg.api.LogogramError` with the reason, and `lg.load_run(project, run_id).traceback`
-reads the traceback it kept. Interrupting the kernel records the run as cancelled.
+reads the traceback it kept. Interrupting the kernel records the run as cancelled, keeping what
+finished: `run.partial` says how far a run that stopped early got and what it doesn't keep.
 `run.rename("Name movers")`, `run.star()` and `run.archive()` change what the history shows
 (`run.title`, `run.starred`, `run.archived`), and `lg.delete_run(project, run)` deletes a run's
 folder for good.
@@ -454,6 +480,10 @@ tunnel or service that puts Logogram on another address is refused by design.
   (`logogram doctor` warns when the cache's disk is nearly full). For gated models, run
   `hf auth login` on the remote machine.
 * Settings and the list of recent projects are in `~/.config/logogram`.
+
+**Overnight runs.** Without the app, queue specs with `logogram queue add SPEC.json` and run them
+in `tmux` or `screen` with `logogram queue run`, which reuses the loaded model from one run to the
+next. The queue is the project's, so the app shows it too, and specs queued in the app run as well.
 
 **Copying runs back.** A project is a folder: copy it with `rsync` or `scp`, from your own
 computer.

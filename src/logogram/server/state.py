@@ -16,9 +16,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from logogram import runqueue
 from logogram.backends.base import Cancelled, ModelBackend
 from logogram.project import Project, config_dir, remember_recent
-from logogram.schema import RunListing, validate_event
+from logogram.runqueue import Queued, QueueError
+from logogram.schema import QueueRunner, RunListing, validate_event
 from logogram.spec import ModelRef, Spec
 
 log = logging.getLogger(__name__)
@@ -163,6 +165,11 @@ class QueuedRun:
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     queued_at: float = field(default_factory=time.time)
 
+    @classmethod
+    def of(cls, item: Queued, session: str) -> QueuedRun:
+        """A run of the project's saved queue, in the open project (``session``)."""
+        return cls(item.spec, session, item.draft_id, item.derived_from, item.id, item.queued_at)
+
     @property
     def title(self) -> str:
         return self.spec.name
@@ -193,10 +200,12 @@ class AppState:
         self.job: Job | None = None
         # Re-entrant, so the queue can decide that a run may start and start it in one hold.
         self._job_lock = threading.RLock()
-        # Runs waiting for the job in progress to end, first in line first (see queue_run). Only
-        # changed under _job_lock. The queue lives in memory, so it doesn't survive a restart of
-        # the server, and it belongs to the open project: switching or closing it empties it.
-        self._queue: list[QueuedRun] = []
+        # The open project's queue is kept in the project (logogram.runqueue), so it survives a
+        # restart of the server and closing the project. This server runs it while it holds it
+        # (see queue_run and start_queue): its runner record, and the job it started last. Only
+        # changed under _job_lock.
+        self._queue_hold: QueueRunner | None = None
+        self._queue_job: str | None = None
         self._stop = threading.Event()
         self._update_lock = threading.Lock()
 
@@ -250,6 +259,9 @@ class AppState:
 
     def stop(self) -> None:
         self._stop.set()
+        # The server is stopping: its queue stays in the project, paused.
+        with self._job_lock:
+            self._release_queue(publish=False)
 
     # -- settings ----------------------------------------------------------------------------
 
@@ -272,10 +284,12 @@ class AppState:
     # -- project -----------------------------------------------------------------------------
 
     def open_project(self, project: Project) -> None:
+        """Open ``project``. Runs it had queued come back paused: nothing starts on its own."""
         with self._job_lock:
             self._check_switch()
             mark_interrupted_runs(project)
-            self._clear_queue()
+            # The queue of the project open until now stays in it, paused.
+            self._release_queue(publish=False)
             self.project = project
         remember_recent(project)
         log.info("Opened the project %s", project.root)
@@ -295,7 +309,7 @@ class AppState:
                     "The project changed in another tab. Wait for this tab to refresh, then try again."
                 )
             self._check_switch()
-            self._clear_queue()
+            self._release_queue(publish=False)  # its queue stays in it, paused
             self.project = None
         self.hub.publish("project", {"session_id": None})
 
@@ -601,7 +615,7 @@ class AppState:
                     raise Conflict(
                         f"{draft_id} has run, so its spec stays as it ran. Save a new draft instead."
                     )
-                if any(item.draft_id == draft_id for item in self._queue):
+                if self._queued_draft(project, draft_id):
                     raise Conflict(
                         f"{draft_id} is queued to run as it was saved. Remove it from the queue "
                         "to change it, or save a new draft."
@@ -646,10 +660,56 @@ class AppState:
         return job
 
     # -- the run queue -----------------------------------------------------------------------
+    #
+    # The queue is the open project's, kept in the project (logogram.runqueue): it survives a
+    # restart of the server and closing the project, and `logogram queue add` adds to it. This
+    # server runs it while it holds it: from when runs are queued behind a job here on an empty
+    # queue, or someone starts it, until it is empty or paused. A queue that comes back with its
+    # project is paused, and only one process runs a queue at a time.
 
     def queued_runs(self) -> list[dict[str, Any]]:
-        """The runs waiting in the queue, first in line first."""
-        return [item.to_dict() for item in list(self._queue)]
+        """The runs waiting in the open project's queue, first in line first."""
+        project = self.project
+        if project is None:
+            return []
+        try:
+            items = runqueue.read_queue(project)
+        except (QueueError, OSError):
+            return []
+        return [QueuedRun.of(item, project.session_id).to_dict() for item in items]
+
+    def queue_status(self) -> dict[str, Any]:
+        """The open project's queue and how it stands (see schema.QueueChanged): ``waiting``
+        when this server starts its next run as the job in progress ends, ``running`` when one
+        of its runs is in progress here or another process runs it, ``paused`` when nothing
+        starts until it is started, ``idle`` when it is empty."""
+        project = self.project
+        if project is None:
+            return {"project_session": None, "runs": [], "state": "idle"}
+        error = None
+        try:
+            items = runqueue.read_queue(project)
+        except (QueueError, OSError) as exc:
+            items, error = [], _reason(exc)
+        runner = runqueue.queue_runner(project)
+        mine = self._queue_hold is not None and runner is not None
+        mine = mine and runner.token == self._queue_hold.token  # type: ignore[union-attr]
+        job = self.job
+        running = job is not None and job.status == "running"
+        if mine:
+            from_queue = running and job is not None and job.id == self._queue_job
+            state = "running" if from_queue else "waiting"
+        elif runner is not None:
+            state = "running"
+        else:
+            state = "paused" if items else "idle"
+        return {
+            "project_session": project.session_id,
+            "runs": [QueuedRun.of(item, project.session_id).to_dict() for item in items],
+            "state": state,
+            "runner": runqueue.runner_text(runner) if runner is not None and not mine else None,
+            "error": error,
+        }
 
     def queue_run(
         self,
@@ -657,8 +717,14 @@ class AppState:
         derived_from: dict[str, Any] | None = None,
         draft_id: str | None = None,
     ) -> Job | QueuedRun:
-        """Run ``spec`` after the jobs ahead of it: at once when nothing is running or waiting
-        (the job is returned), otherwise last in the queue (the queued run is returned).
+        """Run ``spec`` after the jobs ahead of it: at once when nothing is running here and the
+        queue isn't about to start runs (the job is returned), otherwise last in the queue (the
+        queued run is returned).
+
+        Queued behind a job here on an empty queue, it makes the queue this server's to run: its
+        runs start one at a time as each job ends. A paused queue (one that came back with its
+        project) stays paused: what is added waits for Start the queue. A queue that another
+        process runs (`logogram queue run`) gets the run at its end.
 
         When its turn comes it starts like any run, through ``run_spec_job``, which checks it
         again. What can be checked now is checked now, so a run that can't start isn't queued.
@@ -668,71 +734,172 @@ class AppState:
             self.require_project()  # check again under the switch/job lock
             job = self.job
             running = job is not None and job.status == "running"
-            if not running and not self._queue:
+            broken: QueueError | None = None
+            try:
+                items = runqueue.read_queue(project)
+            except QueueError as exc:
+                items, broken = [], exc
+            runner = runqueue.queue_runner(project)
+            mine = self._holds_queue(project)
+            if not running and (runner is None or mine) and not (mine and items):
                 return self.run_spec_job(spec, derived_from, draft_id)
+            if broken is not None:
+                raise broken
             self._check_run(project, spec, draft_id)
             if draft_id is not None:
                 if running and job is not None and job.run_id == draft_id:
                     raise Conflict(f"{draft_id} is running now. Queue a new run instead.")
-                if any(item.draft_id == draft_id for item in self._queue):
+                if any(item.draft_id == draft_id for item in items):
                     raise Conflict(f"{draft_id} is already queued. It runs when its turn comes.")
-            item = QueuedRun(spec, project.session_id, draft_id, derived_from)
-            self._queue.append(item)
+            item = runqueue.add_to_queue(
+                project, spec, draft_id=draft_id, derived_from=derived_from
+            )
+            if running and runner is None and not items:
+                # Behind the job in progress, on an empty queue: this server runs the queue. (A
+                # process that took it in the meantime runs it instead.)
+                with contextlib.suppress(Conflict):
+                    self._take_queue(project)
             self._publish_queue(project.session_id)
-        return item
+        return QueuedRun.of(item, project.session_id)
 
     def remove_queued_run(self, queued_id: str) -> list[dict[str, Any]]:
         """Take a run out of the queue before it starts. Returns the runs still waiting."""
         project = self.require_project()
         with self._job_lock:
             self.require_project()
-            item = next((q for q in self._queue if q.id == queued_id), None)
-            if item is None:
+            if runqueue.remove_from_queue(project, queued_id) is None:
                 raise Missing("That run isn't queued any more: it has started or was removed.")
-            self._queue.remove(item)
             self._publish_queue(project.session_id)
             return self.queued_runs()
 
-    def _start_next(self) -> None:
-        """Start the queue's next run, now that no job is running. A run that can't start (its
-        dataset was deleted, say) leaves the queue, the tabs are told why, and the next one is
-        tried. Called by every job's thread once the job has ended, so never two jobs at once."""
+    def start_queue(self) -> dict[str, Any]:
+        """Run the queue here (a paused one, say, that came back with its project): its next run
+        starts now if nothing is running, and the rest follow, one at a time. Refused, saying
+        who, while another process runs it."""
+        project = self.require_project()
         with self._job_lock:
-            while self._queue and (self.job is None or self.job.status != "running"):
-                item = self._queue[0]
+            self.require_project()
+            if not runqueue.read_queue(project):
+                raise Conflict("The queue is empty: there is nothing to start.")
+            if not self._holds_queue(project):
+                self._take_queue(project)
+            self._publish_queue(project.session_id)
+        self._start_next()
+        return self.queue_status()
+
+    def pause_queue(self) -> dict[str, Any]:
+        """Stop starting the queue's runs. The run in progress goes on; the rest wait, paused,
+        until the queue is started again."""
+        project = self.require_project()
+        with self._job_lock:
+            self.require_project()
+            if not self._holds_queue(project):
+                runner = runqueue.queue_runner(project)
+                if runner is not None:
+                    raise Conflict(
+                        f"The queue is being run by {runqueue.runner_text(runner)}, not here. Stop "
+                        "it there to pause it."
+                    )
+            self._release_queue()
+        return self.queue_status()
+
+    def clear_queue(self) -> dict[str, Any]:
+        """Take every run out of the queue, even a saved queue that can't be read. A run in
+        progress goes on; nothing starts after it."""
+        project = self.require_project()
+        with self._job_lock:
+            self.require_project()
+            runqueue.clear_queue(project)
+            self._release_queue()
+        return self.queue_status()
+
+    @staticmethod
+    def _queued_draft(project: Project, draft_id: str) -> bool:
+        """Whether the saved draft ``draft_id`` waits in the queue to run as it was saved."""
+        try:
+            return any(item.draft_id == draft_id for item in runqueue.read_queue(project))
+        except (QueueError, OSError):
+            return False
+
+    def _holds_queue(self, project: Project) -> bool:
+        """Whether this server runs the project's queue (and no one has taken it over)."""
+        hold = self._queue_hold
+        return hold is not None and runqueue.holds_queue(project, hold)
+
+    def _take_queue(self, project: Project) -> None:
+        try:
+            self._queue_hold = runqueue.take_queue(project, "app")
+        except runqueue.QueueBusy as exc:
+            raise Conflict(str(exc)) from exc
+
+    def _start_next(self) -> None:
+        """Start the queue's next run, now that no job is running, if this server runs the queue.
+        A run that can't start (its dataset was deleted, say) leaves the queue, the tabs are told
+        why, and the next one is tried. Once the queue is empty, this server lets go of it.
+        Called by every job's thread once the job has ended, so never two jobs at once."""
+        with self._job_lock:
+            while self._queue_hold is not None and (
+                self.job is None or self.job.status != "running"
+            ):
+                project = self.project
+                if project is None or not self._holds_queue(project):
+                    self._queue_hold = self._queue_job = None  # its project closed, or it was taken
+                    return
                 try:
-                    if self.project is None or self.project.session_id != item.project_session:
-                        raise Missing("Its project isn't open any more.")  # cleared on a switch
-                    self.run_spec_job(item.spec, item.derived_from, item.draft_id)
-                except Exception as exc:  # noqa: BLE001 - reported, and the next run is tried
-                    reason = _reason(exc)
+                    # Under the queue's lock: no other process changes the queue between reading
+                    # its first run, starting it and taking it out.
+                    with runqueue.locked(project):
+                        items = runqueue.read_queue(project)
+                        if not items:
+                            self._release_queue()
+                            return
+                        item = items[0]
+                        failure: Exception | None = None
+                        try:
+                            self._queue_job = self.run_spec_job(
+                                item.spec, item.derived_from, item.draft_id
+                            ).id
+                        except Exception as exc:  # noqa: BLE001 - reported, and the next is tried
+                            failure = exc
+                        # Only now, once the job has taken its place: the queue and the job never
+                        # both look idle while a run starts.
+                        runqueue.remove_from_queue(project, item.id)
+                except (QueueError, OSError) as exc:
+                    # Unreadable (the tabs hear why from the queue's error), or a run that would
+                    # start again and again: stop running the queue instead.
+                    log.warning("The queue stops: %s", _reason(exc))
+                    self._release_queue()
+                    return
+                if failure is not None:
+                    reason = _reason(failure)
                     log.warning("A queued run couldn't start: %s", reason)
                     skipped = {
-                        "project_session": item.project_session,
+                        "project_session": project.session_id,
                         "id": item.id,
                         "title": item.title,
                         "error": reason,
                     }
                     self.hub.publish("queue.skipped", validate_event("queue.skipped", skipped))
-                finally:
-                    # Only now, once the job has taken its place: the queue and the job never
-                    # both look idle while a run starts.
-                    self._queue.remove(item)
-                    self._publish_queue(item.project_session)
+                self._publish_queue(project.session_id)
 
-    def _publish_queue(self, session: str | None) -> None:
-        """Tell the tabs the whole queue. Called under _job_lock, so they hear the changes in
-        the order they were made."""
-        payload = {"project_session": session, "runs": self.queued_runs()}
-        self.hub.publish("queue", validate_event("queue", payload))
+    def _publish_queue(self, session: str | None = None) -> None:
+        """Tell the tabs the open project's whole queue and how it stands. Called under
+        _job_lock, so they hear the changes in the order they were made."""
+        self.hub.publish("queue", validate_event("queue", self.queue_status()))
 
-    def _clear_queue(self) -> None:
-        """The queue belongs to the open project: empty it when another project opens or this
-        one closes (under _job_lock, once the switch is allowed)."""
-        if self._queue:
-            session = self._queue[0].project_session
-            self._queue.clear()
-            self._publish_queue(session)
+    def _release_queue(self, publish: bool = True) -> None:
+        """Stop running the open project's queue (under _job_lock): it stays in the project,
+        paused, until it is started again. When it is empty or paused, and when its project
+        closes or the server stops."""
+        hold, self._queue_hold, self._queue_job = self._queue_hold, None, None
+        project = self.project
+        if hold is not None and project is not None:
+            try:
+                runqueue.release_queue(project, hold)
+            except (QueueError, OSError, ValueError) as exc:  # its record goes when we do
+                log.warning("Couldn't let go of the queue: %s", _reason(exc))
+        if publish and project is not None:
+            self._publish_queue(project.session_id)
 
     # -- managing runs -----------------------------------------------------------------------
 
@@ -762,7 +929,7 @@ class AppState:
                 raise RunInUse(
                     f"{name} is running. Wait for it to end, or cancel it, then delete it."
                 )
-            if any(item.draft_id == run_id for item in self._queue):
+            if self._queued_draft(project, run_id):
                 raise RunInUse(
                     f"{name} is waiting in the queue to run. Take it out of the queue first, then "
                     "delete it."

@@ -6,6 +6,7 @@ be used are refused with what to do, and no template at all reads exactly as bef
 from __future__ import annotations
 
 import json
+import threading
 
 import numpy as np
 import pyarrow.parquet as pq
@@ -229,6 +230,28 @@ def test_a_run_wraps_its_prompts_and_records_the_template(chat_backend, project,
         "prepend_bos": False,
         "chat_template": {"kind": "user_turn", "system": None},
     }
+
+
+def test_a_run_that_stopped_early_says_how_its_prompts_were_wrapped(
+    chat_backend, project, spec_factory
+):
+    spec = _spec(
+        spec_factory,
+        USER,
+        dataset={"path": "datasets/ioi.jsonl", "limit": 6},
+        scope={"kind": "heads", "position": {"kind": "all"}},
+    )
+    cancel = threading.Event()
+
+    def on_event(kind: str, data: dict) -> None:
+        if kind == "layer":
+            cancel.set()
+
+    outcome = run_spec(spec, project, backend=chat_backend, on_event=on_event, cancel=cancel)
+    assert outcome.status == "cancelled"
+    assert outcome.summary is not None and outcome.summary["partial"]["unit"] == "layers"
+    assert outcome.summary["chat_template"]["sha256"] == TEMPLATE_SHA
+    assert outcome.manifest["chat_template"] == {"kind": "user_turn", "sha256": TEMPLATE_SHA}
 
 
 def test_the_same_spec_with_a_template_gives_identical_results(chat_backend, project, spec_factory):

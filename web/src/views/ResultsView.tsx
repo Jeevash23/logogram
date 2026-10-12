@@ -87,6 +87,9 @@ export function ResultsView() {
   const elsewhere = status === "running" && run.live?.status !== "running" && !!listing?.elsewhere;
   const summary = run.detail?.summary;
   const manifest = run.detail?.manifest;
+  // A cancelled or failed run that kept what finished: its results are shown like a finished
+  // run's, with a note saying how far it got.
+  const partial = status === "cancelled" || status === "failed" ? summary?.partial ?? listing?.partial ?? null : null;
   const layout = run.layout;
   const selectedSite = findSite(run.sites, selection);
 
@@ -153,6 +156,7 @@ export function ResultsView() {
               </Button>
             </>
           )}
+          {partial && run.detail && <ExportMenu runId={run.id} detail={run.detail} />}
           {spec && (status === "failed" || status === "cancelled" || status === "draft") && (
             <Button
               variant={status === "draft" ? "primary" : "secondary"}
@@ -175,15 +179,34 @@ export function ResultsView() {
           Its results appear here when it finishes.
         </Callout>
       )}
-      {status === "failed" && (
+      {partial && (
+        <Callout
+          tone={status === "failed" ? "error" : undefined}
+          title={status === "failed" ? "This run failed before it finished" : "This run was cancelled before it finished"}
+        >
+          <strong>{partial.note}</strong> Nothing is drawn for the rest. Their statistics are computed as for a finished run.
+          {(manifest?.error ?? listing?.error) && <> {manifest?.error ?? listing?.error}</>}
+          {partial.left_out.length > 0 && (
+            <ul className={r.leftOut} aria-label="What this run doesn't keep">
+              {partial.left_out.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          )}
+          {status === "failed" && run.detail?.traceback && <FailureDetails key={run.id} traceback={run.detail.traceback} />}
+        </Callout>
+      )}
+      {status === "failed" && !partial && (
         <Callout tone="error" title="This run failed">
           {manifest?.error ?? listing?.error ?? "No error message was recorded."}
           {run.detail?.traceback && <FailureDetails key={run.id} traceback={run.detail.traceback} />}
         </Callout>
       )}
-      {status === "cancelled" && (
+      {status === "cancelled" && !partial && (
         <Callout title="This run was cancelled">
-          {manifest?.error ? `${manifest.error} ` : ""}Its spec and any dataset snapshot were kept. Partial results were discarded.
+          {manifest?.error ? `${manifest.error} ` : ""}Its spec and any dataset snapshot were kept. It has no results: either
+          nothing had finished when it stopped, or it ran on a version of Logogram before 0.5, which didn't keep what
+          finished.
         </Callout>
       )}
       {status === "draft" && !run.live && (
@@ -365,6 +388,7 @@ export function ResultsView() {
               selection={selection}
               showValues={cellValues}
               running={status === "running"}
+              partial={!!partial}
             />
           </div>
           <div className={r.side}>
@@ -462,6 +486,7 @@ function ResultsHeatmap({
   selection,
   showValues,
   running,
+  partial,
 }: {
   layout: Layout;
   sites: SiteBase[];
@@ -476,6 +501,8 @@ function ResultsHeatmap({
   selection: Selection | null;
   showValues: boolean;
   running: boolean;
+  /** A run that stopped early: its missing sites weren't measured. */
+  partial: boolean;
 }) {
   const select = useStore((st) => st.select);
   const grid = useMemo(() => siteGrid(sites), [sites]);
@@ -539,6 +566,7 @@ function ResultsHeatmap({
       showValues={showValues}
       format={formatCell}
       fade={running}
+      missing={partial ? "Not measured" : undefined}
       selected={selected}
       flagged={isFlagged}
       onSelect={onSelect}

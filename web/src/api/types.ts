@@ -105,6 +105,24 @@ export interface QueuedRun {
   queued_at: number;
 }
 
+/** How the open project's queue stands: "waiting" (its next run starts when the job in progress
+ * ends), "running" (one of its runs is in progress, here or in another process, and the next
+ * follows), "paused" (nothing starts until it is started: a queue that comes back with its project
+ * is paused) or "idle" (empty). */
+export type QueueState = "idle" | "waiting" | "running" | "paused";
+
+/** The open project's queue, kept in the project, and how it stands (GET /api/queue/state and
+ * the "queue" event). */
+export interface QueueStatus {
+  project_session: string | null;
+  runs: QueuedRun[];
+  state: QueueState;
+  /** Who runs it, when another process does: "`logogram queue run` (process 1234)". */
+  runner?: string | null;
+  /** Why the project's saved queue can't be read, and how to fix it. */
+  error?: string | null;
+}
+
 /** A run sent to the queue: started at once when nothing was running (run_id and job), or
  * waiting its turn (queued). */
 export interface QueueAdded {
@@ -162,6 +180,8 @@ export interface ServerState {
   sae?: SAEStatus;
   /** The runs waiting for the job in progress, first in line first. */
   queue?: QueuedRun[];
+  /** The same runs, how the queue stands, and who runs it. */
+  queue_status?: QueueStatus | null;
 }
 
 export interface RecentProject {
@@ -677,6 +697,8 @@ export interface Summary {
     before: string;
     after: string;
   } | null;
+  /** A run that stopped before the end: what it kept. Absent or null for a finished run. */
+  partial?: PartialRun | null;
 }
 
 export interface SummaryMetric {
@@ -876,6 +898,27 @@ export interface RunListing {
   /** The run's spec can't be read: `error` says what is wrong and how to fix it. Its folder can
    * be deleted; it can't be opened. */
   damaged?: boolean;
+  /** A cancelled or failed run that kept what finished. */
+  partial?: PartialRun | null;
+}
+
+/** What a run that stopped before the end (cancelled, or failed mid-sweep) kept. A sweep that goes
+ * layer by layer (site by site, set by set) keeps the sites every prompt ran at; a method that
+ * measures every site at once keeps every site over the prompts that finished. Statistics come
+ * from the kept rows as for a finished run. */
+export interface PartialRun {
+  status: "cancelled" | "failed";
+  unit: "layers" | "sites" | "sets" | "prompts";
+  done: number;
+  total: number;
+  sites: number;
+  sites_total: number;
+  prompts: number;
+  prompts_total: number;
+  /** "Stopped after 7 of 12 layers: these are the layers that finished." */
+  note: string;
+  /** What the run doesn't keep, or keeps over the finished part only. */
+  left_out: string[];
 }
 
 /** A change to what is said about a run. What is left out stays; a title of "" or null (or the
@@ -1206,6 +1249,9 @@ export interface Comparison {
   n_differs?: number;
   /** Versions or devices the two manifests differ in: these alone can change the last digits. */
   environment_differences?: EnvironmentDifference[];
+  /** A run that stopped early: what it kept (only the sites both runs have are compared). */
+  partial_a?: PartialRun | null;
+  partial_b?: PartialRun | null;
 }
 
 export interface EnvironmentDifference {

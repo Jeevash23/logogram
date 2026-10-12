@@ -408,3 +408,13 @@
   color: var(--muted);
   font-size: var(--text-sm);
 }
+
+/* What a run that stopped early doesn't keep, under the note that says how far it got. */
+.leftOut {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.leftOut li + li {
+  margin-top: 2px;
+}

@@ -9,6 +9,8 @@ from pydantic import BaseModel, ConfigDict
 from logogram.schema import (
     ContinuationsFile,
     GeneratedTokens,
+    PartialRun,
+    QueueChanged,
     QueuedRunInfo,
     RunListing,
     SiteSummary,
@@ -185,6 +187,8 @@ class ServerState(_Out):
     sae: dict[str, Any] = {"state": "none"}
     # The runs waiting for the job in progress, first in line first.
     queue: list[QueuedRunInfo] = []
+    # The same runs, and how the queue stands (waiting, running, paused), and who runs it.
+    queue_status: QueueChanged | None = None
 
 
 class Settings(BaseModel):
@@ -715,6 +719,9 @@ class Comparison(_Out):
     n_differs: int = 0
     # Versions or devices that differ: these alone can change results in the last digits.
     environment_differences: list[EnvironmentDifference] = []
+    # A run that stopped early: what it kept (only the sites both runs have are compared).
+    partial_a: PartialRun | None = None
+    partial_b: PartialRun | None = None
 
 
 class EnvironmentOut(_Out):

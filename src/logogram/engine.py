@@ -125,6 +125,10 @@ def empty_values(n_sites: int, n: int) -> tuple[np.ndarray, np.ndarray, np.ndarr
 
 ProgressFn = Callable[[int, int, int], None]  # (rows done, rows total, current layer)
 LayerFn = Callable[[int, list[int], "EngineResult"], None]  # (layer, sites done, partial)
+# Methods that measure every site in one pass per batch of prompts report the prompts they have
+# finished: their positions in the prompt list, and a function that builds the result over just
+# those prompts, as a run of only them would give it (for a run that stops early).
+PromptsFn = Callable[[list[int], Callable[[], "EngineResult"]], None]
 
 
 def _chunks(n: int, size: int) -> Iterator[slice]:
@@ -477,8 +481,12 @@ def run_experiment(
     prompts: list[PreparedPrompt],
     **kwargs: Any,
 ) -> EngineResult:
-    """Run whichever experiment the spec describes. The app and the CLI both come through here."""
+    """Run whichever experiment the spec describes. The app and the CLI both come through here.
+
+    Sweeps report the sites they finish through ``on_layer``; the methods that measure every site
+    in one pass per batch of prompts report the prompts they finish through ``on_prompts``."""
     sae = kwargs.pop("sae", None)
+    on_prompts: PromptsFn | None = kwargs.pop("on_prompts", None)
     if isinstance(spec.scope, FeaturesScope) or (
         isinstance(spec.scope, SitesScope)
         and any(s.kind == "sae_feature" for s in spec.scope.sites)
@@ -491,11 +499,11 @@ def run_experiment(
     if isinstance(spec.experiment, DirectLogitAttribution):
         from logogram.direct import run_direct_effects
 
-        return run_direct_effects(spec, backend, prompts, **kwargs)
+        return run_direct_effects(spec, backend, prompts, on_prompts=on_prompts, **kwargs)
     if isinstance(spec.experiment, AttributionPatching):
         from logogram.atp import run_attribution_patching
 
-        return run_attribution_patching(spec, backend, prompts, **kwargs)
+        return run_attribution_patching(spec, backend, prompts, on_prompts=on_prompts, **kwargs)
     if isinstance(spec.experiment, Steering):
         from logogram.steering import run_steering
 

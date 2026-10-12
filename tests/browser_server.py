@@ -15,11 +15,15 @@ os.environ["MKL_NUM_THREADS"] = "1"
 PORT = int(os.environ.get("LOGOGRAM_BROWSER_PORT", "8877"))
 # Runs with this name wait until they are cancelled, so the checks can queue runs behind one.
 HELD_RUN = "Held run"
+# Runs with this name are cancelled once their first layer has finished, so the checks can show
+# a run that stopped early and kept what finished.
+PARTIAL_RUN = "Partial run"
 
 
 def hold_runs() -> None:
     """Make runs named HELD_RUN wait, before they start, until they are cancelled (or for five
-    minutes at most, so a check that forgets to cancel one can't stall the server)."""
+    minutes at most, so a check that forgets to cancel one can't stall the server), and runs
+    named PARTIAL_RUN stop after their first layer."""
     from logogram import runner
 
     run_spec = runner.run_spec
@@ -28,6 +32,16 @@ def hold_runs() -> None:
         cancel = kwargs.get("cancel")
         if spec.name == HELD_RUN and cancel is not None:
             cancel.wait(300)
+        if spec.name == PARTIAL_RUN and cancel is not None:
+            given = kwargs.get("on_event")
+
+            def on_event(kind: str, data: dict[str, Any]) -> None:
+                if given is not None:
+                    given(kind, data)
+                if kind == "layer":
+                    cancel.set()
+
+            kwargs["on_event"] = on_event
         return run_spec(spec, project, **kwargs)
 
     runner.run_spec = held

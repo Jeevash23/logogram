@@ -38,6 +38,6 @@ async function violations(page: Page): Promise<Violation[]> {
 }
 
 /** No violations once the view settles (three seconds to come clean, as in a11y.browser.ts). */
-export async function expectAccessible(page: Page, view: string) {
+export async function expectAccessible(page: Page, view: string): Promise<void> {
   await expect.poll(() => violations(page), { message: `${view} has accessibility violations`, timeout: 3_000 }).toEqual([]);
 }

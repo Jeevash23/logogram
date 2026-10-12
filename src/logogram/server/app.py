@@ -50,7 +50,14 @@ from logogram.research import (
     read_notebook,
     save_note,
 )
-from logogram.schema import ContinuationsFile, Manifest, QueuedRunInfo, RunListing, Summary
+from logogram.schema import (
+    ContinuationsFile,
+    Manifest,
+    QueueChanged,
+    QueuedRunInfo,
+    RunListing,
+    Summary,
+)
 from logogram.server import models as M
 from logogram.server.security import SecurityConfig, SecurityMiddleware
 from logogram.server.state import AppState, Conflict, EventHub, Job, Missing, request_project
@@ -575,13 +582,14 @@ def create_app(
     def get_state() -> dict[str, Any]:
         settings = state.settings()
         # Before the job: a run leaves the queue only once its job has started.
-        queue = state.queued_runs()
+        queue = state.queue_status()
         return {
             "version": __version__,
             "project": state.project.to_dict() if state.project else None,
             "model": state.model_payload(),
             "job": state.job.to_dict() if state.job else None,
-            "queue": queue,
+            "queue": queue["runs"],
+            "queue_status": queue,
             "first_run": not settings.get("system_check_seen", False),
             # Until someone picks one, the app follows the computer's light or dark setting.
             "theme": settings.get("theme", "system"),
@@ -1445,9 +1453,14 @@ def create_app(
         return _read_run(state.require_project(), run_id)
 
     def _finished(project: Project, run_id: str) -> None:
+        """A run with results: finished, or stopped early with what finished kept (the files say
+        it is partial)."""
         listing = project.run_listing(run_id)
-        if listing is None or listing.status != "finished":
-            raise Conflict("Only finished runs can be exported. Select a finished run first.")
+        if listing is None or (listing.status != "finished" and listing.partial is None):
+            raise Conflict(
+                "Only a run with results can be exported: a finished run, or one that stopped "
+                "early and kept what finished. Select one first."
+            )
 
     @app.get("/api/runs/{run_id}/export.csv")
     def export_run(run_id: str, text: bool = False) -> StreamingResponse:
@@ -1572,10 +1585,11 @@ def create_app(
 
     @app.post("/api/runs/{run_id}/robustness", response_model=M.StartedRun)
     def robustness(run_id: str, body: RobustnessRequest) -> dict[str, Any]:
-        from logogram.robustness import robustness_spec
+        from logogram.robustness import require_finished, robustness_spec
 
         project = state.require_project()
         original = Spec.from_path(project.readable(project.run_dir(run_id) / "spec.json"))
+        require_finished(project, run_id, "Checking robustness")
         variant, change = robustness_spec(original, experiment=body.experiment, dtype=body.dtype)
         job = state.run_spec_job(
             variant, derived_from={"run": run_id, "kind": "robustness", "change": change}
@@ -1585,10 +1599,12 @@ def create_app(
     @app.post("/api/runs/{run_id}/verify", response_model=M.StartedRun)
     def verify(run_id: str, body: VerifyRequest) -> dict[str, Any]:
         """Patch, for real, the sites an attribution patching run estimated to matter most."""
+        from logogram.robustness import require_finished
         from logogram.verify import verification_spec
 
         project = state.require_project()
         run = _read_run(project, run_id)
+        require_finished(project, run_id, "Verifying by patching")
         if not run["summary"]:
             raise ValueError("Only a finished run can be verified.")
         spec = verification_spec(Spec.model_validate(run["spec"]), run["summary"], body.top)
@@ -1668,6 +1684,28 @@ def create_app(
     @app.delete("/api/queue/{queued_id}", response_model=list[QueuedRunInfo])
     def remove_queued_run(queued_id: str) -> list[dict[str, Any]]:
         return state.remove_queued_run(queued_id)
+
+    @app.get("/api/queue/state", response_model=QueueChanged)
+    def queue_status() -> dict[str, Any]:
+        """The queue and how it stands: waiting, running (here or in another process, which it
+        names), paused or idle. It is kept in the project, so another process can change it."""
+        state.require_project()
+        return state.queue_status()
+
+    @app.post("/api/queue/start", response_model=QueueChanged)
+    def start_queue() -> dict[str, Any]:
+        """Run the queue here: its next run starts now if nothing is running."""
+        return state.start_queue()
+
+    @app.post("/api/queue/pause", response_model=QueueChanged)
+    def pause_queue() -> dict[str, Any]:
+        """Start no more of the queue's runs; the run in progress goes on."""
+        return state.pause_queue()
+
+    @app.delete("/api/queue", response_model=QueueChanged)
+    def clear_queue() -> dict[str, Any]:
+        """Take every run out of the queue."""
+        return state.clear_queue()
 
     # -- events ------------------------------------------------------------------------------
 
