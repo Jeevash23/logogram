@@ -13,6 +13,7 @@ hold together with the run's confidence level) and Benjamini–Hochberg q-values
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, cast
 
 import numpy as np
 
@@ -267,7 +268,10 @@ def _site_stats_in_chunks(
     stats = SiteStats(
         n=parts[0].n,
         denominator=parts[0].denominator,
-        **{name: np.concatenate([getattr(p, name) for p in parts]) for name in fields},
+        **cast(
+            dict[str, Any],
+            {name: np.concatenate([getattr(p, name) for p in parts]) for name in fields},
+        ),
     )
     if family and stats.n >= 2:
         stats.band_lo = np.full(S, np.nan)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pyarrow as pa
@@ -101,7 +101,10 @@ def take_rows(stats: SiteStats, rows: list[int]) -> SiteStats:
         n=stats.n,
         denominator=stats.denominator,
         band_level=stats.band_level,
-        **{name: None if value is None else value[at] for name, value in arrays.items()},
+        **cast(
+            dict[str, Any],
+            {name: None if value is None else value[at] for name, value in arrays.items()},
+        ),
     )
 
 

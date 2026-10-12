@@ -398,7 +398,7 @@ def edge_cost(
     batches = sum(math.ceil(len(g.members) / batch_size) for g in groups)
     length = max(g.length for g in groups)
     rows = min(batch_size, max(len(g.members) for g in groups))
-    steps = exp.steps if exp.method == "integrated_gradients" else 1
+    steps = (exp.steps or 1) if exp.method == "integrated_gradients" else 1
     curve = exp.curve
     # The curve's circuits: each number of edges the graph has, strongest and in each random
     # draw, and every edge. Its batches first capture the senders on the source prompts.
@@ -1228,8 +1228,10 @@ def edge_table(result: EngineResult, stats: Any) -> Any:
         return np.asarray(values, dtype=np.float64)
 
     sites = result.sites
-    edges = [s.edge for s in sites]
-    assert all(e is not None for e in edges)
+    edges: list[Edge] = []
+    for s in sites:
+        assert s.edge is not None
+        edges.append(s.edge)
     nan = np.full(len(sites), np.nan)
     band_lo = nan if stats.band_lo is None else stats.band_lo
     band_hi = nan if stats.band_hi is None else stats.band_hi
@@ -1238,21 +1240,21 @@ def edge_table(result: EngineResult, stats: Any) -> Any:
         {
             "edge": np.array([s.index for s in sites], dtype=np.int32),
             "label": [s.label for s in sites],
-            "sender": [e.sender.kind for e in edges],  # type: ignore[union-attr]
+            "sender": [e.sender.kind for e in edges],
             "sender_layer": np.array(
-                [-1 if e.sender.layer is None else e.sender.layer for e in edges],  # type: ignore[union-attr]
+                [-1 if e.sender.layer is None else e.sender.layer for e in edges],
                 dtype=np.int16,
             ),
             "sender_head": np.array(
-                [-1 if e.sender.head is None else e.sender.head for e in edges],  # type: ignore[union-attr]
+                [-1 if e.sender.head is None else e.sender.head for e in edges],
                 dtype=np.int16,
             ),
             "receiver": [
                 "logits"
-                if isinstance(e.receiver, LogitsReceiver)  # type: ignore[union-attr]
+                if isinstance(e.receiver, LogitsReceiver)
                 else "mlp"
-                if isinstance(e.receiver, MlpReceiver)  # type: ignore[union-attr]
-                else e.receiver.input  # type: ignore[union-attr]
+                if isinstance(e.receiver, MlpReceiver)
+                else e.receiver.input
                 for e in edges
             ],
             "receiver_layer": np.array(
