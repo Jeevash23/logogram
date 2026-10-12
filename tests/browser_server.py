@@ -108,6 +108,14 @@ def main() -> None:
 
             state.sae = exact_sae(root / "sae", backend.info.d_model)
             state.sae_status = {"state": "ready"}
+        # A catalogue of published SAEs for the tiny model in place of SAELens's registry, whose
+        # SAE local/exact (the same SAE as above) loads from a folder in place of Hugging Face.
+        import logogram.backends.catalogue as catalogue
+        from catalogue_fixture import fixture_catalogue, serve_published
+
+        tiny_catalogue = fixture_catalogue(f"tiny-{arch}", backend.info.d_model)
+        catalogue.load_catalogue = lambda: tiny_catalogue
+        serve_published(setattr, root / "published", backend.info.d_model)
         hold_runs()
         uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning", access_log=False)
 

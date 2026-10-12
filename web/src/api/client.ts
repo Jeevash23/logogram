@@ -21,6 +21,7 @@ import type {
   TaskInfo,
   ModelPreset,
   ModelStatus,
+  SAECatalogue,
   SAEFit,
   SAEStatus,
   TokenFeatures,
@@ -313,6 +314,9 @@ export const api = {
   deleteRun: (id: string) => request<{ ok: boolean }>("DELETE", `/api/runs/${encodeURIComponent(id)}`),
 
   saeSuggestions: (model: string) => get<{ repo: string; detail: string }[]>(`/api/sae/suggestions?model=${encodeURIComponent(model)}`),
+  /** The published SAEs for a model from the catalogue that ships with Logogram: nothing is fetched. */
+  saeCatalogue: (model: string, query: string, limit = 100) =>
+    get<SAECatalogue>(`/api/sae/catalogue?model=${encodeURIComponent(model)}&q=${encodeURIComponent(query)}&limit=${limit}`),
   saeFolders: (repo: string) => get<{ repo: string; revision: string; folders: string[] }>(`/api/sae/folders?repo=${encodeURIComponent(repo)}`),
   loadSae: (ref: { repo: string; path: string; revision: string | null }) => post<Job>("/api/sae/load", ref),
   unloadSae: () => post<SAEStatus>("/api/sae/unload"),
