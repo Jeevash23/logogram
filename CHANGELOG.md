@@ -2,6 +2,114 @@
 
 What changed in each version of Logogram.
 
+## 0.6.0 (2026-10-12)
+
+Interventions on single queries, keys, values and neurons, and on the edges between components,
+estimated by edge attribution and checked by path patching. Prompt pairs whose prompts tokenize
+to different lengths. Published SAEs found by name. Two toy models whose circuits are known, to
+check every method against.
+
+### Added
+
+- **Queries, keys, values and neurons as sites.**
+  - Site kinds `q`, `k` and `v`: one head's query, or one key/value head's key or value. With
+    grouped-query attention, a key/value head is read by every query head of its group.
+  - Site kind `neuron`: one MLP neuron's activation after the nonlinearity (for a gated MLP, the
+    gate's activation times the up projection).
+  - The scopes `head_inputs` and `neurons`.
+
+  When a model loads, Logogram measures what these sites assume:
+
+  - queries, keys and values together reproduce the attention output, and neurons the MLP
+    output;
+  - replacing one changes only the heads that read it.
+
+  It offers only the sites that hold, and says why for the rest. Activation patching, ablation,
+  attribution patching and sets of sites take them. Direct logit attribution reads neurons and
+  values, and refuses queries and keys with the reason. Results show head inputs as the layer ×
+  head map. Neurons are shown layer by layer: the distribution of every neuron's effect, beside
+  the strongest.
+- **Edge attribution** (`edge_attribution`, with the `graph` scope). EAP (Syed et al. 2023) and
+  EAP-IG (Hanna et al. 2024) estimate every edge of the model's graph. An edge runs from the
+  embeddings, a head or an MLP into a later head's query, key or value, a later MLP's input, or
+  the logits.
+  - Each receiver reads its own copy of the residual stream. Before the first use, the backend
+    measures that this reproduces the model.
+  - A run keeps every edge's per-prompt values and statistics, and its corrections count every
+    edge.
+  - An optional faithfulness curve patches the k strongest edges together (or every edge but
+    them), beside edges chosen at random with a seed.
+  - **Verify** path-patches the strongest edges one at a time (the `edges` scope). It puts each
+    estimate beside its measurement, with their rank correlation (`logogram verify`,
+    `lg.verify_run`, `lg.edge_verification`).
+  - Before a run starts, the app says the graph's size, the passes and the memory it needs.
+  - The app draws the strongest edges, with the curve and the verification beside them. The
+    report draws them as SVG.
+
+  Path patching also takes MLP receivers, and the embeddings as a sender.
+- **Prompt pairs of different lengths.** Such a pair is usable when `corrupt_positions` labels
+  the same positions in the corrupt prompt as `positions` does in the clean one.
+  - A site at a label or at the last token is patched from the source prompt's token there into
+    the receiver's.
+  - Where a value is carried between such prompts, every position and token indices are refused.
+    So are integrated gradients, edge attribution and sets that replace every position. Each
+    refusal names the pairs and says what to choose instead.
+  - Datasets of equal-length pairs give the same numbers as before, bit for bit.
+  - The prompts table, the token strip and the editor show both prompts lined up by label.
+  - The form offers only positions a method can match, and a run says which of its pairs were
+    matched this way.
+  - Task generators take `full_vocabulary`: words of several tokens are kept, and both prompts
+    are labelled.
+- **Published SAEs by name.** Logogram ships a catalogue of the 13,857 SAEs in the 170 releases
+  of SAELens's registry (sae-lens 6.54.0). Each entry gives the SAE's model, hook, width and
+  architecture, and whether Logogram reads it exactly or why not; 440 were checked on their real
+  files.
+  - **Load an SAE** searches the loaded model's SAEs by release, hook, layer and width.
+  - `logogram saes MODEL`, `lg.list_saes` and `lg.load_sae(release=..., sae_id=...)` do the same.
+  - Nothing is fetched to list them. Specs still record the repository, folder and revision.
+- **Toy models whose circuits are known.** Two small GPT-2 checkpoints have weights set by hand:
+  - an induction toy: a previous-token head, and an induction head that reads it through its key;
+  - an IOI toy: GPT-2 small's circuit with one head per step.
+
+  `logogram toy NAME` and `lg.toy_model(name)` write a project holding the model, its datasets,
+  and experiments whose notes say what each method should find. The model is added to the local
+  models and named by the hash of its files, the same on every machine. Loading a toy checks that
+  it solves its prompts and that its planted heads attend as built.
+
+  Tests check every method against the toys:
+  - patching, path patching, edges, sets of sites, direct logit attribution, steering and the
+    head finder;
+  - attribution patching and edge attribution. These are exact where the path is linear and blind
+    through saturated attention. Integrated gradients recover what one gradient misses where the
+    path between the prompts is smooth enough.
+- **Documentation**:
+  - a page on edge attribution;
+  - a guide to checking a method on a toy model;
+  - the pages on activation patching, attribution patching, path patching, direct logit
+    attribution, circuits, SAE features and the model checks now cover the new sites, pairs of
+    different lengths and published SAEs by name.
+
+### Changed
+
+- Spec version 3 is unchanged. The new sites, scopes and experiment are new members of its
+  unions, and every existing spec reads and runs as before.
+- These SAEs now load:
+  - SAELens's earlier files that hold a `scaling_factor` of ones their configuration doesn't
+    mention (ones change nothing).
+
+  These are refused before anything is downloaded, saying why:
+
+  - any other `scaling_factor`;
+  - normalizing activations;
+  - settings that SAELens's registry applies but a configuration doesn't state.
+
+### Fixed
+
+- On Windows, taking the last run out of the queue while a tab read it stopped the queue with the
+  run still in it. Removing a file being read now retries briefly there, as replacing one did.
+- A word that a word-level tokenizer doesn't know was taken for a single token, its unknown token,
+  which stands for every such word. It no longer is.
+
 ## 0.5.0 (2026-10-12)
 
 Chat models on their own template, your own fine-tunes, findings checked across seeds and
