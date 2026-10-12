@@ -215,7 +215,7 @@ function Details({ sae, busy, onLoad, loadRef }: { sae: CatalogueSAE; busy: bool
           Logogram reads it exactly, as its configuration states it
           {sae.verified
             ? sae.verified.read === "weights"
-              ? `; its files at ${shortRevision(sae.verified.revision)} were read whole${fit ? ` and explain ${pct(fit.variance_explained)} of the variance of ${fit.model}'s activations over ${count(fit.tokens)} tokens` : ""}`
+              ? `; its files at ${shortRevision(sae.verified.revision)} were read whole${fit ? ` and explain ${pct(fit.variance_explained)} of the variance of ${fit.model}'s activations over ${count(fit.tokens)} tokens of plain text, with weight processing ${fit.process_weights ? "on" : "off"}` : ""}`
               : `; its weights file's header at ${shortRevision(sae.verified.revision)} agrees`
             : ""}
           . Loading downloads its configuration and weights at the repository's current commit, which specs record, and checks them again.

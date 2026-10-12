@@ -16,13 +16,19 @@ its configuration states, and whether Logogram reads it exactly or why not. That
 Logogram's own readers from the configuration (``logogram.backends.saes.read_config``, the checks
 reading the files runs, on parameters without values), from the files a folder holds
 (``unreadable_files``: pickles, NumPy archives, cross-layer parameters, formats not read yet), and
-from settings SAELens's registry reads an SAE with that its configuration doesn't state.
+from settings SAELens's registry reads an SAE with that its configuration doesn't state. SAELens's
+own files can hold parameters their configuration doesn't list (its earlier ones hold a
+scaling_factor), so for that format the build also reads each weights file's header, and the
+values of a scaling_factor, by range requests: no weights are downloaded.
 
-``verify`` then checks a sample on the real files and writes what it found into the catalogue: for
-SAEs read exactly, the header of their weights file (every parameter's name and shape, read as
-Logogram reads the weights) for a few of every release, and for a smaller sample on models small
-enough to run here, the whole files, read and run on the model to measure the variance they
-explain. A check that disagrees with the catalogue fails the command.
+``verify`` then checks a sample on the real files and writes what it found into the catalogue: the
+header of the weights files of a few SAEs of every release (every parameter's name, shape and
+type, read as Logogram reads the weights, must give the catalogue's verdict, site, layer and
+width), and for one SAE of every release whose model runs here (GPT-2 small, Pythia-70m and Gemma
+3 270M, the last through an ungated copy whose weights files have Google's SHA-256), the whole
+files, read by Logogram's reader and run on the model, with and without TransformerLens's weight
+processing, to measure the share of its activations' variance the SAE explains. A check that
+disagrees with the catalogue fails the command.
 
 Logogram never runs this script: the catalogue is package data, and at run time Logogram contacts
 nothing but the Hugging Face downloads a person starts and the opt-in update check. Everything
