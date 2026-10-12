@@ -275,7 +275,7 @@ def main_callback(
 def open_cmd(
     path: Annotated[Path, typer.Argument(help="A project folder.")],
     port: Annotated[int, PortOption] = 8765,
-    no_browser: Annotated[bool, typer.Option("--no-browser")] = False,
+    no_browser: Annotated[bool, typer.Option("--no-browser", help="Don't open a browser.")] = False,
     verbose: Annotated[bool, VerboseOption] = False,
     log_file: Annotated[Path | None, LogFileOption] = None,
     forwarded_port: Annotated[list[int] | None, ForwardedPortOption] = None,
@@ -304,7 +304,7 @@ def serve(
     dev: Annotated[
         bool, typer.Option("--dev", help="API only, for the Vite dev server in web/.")
     ] = False,
-    no_browser: Annotated[bool, typer.Option("--no-browser")] = False,
+    no_browser: Annotated[bool, typer.Option("--no-browser", help="Don't open a browser.")] = False,
     project: Annotated[Path | None, typer.Option(help="Open this project.")] = None,
     verbose: Annotated[bool, VerboseOption] = False,
     log_file: Annotated[Path | None, LogFileOption] = None,

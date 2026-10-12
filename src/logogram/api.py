@@ -566,7 +566,9 @@ def _table(rows: list[dict[str, Any]]) -> Any:
 
 @dataclass
 class Run:
-    """A run in a project: its spec, summary and manifest as written, and its per-prompt values."""
+    """A run in a project: its spec, summary and manifest as written, and its per-prompt values.
+    ``model`` is the loaded model it was run with, when there is one, for the runs made from
+    it (:func:`verify_run`, :func:`check_robustness`, :func:`sweep`)."""
 
     project: Project
     id: str
@@ -577,10 +579,13 @@ class Run:
 
     @property
     def folder(self) -> Path:
+        """The run's folder: experiments/ and its id, in the project."""
         return self.project.run_dir(self.id)
 
     @property
     def status(self) -> str:
+        """``finished``, ``failed``, ``cancelled``, ``running``, or ``draft`` for a spec that
+        hasn't run. A run whose process stopped before it finished reads as ``failed``."""
         status = str(self.manifest.get("status") or "draft")
         if status == "running":
             # Still going, here or in another process, or interrupted: the history knows which.
@@ -609,10 +614,12 @@ class Run:
 
     @property
     def starred(self) -> bool:
+        """Whether the run is starred (see :meth:`star`)."""
         return self._annotations().starred
 
     @property
     def archived(self) -> bool:
+        """Whether the run is archived (see :meth:`archive`)."""
         return self._annotations().archived
 
     def rename(self, title: str | None) -> Run:
@@ -710,6 +717,8 @@ class Run:
         return site_detail(self.project, self.id, index)
 
     def strongest(self, k: int = 10) -> list[dict[str, Any]]:
+        """The ``k`` sites with the largest mean effects, by magnitude, as summary.json holds
+        them: each site's label, effect with its interval, and the rest of its statistics."""
         sites = [s for s in self._summary()["sites"] if s["effect"]["mean"] is not None]
         return sorted(sites, key=lambda s: -abs(s["effect"]["mean"]))[:k]
 

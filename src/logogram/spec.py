@@ -51,8 +51,9 @@ SITE_KIND_LABELS: dict[str, str] = {
 }
 
 
+# A string just below a field describes it: docs/reference/spec.md is written from them.
 class _Strict(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", use_attribute_docstrings=True)
 
 
 Seed = Annotated[int, Field(ge=0, lt=SEED_MAX)]
@@ -78,6 +79,7 @@ class IndexPosition(_Strict):
 
     kind: Literal["index"] = "index"
     index: int
+    """The token's index in each prompt, from 0; negative counts from the end."""
 
 
 class LabelPosition(_Strict):
@@ -85,6 +87,7 @@ class LabelPosition(_Strict):
 
     kind: Literal["label"] = "label"
     label: str = Field(min_length=1)
+    """A name in the prompts' ``positions``: the last token that overlaps its span."""
 
 
 Position = Annotated[
@@ -127,12 +130,20 @@ def describe_sae_site(site: str, layer: int, transcoder: bool) -> str:
 
 
 class Site(_Strict):
+    """One place in the model, at a layer and a position of each prompt."""
+
     kind: SiteKind
+    """A residual stream state, an attention or MLP output, one head's output (z), or a feature
+    of the spec's SAE."""
     layer: int = Field(ge=0)
+    """The layer, from 0."""
     head: int | None = Field(default=None, ge=0)
+    """The head's index in its layer, for a head site; null for any other site."""
     # A feature of the spec's SAE (kind sae_feature): its index among the SAE's features.
     feature: int | None = Field(default=None, ge=0)
+    """The feature's index in the spec's SAE, for an sae_feature site; null for any other."""
     position: Position
+    """The token or tokens of each prompt intervened on."""
 
     @model_validator(mode="after")
     def _head_matches_kind(self) -> Site:
@@ -152,6 +163,7 @@ class HeadsScope(_Strict):
 
     kind: Literal["heads"] = "heads"
     position: Position
+    """The token or tokens of each prompt where every head is intervened on."""
 
 
 class LayerPositionScope(_Strict):
@@ -163,7 +175,9 @@ class LayerPositionScope(_Strict):
 
     kind: Literal["layer_position"] = "layer_position"
     site: StreamSiteKind
+    """The site measured at every layer and position."""
     positions: Literal["each", "labels"]
+    """``each``: every token index (prompts of one length); ``labels``: the named positions."""
 
 
 class LayerComponentsScope(_Strict):
@@ -171,7 +185,9 @@ class LayerComponentsScope(_Strict):
 
     kind: Literal["layer_components"] = "layer_components"
     components: list[StreamSiteKind]
+    """The sites measured at every layer, each once, such as attn_out and mlp_out."""
     position: Position
+    """The token or tokens of each prompt intervened on."""
 
     @model_validator(mode="after")
     def _non_empty(self) -> LayerComponentsScope:
@@ -187,6 +203,7 @@ class SitesScope(_Strict):
 
     kind: Literal["sites"] = "sites"
     sites: list[Site] = Field(min_length=1)
+    """The sites, each intervened on alone: one result per site."""
 
 
 class FeaturesScope(_Strict):
@@ -204,9 +221,13 @@ class FeaturesScope(_Strict):
 
     kind: Literal["features"] = "features"
     position: Position
+    """The token of each prompt where the features are read, or all of them, summed."""
     top: int = Field(ge=1, le=500)
+    """How many features, largest estimated effects first, the run keeps as its sites."""
     choose_on: float | None = Field(gt=0.0, lt=1.0)
+    """The share of prompts that choose the features (the rest report them), or null for all."""
     seed: Seed | None
+    """The seed of the split into prompts that choose and prompts that report; null without it."""
 
     @model_validator(mode="after")
     def _split(self) -> FeaturesScope:
@@ -235,8 +256,11 @@ class SiteSet(_Strict):
     """
 
     label: str = Field(min_length=1, max_length=80)
+    """The set's name in the results."""
     sites: list[Site] = Field(max_length=4096)
+    """The sites intervened on together, or, with complement, the sites kept."""
     complement: bool
+    """Intervene on every component of the scope's universe except these sites."""
 
     @model_validator(mode="after")
     def _usable(self) -> SiteSet:
@@ -261,7 +285,10 @@ class SiteSetsScope(_Strict):
 
     kind: Literal["site_sets"] = "site_sets"
     universe: list[UniverseKind] | None
+    """The components, at every layer and position, that make up the rest of the model for
+    complement sets; null when no set is one."""
     sets: list[SiteSet] = Field(min_length=1, max_length=64)
+    """The sets, each intervened on at once: one result per set."""
 
     @model_validator(mode="after")
     def _consistent(self) -> SiteSetsScope:
@@ -307,7 +334,14 @@ Scope = Annotated[
 # Experiments
 
 
-Direction = Literal["clean_to_corrupt", "corrupt_to_clean"]
+Direction = Annotated[
+    Literal["clean_to_corrupt", "corrupt_to_clean"],
+    Field(
+        description="clean_to_corrupt runs the corrupt prompt with clean activations (does this "
+        "restore the behavior?); corrupt_to_clean runs the clean prompt with corrupt ones (does "
+        "this break it?)."
+    ),
+]
 
 
 class ActivationPatching(_Strict):
@@ -323,6 +357,8 @@ class ActivationPatching(_Strict):
 
 
 class ZeroBaseline(_Strict):
+    """Replace the activation with zeros."""
+
     kind: Literal["zero"] = "zero"
 
 
@@ -336,6 +372,7 @@ class MeanBaseline(_Strict):
 
     kind: Literal["mean"] = "mean"
     reference: Literal["clean", "corrupt"]
+    """The prompts the mean is taken over: the dataset's clean or corrupt prompts."""
 
 
 class ResampleBaseline(_Strict):
@@ -347,8 +384,11 @@ class ResampleBaseline(_Strict):
 
     kind: Literal["resample"] = "resample"
     pool: Literal["clean", "corrupt"]
+    """The prompts donors are drawn from: the dataset's clean or corrupt prompts."""
     donors: int = Field(ge=1, le=1000)
+    """How many donors each prompt draws."""
     seed: Seed
+    """The seed of the draw."""
 
 
 Baseline = Annotated[ZeroBaseline | MeanBaseline | ResampleBaseline, Field(discriminator="kind")]
@@ -359,6 +399,7 @@ class Ablation(_Strict):
 
     kind: Literal["ablation"] = "ablation"
     baseline: Baseline
+    """What replaces the activation. It changes the result, so there is no default."""
 
 
 class DirectLogitAttribution(_Strict):
@@ -373,6 +414,7 @@ class DirectLogitAttribution(_Strict):
 
     kind: Literal["direct_logit_attribution"] = "direct_logit_attribution"
     prompts: Literal["clean", "corrupt"]
+    """Whose logit difference is split: the clean prompts' or the corrupt prompts'."""
 
 
 class AttributionPatching(_Strict):
@@ -394,7 +436,10 @@ class AttributionPatching(_Strict):
     kind: Literal["attribution_patching"] = "attribution_patching"
     direction: Direction
     method: Literal["gradient", "integrated_gradients"]
+    """One gradient at the receiver run, or gradients averaged along the way between the two
+    prompts' input embeddings (integrated gradients)."""
     steps: int | None = Field(ge=2, le=64)
+    """The points along the way, for integrated gradients; null for a single gradient."""
 
     @model_validator(mode="after")
     def _steps_match_method(self) -> AttributionPatching:
@@ -417,6 +462,7 @@ class FeatureDirection(_Strict):
 
     kind: Literal["sae_feature"] = "sae_feature"
     feature: int = Field(ge=0)
+    """The feature's index in the spec's SAE."""
 
 
 SteeringDirection = Annotated[MeanDifference | FeatureDirection, Field(discriminator="kind")]
@@ -427,7 +473,9 @@ class Continuations(_Strict):
     (and with the control, when it runs): what the steered model says, beside what it scores."""
 
     prompts: int = Field(ge=1, le=8)
+    """How many held-out prompts are continued, in the split's order."""
     tokens: int = Field(ge=1, le=64)
+    """How many tokens each continuation adds, each the most likely one."""
 
 
 class Steering(_Strict):
@@ -442,12 +490,21 @@ class Steering(_Strict):
 
     kind: Literal["steering"] = "steering"
     apply_to: Literal["clean", "corrupt"]
+    """The prompts the direction is added to; it steers them toward the other prompts."""
     direction: SteeringDirection
+    """What is added: the mean difference between the prompts of each training pair, or one SAE
+    feature's decoder direction."""
     coefficients: list[float] = Field(min_length=1, max_length=16)
+    """The strengths: 1 adds the whole mean difference (or the feature at its typical
+    activation), negative values push the other way."""
     train_fraction: float = Field(gt=0.0, lt=1.0)
+    """The share of pairs, drawn with seed, that compute the direction; the rest measure it."""
     seed: Seed
+    """The seed of the split into training and held-out pairs, and of the random control."""
     control: bool
+    """Also add a random direction of the same length, at the same strengths."""
     continuations: Continuations | None
+    """Also record what the model goes on to say; null records nothing."""
 
     @model_validator(mode="after")
     def _distinct_finite(self) -> Steering:
@@ -463,8 +520,11 @@ class HeadReceiver(_Strict):
 
     kind: Literal["head"] = "head"
     layer: int = Field(ge=0)
+    """The receiving head's layer, from 0."""
     head: int = Field(ge=0)
+    """The receiving head's index in its layer."""
     input: Literal["q", "k", "v"]
+    """The input the path reaches: the head's query, key or value."""
 
 
 class LogitsReceiver(_Strict):
@@ -490,7 +550,10 @@ class PathPatching(_Strict):
     kind: Literal["path_patching"] = "path_patching"
     direction: Direction
     receivers: list[PathReceiver] = Field(min_length=1, max_length=64)
+    """Where the paths end: later heads' queries, keys or values, or the logits."""
     freeze_mlps: bool
+    """Hold the MLPs at their own values too, so the change travels through the residual stream
+    alone."""
 
     @model_validator(mode="after")
     def _distinct(self) -> PathPatching:
@@ -547,6 +610,8 @@ DEVICE = re.compile(r"^(auto|cpu|cuda|mps|cuda:\d{1,2})$")
 
 
 class ModelRef(_Strict):
+    """The model, exactly: which files, in which precision, on which device."""
+
     id: str = Field(
         min_length=1,
         max_length=200,
@@ -565,6 +630,7 @@ class ModelRef(_Strict):
         "machine it was added to. None for Hugging Face, where the revision pins the files."
     )
     dtype: Literal["float32", "float16", "bfloat16"]
+    """The precision the model runs in. float16 and bfloat16 halve the memory, but round."""
     device: str = Field(description="auto, cpu, cuda, cuda:N (one GPU of several) or mps")
     process_weights: bool = Field(
         description="Fold LayerNorm weights and center writing weights and the unembedding, as "
@@ -616,6 +682,8 @@ def check_relative_path(value: str, what: str) -> str:
 
 
 class DatasetRef(_Strict):
+    """The prompt pairs: a JSONL file in the project, one pair per line."""
+
     path: str = Field(min_length=1, description="Project-relative path to a JSONL dataset")
     sha256: str | None = Field(description="Expected hash of the file, if pinned")
     limit: int | None = Field(ge=1, description="Use only the first n prompts")
@@ -631,8 +699,13 @@ class SAERef(_Strict):
     holding it (empty for the top level) and the exact commit, pinned when a run starts."""
 
     repo: str = Field(min_length=1)
+    """The Hugging Face repository, such as jbloom/GPT2-Small-SAEs-Reformatted."""
     path: str
+    """The folder in the repository that holds the SAE, such as blocks.8.hook_resid_pre; empty
+    for the top level."""
     revision: str | None
+    """The exact commit; null resolves the main branch when a run starts, and the run's spec
+    pins it."""
 
     @model_validator(mode="after")
     def _relative(self) -> SAERef:
@@ -648,6 +721,8 @@ class UserTurn(_Strict):
 
     kind: Literal["user_turn"] = "user_turn"
     system: str | None = Field(max_length=4000)
+    """A system message before the prompt, or null for none (some templates then write their
+    own)."""
 
 
 class AssistantPrefix(_Strict):
@@ -656,14 +731,21 @@ class AssistantPrefix(_Strict):
 
     kind: Literal["assistant_prefix"] = "assistant_prefix"
     system: str | None = Field(max_length=4000)
+    """A system message before the person's, or null for none (some templates then write their
+    own)."""
     user: str = Field(min_length=1, max_length=4000)
+    """The person's message that every prompt replies to."""
 
 
 ChatTemplate = Annotated[UserTurn | AssistantPrefix, Field(discriminator="kind")]
 
 
 class Tokenization(_Strict):
+    """How each prompt becomes the tokens the model reads."""
+
     prepend_bos: bool
+    """Put the beginning-of-sequence token before each prompt. False with a chat template, which
+    writes the beginning itself, and for tokenizers that have no such token."""
     chat_template: ChatTemplate | None = Field(
         description="Wrap each prompt in the model's own chat template (the one its tokenizer "
         "ships at the model's revision), as instruct models are used; None feeds the raw text."
@@ -679,7 +761,13 @@ class Tokenization(_Strict):
         return self
 
 
-Normalization = Literal["dataset_gap", "prompt_gap"]
+Normalization = Annotated[
+    Literal["dataset_gap", "prompt_gap"],
+    Field(
+        description="What an effect is divided by: the gap between the two prompts' metric, "
+        "averaged over the dataset (dataset_gap) or each prompt's own (prompt_gap)."
+    ),
+]
 
 
 class LogitDiffMetric(_Strict):
@@ -730,6 +818,7 @@ class KLMetric(_Strict):
 
     kind: Literal["kl"] = "kl"
     target: Literal["clean", "corrupt"]
+    """The prompt whose own next-token distribution the divergence is measured from."""
     normalization: Normalization
 
 
@@ -774,9 +863,13 @@ class Statistics(_Strict):
     prompts, since prompts from one template aren't independent."""
 
     bootstrap: int = Field(ge=100, le=100_000)
+    """How many bootstrap resamples the intervals are computed from."""
     ci: float = Field(gt=0.5, lt=1.0)
+    """The confidence level of the intervals and simultaneous bands, such as 0.95."""
     seed: Seed
+    """Seeds the bootstrap, and Python, NumPy and PyTorch for the whole run."""
     cluster: str | None
+    """A field of the prompts' meta whose values group them, or null to resample prompts."""
 
     @model_validator(mode="after")
     def _cluster_key(self) -> Statistics:
@@ -786,6 +879,8 @@ class Statistics(_Strict):
 
 
 class Execution(_Strict):
+    """How the work is batched."""
+
     batch_size: int = Field(
         ge=1,
         le=4096,
@@ -798,27 +893,48 @@ class PredictionSettings(_Strict):
     """An optional, explicitly configured diagnostic; it never changes an intervention."""
 
     method: Literal["final_norm_logit_lens"]
+    """Each layer's resid_post read through the final normalization and the unembedding."""
     prompt_index: int = Field(ge=0)
+    """The prompt pair's index in the dataset, from 0."""
     which: Literal["clean", "corrupt"]
+    """The pair's clean or corrupt prompt."""
     position: Annotated[LastPosition | IndexPosition, Field(discriminator="kind")]
+    """The token whose next-token predictions are read."""
     top_k: int = Field(ge=1, le=20)
+    """How many of the most likely tokens are listed at each layer."""
 
 
 class Spec(_Strict):
+    """An experiment: what runs, on which model and prompts, and how its numbers are measured."""
+
     logogram_spec: Literal[3]
+    """The spec's version. Version 1 and 2 specs are read too, as version 3."""
     name: str = Field(min_length=1, max_length=NAME_MAX)
+    """What the experiment is called, in the history and the results."""
     notes: str = ""
+    """What you expect and why, saved with the spec and shown beside the results."""
     model: ModelRef
+    """The model, exactly: its files, precision, device and weight processing."""
     dataset: DatasetRef
+    """The prompt pairs."""
     tokenization: Tokenization
+    """How each prompt becomes tokens."""
     experiment: Experiment
+    """The method, with every choice that changes its numbers."""
     scope: Scope
+    """The sites the method measures: one result per site."""
     metric: Metric
+    """What is read from the model's output, and how effects are normalized."""
     statistics: Statistics
+    """The intervals' bootstrap, confidence level and seed."""
     execution: Execution
+    """How the work is batched."""
     predictions: PredictionSettings | None = None
+    """An optional logit lens saved beside the results; it never changes an intervention."""
     # The SAE (or transcoder) whose features sae_feature sites and the features scope refer to.
     sae: SAERef | None = None
+    """The SAE or transcoder that feature sites, the features scope and steering along a feature
+    refer to; null otherwise."""
 
     # Fields a version 1 spec left out, which took the values version 1 gave them.
     _upgraded: list[str] = PrivateAttr(default_factory=list)
