@@ -546,6 +546,8 @@ class QueueEntry(_Model):
     # A saved draft it runs in (its folder), and where it comes from (a rerun, a check, a sweep).
     draft_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
     derived_from: Derivation | None = None
+    # What a version 1 spec left out, filled in with version 1's values: its run says so.
+    upgraded: list[str] = Field(default_factory=list, max_length=100)
 
 
 class QueueFile(_Model):

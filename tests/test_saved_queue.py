@@ -514,3 +514,33 @@ def test_ctrl_c_before_a_queued_run_starts_puts_it_back(project, spec_factory, m
     assert runqueue.read_queue(project) == before
     assert project.list_runs() == []
     assert runqueue.queue_runner(project) is None
+
+
+def test_a_version_1_spec_says_what_it_left_out_when_queued_or_swept(project, tiny_backend):
+    from logogram.runner import run_spec
+    from logogram.spec import Spec
+    from logogram.sweeps import get_field, variant_spec
+
+    old = Spec.model_validate(
+        {
+            "logogram_spec": 1,
+            "name": "Old",
+            "model": {"id": "tiny-gpt2", "revision": "test", "device": "cpu"},
+            "dataset": {"path": "datasets/ioi.jsonl", "limit": 4},
+            "experiment": {"kind": "activation_patching", "direction": "clean_to_corrupt"},
+            "scope": {"kind": "layer_components", "position": {"kind": "last"}},
+            "execution": {"batch_size": 16},
+            "statistics": {"bootstrap": 200, "seed": 0},
+        }
+    )
+    filled = old.upgraded_fields
+    assert filled
+    runqueue.add_to_queue(project, old)
+    (queued,) = runqueue.read_queue(project)
+    assert queued.spec.upgraded_fields == filled
+    swept = variant_spec(old, get_field("statistics.seed"), 1)
+    assert swept.upgraded_fields == filled
+    for spec in (queued.spec, swept):
+        outcome = run_spec(spec, project, backend=tiny_backend)
+        assert outcome.summary is not None
+        assert outcome.summary["warnings"][0].startswith("This spec is version 1")

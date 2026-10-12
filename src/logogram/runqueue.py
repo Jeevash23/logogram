@@ -205,6 +205,14 @@ def _reason(exc: Exception) -> str:
     return str(exc) or type(exc).__name__
 
 
+def _spec(data: dict[str, Any], upgraded: list[str]) -> Spec:
+    """A queued spec as it was queued, saying what a version 1 spec left out (the queue keeps
+    it in version 3's form, which states every value)."""
+    spec = Spec.model_validate(data)
+    spec._upgraded = list(upgraded)
+    return spec
+
+
 def _read(project: Project) -> list[Queued]:
     path = project.root / QUEUE_FOLDER / QUEUE_FILE
     if not os.path.lexists(path):
@@ -217,7 +225,7 @@ def _read(project: Project) -> list[Queued]:
         return [
             Queued(
                 id=entry.id,
-                spec=Spec.model_validate(entry.spec),
+                spec=_spec(entry.spec, entry.upgraded),
                 queued_at=datetime.fromisoformat(entry.queued_at).timestamp(),
                 draft_id=entry.draft_id,
                 derived_from=(
@@ -247,6 +255,7 @@ def _write(project: Project, folder: Path, runs: list[Queued]) -> None:
                 spec=q.spec.model_dump(mode="json"),
                 draft_id=q.draft_id,
                 derived_from=q.derived_from,  # type: ignore[arg-type]
+                upgraded=q.spec.upgraded_fields,
             )
             for q in runs
         ]

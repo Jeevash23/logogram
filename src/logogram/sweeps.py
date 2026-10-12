@@ -341,6 +341,8 @@ def variant_spec(spec: Spec, field: SweepField, value: Any, project: Project | N
         allowed.add("dataset.sha256")
     data["name"] = _name(spec.name, field, value)
     variant = Spec.model_validate(data)
+    # A version 1 spec's runs say what it left out, as the spec's own run does.
+    variant._upgraded = spec.upgraded_fields
     changed = {d["path"] for d in spec_differences(spec.model_dump(mode="json"), data)}
     if not changed <= allowed:  # a field this module doesn't know how to set alone
         raise SweepError(f"Setting {field.path} would also change {', '.join(sorted(changed))}.")
