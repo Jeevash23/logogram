@@ -24,6 +24,12 @@ Named positions are character spans in the clean prompt, and ``meta["template"]`
 prompt's template, for a bootstrap clustered by template. Randomness uses only
 ``random.Random.random()``, whose sequence Python guarantees across versions, and lists are walked
 in a fixed order, so a seed gives the same dataset on every machine.
+
+Every task takes ``full_vocabulary``: with it, words the model splits into several tokens are kept
+(where the metric can still read the answers), and so are pairs whose prompts then differ in
+length. Both prompts' positions are labelled (``corrupt_positions``), so a run matches them label
+by label, and each prompt's meta records ``"vocabulary": "full"``. Without it, the datasets are
+what they always were.
 """
 
 from __future__ import annotations
@@ -240,6 +246,24 @@ def _collect(
     return records
 
 
+def _vocabulary(meta: dict[str, Any], full: bool) -> dict[str, Any]:
+    """A prompt's meta, saying when it was made from the full vocabulary."""
+    return {**meta, "vocabulary": "full"} if full else meta
+
+
+FULL_VOCABULARY = TaskOption(
+    name="full_vocabulary",
+    type="bool",
+    default=False,
+    description=(
+        "Use every word of the task's lists, also those the model splits into several tokens, "
+        "and keep pairs whose prompts then differ in length. Both prompts' positions are "
+        "labelled, so a run matches them at a label or the last token (not at every position or "
+        "a token index). Each prompt's meta records it as vocabulary: full."
+    ),
+)
+
+
 def _split_words(what: str) -> TaskError:
     return TaskError(
         f"This model's tokenizer splits too many of the built-in {what} into several tokens. "
@@ -266,6 +290,7 @@ def _ioi(
             patterns=options["patterns"],
             corruption=options["corruption"],
             single_token=single_token,
+            full_vocabulary=options["full_vocabulary"],
         )
     except IOIError as exc:
         raise TaskError(str(exc)) from exc
@@ -301,8 +326,9 @@ def _greater_than(
     token_count: TokenCount | None,
 ) -> list[PromptRecord]:
     tok = _Tokens(single_token, token_count)
+    full = options["full_vocabulary"]
     templates = _chosen(GREATER_THAN_TEMPLATES, options["templates"])
-    nouns = [w for w in GREATER_THAN_NOUNS if tok.single(" " + w)]
+    nouns = [w for w in GREATER_THAN_NOUNS if full or tok.single(" " + w)]
     if not nouns:
         raise _split_words("nouns")
     # Two-digit tokens, written without a space: " 17" is followed directly by "32".
@@ -338,18 +364,25 @@ def _greater_than(
         xx, yy = _pick(rng, years)
         values = {"NOUN": noun, "XX": str(xx), "YY": f"{yy:02d}", "XX2": str(xx)}
         clean, spans = _fill(template.text, values)
-        corrupt, _ = _fill(template.text, {**values, "YY": "01"})
-        if tok.count(clean) != tok.count(corrupt):
+        corrupt, corrupt_spans = _fill(template.text, {**values, "YY": "01"})
+        if not full and tok.count(clean) != tok.count(corrupt):
             return None
         later, rest = sets[yy]
+
+        def labelled(text: str, slots: dict[str, tuple[int, int]]) -> dict[str, tuple[int, int]]:
+            return {"YY": slots["YY"], "XX2": slots["XX2"], "end": _last_word(text)}
+
         return PromptRecord(
             clean=clean,
             corrupt=corrupt,
             answer=list(later),
             distractor=list(rest),
-            positions={"YY": spans["YY"], "XX2": spans["XX2"], "end": _last_word(clean)},
+            positions=labelled(clean, spans),
+            corrupt_positions=labelled(corrupt, corrupt_spans) if full else None,
             id=f"greater-than-{index:05d}",
-            meta={"template": template.id, "noun": noun, "century": xx, "yy": yy},
+            meta=_vocabulary(
+                {"template": template.id, "noun": noun, "century": xx, "yy": yy}, full
+            ),
         )
 
     return _collect(n, make, more)
@@ -403,13 +436,18 @@ def _docstring(
     token_count: TokenCount | None,
 ) -> list[PromptRecord]:
     tok = _Tokens(single_token, token_count)
+    full = options["full_vocabulary"]
     templates = _chosen(DOCSTRING_TEMPLATES, options["templates"])
+    # The arguments are the answer and the distractor's set, so they are single tokens.
     words = [w for w in DOCSTRING_WORDS if tok.single(" " + w)]
+    # With the full vocabulary, every other word can be anything: the definition's renamed
+    # arguments, the function's name and the descriptions.
+    vocabulary = list(DOCSTRING_WORDS) if full else words
     # The summary's first word follows the quotes without a space.
-    starts = [w for w in words if tok.single(w)]
+    starts = vocabulary if full else [w for w in words if tok.single(w)]
     most = max(_DOCSTRING_SHAPES[t.id][0] for t in templates)
     # Arguments, their replacements, the function's name and three words for descriptions.
-    if len(words) < 2 * most + 4 or not starts:
+    if len(vocabulary) < 2 * most + 4 or len(words) < most or not starts:
         raise _split_words("words")
     more = len(templates) < len(DOCSTRING_TEMPLATES)
     rng = random.Random(seed)
@@ -418,9 +456,15 @@ def _docstring(
         template = _pick(rng, templates)
         n_args, n_documented = _DOCSTRING_SHAPES[template.id]
         slots = _ARG_SLOTS[:n_args]
-        chosen = _sample(rng, words, 2 * n_args + 1)
-        args, others, function = chosen[:n_args], chosen[n_args : 2 * n_args], chosen[-1]
-        rest = [w for w in words if w not in chosen]
+        if full:
+            args = _sample(rng, words, n_args)
+            more = _sample(rng, [w for w in vocabulary if w not in args], n_args + 1)
+            others, function = more[:n_args], more[-1]
+            chosen = args + more
+        else:
+            chosen = _sample(rng, words, 2 * n_args + 1)
+            args, others, function = chosen[:n_args], chosen[n_args : 2 * n_args], chosen[-1]
+        rest = [w for w in vocabulary if w not in chosen]
         first = [w for w in starts if w not in chosen]
         if not first:
             return None
@@ -435,17 +479,23 @@ def _docstring(
         clean, spans = _fill(template.text, values)
         # A random def: the definition's arguments get other names; the docstring keeps them.
         renamed = {f"DEF_{x}": other for x, other in zip(slots, others, strict=True)}
-        corrupt, _ = _fill(template.text, {**values, **renamed})
-        if tok.count(clean) != tok.count(corrupt):
+        corrupt, corrupt_spans = _fill(template.text, {**values, **renamed})
+        if not full and tok.count(clean) != tok.count(corrupt):
             return None
+        slot = f"DEF_{slots[n_documented]}"
+
+        def labelled(text: str, at: dict[str, tuple[int, int]]) -> dict[str, tuple[int, int]]:
+            return {"def_arg": at[slot], "end": _last_word(text)}
+
         return PromptRecord(
             clean=clean,
             corrupt=corrupt,
             answer=" " + args[n_documented],
             distractor=[" " + a for i, a in enumerate(args) if i != n_documented],
-            positions={"def_arg": spans[f"DEF_{slots[n_documented]}"], "end": _last_word(clean)},
+            positions=labelled(clean, spans),
+            corrupt_positions=labelled(corrupt, corrupt_spans) if full else None,
             id=f"docstring-{index:05d}",
-            meta={"template": template.id, "corruption": "random_def"},
+            meta=_vocabulary({"template": template.id, "corruption": "random_def"}, full),
         )
 
     return _collect(n, make, more)
@@ -498,19 +548,24 @@ def _gendered_pronoun(
             "' he' and ' she' aren't both single tokens for this model. Import a JSONL dataset "
             "written for this model instead."
         )
+    full = options["full_vocabulary"]
     templates = _chosen(PRONOUN_TEMPLATES, options["templates"])
     names = {
-        "male": [w for w in MALE_NAMES if tok.single(" " + w)],
-        "female": [w for w in FEMALE_NAMES if tok.single(" " + w)],
+        "male": [w for w in MALE_NAMES if full or tok.single(" " + w)],
+        "female": [w for w in FEMALE_NAMES if full or tok.single(" " + w)],
     }
     if not names["male"] or not names["female"]:
         raise _split_words("names")
     # Per template and gender: each name whose prompt has as many tokens as the prompt with some
-    # name of the other gender, and those names, which can replace it in the corrupt prompt.
+    # name of the other gender, and those names, which can replace it in the corrupt prompt (with
+    # the full vocabulary, every name of the other gender).
     entries: list[tuple[TaskTemplate, dict[str, list[tuple[str, list[str]]]]]] = []
     for template in templates:
         counts = {
-            g: [(name, tok.count(_fill(template.text, {"NAME": name})[0])) for name in names[g]]
+            g: [
+                (name, 0 if full else tok.count(_fill(template.text, {"NAME": name})[0]))
+                for name in names[g]
+            ]
             for g in _GENDERS
         }
         usable: dict[str, list[tuple[str, list[str]]]] = {}
@@ -536,7 +591,7 @@ def _gendered_pronoun(
         name, partners = _pick(rng, usable[gender])
         partner = _pick(rng, partners)
         clean, spans = _fill(template.text, {"NAME": name})
-        corrupt, _ = _fill(template.text, {"NAME": partner})
+        corrupt, corrupt_spans = _fill(template.text, {"NAME": partner})
         other = _GENDERS[1 - index % 2]
         return PromptRecord(
             clean=clean,
@@ -544,8 +599,11 @@ def _gendered_pronoun(
             answer=_PRONOUNS[gender],
             distractor=_PRONOUNS[other],
             positions={"name": spans["NAME"], "end": _last_word(clean)},
+            corrupt_positions={"name": corrupt_spans["NAME"], "end": _last_word(corrupt)}
+            if full
+            else None,
             id=f"gendered-pronoun-{index:05d}",
-            meta={"template": template.id, "gender": gender},
+            meta=_vocabulary({"template": template.id, "gender": gender}, full),
         )
 
     return _collect(n, make, more)
@@ -604,10 +662,11 @@ def _subject_verb_agreement(
             "' is' and ' are' aren't both single tokens for this model. Import a JSONL dataset "
             "written for this model instead."
         )
+    full = options["full_vocabulary"]
     templates = _chosen(AGREEMENT_TEMPLATES, options["templates"])
 
     def usable(pairs: tuple[tuple[str, str], ...]) -> list[tuple[str, str]]:
-        return [p for p in pairs if tok.single(" " + p[0]) and tok.single(" " + p[1])]
+        return [p for p in pairs if full or (tok.single(" " + p[0]) and tok.single(" " + p[1]))]
 
     animate = usable(ANIMATE_NOUNS)
     nouns = animate + usable(INANIMATE_NOUNS)
@@ -635,22 +694,23 @@ def _subject_verb_agreement(
             said, flipped, other, verb = subject[1], subject[0], attractor[0], "likes"
         values = {"SUBJECT": said, "ATTRACTOR": other, "VERB": verb}
         clean, spans = _fill(template.text, values)
-        corrupt, _ = _fill(template.text, {**values, "SUBJECT": flipped})
-        if tok.count(clean) != tok.count(corrupt):
+        corrupt, corrupt_spans = _fill(template.text, {**values, "SUBJECT": flipped})
+        if not full and tok.count(clean) != tok.count(corrupt):
             return None
         answer, distractor = _VERBS[number]
+
+        def labelled(text: str, at: dict[str, tuple[int, int]]) -> dict[str, tuple[int, int]]:
+            return {"subject": at["SUBJECT"], "attractor": at["ATTRACTOR"], "end": _last_word(text)}
+
         return PromptRecord(
             clean=clean,
             corrupt=corrupt,
             answer=answer,
             distractor=distractor,
-            positions={
-                "subject": spans["SUBJECT"],
-                "attractor": spans["ATTRACTOR"],
-                "end": _last_word(clean),
-            },
+            positions=labelled(clean, spans),
+            corrupt_positions=labelled(corrupt, corrupt_spans) if full else None,
             id=f"subject-verb-agreement-{index:05d}",
-            meta={"template": template.id, "number": number},
+            meta=_vocabulary({"template": template.id, "number": number}, full),
         )
 
     return _collect(n, make, more)
@@ -703,6 +763,7 @@ def _factual_recall(
     token_count: TokenCount | None,
 ) -> list[PromptRecord]:
     tok = _Tokens(single_token, token_count)
+    full = options["full_vocabulary"]
     templates = _chosen(FACTUAL_TEMPLATES, options["templates"])
     single = options["single_token_answers"]
     countries = [(c, cap) for c, cap in CAPITALS if not single or tok.single(" " + cap)]
@@ -713,11 +774,13 @@ def _factual_recall(
             "a JSONL dataset written for this model."
         )
     # Per template: each country whose prompt has as many tokens as another country's, and those
-    # countries, which can replace it in the corrupt prompt.
+    # countries, which can replace it in the corrupt prompt (with the full vocabulary, every other
+    # country).
     entries: list[tuple[TaskTemplate, list[tuple[str, str, list[tuple[str, str]]]]]] = []
     for template in templates:
         counted = [
-            (c, cap, tok.count(_fill(template.text, {"COUNTRY": c})[0])) for c, cap in countries
+            (c, cap, 0 if full else tok.count(_fill(template.text, {"COUNTRY": c})[0]))
+            for c, cap in countries
         ]
         usable = []
         for country, capital, count in counted:
@@ -742,15 +805,18 @@ def _factual_recall(
         country, capital, partners = _pick(rng, usable)
         other, other_capital = _pick(rng, partners)
         clean, spans = _fill(template.text, {"COUNTRY": country})
-        corrupt, _ = _fill(template.text, {"COUNTRY": other})
+        corrupt, corrupt_spans = _fill(template.text, {"COUNTRY": other})
         return PromptRecord(
             clean=clean,
             corrupt=corrupt,
             answer=" " + capital,
             distractor=" " + other_capital,
             positions={"country": spans["COUNTRY"], "end": _last_word(clean)},
+            corrupt_positions={"country": corrupt_spans["COUNTRY"], "end": _last_word(corrupt)}
+            if full
+            else None,
             id=f"factual-recall-{index:05d}",
-            meta={"template": template.id, "country": country},
+            meta=_vocabulary({"template": template.id, "country": country}, full),
         )
 
     return _collect(n, make, more)
@@ -816,9 +882,12 @@ TASKS: dict[str, TaskInfo] = {
                     ),
                     allowed=("flip", "abc"),
                 ),
+                FULL_VOCABULARY,
             ),
             templates=tuple(TaskTemplate(t.id, t.text, t.default) for t in IOI_TEMPLATES),
             generate=_ioi,
+            # Names of several tokens are answers of several tokens.
+            metric_when=(("full_vocabulary", True, "logprob_diff"),),
         ),
         TaskInfo(
             id="greater_than",
@@ -831,7 +900,7 @@ TASKS: dict[str, TaskInfo] = {
                 "it."
             ),
             metric="prob_diff",
-            options=(_templates_option(GREATER_THAN_TEMPLATES, _SHARED_STRUCTURE),),
+            options=(_templates_option(GREATER_THAN_TEMPLATES, _SHARED_STRUCTURE), FULL_VOCABULARY),
             templates=GREATER_THAN_TEMPLATES,
             generate=_greater_than,
         ),
@@ -853,6 +922,7 @@ TASKS: dict[str, TaskInfo] = {
                     "paper; three_args documents one of three, and five_args three of five. The "
                     "answer is always the next argument.",
                 ),
+                FULL_VOCABULARY,
             ),
             templates=DOCSTRING_TEMPLATES,
             generate=_docstring,
@@ -866,7 +936,7 @@ TASKS: dict[str, TaskInfo] = {
                 "GPT-2 small. The corrupt prompt uses a name that takes the other pronoun."
             ),
             metric="logit_diff",
-            options=(_templates_option(PRONOUN_TEMPLATES, _SHARED_STRUCTURE),),
+            options=(_templates_option(PRONOUN_TEMPLATES, _SHARED_STRUCTURE), FULL_VOCABULARY),
             templates=PRONOUN_TEMPLATES,
             generate=_gendered_pronoun,
         ),
@@ -886,6 +956,7 @@ TASKS: dict[str, TaskInfo] = {
                     f"{_SHARED_STRUCTURE} In relative, the attractor is a person or an animal "
                     "that likes the subject.",
                 ),
+                FULL_VOCABULARY,
             ),
             templates=AGREEMENT_TEMPLATES,
             generate=_subject_verb_agreement,
@@ -913,6 +984,7 @@ TASKS: dict[str, TaskInfo] = {
                         "too, read with the log-probability difference."
                     ),
                 ),
+                FULL_VOCABULARY,
             ),
             templates=FACTUAL_TEMPLATES,
             generate=_factual_recall,
