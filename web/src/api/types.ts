@@ -319,6 +319,47 @@ export interface SAEInfo extends SAERef {
   skip?: boolean;
 }
 
+/** One SAE of SAELens's registry, as the catalogue that ships with Logogram describes it: where
+ * it is published, what its configuration states, and whether Logogram reads it exactly. */
+export interface CatalogueSAE {
+  release: string;
+  id: string;
+  /** The model as SAELens names it, and its Hugging Face id. */
+  model: string;
+  hf_model: string;
+  repo: string;
+  folder: string;
+  /** The commit whose files the catalogue read; loading pins the repository's current one. */
+  revision: string | null;
+  licence: string | null;
+  gated: boolean;
+  hook: string | null;
+  /** The site it writes (a transcoder reads its MLP's input), and its layer. */
+  site: string | null;
+  layer: number | null;
+  width: number | null;
+  architecture: string | null;
+  kind: "sae" | "transcoder" | "skip_transcoder";
+  reads: "exact" | "refused" | "unknown";
+  reason: string | null;
+  l0: number | null;
+  verified: {
+    revision: string;
+    read: "header" | "weights";
+    fit: { model: string; process_weights: boolean; tokens: number; variance_explained: number; l0: number } | null;
+  } | null;
+}
+
+export interface SAECatalogue {
+  model: string;
+  source: string;
+  /** SAEs for the model, how many Logogram reads exactly, and how many match the search. */
+  total: number;
+  exact: number;
+  matches: number;
+  saes: CatalogueSAE[];
+}
+
 /** What one feature writes directly into the logits: one unit of its decoder direction, read
  * through the final normalization (its scale held at its value at one token) and the
  * unembedding, skipping every later layer. Logit changes are relative to the vocabulary's mean. */

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { api } from "../api/client";
-import type { FeatureReport, SAEInfo, TokenFeatures } from "../api/types";
+import type { CatalogueSAE, FeatureReport, SAEInfo, TokenFeatures } from "../api/types";
 import { FeatureWrites } from "../components/FeatureWrites";
 import { Button, Callout, Empty, Field, Input, Progress, Segmented, Select, Spinner, useRadioGroup } from "../components/ui";
 import { inkScale, textOn } from "../lib/color";
@@ -11,6 +11,7 @@ import { KIND_NAMES } from "../lib/sites";
 import { steerSiteOf } from "../lib/spec";
 import { POOR_FIT } from "../lib/thresholds";
 import { useStore } from "../store/app";
+import { SAEPicker } from "./SAEPicker";
 import s from "./views.module.css";
 import f from "./FeaturesView.module.css";
 
@@ -40,6 +41,10 @@ function siteOf(info: SAEInfo): string {
 export function FeaturesView() {
   const model = useStore((st) => st.model);
   const sae = useStore((st) => st.sae);
+  // Choosing another SAE while one is loaded: it stays loaded until loading another begins.
+  const [choosing, setChoosing] = useState(false);
+  const loadedKey = sae.info ? `${sae.info.repo}/${sae.info.path}@${sae.info.revision}` : null;
+  useEffect(() => setChoosing(false), [loadedKey]);
   if (model.state !== "ready" || !model.info) {
     return (
       <div className={s.view}>
@@ -63,12 +68,16 @@ export function FeaturesView() {
           </p>
         </div>
       </div>
-      {sae.state === "ready" && sae.info ? <Loaded info={sae.info} /> : <Loader />}
+      {sae.state === "ready" && sae.info && !choosing ? (
+        <Loaded info={sae.info} onChoose={() => setChoosing(true)} />
+      ) : (
+        <Loader onKeep={sae.state === "ready" && sae.info ? () => setChoosing(false) : undefined} />
+      )}
     </div>
   );
 }
 
-function Loader() {
+function Loader({ onKeep }: { onKeep?: () => void }) {
   const model = useStore((st) => st.model);
   const sae = useStore((st) => st.sae);
   const job = useStore((st) => st.job);
@@ -112,12 +121,32 @@ function Loader() {
     const out = await guard(() => api.loadSae({ repo: folders.repo, path: folder, revision: folders.revision }));
     if (out) useStore.getState().applyJob(out);
   };
+  // A published SAE by its release and id: its repository and folder, at the repository's current
+  // commit, which loading pins and specs record.
+  const loadPublished = async (x: CatalogueSAE) => {
+    const out = await guard(() => api.loadSae({ repo: x.repo, path: x.folder, revision: null }));
+    if (out) useStore.getState().applyJob(out);
+  };
   const loading = sae.state === "loading";
+  const busy = loading || job?.status === "running";
 
   return (
     <section className={f.loader} aria-label="Load an SAE">
+      {onKeep && (
+        <div className={f.keep}>
+          <span className={s.small}>
+            Loading another SAE replaces {sae.info?.repo}
+            {sae.info?.path ? `/${sae.info.path}` : ""}.
+          </span>
+          <Button size="small" variant="ghost" onClick={onKeep}>
+            Keep the loaded SAE
+          </Button>
+        </div>
+      )}
+      <SAEPicker modelId={id} busy={busy} onLoad={(x) => void loadPublished(x)} />
+      <h2 className={s.panelTitle}>Or name a repository and folder</h2>
       {suggestions.length > 0 && (
-        <div className={f.suggestions} role="radiogroup" aria-label="SAEs for this model">
+        <div className={f.suggestions} role="radiogroup" aria-label="Repositories with SAEs for this model">
           {suggestions.map((x, i) => (
             <button key={x.repo} type="button" role="radio" aria-checked={repo === x.repo} className={f.suggestion} onClick={() => { setRepo(x.repo); setFolders(null); }} {...suggestionRadio(i)}>
               <span className={f.dot} />
@@ -147,7 +176,7 @@ function Loader() {
               ))}
             </Select>
           </Field>
-          <Button variant="primary" onClick={() => void load()} disabled={loading || job?.status === "running"}>
+          <Button variant="primary" onClick={() => void load()} disabled={busy}>
             Load
           </Button>
         </div>
@@ -165,7 +194,7 @@ function Loader() {
   );
 }
 
-function Loaded({ info }: { info: SAEInfo }) {
+function Loaded({ info, onChoose }: { info: SAEInfo; onChoose: () => void }) {
   const dataset = useStore((st) => st.datasetPath);
   const context = useAnalysisContext();
   const guard = useStore((st) => st.guard);
@@ -196,6 +225,9 @@ function Loaded({ info }: { info: SAEInfo }) {
           <div className={s.headActions}>
             <Button size="small" onClick={() => void measure()} disabled={!dataset || measuring}>
               {measuring ? "Measuring…" : fit ? "Measure again" : "Measure the fit"}
+            </Button>
+            <Button size="small" onClick={onChoose}>
+              Load another SAE
             </Button>
             <Button size="small" variant="ghost" onClick={() => void guard(() => api.unloadSae())}>
               Unload

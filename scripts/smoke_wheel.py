@@ -40,6 +40,12 @@ def main() -> None:
     from logogram.gallery import EXAMPLES, list_examples
 
     assert [e["id"] for e in list_examples()] == [e.id for e in EXAMPLES]
+    # The catalogue of published SAEs ships as package data, with SAELens's licence notice.
+    from logogram.backends.catalogue import load_catalogue
+
+    catalogue = load_catalogue()
+    assert catalogue.for_model("openai-community/gpt2"), "SAE catalogue missing from wheel"
+    assert "Permission is hereby granted" in catalogue.source.notice
 
     sock = _bind(0)
     port = sock.getsockname()[1]

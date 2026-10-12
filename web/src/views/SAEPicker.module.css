@@ -1,0 +1,159 @@
+/* The published SAEs for the loaded model: a search field over a list, and the chosen one.
+   Hairlines and space; the chosen row is marked in ink and by its radio mark (the workspace's
+   color), not by a wash. */
+
+.picker {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: min(360px, 50vh);
+  overflow: auto;
+  border-top: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.option {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1.4fr) minmax(0, 1.2fr) minmax(96px, auto) minmax(112px, auto);
+  gap: 4px 12px;
+  align-items: baseline;
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--line-soft);
+  cursor: default;
+  font-size: var(--text-sm);
+}
+
+.option:last-child {
+  border-bottom: 0;
+}
+
+.option[aria-selected="true"] {
+  box-shadow: inset 2px 0 0 var(--text);
+}
+
+.dot {
+  align-self: center;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1.5px solid var(--faint);
+}
+
+.option[aria-selected="true"] .dot {
+  border-color: var(--text);
+  background: radial-gradient(circle, var(--ws, var(--text)) 0 3.2px, transparent 3.7px);
+}
+
+.name {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.release {
+  font-size: var(--text-xs);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.id {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.where,
+.width {
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+.width {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.status {
+  font-size: var(--text-xs);
+  font-weight: 560;
+  white-space: nowrap;
+}
+
+.option[data-reads="refused"] .id,
+.option[data-reads="refused"] .status {
+  color: var(--muted);
+  font-weight: 450;
+}
+
+.details {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 820px;
+}
+
+.detailsHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.title {
+  margin: 2px 0 0;
+  font-size: var(--text-xl);
+  font-weight: 560;
+  font-stretch: var(--display-stretch);
+  overflow-wrap: anywhere;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 16px;
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.facts > div {
+  display: contents;
+}
+
+.facts dt {
+  color: var(--muted);
+  font-size: var(--text-xs);
+  padding-top: 2px;
+}
+
+.facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.path {
+  color: var(--muted);
+}
+
+/* A narrow window: the site, width and status go under the name. */
+@container (max-width: 700px) {
+  .option {
+    grid-template-columns: 14px minmax(0, 1fr) auto;
+  }
+  .where {
+    grid-column: 2 / 4;
+  }
+  .width {
+    grid-column: 2;
+  }
+  .status {
+    grid-column: 3;
+    grid-row: 1;
+  }
+}

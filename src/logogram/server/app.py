@@ -1317,6 +1317,25 @@ def create_app(
     def sae_suggestions(model: str) -> list[dict[str, str]]:
         return SAE_SUGGESTIONS.get(model, [])
 
+    @app.get("/api/sae/catalogue", response_model=M.CatalogueOut)
+    def sae_catalogue(model: str, q: str = "", limit: int = 100) -> dict[str, Any]:
+        """The published SAEs trained on a model, from the catalogue that ships with Logogram
+        (SAELens's registry; nothing is fetched): those matching ``q``, the ones Logogram reads
+        exactly first, at most ``limit`` of them."""
+        from logogram.backends.catalogue import load_catalogue, order, search
+
+        catalogue = load_catalogue()
+        entries = catalogue.for_model(model)
+        found = order(search(entries, q) if q.strip() else entries)
+        return {
+            "model": model,
+            "source": f"SAELens {catalogue.source.version}",
+            "total": len(entries),
+            "exact": sum(e.exact for e in entries),
+            "matches": len(found),
+            "saes": [e.to_dict() for e in found[: max(1, min(limit, 500))]],
+        }
+
     @app.get("/api/sae/folders")
     def sae_folders(repo: str, revision: str | None = None) -> dict[str, Any]:
         """The SAEs in a Hugging Face repository (one per folder), at its exact revision."""

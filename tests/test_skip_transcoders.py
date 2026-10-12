@@ -41,9 +41,8 @@ def sparsify_reference(cfg: dict, tensors: dict, x: torch.Tensor) -> tuple[torch
 
 def gemma_scope_reference(params: dict, x: torch.Tensor) -> tuple[torch.Tensor, ...]:
     """Gemma Scope 2's JumpReLU transcoder, its affine skip connection added as
-    x @ affine_skip_connection (stored input by output, like w_enc and w_dec). On Gemma 3 270M's
-    layer 12 this explains 91% of the MLP output's variance, more than the transcoder without
-    one (89%); the transpose explains 34%, less than no skip connection at all."""
+    x @ affine_skip_connection (stored input by output, like w_enc and w_dec), the way round the
+    real files fit their model (see test_the_affine_skip_is_applied_as_stored_never_transposed)."""
     pre = x @ params["w_enc"] + params["b_enc"]
     f = torch.relu(pre) * (pre > params["threshold"])
     out = f @ params["w_dec"] + params["b_dec"]
@@ -164,6 +163,56 @@ def test_gemma_scope_affine_transcoders_decode_with_their_skip_connection(tmp_pa
     # Without its input, a skip transcoder can't decode.
     with pytest.raises(ValueError, match="with its input"):
         sae.decode(f, stats)
+
+
+def test_the_affine_skip_is_applied_as_stored_never_transposed(tmp_path):
+    """Gemma Scope 2 stores affine_skip_connection input by output: its transcoders add
+    x @ affine_skip_connection. The files are square, so their shape can't say which way round
+    they mean; their fit does. Run on Gemma 3 270M (an ungated copy whose weights file has
+    Google's SHA-256) over 1,024 tokens of plain English, the affine transcoders
+    transcoder_all/layer_{5,12,15}_width_16k_l0_small_affine explain 99.1%, 85.3% and 78.6% of
+    the MLP output's variance read this way, and 36.8%, 8.5% and -2207% read transposed, worse
+    than leaving the skip out (49.6%, 24.6%, -2194%); their matrices are far from symmetric
+    (|A - A.T| / |A| is 1.3 to 1.4). SAELens 6.54.0 reads them transposed (it loads the matrix as
+    W_skip and adds x @ W_skip.T).
+
+    Here no feature fires and the matrix is strictly upper triangular, so the output is the
+    matrix itself for the basis vectors as input, and its transpose would differ in every
+    entry off the diagonal."""
+    d, width = 6, 10
+    skip = torch.triu(torch.arange(1.0, d * d + 1).reshape(d, d), diagonal=1)
+    assert not torch.equal(skip, skip.T)
+    params = {
+        "w_enc": torch.randn(d, width, generator=torch.Generator().manual_seed(4)),
+        "b_enc": torch.full((width,), -100.0),  # nothing fires
+        "threshold": torch.zeros(width),
+        "w_dec": torch.randn(width, d, generator=torch.Generator().manual_seed(5)),
+        "b_dec": torch.zeros(d),
+        "affine_skip_connection": skip,
+    }
+    folder = tmp_path / "triangular"
+    folder.mkdir()
+    (folder / "config.json").write_text(
+        json.dumps(
+            {
+                "hf_hook_point_in": "model.layers.0.pre_feedforward_layernorm.output",
+                "hf_hook_point_out": "model.layers.0.post_feedforward_layernorm.output",
+                "architecture": "jump_relu",
+                "affine_connection": True,
+                "type": "transcoder",
+            }
+        ),
+        encoding="utf-8",
+    )
+    save_file(params, str(folder / "params.safetensors"))
+    sae = SAE(repo="local/triangular", path="", revision="test", params=read_sae(folder))
+    x = torch.eye(d)
+    f, stats = sae.encode(x)
+    assert not f.any()
+    out = sae.decode(f, stats, x)
+    assert torch.equal(out, skip)
+    assert torch.equal(sae.skip_write(x), skip)
+    assert not torch.isclose(out, skip.T).all()
 
 
 def _prompts(backend, project):

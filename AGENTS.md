@@ -125,7 +125,8 @@ src/logogram/
   api.py               the Python API for notebooks (imported lazily by logogram/__init__.py)
   analysis.py          token strip, baseline check, attention patterns
   backends/            ModelBackend interface, TransformerLens backend, Hugging Face access,
-                       published SAE formats
+                       published SAE formats, the catalogue of published SAEs (SAELens's
+                       registry, built by scripts/sae_catalogue.py)
   server/              FastAPI app, security, response models, job and event handling
   system.py            hardware report, doctor, memory estimates, the environment (logogram env)
   support.py           the problem report: versions and the last error, no names or paths

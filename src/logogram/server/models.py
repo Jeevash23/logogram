@@ -603,6 +603,58 @@ class EstimateOut(_Out):
     estimate: MemoryEstimateOut
 
 
+# -- published SAEs ----------------------------------------------------------------------------
+
+
+class CatalogueFitOut(_Out):
+    model: str
+    process_weights: bool
+    tokens: int
+    variance_explained: float
+    l0: float
+
+
+class CatalogueCheckOut(_Out):
+    revision: str
+    read: Literal["header", "weights"]
+    fit: CatalogueFitOut | None
+
+
+class CatalogueSAEOut(_Out):
+    """One SAE of SAELens's registry, as the bundled catalogue describes it."""
+
+    release: str
+    id: str
+    model: str
+    hf_model: str
+    repo: str
+    folder: str
+    # The commit whose files the catalogue read; loading pins the repository's current one.
+    revision: str | None
+    licence: str | None
+    gated: bool
+    hook: str | None
+    site: str | None
+    layer: int | None
+    width: int | None
+    architecture: str | None
+    kind: Literal["sae", "transcoder", "skip_transcoder"]
+    reads: Literal["exact", "refused", "unknown"]
+    reason: str | None
+    l0: float | None
+    verified: CatalogueCheckOut | None
+
+
+class CatalogueOut(_Out):
+    model: str
+    # Where the catalogue came from: SAELens's registry, in this version of sae-lens.
+    source: str
+    total: int
+    exact: int
+    matches: int
+    saes: list[CatalogueSAEOut]
+
+
 # -- runs --------------------------------------------------------------------------------------
 
 
