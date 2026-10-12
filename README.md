@@ -777,15 +777,17 @@ inputs and outputs, which only their model card says, and they fit poorly as pub
 (`gpt2-small-res-jb`, `blocks.8.hook_resid_pre`); Logogram ships a catalogue of the 13,857 SAEs in
 the 170 releases of SAELens 6.54.0's registry, with the model each was trained on, its repository
 and folder, the hook it reads, its width, the architecture its configuration states, and whether
-Logogram reads it exactly or why not. Logogram reads 9,035 of them exactly (GPT-2 small's
-SAELens, OpenAI and feature-splitting SAEs, Pythia-70m's, Gemma 2's and Gemma 3's matryoshka
-SAEs, and all of Gemma Scope 2's SAEs and transcoders); most of the others are the first Gemma
-Scope's NumPy archives, PyTorch pickles (which Logogram never opens), formats it doesn't read yet
-(Llama Scope's, circuit-tracer's transcoders) and cross-layer transcoders. The verdicts come from
-Logogram's own readers run on each SAE's configuration (and, for SAELens's format, its weights
-file's header), and a sample was checked on the real files: a few of every release by their
-header, and some on GPT-2 small, Pythia-70m and Gemma 3 270M by their weights and fit, which the
-catalogue records. An SAE that SAELens's registry reads with settings its own configuration
+Logogram reads it exactly or why not. Logogram reads 9,035 of them exactly: GPT-2 small's SAELens
+SAEs (Joseph Bloom's, the feature-splitting ones and Apollo Research's), OpenAI's TopK SAEs on it
+but for those between attention and MLP, Pythia-70m's, Gemma 2B's, the matryoshka SAEs for Gemma
+2 and Gemma 3 1B, and all of Gemma Scope 2's SAEs and transcoders. Most of the others are the first
+Gemma Scope's NumPy archives, PyTorch pickles (which Logogram never opens), formats it doesn't read
+yet (Llama Scope's, circuit-tracer's transcoders) and cross-layer transcoders. The verdicts come
+from Logogram's own readers run on each SAE's configuration (and, for SAELens's format, its weights
+file's header), and they were checked on the real files, which the catalogue records: 427 SAEs
+across every release Logogram reads by their weights file's header, and 13 on GPT-2 small,
+Pythia-70m and Gemma 3 270M by their weights and their fit to the model. An SAE that SAELens's
+registry reads with settings its own configuration
 doesn't state (Mistral 7B's, which SAELens rescales) is refused before anything downloads, also
 when named by its folder. The catalogue is part of the package and is never fetched;
 `scripts/sae_catalogue.py` builds it from a sae-lens wheel, and SAELens's MIT notice travels with
