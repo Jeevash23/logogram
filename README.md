@@ -601,7 +601,11 @@ that site alone, at one token of each prompt:
 * an SAE on an MLP output, and a transcoder (which writes its MLP's output), add it to that MLP's
   output, the same as adding it to the residual stream after the layer;
 * an SAE on attention heads' outputs adds it to every head's output `z`, before the output
-  projection carries it into the attention output (the scope names that attention output).
+  projection carries it into the attention output (the scope names that attention output). Where
+  the heads add up to the attention output, this is the same as adding what the output projection
+  makes of it there; in models that normalize the attention output after combining the heads
+  (Gemma 2 and 3, OLMo 2) it is still exactly what the feature writes, but no fixed direction in
+  the residual stream.
 
 Tests measure each of these equivalences on tiny models, through TransformerLens's own hooks.
 W_dec[f] times a is what the feature writes when its activation is a, so strength 1 is the
