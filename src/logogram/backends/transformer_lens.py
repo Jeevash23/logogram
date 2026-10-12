@@ -574,10 +574,10 @@ def unit_sites(checks: ModelChecks) -> tuple[tuple[str, ...], dict[str, str]]:
         )
         notes.update(dict.fromkeys(("q", "k", "v"), text))
     else:
-        for part, error, what in (
-            ("q", checks.q_alone, "query"),
-            ("k", checks.k_alone, "key"),
-            ("v", checks.v_alone, "value"),
+        for part, error, what, these in (
+            ("q", checks.q_alone, "query", "queries"),
+            ("k", checks.k_alone, "key", "keys"),
+            ("v", checks.v_alone, "value", "values"),
         ):
             if holds(error):
                 kinds.append(part)
@@ -585,8 +585,8 @@ def unit_sites(checks: ModelChecks) -> tuple[tuple[str, ...], dict[str, str]]:
             reader = "its own head" if part == "q" else "the query heads of its group"
             notes[part] = (
                 f"When this model loaded, replacing one head's {what} also changed the output of "
-                f"heads other than {reader} (by up to {_share(error)}): its {what}s aren't "
-                f"separate per head (OLMo 2, for one, normalizes every head's {what}s together), "
+                f"heads other than {reader} (by up to {_share(error)}): its {these} aren't "
+                f"separate per head (OLMo 2, for one, normalizes every head's {these} together), "
                 f"so a single head's {what} can't be patched alone."
             )
     if checks.neurons is None:
