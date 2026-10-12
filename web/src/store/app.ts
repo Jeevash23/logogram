@@ -194,6 +194,9 @@ interface Store {
   bootError: string | null;
   version: string;
   firstRun: boolean;
+  /** How the walkthrough of the example ended, from the person's settings: until it has, the
+   * first screens offer it. */
+  walkthrough: "finished" | "skipped" | null;
   projectsParent: string;
   themeSetting: ThemeSetting;
   theme: ResolvedTheme;
@@ -261,8 +264,8 @@ interface Store {
   cancelConfirmOpen: boolean;
   /** The sheet of keyboard shortcuts (? or the command palette). */
   shortcutsOpen: boolean;
-  /** A dialog from the Help menu or the palette: the problem report, or About. */
-  helpDialog: "report" | "about" | null;
+  /** A dialog from the Help menu or the palette: the guide, the problem report, or About. */
+  helpDialog: "guide" | "report" | "about" | null;
   /** The last error the app showed (a notice, a view that stopped, or a failed start), for the
    * problem report. */
   lastError: string | null;
@@ -422,6 +425,7 @@ export const useStore = create<Store>((set, get) => ({
   bootError: null,
   version: "",
   firstRun: false,
+  walkthrough: null,
   projectsParent: "",
   // Until the saved appearance arrives, follow the system, as the page does (tokens.css).
   themeSetting: "system",
@@ -496,6 +500,7 @@ export const useStore = create<Store>((set, get) => ({
       projectsParent: s.projects_parent,
       themeSetting: s.theme,
       singleKeys: s.single_key_shortcuts ?? true,
+      walkthrough: s.walkthrough ?? null,
       update: s.update ?? null,
       sae: s.sae ?? { state: "none" },
       queue: s.queue ?? [],

@@ -149,7 +149,7 @@ export function ResultsView() {
                   Test the top sites as a circuit
                 </Button>
               )}
-              <Button onClick={() => useStore.setState({ robustnessDialogOpen: true })} icon="refresh">
+              <Button onClick={() => useStore.setState({ robustnessDialogOpen: true })} icon="refresh" data-tour="robustness">
                 Check robustness
               </Button>
               <Button
@@ -373,7 +373,7 @@ export function ResultsView() {
       )}
       {layout && layout.kind !== "sites" && layout.kind !== "site_sets" && (
         <div className={r.grid}>
-          <div className={r.heat}>
+          <div className={r.heat} data-tour="map">
             <div className={r.heatHead}>
               <span className={s.panelTitle}>{layoutTitle(layout)}</span>
               {flagged.size > 0 && (

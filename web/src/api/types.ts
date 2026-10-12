@@ -175,6 +175,8 @@ export interface ServerState {
   theme: ThemeSetting;
   /** Whether single keys act as shortcuts (on until turned off). */
   single_key_shortcuts?: boolean;
+  /** How the walkthrough of the example ended, or null while it never has. */
+  walkthrough?: "finished" | "skipped" | null;
   projects_parent: string;
   update: UpdateStatus;
   sae?: SAEStatus;

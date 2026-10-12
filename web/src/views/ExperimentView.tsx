@@ -98,7 +98,9 @@ export function ExperimentView() {
     <div className={s.view}>
       <div className={s.head}>
         <div className={s.titleBlock}>
-          <h1 className={s.title}>{form.draftId ? form.name || "A saved experiment" : "New experiment"}</h1>
+          <h1 className={s.title} data-tour="experiment-form">
+            {form.draftId ? form.name || "A saved experiment" : "New experiment"}
+          </h1>
           <p className={s.subtitle}>
             {form.draftId ? (
               <>

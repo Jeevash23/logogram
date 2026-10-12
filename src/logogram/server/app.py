@@ -522,6 +522,15 @@ class SettingsRequest(BaseModel):
     # Whether single keys (1 to 5, [ and ], P, B, A, C and ?) act as shortcuts. On until turned
     # off, for someone who uses speech input or presses keys by accident.
     single_key_shortcuts: bool | None = None
+    # How the walkthrough of the example ended, so the first screens stop offering it.
+    walkthrough: Literal["finished", "skipped"] | None = None
+
+
+def walkthrough_ended(settings: dict[str, Any]) -> str | None:
+    """How the walkthrough ended ("finished" or "skipped"), or None if it never did. A settings
+    file edited by hand into anything else reads as never."""
+    value = settings.get("walkthrough")
+    return value if value in ("finished", "skipped") else None
 
 
 class ReportRequest(BaseModel):
@@ -614,6 +623,7 @@ def create_app(
             # Until someone picks one, the app follows the computer's light or dark setting.
             "theme": settings.get("theme", "system"),
             "single_key_shortcuts": settings.get("single_key_shortcuts", True),
+            "walkthrough": walkthrough_ended(settings),
             "projects_parent": str(default_projects_parent()),
             "update": state.update_status(),
             "sae": state.sae_payload(),
