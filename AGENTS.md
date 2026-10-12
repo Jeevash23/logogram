@@ -115,7 +115,9 @@ src/logogram/
   schema.py            schemas for run files, history listings and live events
   fileio.py            atomic writes that never follow symlinks
   runner.py            run a spec end to end (used by the app, the CLI and the Python API)
+  partial.py           what a run that stops early keeps of what finished, and what it leaves out
   owner.py             which process runs a run, so a run going elsewhere isn't taken for interrupted
+  runqueue.py          the project's run queue (.logogram/queue.json) and the one process running it
   history.py           what people say about runs (titles, stars, the archive), and deleting runs
   robustness.py        the spec that reruns a run with one choice changed
   compare.py           run comparisons, paired prompt by prompt where they can be
