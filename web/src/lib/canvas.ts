@@ -12,6 +12,8 @@ export interface ChromeColors {
   text: string;
   muted: string;
   faint: string;
+  /** An interval drawn in a chart: ink, faintly. */
+  band: string;
   font: string;
 }
 
@@ -27,6 +29,7 @@ function readColors(): ChromeColors {
     text: v("--text"),
     muted: v("--muted"),
     faint: v("--faint"),
+    band: v("--band"),
     font: v("--font"),
   };
 }

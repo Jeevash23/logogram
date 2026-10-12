@@ -113,7 +113,7 @@ test("every view has no accessibility violations", async ({ page }) => {
   await question.getByRole("button", { name: "Discard edits", exact: true }).click();
   await expect(page.getByRole("region", { name: "Unsaved edits" })).toHaveCount(0);
   await page.getByRole("button", { name: "Evidence", exact: true }).click();
-  for (const view of ["Results", "Compare runs", "Research notes"]) {
+  for (const view of ["Results", "Compare runs", "Sweeps", "Research notes"]) {
     await open(page, view);
     await expectAccessible(page, `Evidence, ${view}`);
   }

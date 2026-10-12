@@ -180,11 +180,25 @@ The workbench has three workspaces:
   interact** runs each alone and both together. On a finished run, **Test the top sites as a
   circuit** keeps its strongest 1, 2, 4, 8 … sites alone, for a curve of faithfulness against
   circuit size.
-* **Evidence** contains the full result heatmap, run comparisons, and research notes. Selecting
-  an effect opens its per-prompt evidence and recorded method in the inspector, with its
+* **Evidence** contains the full result heatmap, run comparisons, sweeps and research notes.
+  Selecting an effect opens its per-prompt evidence and recorded method in the inspector, with its
   simultaneous band and q-value. A run of sets of sites shows each set's faithfulness, what each
   site adds and how sites interact, beside a chart of faithfulness against the number of sites
   kept.
+
+A finding that holds for one seed, one sample of prompts or one checkpoint may not hold for
+others. **Sweep…** on a finished run runs its spec once for each of several values of one choice:
+a seed it states, the dataset (several files, which it offers to generate with a task's
+generator, one per seed), or the model's revision (commits, tags or branches, such as Pythia's
+training checkpoints, listed from Hugging Face when you ask). The runs wait in the queue and run
+one after another; the run swept stands in for its own value. **Sweeps** then shows, for the
+strongest sites (chosen on the first value or on all of them, as it says), each site's effect and
+its interval at every value, with the spread of its means across values beside a run's own
+interval, since a run's interval leaves out what changes with the seed or the prompts. It says
+plainly which sites keep their sign and size and which don't: a sign that flips with both
+intervals excluding zero, or intervals that exclude each other. Revisions are drawn in the order
+given, as checkpoints over training. A run that failed or never ran is missing, never zero. The
+table exports as CSV; a sweep's runs say so in the results, the history and comparisons.
 
 The experiment form shows every choice that changes a number: the method (attribution patching
 with one gradient or integrated gradients), the metric and, for the KL divergence, the prompt it

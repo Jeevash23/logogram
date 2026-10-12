@@ -75,7 +75,7 @@ export function useGlobalKeys(): void {
         useStore.setState({ shortcutsOpen: true });
         return;
       }
-      if (st.screen !== "workbench" || st.paletteOpen || st.modelDialogOpen || st.robustnessDialogOpen || st.cancelConfirmOpen || st.shortcutsOpen) return;
+      if (st.screen !== "workbench" || st.paletteOpen || st.modelDialogOpen || st.robustnessDialogOpen || st.sweepDialogRun || st.cancelConfirmOpen || st.shortcutsOpen) return;
       // Undo and redo the experiment form while it is open, except in a text field, whose own
       // undo goes first.
       const step = historyKey(e);

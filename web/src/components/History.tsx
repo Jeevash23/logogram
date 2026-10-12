@@ -15,6 +15,7 @@ import {
   runTitle,
   type HistoryFilter,
 } from "../lib/runs";
+import { fieldWords, sweepsOf, sweepsOfRun, type SweepGroup } from "../lib/sweeps";
 import { useStore } from "../store/app";
 import { Logogram } from "./Logogram";
 import { Button, ConfirmDialog, Icon, Input, menuClasses, Segmented, Spinner } from "./ui";
@@ -54,6 +55,7 @@ export function History({ onOpen }: { onOpen?: () => void } = {}) {
   }, [runs]);
 
   const rows = useMemo(() => historyRows(runs, filter, query), [runs, filter, query]);
+  const sweeps = useMemo(() => sweepsOf(runs), [runs]);
   const counts = useMemo(() => filterCounts(runs), [runs]);
   const searching = query.trim() !== "";
   // Archived runs a search finds while they are hidden: say so, rather than finding nothing.
@@ -234,6 +236,11 @@ export function History({ onOpen }: { onOpen?: () => void } = {}) {
                     deletingAt.current = { id: run.id, index };
                     setDeleting(run);
                   }}
+                  sweeps={sweepsOfRun(sweeps, run.id).map((m) => m.sweep)}
+                  onShowSweep={(id) => {
+                    useStore.getState().openSweep(id);
+                    onOpen?.();
+                  }}
                 />
               ))}
             </ul>
@@ -278,6 +285,8 @@ function RunRow({
   onStar,
   onArchive,
   onDelete,
+  sweeps,
+  onShowSweep,
 }: {
   run: RunListing;
   depth: number;
@@ -291,6 +300,9 @@ function RunRow({
   onStar: () => void;
   onArchive: () => void;
   onDelete: () => void;
+  /** The sweeps the run is a value of. */
+  sweeps: SweepGroup[];
+  onShowSweep: (id: string) => void;
 }) {
   const live = useStore((st) => st.live[run.id]);
   const active = useStore((st) => st.activeRunId === run.id);
@@ -353,6 +365,7 @@ function RunRow({
             {orphan ? "From a deleted run · " : ""}
             {methodText(run)}
             {run.n_prompts ? ` · ${plural(run.n_prompts, "prompt")}` : ""}
+            {sweeps.map((x) => ` · in a sweep over ${plural(x.values.length, fieldWords(x.field).label, fieldWords(x.field).plural)}`).join("")}
             {status === "running" && run.elsewhere ? " · running in another process" : ""}
           </span>
           {run.annotations_error && <span className={s.problem}>{run.annotations_error}</span>}
@@ -369,7 +382,7 @@ function RunRow({
           >
             <Icon name="star" size={15} fill={run.starred ? "currentColor" : "none"} />
           </button>
-          <RunMenu run={run} label={label} onRename={onRename} onStar={onStar} onArchive={onArchive} onDelete={onDelete} />
+          <RunMenu run={run} label={label} onRename={onRename} onStar={onStar} onArchive={onArchive} onDelete={onDelete} sweeps={sweeps} onShowSweep={onShowSweep} />
         </>
       )}
     </li>
@@ -385,6 +398,8 @@ function RunMenu({
   onStar,
   onArchive,
   onDelete,
+  sweeps,
+  onShowSweep,
 }: {
   run: RunListing;
   label: string;
@@ -392,6 +407,8 @@ function RunMenu({
   onStar: () => void;
   onArchive: () => void;
   onDelete: () => void;
+  sweeps: SweepGroup[];
+  onShowSweep: (id: string) => void;
 }) {
   const pending = useRef<(() => void) | null>(null);
   const running = useStore((st) => st.live[run.id]?.status === "running" || (st.job?.status === "running" && st.job.run_id === run.id));
@@ -428,6 +445,11 @@ function RunMenu({
           <DropdownMenu.Item className={menuClasses.item} onSelect={onArchive}>
             {run.archived ? "Move out of the archive" : "Archive"}
           </DropdownMenu.Item>
+          {sweeps.map((x) => (
+            <DropdownMenu.Item key={x.id} className={menuClasses.item} onSelect={afterClosing(() => onShowSweep(x.id))}>
+              {sweeps.length > 1 ? `Show the sweep over ${fieldWords(x.field).plural}` : "Show the sweep"}
+            </DropdownMenu.Item>
+          ))}
           <DropdownMenu.Separator className={menuClasses.separator} />
           <DropdownMenu.Item className={menuClasses.item} disabled={busy !== null} onSelect={afterClosing(onDelete)}>
             Delete…

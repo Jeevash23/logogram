@@ -762,10 +762,169 @@ export interface Manifest {
   derived_from?: DerivedFrom | null;
 }
 
-export interface DerivedFrom {
-  run: string;
-  kind: "robustness" | "rerun" | "verification";
-  change?: string;
+/** Where a run came from: another run (a robustness check, a rerun, a verification), or a sweep. */
+export type DerivedFrom =
+  | { run: string; kind: "robustness" | "rerun" | "verification"; change?: string | null }
+  | SweepMember;
+
+/** A value a sweep runs: a seed, or a dataset's path or a revision as given. */
+export type SweepValue = number | string;
+
+/** A run of a sweep (src/logogram/schema.py SweepMember): every run of it records the sweep. */
+export interface SweepMember {
+  kind: "sweep";
+  sweep: string;
+  /** The field it varies, dotted as in the spec, and this run's value and place among the values. */
+  field: string;
+  value: SweepValue;
+  index: number;
+  of: number;
+  values: SweepValue[];
+  /** The run the sweep was made from, and the value it stands in for (not run again). */
+  run: string | null;
+  original: number | null;
+  /** This run's value in words, such as "bootstrap seed 2". */
+  change: string | null;
+}
+
+export type SweepKind = "seed" | "dataset" | "revision";
+
+/** A field a run's spec can be swept over (GET /api/runs/{id}/sweep-fields). */
+export interface SweepField {
+  field: string;
+  kind: SweepKind;
+  label: string;
+  plural: string;
+  description: string;
+  current: SweepValue | null;
+  current_label: string | null;
+  /** What the app offers at first: the spec's own value first, so its run stands in for it. */
+  suggested: SweepValue[];
+}
+
+/** What a sweep is asked for: a run (or a spec) and the values of one of its fields, in order. */
+export interface SweepRequest {
+  run?: string;
+  spec?: Spec;
+  field: string;
+  values: SweepValue[];
+}
+
+/** The runs a sweep makes, one per value (POST /api/sweeps/plan). */
+export interface SweepPlan {
+  sweep: string;
+  field: string;
+  kind: SweepKind;
+  label: string;
+  plural: string;
+  values: SweepValue[];
+  labels: string[];
+  original: string | null;
+  stands_in: number | null;
+  runs: { index: number; value: SweepValue; label: string; name: string | null; original: boolean }[];
+}
+
+export interface SweepStarted {
+  sweep: string;
+  plan: SweepPlan;
+  run_id: string | null;
+  job: Job | null;
+  queue: QueuedRun[];
+}
+
+export type SweepStatus = "finished" | "failed" | "cancelled" | "running" | "draft" | "missing" | "deleted";
+
+export interface SweepValueRow {
+  index: number;
+  value: SweepValue;
+  label: string;
+  run: string | null;
+  status: SweepStatus;
+  /** The run the sweep was made from, standing in for this value. */
+  original: boolean;
+  title: string | null;
+  error: string | null;
+  n_prompts: number | null;
+  /** The commit a revision resolved to, and the prompts a dataset held, as the run pinned them. */
+  revision: string | null;
+  dataset_sha256: string | null;
+}
+
+/** One site at one value: the run's mean effect, its interval and SD over prompts, and n. */
+export interface SweepPoint {
+  mean: number | null;
+  lo: number | null;
+  hi: number | null;
+  sd: number | null;
+  n: number | null;
+}
+
+export type SweepVerdict = "holds" | "size" | "sign" | "unknown";
+
+export interface SweepSite {
+  key: string;
+  rank: number;
+  label: string;
+  kind: ResultKind;
+  layer: number;
+  head: number | null;
+  feature: number | null;
+  position: PositionSpec | null;
+  position_key: string;
+  variant: SiteBase["variant"];
+  variant_key: string | null;
+  /** One per value; null where the value has no results for this site (never zero). */
+  points: (SweepPoint | null)[];
+  measured: number;
+  /** The spread of its means across the values that measured it. */
+  spread: { mean: number; sd: number | null; min: number; max: number } | null;
+  /** The median half-width of the runs' own intervals. */
+  half_width: number | null;
+  above: number[];
+  below: number[];
+  /** Two values whose intervals exclude zero on opposite sides; two whose intervals exclude each other. */
+  sign: number[] | null;
+  apart: number[] | null;
+  missing: number[];
+  excludes_zero: "every" | "some" | "none";
+  verdict: SweepVerdict;
+  text: string;
+}
+
+/** A sweep read back (GET /api/sweeps/{id}). */
+export interface SweepTable {
+  sweep: string;
+  field: string;
+  kind: SweepKind;
+  label: string;
+  plural: string;
+  description: string;
+  name: string;
+  created: string | null;
+  original: string | null;
+  stands_in: number | null;
+  values: SweepValueRow[];
+  finished: number;
+  choose: "first" | "all";
+  top: number;
+  chosen: string;
+  problem: string | null;
+  n_sites: number;
+  sites: SweepSite[];
+  counts: Record<SweepVerdict, number>;
+  headline: string;
+  spread: string;
+  notes: string[];
+  ci: number | null;
+  measure: Measure | null;
+  metric: SummaryMetric | null;
+  experiment: ExperimentSpec | null;
+}
+
+/** A model's branches and tags on Hugging Face, each with its commit (GET /api/models/revisions). */
+export interface Revisions {
+  id: string;
+  revisions: { name: string; commit: string; kind: "branch" | "tag" }[];
 }
 
 export interface RunListing {
