@@ -197,7 +197,12 @@ export function HeadKinds() {
             </ol>
             <p className={s.small}>
               {count(shown.settings.sequences)} sequences of {shown.settings.length} tokens repeated twice, seed{" "}
-              {shown.settings.seed}, {shown.settings.prepend_bos ? "after a beginning-of-sequence token" : "without a beginning-of-sequence token"};{" "}
+              {shown.settings.seed},{" "}
+              {shown.settings.chat_template
+                ? `each where a prompt goes in the chat template, as ${shown.settings.chat_template.kind === "user_turn" ? "the person's message" : "the start of the reply"}`
+                : shown.settings.prepend_bos
+                  ? "after a beginning-of-sequence token"
+                  : "without a beginning-of-sequence token"};{" "}
               {Math.round(shown.settings.ci * 100)}% intervals from {count(shown.settings.bootstrap)} bootstrap resamples of the
               sequences. Choose a head to see its attention on the prompts.
             </p>

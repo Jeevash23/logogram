@@ -4,6 +4,7 @@
 import type {
   AttributionMethod,
   BaselineSpec,
+  ChatTemplateSpec,
   ExperimentKind,
   MetricKind,
   Normalization,
@@ -57,7 +58,12 @@ export interface FormState {
   cluster: string | null;
   batchSize: number;
   limit: number | null;
+  /** Whether prompts begin with the beginning-of-sequence token. A chat template writes the
+   * beginning itself, so with one the spec says false; this keeps the choice for without. */
   prependBos: boolean;
+  /** The model's own chat template prompts are wrapped in (the person's message, or the start of
+   * the model's reply), or null for plain text. */
+  chatTemplate: ChatTemplateSpec | null;
   notes: string;
   /** The model a saved spec asks for; used when no model is loaded. */
   modelRef: Spec["model"] | null;
@@ -96,6 +102,7 @@ export const DEFAULT_FORM: FormState = {
   batchSize: 64,
   limit: null,
   prependBos: true,
+  chatTemplate: null,
   notes: "",
   modelRef: null,
   savedDataset: null,
@@ -137,10 +144,18 @@ export function formFromSpec(spec: Spec): FormState {
     cluster: spec.statistics.cluster ?? null,
     batchSize: spec.execution.batch_size,
     limit: spec.dataset.limit,
-    prependBos: spec.tokenization.prepend_bos,
+    // A spec with a chat template says false; without one again, prompts begin with BOS.
+    prependBos: spec.tokenization.chat_template ? true : spec.tokenization.prepend_bos,
+    chatTemplate: spec.tokenization.chat_template ?? null,
     notes: spec.notes,
     modelRef: spec.model,
     savedDataset: { path: spec.dataset.path, sha256: spec.dataset.sha256 },
     draftId: null,
   };
+}
+
+/** How the form's prompts are tokenized, as a spec writes it: a chat template writes the
+ * beginning of the text, so with one there is no beginning-of-sequence token to prepend. */
+export function formTokenization(form: Pick<FormState, "prependBos" | "chatTemplate">): Spec["tokenization"] {
+  return { prepend_bos: form.chatTemplate ? false : form.prependBos, chat_template: form.chatTemplate };
 }

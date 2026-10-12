@@ -12,11 +12,11 @@ const spec: Spec = {
   metric: { kind: "logit_diff", normalization: "dataset_gap" }, statistics: { bootstrap: 200, seed: 7, ci: 0.95, cluster: null }, execution: { batch_size: 2 },
 };
 
-test("saved analyses retain BOS, prompt limit, batch and pinned model settings", () => {
+test("saved analyses retain BOS, the chat template, prompt limit, batch and pinned model settings", () => {
   const state = { ...useStore.getInitialState(), project: project("one"), activeRunId: "run", analysisSource: "run" as const,
     runDetails: { run: { spec } }, datasetPath: spec.dataset.path };
   const context = analysisContext(state);
-  expect(context.options).toEqual({ model: spec.model, dataset_sha256: "fixed", prepend_bos: false, limit: 3, batch_size: 2 });
+  expect(context.options).toEqual({ model: spec.model, dataset_sha256: "fixed", prepend_bos: false, chat_template: null, limit: 3, batch_size: 2 });
   const edited = analysisContext({ ...state, analysisSource: "form", form: { ...DEFAULT_FORM, prependBos: true, limit: 7, batchSize: 8 } });
   expect(edited.key).not.toBe(context.key);
   expect(edited.options.prepend_bos).toBe(true);

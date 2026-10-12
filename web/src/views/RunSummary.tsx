@@ -5,7 +5,7 @@ import type { ExperimentKind, RunMemory, Spec } from "../api/types";
 import { MOD } from "../components/Header";
 import { RunButton } from "../components/RunButton";
 import { Button, Callout, Kbd } from "../components/ui";
-import { CHAT_ADVICE, chatReason } from "../lib/chat";
+import { chatAdvice, chatReason } from "../lib/chat";
 import { bytes, plural } from "../lib/format";
 import { modelName, useAnalysisContext } from "../lib/hooks";
 import { metricWords } from "../lib/metrics";
@@ -47,8 +47,10 @@ export function RunSummary({
   const titleId = useId();
   const waiting = useStore((st) => st.job?.status === "running" || st.queue.length > 0);
   const loaded = useStore((st) => (st.model.state === "ready" ? st.model.info : undefined));
+  // Wrapped in the model's chat template, its prompts read as a chat: nothing to point out.
+  const wrapped = useStore((st) => st.form.chatTemplate !== null);
   // The loaded model runs the spec, so what is known about it applies when the spec names it.
-  const chat = loaded && (!spec || spec.model.id === loaded.id) ? chatReason(loaded) : null;
+  const chat = loaded && !wrapped && (!spec || spec.model.id === loaded.id) ? chatReason(loaded) : null;
   return (
     <section className={e.panel} aria-labelledby={titleId}>
       <h2 id={titleId} className={e.panelTitle}>
@@ -80,7 +82,7 @@ export function RunSummary({
                 plain text, which can differ from how it behaves in a chat.
               </span>
               <span className={e.factNote}>
-                {chat} {CHAT_ADVICE}
+                {chat} {chatAdvice(loaded)}
               </span>
             </dd>
           </>

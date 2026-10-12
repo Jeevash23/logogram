@@ -4,11 +4,11 @@ import { fileURLToPath } from "node:url";
 
 import { isProjectScoped, PROJECT_SCOPED } from "../src/api/client";
 import type { DatasetDetail, ModelStatus, PromptRecord, Spec } from "../src/api/types";
-import { analysisContext } from "../src/lib/analysis";
-import { buildSpec, datasetFacts, metricOf } from "../src/lib/buildSpec";
+import { analysisContext, sameModel, tokenizationKey } from "../src/lib/analysis";
+import { buildSpec, datasetFacts, metricOf, savedDifferences } from "../src/lib/buildSpec";
 import { DEFAULT_FORM, formFromSpec, type FormState } from "../src/lib/formState";
 import { gapCheck, METRIC_KINDS, metricWords } from "../src/lib/metrics";
-import { measureWords, splitCount, workload, workloadText } from "../src/lib/spec";
+import { measureWords, sameDevice, splitCount, workload, workloadText } from "../src/lib/spec";
 import { useStore } from "../src/store/app";
 
 const model: ModelStatus = {
@@ -226,4 +226,69 @@ test("every project-scoped route on the server says which project a tab means", 
   for (const path of ["/api/state", "/api/tasks", "/api/sae/load", "/api/sae/suggestions?model=x", "/api/models/load", "/api/projectsx", "/api/runsx"]) {
     expect(isProjectScoped(path), path).toBe(false);
   }
+});
+
+/** The loaded model, made for chat: its tokenizer ships a chat template. */
+const chatModel: ModelStatus = {
+  ...model,
+  info: { ...model.info!, extra: { chat: { instruct: true, template: true, reason: "its name marks it as made for chat (it)" }, chat_template_sha256: "c".repeat(64) } },
+};
+
+test("a chat template wraps the prompts, and the template writes the beginning", () => {
+  const userTurn = { kind: "user_turn", system: null } as const;
+  const spec = built(form({ chatTemplate: userTurn }), { model: chatModel });
+  expect(spec.tokenization).toEqual({ prepend_bos: false, chat_template: userTurn });
+  // The form keeps its choice of BOS for without a template; the spec says what runs.
+  expect(built(form({ chatTemplate: userTurn, prependBos: true }), { model: chatModel }).tokenization.prepend_bos).toBe(false);
+  expect(built(formFromSpec(spec), { model: chatModel })).toEqual(spec);
+  expect(formFromSpec(spec).prependBos).toBe(true);
+  const reply = { kind: "assistant_prefix", system: "Answer in one word.", user: "Finish the sentence." } as const;
+  expect(built(form({ chatTemplate: reply }), { model: chatModel }).tokenization.chat_template).toEqual(reply);
+  // The start of a reply answers a message, and a model without a template has none to wrap in.
+  expect(refused(form({ chatTemplate: { ...reply, user: "  " } }), { model: chatModel })).toContain("Write the person's message");
+  const plain: ModelStatus = { ...model, info: { ...model.info!, extra: { chat_template_sha256: null } } };
+  expect(refused(form({ chatTemplate: userTurn }), { model: plain })).toContain("has no chat template");
+  expect(refused(form({ chatTemplate: { kind: "user_turn", system: "x".repeat(4001) } }), { model: chatModel })).toContain("under 4,000 characters");
+});
+
+test("analyses wrap prompts as the run did, or as the form says", () => {
+  const userTurn = { kind: "user_turn", system: null } as const;
+  const spec = built(form());
+  const base = { ...useStore.getInitialState(), model: chatModel, project: { session_id: "one" }, datasetPath: spec.dataset.path, runDetails: { run: { spec } } };
+  const wrapped = form({ chatTemplate: userTurn });
+  const fromForm = analysisContext({ ...base, activeRunId: null, analysisSource: "form", form: wrapped });
+  expect(fromForm.options.chat_template).toEqual(userTurn);
+  expect(fromForm.options.prepend_bos).toBe(false);
+  expect(fromForm.label).toContain("chat template, person's message");
+  // A run without a template reads its prompts as plain text, whatever the form says.
+  const fromRun = analysisContext({ ...base, activeRunId: "run", analysisSource: "run", form: wrapped });
+  expect(fromRun.options.chat_template).toBeNull();
+  expect(fromRun.options.prepend_bos).toBe(true);
+  // Changing the template reads the prompts again, as changing BOS does.
+  expect(tokenizationKey(fromForm.options)).not.toBe(tokenizationKey(fromRun.options));
+  expect(fromForm.key).not.toBe(analysisContext({ ...base, activeRunId: null, analysisSource: "form", form: form() }).key);
+});
+
+test("a model is the one a spec names by its files, and cuda is the default GPU", () => {
+  expect(sameDevice("auto", "cuda:1")).toBe(true);
+  expect(sameDevice("cuda", "cuda:0")).toBe(true);
+  expect(sameDevice("cuda:1", "cuda:1")).toBe(true);
+  expect(sameDevice("cuda:1", "cuda:0")).toBe(false);
+  expect(sameDevice("cpu", "cuda:0")).toBe(false);
+  const info = model.info!;
+  const ref = model.ref!;
+  expect(sameModel(ref, info)).toBe(true);
+  expect(sameModel({ ...ref, device: "cuda:1" }, { ...info, device: "cuda:1" })).toBe(true);
+  expect(sameModel({ ...ref, device: "cuda:1" }, { ...info, device: "cuda:0" })).toBe(false);
+  // A local model is its files: found by their hash, whatever name it was added under.
+  const local = { ...info, id: "my-fine-tune", source: "local" as const, sha256: "a".repeat(64), revision: null };
+  const named = { ...ref, id: "their name for it", source: "local" as const, sha256: "a".repeat(64), revision: null };
+  expect(sameModel(named, local)).toBe(true);
+  expect(sameModel({ ...named, sha256: "b".repeat(64) }, local)).toBe(false);
+  expect(sameModel({ ...named, source: "hub", sha256: null, id: "my-fine-tune" }, local)).toBe(false);
+  // The form says when the model loaded isn't the one its saved spec was written for.
+  const loaded: ModelStatus = { state: "ready", info: local };
+  expect(savedDifferences(form({ modelRef: named }), loaded, null, null)).toEqual([]);
+  expect(savedDifferences(form({ modelRef: { ...named, sha256: "b".repeat(64) } }), loaded, null, null)[0]).toContain("a local model with other files");
+  expect(savedDifferences(form({ modelRef: { ...ref, device: "cuda" } }), { ...model, info: { ...info, device: "cuda:0" } }, null, null)).toEqual([]);
 });

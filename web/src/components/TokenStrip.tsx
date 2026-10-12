@@ -157,6 +157,8 @@ export function TokenGrid({ data }: { data: TokenStripData }) {
     grid.current?.querySelector<HTMLElement>(`[data-row="${row}"][data-col="${col}"]`)?.focus();
   };
   const differs = new Set(data.differs);
+  // With a chat template, the tokens outside the prompt are the template's.
+  const template = (i: number) => !!data.prompt && (i < data.prompt[0] || i >= data.prompt[1]);
   const labelAt = new Map<number, string[]>();
   for (const [label, pos] of Object.entries(data.labels)) {
     labelAt.set(pos, [...(labelAt.get(pos) ?? []), label]);
@@ -188,10 +190,10 @@ export function TokenGrid({ data }: { data: TokenStripData }) {
                 return (
                   <button type="button"
                     key={`${row}${i}`}
-                    className={`${s.cell} ${differs.has(i) ? s.diff : ""} ${token === undefined ? s.missing : ""}`}
-                    title={token === undefined ? "No token at this position" : `${JSON.stringify(token)} · id ${data[row].ids[i]}`}
+                    className={`${s.cell} ${differs.has(i) ? s.diff : ""} ${token === undefined ? s.missing : ""} ${template(i) ? s.template : ""}`}
+                    title={token === undefined ? "No token at this position" : `${JSON.stringify(token)} · id ${data[row].ids[i]}${template(i) ? " · written by the chat template" : ""}`}
                     disabled={token === undefined}
-                    aria-label={`${row} token ${i}: ${token === undefined ? "missing" : visibleToken(token)}`}
+                    aria-label={`${row} token ${i}: ${token === undefined ? "missing" : visibleToken(token)}${template(i) ? ", the chat template's" : ""}`}
                     aria-pressed={selected === i}
                     data-row={r}
                     data-col={i}

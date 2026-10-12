@@ -73,7 +73,7 @@ function upgradeModelRef(ref: Record<string, unknown> | null): Record<string, un
 }
 
 /** Fields of the form that a form stored by an earlier version doesn't have. */
-const ADDED = new Set<keyof FormState>(["atpMethod", "atpSteps", "metric", "klTarget", "cluster"]);
+const ADDED = new Set<keyof FormState>(["atpMethod", "atpSteps", "metric", "klTarget", "cluster", "chatTemplate"]);
 
 /** A sweep stored before it had every field: an every-feature sweep chose and reported its
  * features on every prompt. */
@@ -194,6 +194,11 @@ const isModelRef: Check = (v) =>
 
 const isSavedDataset: Check = (v) => isObject(v) && isString(v.path) && orNull(isString)(v.sha256);
 
+const isChatTemplate: Check = (v) =>
+  isObject(v) &&
+  orNull(isString)(v.system) &&
+  (v.kind === "user_turn" || (v.kind === "assistant_prefix" && isString(v.user)));
+
 /** Every field of the form and what it may hold. Adding a field to FormState without adding it
  * here is a type error, so a stored form always has every field. */
 const FIELDS: { [K in keyof FormState]-?: Check } = {
@@ -225,6 +230,7 @@ const FIELDS: { [K in keyof FormState]-?: Check } = {
   batchSize: isNumber,
   limit: orNull(isNumber),
   prependBos: isBoolean,
+  chatTemplate: orNull(isChatTemplate),
   notes: isString,
   modelRef: orNull(isModelRef),
   savedDataset: orNull(isSavedDataset),

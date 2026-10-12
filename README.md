@@ -274,7 +274,10 @@ logogram report RUN           a run as one HTML page anyone can open (-o FILE, -
 logogram methods RUN          a run's methods paragraph
 logogram tasks                the tasks Logogram writes prompts for, with their options
 logogram generate TASK        a seeded dataset for a task (-n N --seed S, --option NAME=VALUE)
-logogram doctor               environment and hardware report, with fixes
+logogram models add PATH --name NAME   add a model folder on this machine (its files are hashed)
+logogram models list          the model folders added here, with their hashes
+logogram models remove NAME   forget a model folder (its files stay)
+logogram doctor               environment and hardware report, with fixes (each GPU by its cuda:N)
 logogram env                  the versions and devices results depend on, as JSON (--requirements pins them)
 logogram doctor --report      a short report to paste into an issue (--hardware adds the hardware)
 logogram check-updates        ask PyPI whether a newer Logogram is out
@@ -340,6 +343,12 @@ lg.write_dataset(project, "greater-than", records)
 sae = lg.load_sae("jbloom/GPT2-Small-SAEs-Reformatted", "blocks.8.hook_resid_pre", model=model)
 lg.feature_writes(model, sae, 1234, "When Mary and John went to the store, John gave a drink to",
                   prepend_bos=True)   # the tokens the feature promotes and suppresses directly
+
+lg.add_local_model("~/models/my-fine-tune", "my-fine-tune")   # hash a model folder, once
+tuned = lg.load_model("my-fine-tune", device="cuda:1")         # a local model, on the second GPU
+chat = lg.load_model("Qwen/Qwen2.5-0.5B-Instruct")
+lg.look(chat, "The capital of France is", prepend_bos=False,
+        chat_template={"kind": "user_turn", "system": None})   # read in its own chat template
 ```
 
 Tables come back as pandas DataFrames when pandas is installed, and as pyarrow Tables otherwise.
@@ -725,8 +734,9 @@ without continuations.
 |---|---|
 | `model.source` | `"hub"` for Hugging Face, or `"local"` for a folder on this machine added to Logogram's local models. A local model's `id` is the name it was added under, and its folder is found by `model.sha256`, the hash of its files, so the spec never holds a path. |
 | `model.revision` | A commit. `null` resolves the current main branch at run time; the saved spec pins what ran. Always `null` for a local model. |
-| `model.device` | `auto`, `cpu`, `cuda`, `cuda:N` (one GPU of several, such as `cuda:1`) or `mps`. |
-| `tokenization.chat_template` | `null` feeds each prompt as raw text. `{"kind": "user_turn", "system": null}` makes each prompt the person's message in the model's own chat template, so the answer is the first token of the reply; `{"kind": "assistant_prefix", "system": null, "user": "…"}` makes it the start of the model's reply to a fixed message. The template is the one the tokenizer ships at the model's revision. With a template, `prepend_bos` is `false`: the template writes the beginning of the text. |
+| `model.device` | `auto`, `cpu`, `cuda` (the default GPU), `cuda:N` (one GPU of several, such as `cuda:1`; see [Choosing a GPU](#choosing-a-gpu)) or `mps`. |
+| `model.sha256` | For a local model, the hash of its files (see [Local models](#local-models)); `null` for Hugging Face, where the revision pins the files. |
+| `tokenization.chat_template` | `null` feeds each prompt as raw text. `{"kind": "user_turn", "system": null}` makes each prompt the person's message in the model's own chat template, so the answer is the first token of the reply; `{"kind": "assistant_prefix", "system": null, "user": "…"}` makes it the start of the model's reply to a fixed message. `system` is an optional system message. The template is the one the tokenizer ships at the model's revision (see [Chat templates](#chat-templates)). With a template, `prepend_bos` is `false`: the template writes the beginning of the text. |
 | `model.process_weights` | Fold LayerNorm and center weights, as TransformerLens does by default. Logit differences don't change. Value biases are folded into the attention output's bias, so zero ablation of head outputs and heads' direct effects do change (by up to several logits in Qwen 2.5, whose value biases are large); a layer's attention output doesn't. |
 | `dataset.sha256` | If set, the run refuses a dataset file that has changed. |
 | `experiment` | `{"kind": "activation_patching", "direction": "clean_to_corrupt" \| "corrupt_to_clean"}`, `{"kind": "ablation", "baseline": …}` with `{"kind": "zero"}`, `{"kind": "mean", "reference": "clean" \| "corrupt"}` or `{"kind": "resample", "pool": "clean" \| "corrupt", "donors": 10, "seed": 0}`, `{"kind": "attribution_patching", "direction": …, "method": "gradient", "steps": null}` (same directions as patching; or `"method": "integrated_gradients", "steps": 8`), `{"kind": "direct_logit_attribution", "prompts": "clean" \| "corrupt"}`, `{"kind": "path_patching", "direction": …, "receivers": [{"kind": "head", "layer": 9, "head": 9, "input": "q" \| "k" \| "v"}, {"kind": "logits"}], "freeze_mlps": false}`, or `{"kind": "steering", "apply_to": "clean" \| "corrupt", "direction": {"kind": "mean_difference"}, "coefficients": [-1, 1, 2], "train_fraction": 0.5, "seed": 0, "control": true, "continuations": null}` with a scope of one residual component per layer (`layer_components`) or residual `sites`, at one token. The direction can instead be one SAE feature's decoder direction, `{"kind": "sae_feature", "feature": 1234}`, and `continuations` can be `{"prompts": 3, "tokens": 20}` to record what the steered model goes on to say |
@@ -918,10 +928,82 @@ prompt as plain text, without it, so such a model can behave differently here th
 When a model loads, Logogram checks whether it is made for chat: its name says so (`-it`,
 `-Instruct`, `-Chat`, ...), or it stops generating at the token that ends each turn in its chat
 template (Qwen3 0.6B). A chat template alone isn't enough, since some base models ship one
-(Qwen 2.5 0.5B). The model dialog, the summary beside **Run** and the baseline say so, the model's
-info and each run's manifest record it, and prompts and results are unchanged. Check the baseline
-before trusting a run on such a model; for tasks posed as plain text, its base model is the closer
-fit. Applying chat templates is not built yet.
+(Qwen 2.5 0.5B). The model dialog, the summary beside **Run** and the baseline say so, until its
+chat template is chosen, and the model's info and each run's manifest record it. Check the
+baseline before trusting a run on such a model; for tasks posed as plain text, its base model is
+the closer fit.
+
+### Chat templates
+
+A model that ships a chat template can read the prompts as a chat: choose **Chat template** in the
+experiment form (under Data and model), or set the spec's `tokenization.chat_template`. Every
+prompt, clean and corrupt alike, is wrapped in the model's own template, the one its tokenizer
+ships at the model's revision, rendered as Hugging Face's `apply_chat_template` renders it:
+
+* **The person's message** (`user_turn`): each prompt is the person's message, after the system
+  message if there is one, and the template then opens the model's reply. The answer is the first
+  token of the reply, which in most templates has no leading space: write the answers that way.
+* **The start of the reply** (`assistant_prefix`): a fixed message from the person, then each
+  prompt as the beginning of the model's reply, rendered as `continue_final_message` renders it,
+  so the text ends exactly with the prompt and the model goes on from it.
+
+The wrapped text is tokenized whole, without adding special tokens: the template writes the
+beginning-of-sequence token where the model uses one, so `prepend_bos` is `false`. The template's
+text before and after a prompt is the same for every prompt; named positions move by the length
+of the text before it, clean and corrupt must still line up token by token, and answers are read
+after the whole wrapped text. With Qwen 2.5's template and no system message, a prompt reads as
+`<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\n`
+\+ the prompt + `<|im_end|>\n<|im_start|>assistant\n`. The form shows the first prompt exactly as the
+model reads it, the prompt underlined, and the token strip greys the template's tokens.
+
+A template that changes a prompt (one that trims spaces at its start or end, as Llama 3's does)
+leaves that prompt unusable, with the reason, rather than guessing where its tokens are. A model
+without a chat template, or a template that refuses a system message (Gemma's), is refused with
+what to do. Templates are rendered without a clock, so the same spec reads the same text on any
+day: one that writes today's date uses its own fallback date (Llama 3.2's: 26 Jul 2024), and one
+without a fallback is refused. Each run's manifest records the template's SHA-256, its summary the
+template's text around each prompt, and the methods paragraph says both. The baseline, the token
+strip, attention, layer predictions, the SAE views, the head finder and **Your text** wrap prompts
+the same way.
+
+### Local models
+
+A model on this machine that isn't on Hugging Face, such as a fine-tune, can be added from its
+folder: config.json, the tokenizer's files, and the weights as safetensors (a folder whose weights
+are only pickles, `.bin`, `.pt` or `.pth`, is refused, since opening a pickle can run code). Add it
+under a name with **Add a model folder** in the model dialog, `logogram models add PATH --name
+NAME`, or `lg.add_local_model(path, name)`. Its files are hashed once, with progress for big
+folders; a spec then names the model by that name and hash (`"source": "local"`, `"sha256"`),
+never by its folder, so specs, manifests, summaries and reports say nothing about where the files
+are. A spec from someone else finds the same files on this machine by their hash, whatever name
+they were added under here; one this machine doesn't have says so, with the start of the hash it
+needs and how to add the folder.
+
+**The hash** is the SHA-256 of a text listing the files loading reads, one line each, sorted by
+name: the file's own SHA-256 in lowercase hexadecimal, two spaces and its name, each line ending
+with a newline, as `sha256sum` prints them. The files are those in the folder itself, not in
+subfolders, that Logogram downloads for a model on Hugging Face: every `*.json`, `*.txt`,
+`*.model`, `*.tiktoken` and `*.jinja` file (except hidden files and ONNX, Flax or TensorFlow
+exports), and the weights: `model.safetensors`, or else the shards `model.safetensors.index.json`
+names. Names compare in Unicode's composed form (NFC), so the hash is the same on every machine and
+file system. On Linux, with those names in `files.txt`:
+`sha256sum $(cat files.txt) | LC_ALL=C sort -k2 | sha256sum`.
+
+The list of local models lives in Logogram's settings folder, beside the recent projects, with
+each file's size, modification time and hash. Loading a local model checks its files first: a
+file whose size or modification time changed is hashed again, and a folder whose files changed,
+or that gained or lost one, is refused, naming them; changed files make a new model, added under a
+new name. Removing a model from the list leaves its folder as it is. A local model loads and is
+checked like any other, on any architecture TransformerLens supports.
+
+### Choosing a GPU
+
+On a machine with several GPUs, the model dialog offers each one, by name and free memory, and the
+memory estimate and its verdict use that GPU's free memory. A spec names one as `cuda:N`;
+`cuda` is the default GPU (normally GPU 0), so a model loaded on it serves a spec that asks for
+either. A spec naming a GPU this machine doesn't have is refused with the GPUs it has.
+`logogram doctor` lists them, and each run's manifest records the GPU it ran on: its index and its
+name.
 
 ## Troubleshooting
 

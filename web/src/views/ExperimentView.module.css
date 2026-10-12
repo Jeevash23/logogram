@@ -197,3 +197,35 @@
 .calloutAction {
   margin-top: 8px;
 }
+
+/* A prompt as the model reads it in its chat template: the template's text faint, the prompt
+   underlined in ink, line breaks kept. */
+.wrapped {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.wrappedText {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: var(--text-sm);
+  line-height: 1.6;
+}
+
+.templateText {
+  color: var(--muted);
+}
+
+.promptText {
+  background: none;
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}

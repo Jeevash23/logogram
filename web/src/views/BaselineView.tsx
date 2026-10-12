@@ -6,7 +6,7 @@ import type { BaselinePrompt, BaselineReport, Normalization, PromptRecord, TopTo
 import { Button, Callout, Empty } from "../components/ui";
 import { useElementSize } from "../lib/canvas";
 import { divergingScale, markColor, niceBound } from "../lib/color";
-import { CHAT_ADVICE, chatReason } from "../lib/chat";
+import { chatAdvice, chatReason } from "../lib/chat";
 import { answerText, capitalize, num, plural, prob, signed, visibleToken } from "../lib/format";
 import { modelName, useAnalysisContext } from "../lib/hooks";
 import { analysisContext } from "../lib/analysis";
@@ -64,13 +64,13 @@ export function BaselineView() {
       </div>
 
       <p className={s.small}>{context.label} · {measured.label}</p>
-      {model.state === "ready" && chatReason(model.info) && (
+      {model.state === "ready" && chatReason(model.info) && !context.options.chat_template && (
         <Callout title="These prompts run without the model's chat template">
           {chatReason(model.info)} The baseline shows how {modelName(model.info?.id)} behaves on plain text, which can differ
-          from how it behaves in a chat: if the behavior is weak or missing here, that may be why. {CHAT_ADVICE}
+          from how it behaves in a chat: if the behavior is weak or missing here, that may be why. {chatAdvice(model.info)}
         </Callout>
       )}
-      {context.error && <Callout tone="error" title="The loaded model differs">{context.error}</Callout>}
+      {context.error && <Callout tone="error" title={context.errorTitle}>{context.error}</Callout>}
       {!context.error && context.metricError && <Callout tone="error" title="The metric isn't complete">{context.metricError}</Callout>}
 
       {!ready && !context.error && !context.metricError && (
