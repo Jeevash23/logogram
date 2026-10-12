@@ -49,6 +49,7 @@ Every public name of `import logogram as lg`, from the docstrings in [`src/logog
 | [`lg.load_spec`](#lgload_spec) | A spec from a dict, a JSON string or a spec.json file. |
 | [`lg.load_sweep`](#lgload_sweep) | A sweep of `project` by its id, as its runs record it: its runs in the order of its values (a value whose run is gone, or never ran, has none). |
 | [`lg.look`](#lglook) | Read any text with `model` (from [`load_model()`](#lgload_model)), without making a dataset: its tokens, the `top_k` most likely next tokens after each, and at `position` (the last token by default) what each layer would predict, as the app's Your text view shows. |
+| [`lg.open_example`](#lgopen_example) | Copy a bundled example into a folder of its own inside `parent` (by default the projects folder the app uses, Documents/Logogram) and open it, as the app's examples do: a copy made before is opened as it is, never replaced. |
 | [`lg.open_project`](#lgopen_project) | Open a project folder (one with a project.json). |
 | [`lg.remove_local_model`](#lgremove_local_model) | Forget a local model. |
 | [`lg.run`](#lgrun) | Run a spec and write its experiment folder into `project`, as the app does. |
@@ -290,6 +291,7 @@ lg.look(
     top_k: int = 5,
     position: int | None = None,
     chat_template: dict[str, Any] | None = None,
+    sae: Any = None,
 ) -> dict[str, Any]
 ```
 
@@ -297,7 +299,22 @@ Read any text with `model` (from [`load_model()`](#lgload_model)), without makin
 tokens, the `top_k` most likely next tokens after each, and at `position` (the last token
 by default) what each layer would predict, as the app's Your text view shows. With
 `chat_template` (as a spec writes it, such as `{"kind": "user_turn", "system": None}`,
-with `prepend_bos` false), the text is wrapped in the model's own chat template.
+with `prepend_bos` false), the text is wrapped in the model's own chat template. With
+`sae` (from [`load_sae()`](#lgload_sae)), `features` also lists the `top_k` features that fire most
+on each token, with their activations, and `active` how many fire there (SAEs aren't
+trained on the beginning-of-sequence token, so read from `first_real_token` on).
+
+### lg.open_example
+
+```python
+lg.open_example(example: str = 'ioi-gpt2', parent: str | Path | None = None) -> Project
+```
+
+Copy a bundled example into a folder of its own inside `parent` (by default the projects
+folder the app uses, Documents/Logogram) and open it, as the app's examples do: a copy made
+before is opened as it is, never replaced. The examples are `ioi-gpt2`,
+`greater-than-gpt2`, `factual-recall-gpt2` and `gendered-pronoun-gpt2`: a spec and a
+dataset each, made for GPT-2 small.
 
 ### lg.open_project
 

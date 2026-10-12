@@ -54,6 +54,7 @@ __all__ = [
     "load_spec",
     "load_sweep",
     "look",
+    "open_example",
     "open_project",
     "remove_local_model",
     "run",
@@ -75,6 +76,20 @@ def open_project(path: str | Path) -> Project:
 def create_project(parent: str | Path, name: str) -> Project:
     """Create a project folder called after ``name`` inside ``parent``."""
     return Project.create(parent, name)
+
+
+def open_example(example: str = "ioi-gpt2", parent: str | Path | None = None) -> Project:
+    """Copy a bundled example into a folder of its own inside ``parent`` (by default the projects
+    folder the app uses, Documents/Logogram) and open it, as the app's examples do: a copy made
+    before is opened as it is, never replaced. The examples are ``ioi-gpt2``,
+    ``greater-than-gpt2``, ``factual-recall-gpt2`` and ``gendered-pronoun-gpt2``: a spec and a
+    dataset each, made for GPT-2 small."""
+    from logogram.project import open_example as copy
+
+    try:
+        return copy(None if parent is None else Path(parent).expanduser(), example=example)
+    except ProjectError as exc:
+        raise LogogramError(str(exc)) from exc
 
 
 def load_model(
@@ -285,23 +300,38 @@ def look(
     top_k: int = 5,
     position: int | None = None,
     chat_template: dict[str, Any] | None = None,
+    sae: Any = None,
 ) -> dict[str, Any]:
     """Read any text with ``model`` (from :func:`load_model`), without making a dataset: its
     tokens, the ``top_k`` most likely next tokens after each, and at ``position`` (the last token
     by default) what each layer would predict, as the app's Your text view shows. With
     ``chat_template`` (as a spec writes it, such as ``{"kind": "user_turn", "system": None}``,
-    with ``prepend_bos`` false), the text is wrapped in the model's own chat template."""
-    from logogram.inside import look_report
+    with ``prepend_bos`` false), the text is wrapped in the model's own chat template. With
+    ``sae`` (from :func:`load_sae`), ``features`` also lists the ``top_k`` features that fire most
+    on each token, with their activations, and ``active`` how many fire there (SAEs aren't
+    trained on the beginning-of-sequence token, so read from ``first_real_token`` on)."""
+    from logogram.inside import look_features, look_report
 
+    template = _chat_template(chat_template)
     with model.lock:
-        return look_report(
+        report = look_report(
             model,
             text,
             prepend_bos=prepend_bos,
             top_k=top_k,
             position=position,
-            chat_template=_chat_template(chat_template),
+            chat_template=template,
         )
+        if sae is not None:
+            found = look_features(
+                model, sae, text, prepend_bos=prepend_bos, top_k=top_k, chat_template=template
+            )
+            report.update(
+                features=found["features"],
+                active=found["active"],
+                first_real_token=found["first_real_token"],
+            )
+    return report
 
 
 def continue_text(
