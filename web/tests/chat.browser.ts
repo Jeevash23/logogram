@@ -94,3 +94,31 @@ test("a model folder on this machine is added under a name, offered, and removed
   await expect(option).toHaveCount(0);
   await expect(dialog.getByRole("radio", { name: /^GPT-2 small/ })).toHaveAttribute("aria-checked", "true");
 });
+
+test("a folder typed before the first listing arrives is the one the picker shows", async ({ page }) => {
+  const state = await (await page.request.get("/api/state")).json();
+  const folder = `${state.projects_parent}/../model`;
+  // The picker's first listing (of the folder it starts in) is held back until the typed folder
+  // has been listed.
+  let release = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  await page.route(/\/api\/fs$/, async (route) => {
+    await held;
+    await route.continue();
+  });
+  await page.getByRole("button", { name: /^tiny-gpt2 · / }).click();
+  const dialog = page.getByRole("dialog", { name: "Load a model" });
+  await dialog.getByRole("button", { name: "Add a model folder" }).click();
+  const picker = page.getByRole("dialog", { name: "Choose a model folder" });
+  await picker.getByLabel("Folder path").fill(folder);
+  await picker.getByRole("button", { name: "Go", exact: true }).click();
+  await expect(picker.getByLabel("Folder path")).toHaveValue(/model$/);
+  const late = page.waitForResponse(/\/api\/fs$/);
+  release();
+  await late;
+  // Two frames: time for a late listing to land, were it shown.
+  await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+  await expect(picker.getByLabel("Folder path")).toHaveValue(/model$/);
+  await page.unroute(/\/api\/fs$/);
+  await picker.getByRole("button", { name: "Cancel" }).click();
+});

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { api } from "../api/client";
 import type { FolderListing } from "../api/types";
@@ -27,13 +27,19 @@ export function FolderPicker({
   const [error, setError] = useState<string | null>(null);
   const [typed, setTyped] = useState("");
 
+  // Only the folder asked for last is shown: the first listing, arriving after a typed path was
+  // listed, doesn't take its place.
+  const latest = useRef(0);
   const go = async (path?: string) => {
+    const request = ++latest.current;
     try {
       const next = await api.folders(path);
+      if (request !== latest.current) return;
       setListing(next);
       setTyped(next.path);
       setError(null);
     } catch (e) {
+      if (request !== latest.current) return;
       setError(e instanceof Error ? e.message : String(e));
     }
   };
