@@ -11,6 +11,10 @@ For each sender (a head, attention output or MLP output of the scope) and receiv
 
 The normalized effect is computed as for patching. A sender with no receiver after it has no path,
 so a sweep keeps only the layers before the last receiver.
+
+Between prompts of different token lengths, the sender is patched at a label or the last token:
+from the source prompt's token there into the receiver's. The rest of both passes runs on the
+receiver prompt alone.
 """
 
 from __future__ import annotations
@@ -38,7 +42,7 @@ from logogram.engine import (
     make_scorer,
 )
 from logogram.prompts import PreparedPrompt, group_by_length
-from logogram.sites import ResolvedSite, ScopeError, expand_scope
+from logogram.sites import ResolvedSite, ScopeError, check_lined_up, expand_scope
 from logogram.spec import AllPositions, HeadReceiver, PathPatching, Spec
 
 SENDER_KINDS = ("head", "attn_out", "mlp_out")
@@ -109,9 +113,15 @@ def run_path_patching(
     batch_size = spec.execution.batch_size
     check_receivers(exp, info)
     sites, layout = path_sites(spec, info, prompts)
+    # Between prompts of different lengths, the sender is patched at a label or the last token.
+    check_lined_up([rs.site.position for rs in sites], prompts, "path")
     if on_start is not None:
         on_start(sites, layout)
-    groups = group_by_length(prompts)
+    receiver, source = (
+        ("corrupt", "clean") if exp.direction == "clean_to_corrupt" else ("clean", "corrupt")
+    )
+    # The receivers run in batches of their own length.
+    groups = group_by_length(prompts, receiver)
     scorer = make_scorer(spec, prompts)
     if not scorer.single_position():
         raise ScopeError(
@@ -121,9 +131,6 @@ def run_path_patching(
         )
     baselines = compute_baselines(backend, prompts, groups, batch_size, cancel, scorer)
     check_finite(baselines, info.dtype)
-    receiver, source = (
-        ("corrupt", "clean") if exp.direction == "clean_to_corrupt" else ("clean", "corrupt")
-    )
     reference = source
     warnings = check_gap(spec, baselines, prompts, receiver, reference)
     receivers = [
@@ -161,7 +168,7 @@ def run_path_patching(
         kinds = list(dict.fromkeys(rs.kind for rs in layer_sites))
         sources = _LayerSources(backend, prompts, groups, layer, kinds, source, batch_size, cancel)
         for gi, group in enumerate(groups):
-            tokens = group.clean if receiver == "clean" else group.corrupt
+            tokens = group.tokens(receiver)
             buckets: dict[tuple[str, bool], list[_Row]] = {}
             for rs in layer_sites:
                 all_pos = isinstance(rs.site.position, AllPositions)
@@ -188,6 +195,7 @@ def run_path_patching(
                         info.d_head,
                         dtype,
                         backend.device,
+                        receiver=receiver,
                     )
                     local = torch.tensor([r.local for r in chunk], dtype=torch.long)
                     # The receiver run's own head (and MLP) outputs, which the first pass holds.

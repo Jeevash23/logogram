@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from logogram.backends.base import ModelInfo
-from logogram.prompts import PreparedPrompt, common_labels
+from logogram.prompts import PreparedPrompt, common_labels, uneven_text
 from logogram.spec import (
     AllPositions,
     FeaturesScope,
@@ -111,27 +111,73 @@ def site_label(site: Site) -> str:
 
 
 def resolve_position(
-    position: AllPositions | LastPosition | IndexPosition | LabelPosition, prompt: PreparedPrompt
+    position: AllPositions | LastPosition | IndexPosition | LabelPosition,
+    prompt: PreparedPrompt,
+    side: str = "clean",
 ) -> int | None:
-    """The token index a position refers to in this prompt, or None for all positions."""
+    """The token index a position refers to in this prompt's ``side`` (its clean or corrupt
+    prompt), or None for all positions. In a pair of equal length both sides agree, unless the
+    dataset labels the corrupt prompt's positions itself."""
     if isinstance(position, AllPositions):
         return None
+    length = prompt.length_of(side)
     if isinstance(position, LastPosition):
-        return prompt.length - 1
+        return length - 1
     if isinstance(position, IndexPosition):
-        idx = position.index if position.index >= 0 else prompt.length + position.index
-        if not 0 <= idx < prompt.length:
+        idx = position.index if position.index >= 0 else length + position.index
+        if not 0 <= idx < length:
             raise ScopeError(
                 f"Token index {position.index} is outside prompt {prompt.index}, which has "
-                f"{prompt.length} tokens."
+                f"{length} tokens."
             )
         return idx
-    if position.label not in prompt.labels:
+    labels = prompt.labels_of(side)
+    if position.label not in labels:
         raise ScopeError(
             f"Prompt {prompt.index} has no position named {position.label!r}. Add it to the "
             "dataset's positions, or choose another position."
         )
-    return prompt.labels[position.label]
+    return labels[position.label]
+
+
+# What carries a value from one prompt into another, in words, for refusing positions that don't
+# line up between prompts of different lengths.
+CARRIED = {
+    "patch": "Patching carries each activation from one prompt of a pair into the other",
+    "estimate": "Attribution patching compares each activation with the other prompt's",
+    "path": "Path patching carries the sender's activation from one prompt of a pair into the "
+    "other",
+    "mean": "Mean ablation carries each activation's mean over other prompts into the prompt",
+    "resample": "Resample ablation carries each activation from other prompts into the prompt",
+    "steer": "Steering by the mean difference compares each prompt with the other of its pair",
+}
+
+
+def check_lined_up(
+    positions: list[AllPositions | LastPosition | IndexPosition | LabelPosition],
+    prompts: list[PreparedPrompt],
+    carried: str,
+) -> None:
+    """Refuse positions that need the prompts' positions to line up (every position, or a token
+    index) when some pairs have prompts of different token lengths: a position is then matched
+    from one prompt to another by its label, or as the last token, and only so.
+
+    ``carried`` says how a value goes from one prompt into another (a key of :data:`CARRIED`)."""
+    uneven = [p.index for p in prompts if not p.even]
+    if not uneven:
+        return
+    bad = next((p for p in positions if isinstance(p, AllPositions | IndexPosition)), None)
+    if bad is None:
+        return
+    what = "every position" if isinstance(bad, AllPositions) else f"token index {bad.index}"
+    labels = common_labels(prompts)
+    named = f" or a labelled position ({', '.join(labels)})" if labels else ""
+    raise ScopeError(
+        f"{uneven_text(uneven, len(prompts))}, so their positions don't line up by index. "
+        f"{CARRIED[carried]}, and at {what} that has no meaning across different lengths. "
+        f"Choose the last token{named}, which are matched from one prompt to the other, or use "
+        "pairs of equal length."
+    )
 
 
 def _check_site(site: Site, info: ModelInfo) -> None:
@@ -173,7 +219,7 @@ def expand_scope(
         cols: list[dict[str, Any]] = []
         positions: list[AllPositions | LastPosition | IndexPosition | LabelPosition] = []
         if scope.positions == "each":
-            lengths = sorted({p.length for p in prompts})
+            lengths = sorted({p.length_of(side) for p in prompts for side in ("clean", "corrupt")})
             if len(lengths) > 1:
                 raise ScopeError(
                     f"Prompts have different token lengths ({lengths[0]}–{lengths[-1]}), so "
@@ -259,5 +305,6 @@ def expand_scope(
         if key not in checked:
             checked.add(key)
             for prompt in prompts:
-                resolve_position(rs.site.position, prompt)
+                for side in ("clean", "corrupt"):
+                    resolve_position(rs.site.position, prompt, side)
     return sites, layout

@@ -30,6 +30,7 @@ from logogram.engine import (
     LayerFn,
     ProgressFn,
     _chunks,
+    _LayerSources,
     check_finite,
     check_gap,
     check_values,
@@ -37,9 +38,23 @@ from logogram.engine import (
     empty_values,
     make_scorer,
 )
-from logogram.prompts import PreparedPrompt, first_real_token, group_by_length, seeded_split
+from logogram.prompts import (
+    LengthGroup,
+    PreparedPrompt,
+    first_real_token,
+    group_by_length,
+    seeded_split,
+    side_groups,
+)
 from logogram.sae import SAE, fit_on
-from logogram.sites import ResolvedSite, ScopeError, expand_scope, resolve_position, site_label
+from logogram.sites import (
+    ResolvedSite,
+    ScopeError,
+    check_lined_up,
+    expand_scope,
+    resolve_position,
+    site_label,
+)
 from logogram.spec import (
     Ablation,
     ActivationPatching,
@@ -305,15 +320,19 @@ def _patching(
     batch_size = spec.execution.batch_size
     sites, layout = expand_scope(spec, backend.info, prompts)
     _check_sites(sites, sae)
-    if on_start is not None:
-        on_start(sites, layout)
-    groups = group_by_length(prompts)
-    scorer = make_scorer(spec, prompts)
-    baselines = compute_baselines(backend, prompts, groups, batch_size, cancel, scorer)
-    check_finite(baselines, backend.info.dtype)
     receiver, source, reference = _directions(exp)
     receiver = receiver_override or receiver
     source = source_override or source
+    if source and source != receiver:
+        # Between prompts of different lengths, a feature is patched at a label or the last token.
+        check_lined_up([rs.site.position for rs in sites], prompts, "patch")
+    if on_start is not None:
+        on_start(sites, layout)
+    # The receivers run in batches of their own length.
+    groups = group_by_length(prompts, receiver)
+    scorer = make_scorer(spec, prompts)
+    baselines = compute_baselines(backend, prompts, groups, batch_size, cancel, scorer)
+    check_finite(baselines, backend.info.dtype)
     warnings = check_gap(spec, baselines, prompts, receiver, reference)
     _check_continuations(scorer, [rs.site.position for rs in sites])
     key = (sae.site_in, sae.layer)  # what the features are read from
@@ -339,17 +358,20 @@ def _patching(
     total = len(sites) * n
     done = 0
     local_of = {i: li for g in groups for li, i in enumerate(g.members)}
-    for group in groups:
-        tokens = group.clean if receiver == "clean" else group.corrupt
-        # The chosen features' activations in the source prompts, at every position.
-        targets: dict[int, torch.Tensor] = {}
-        if source:
-            source_tokens = group.clean if source == "clean" else group.corrupt
+    # The chosen features' activations in the source prompts, at every position, captured in
+    # batches of the source prompts' own length (the receivers' batches, for pairs of equal
+    # length).
+    targets: dict[int, torch.Tensor] = {}
+    if source:
+        for group in side_groups(groups, prompts, source):
+            source_tokens = group.tokens(source)
             for sl in _chunks(len(group.members), batch_size):
                 x = backend.capture(source_tokens[sl], [key])[key]
                 f, _ = sae.encode(sae.reads(x))
                 for row, p in enumerate(group.members[sl]):
                     targets[p] = f[row][:, features]  # [pos, n_features]
+    for group in groups:
+        tokens = group.tokens(receiver)
         for sl in _chunks(len(group.members), batch_size):
             captured = backend.capture(tokens[sl], list(dict.fromkeys([key, out_key])))
             receiver_acts.append(captured[key].float().cpu())  # for the fit, later
@@ -366,7 +388,6 @@ def _patching(
                 x: torch.Tensor,
                 read: torch.Tensor | None = None,
                 chunk: list[tuple[ResolvedSite, int]] = chunk,
-                targets: dict[int, torch.Tensor] = targets,
                 length: int = group.length,
             ) -> torch.Tensor:
                 # Only the prompt's positions: tokens appended to read a continuation stay as
@@ -378,16 +399,24 @@ def _patching(
                 for b, (rs, p) in enumerate(chunk):
                     i = int(rs.site.feature or 0)
                     now = f[b, :, i]  # [pos]
-                    if source:
-                        new = targets[p][:, column[i]].to(now.device)
+                    position = rs.site.position
+                    if isinstance(position, AllPositions):
+                        if source:
+                            new = targets[p][:, column[i]].to(now.device)
+                        else:
+                            new = torch.zeros_like(now)
+                        change = new - now
                     else:
-                        new = torch.zeros_like(now)
-                    change = new - now
-                    if not isinstance(rs.site.position, AllPositions):
-                        at = resolve_position(rs.site.position, prompts[p])
-                        keep = torch.zeros_like(change)
-                        keep[at] = change[at]
-                        change = keep
+                        # The receiver's token at the position takes the source's value at its
+                        # own token there (zero, for zero ablation).
+                        at = resolve_position(position, prompts[p], receiver)
+                        if source:
+                            there = resolve_position(position, prompts[p], source)
+                            new_at = targets[p][there, column[i]].to(now.device)
+                        else:
+                            new_at = torch.zeros_like(now[at])
+                        change = torch.zeros_like(now)
+                        change[at] = new_at - now[at]
                     row_stats = None if stats is None else (stats[0][b], stats[1][b])
                     like = out[b, 0]
                     direction = _write_direction(sae, i, row_stats, like)
@@ -424,6 +453,69 @@ def _patching(
     return result
 
 
+def _source_tables(
+    backend: ModelBackend,
+    prompts: list[PreparedPrompt],
+    groups: list[LengthGroup],
+    sae: SAE,
+    positions: list[Any],
+    source: str,
+    batch_size: int,
+    cancel: threading.Event | None,
+) -> dict[tuple[str, str], torch.Tensor]:
+    """What the SAE reads and writes in each source prompt at each position's token, ``[n, d]``
+    by site and position, captured in batches of the source prompts' own length."""
+    kinds = list(dict.fromkeys([str(sae.site_in), str(sae.site)]))
+    sources = _LayerSources(backend, prompts, groups, sae.layer, kinds, source, batch_size, cancel)
+    tables: dict[tuple[str, str], torch.Tensor] = {}
+    for position in positions:
+        probe = ResolvedSite(0, Site(kind="resid_pre", layer=0, position=position), 0, 0, "")
+        for kind in kinds:
+            # Heads' outputs at one token, side by side, as the SAE reads and writes them.
+            table = sources.table(kind, probe).float()
+            tables[(kind, position.model_dump_json())] = table.reshape(table.shape[0], -1)
+    return tables
+
+
+def _at_tokens(
+    sae: SAE,
+    acts: dict[tuple[str, int], torch.Tensor],
+    grads: dict[tuple[str, int], torch.Tensor],
+    tables: dict[tuple[str, str], torch.Tensor],
+    idx: list[int],
+    prompts: list[PreparedPrompt],
+    positions: list[Any],
+    receiver: str,
+) -> dict[str, tuple[np.ndarray, np.ndarray, torch.Tensor, torch.Tensor, torch.Tensor]]:
+    """For a batch of receivers whose pairs may differ in length, at each position: the whole
+    site's estimate and its skip connection's (``[B]``), the features of the source and of the
+    receiver at their own tokens there (``[B, d_sae]``), and the gradient through which a
+    feature's change reaches the metric (``[B, d_out]``, scaled by each input's spread for an
+    SAE that standardizes its inputs)."""
+    key, out_key = (str(sae.site_in), sae.layer), (str(sae.site), sae.layer)
+    rows = torch.arange(len(idx))
+    x_all = sae.reads(acts[key].float())
+    out_all = sae.flat(acts[out_key].float()) if sae.site == "head" else acts[out_key].float()
+    grad_all = sae.flat(grads[out_key].float()) if sae.site == "head" else grads[out_key].float()
+    out: dict[str, tuple[np.ndarray, np.ndarray, torch.Tensor, torch.Tensor, torch.Tensor]] = {}
+    for position in positions:
+        pj = position.model_dump_json()
+        if pj in out:
+            continue
+        at = torch.tensor([resolve_position(position, prompts[p], receiver) for p in idx])
+        x_rec, out_rec, grad = x_all[rows, at], out_all[rows, at], grad_all[rows, at]
+        x_src = tables[(str(sae.site_in), pj)][idx].to(x_rec.device)
+        out_src = tables[(str(sae.site), pj)][idx].to(x_rec.device)
+        site_term = float64(((out_src - out_rec) * grad).sum(-1)).cpu().numpy()
+        skip = sae.skip_write(x_src) - sae.skip_write(x_rec)
+        skip_term = float64((skip * grad).sum(-1)).cpu().numpy()
+        f_src, _ = sae.encode(x_src)
+        f_rec, stats = sae.encode(x_rec)
+        g = grad if stats is None else grad * stats[1]
+        out[pj] = (site_term, skip_term, f_src, f_rec, g)
+    return out
+
+
 def _attribution(
     spec: Spec,
     backend: ModelBackend,
@@ -442,18 +534,29 @@ def _attribution(
     batch_size = spec.execution.batch_size
     scope = spec.scope
     every = isinstance(scope, FeaturesScope)
+    receiver, source, reference = _directions(exp)
+    receiver = receiver_override or receiver
+    source = source_override or source
+    # Pairs of different lengths are compared at a label or the last token, one token each.
+    lined_up = source == receiver or all(p.even for p in prompts)
     chosen: list[ResolvedSite] = []
     layout: dict[str, Any] = {}
     if not every:
         chosen, layout = expand_scope(spec, backend.info, prompts)
         _check_sites(chosen, sae)
-        if on_start is not None:
-            on_start(chosen, layout)
     position = scope.position if isinstance(scope, FeaturesScope) else None
     if position is not None and not isinstance(position, AllPositions):
         for prompt in prompts:
-            resolve_position(position, prompt)
-    groups = group_by_length(prompts)
+            for side in ("clean", "corrupt"):
+                resolve_position(position, prompt, side)
+    # The positions the features are estimated at: the scope's, or each chosen site's.
+    wanted = [position] if position is not None else [rs.site.position for rs in chosen]
+    if not lined_up:
+        check_lined_up(wanted, prompts, "estimate")
+    if not every and on_start is not None:
+        on_start(chosen, layout)
+    # The receivers run in batches of their own length.
+    groups = group_by_length(prompts, receiver)
     # Every feature is chosen on some prompts and reported on others (all of them, unless the
     # scope holds some out): the run measures the reported ones.
     choose_at, report_at = _feature_split(scope, len(prompts)) if every else ([], [])
@@ -461,9 +564,6 @@ def _attribution(
     scorer = make_scorer(spec, prompts)
     baselines = compute_baselines(backend, prompts, groups, batch_size, cancel, scorer)
     check_finite(baselines, backend.info.dtype)
-    receiver, source, reference = _directions(exp)
-    receiver = receiver_override or receiver
-    source = source_override or source
     if every:
         baselines = baselines.subset(report_at)
     warnings = check_gap(spec, baselines, reported, receiver, reference)
@@ -498,13 +598,43 @@ def _attribution(
     receiver_acts: list[torch.Tensor] = []
     receiver_outs: list[torch.Tensor] = []
     done = 0
+    # Pairs of different lengths: the source prompts' activations at each position's token,
+    # captured in batches of their own length, to compare with the receivers' at theirs.
+    tables = (
+        None
+        if lined_up
+        else _source_tables(backend, prompts, groups, sae, wanted, source, batch_size, cancel)
+    )
     for group in groups:
-        receiver_tokens = group.clean if receiver == "clean" else group.corrupt
-        source_tokens = group.clean if source == "clean" else group.corrupt
+        receiver_tokens = group.tokens(receiver)
         for sl in _chunks(len(group.members), batch_size):
             if cancel is not None and cancel.is_set():
                 raise Cancelled()
             idx = group.members[sl]
+            if tables is not None:
+                acts, grads = metric_gradients(backend, scorer, receiver_tokens[sl], idx, keys)
+                receiver_acts.append(acts[key].float().cpu())  # for the fit, later
+                if sae.transcoder:
+                    receiver_outs.append(acts[out_key].float().cpu())
+                at_tokens = _at_tokens(sae, acts, grads, tables, idx, prompts, wanted, receiver)
+                for pj, (site_term, skip_term, f_src, f_rec, g) in at_tokens.items():
+                    if spot is not None:
+                        site_total[idx] = site_term
+                        skip_total[idx] = skip_term
+                    if every:
+                        estimates[idx] = float64((f_src - f_rec) * (g @ W_dec.T)).cpu().numpy()
+                        continue
+                    for rs in chosen:
+                        if rs.site.position.model_dump_json() != pj:
+                            continue
+                        i = int(rs.site.feature or 0)
+                        term = (f_src[:, i] - f_rec[:, i]) * (g @ W_dec[i])  # [B]
+                        estimates[rs.index, idx] = float64(term).cpu().numpy()
+                done += len(idx)
+                if on_progress is not None:
+                    on_progress(done, n, sae.layer)
+                continue
+            source_tokens = group.tokens(source)
             src = backend.capture(source_tokens[sl], keys)
             acts, grads = metric_gradients(backend, scorer, receiver_tokens[sl], idx, keys)
             x_src = sae.reads(src[key].float())
@@ -527,7 +657,7 @@ def _attribution(
                 """``[B, pos]`` values at the estimate's position (or summed over all)."""
                 if spot is None:
                     return float64(values.sum(1)).cpu().numpy()
-                at = [resolve_position(spot, prompts[p]) for p in idx]
+                at = [resolve_position(spot, prompts[p], receiver) for p in idx]
                 return float64(values[torch.arange(len(idx)), at]).cpu().numpy()
 
             site_total[idx] = whole(per_position)
@@ -538,7 +668,9 @@ def _attribution(
                 rows = float64(torch.zeros(len(idx), d_sae, device=x_rec.device))
                 for pos in positions:
                     if position is not None and not isinstance(position, AllPositions):
-                        at = torch.tensor([resolve_position(position, prompts[p]) for p in idx])
+                        at = torch.tensor(
+                            [resolve_position(position, prompts[p], receiver) for p in idx]
+                        )
                         mask = (at == pos).to(x_rec.device)
                         if not bool(mask.any()):
                             continue
@@ -564,7 +696,7 @@ def _attribution(
                     if isinstance(rs.site.position, AllPositions):
                         values = term.sum(1)
                     else:
-                        at = [resolve_position(rs.site.position, prompts[p]) for p in idx]
+                        at = [resolve_position(rs.site.position, prompts[p], receiver) for p in idx]
                         values = term[torch.arange(len(idx)), at]
                     estimates[rs.index, idx] = float64(values).cpu().numpy()
             done += len(idx)
@@ -620,11 +752,14 @@ def _attribution(
                     _skip_first(spec, backend, prompts),
                     receiver_outs if sae.transcoder else None,
                 ),
-                "site_estimate": float(site_total.mean()),
+                # Between prompts of different lengths, only at one position the sites share.
+                "site_estimate": float(site_total.mean()) if lined_up or spot else None,
                 "features_estimate": None if features_sum is None else float(features_sum.mean()),
                 # Through a transcoder's skip connection: the site's estimate is the features',
                 # this, and what the transcoder misses.
-                "skip_estimate": float(skip_total.mean()) if sae.skip else None,
+                "skip_estimate": float(skip_total.mean())
+                if sae.skip and (lined_up or spot)
+                else None,
                 "evaluated": d_sae if every else len(chosen),
                 # With a held-out split: the prompts that chose the features, and those that
                 # report them (the run's prompts).

@@ -1,8 +1,14 @@
 """Tokenize prompt pairs for a model and check that they can be used in an experiment.
 
-A usable pair has clean and corrupt prompts of the same token length (so positions line up), and
-an answer and a distractor the metric can read: single tokens, sets of single tokens, or (for the
-log-probability and probability metrics) continuations of several tokens.
+A usable pair has clean and corrupt prompts of the same token length (so positions line up), or
+of different lengths with its labelled positions given in both prompts (``corrupt_positions``),
+which are then matched label by label; and an answer and a distractor the metric can read: single
+tokens, sets of single tokens, or (for the log-probability and probability metrics) continuations
+of several tokens.
+
+Each side of a pair has its own tokens, labels and length (``tokens_of``, ``labels_of``,
+``length_of``). Batches never mix lengths, so prompts are grouped by length on the side a batch
+runs (``group_by_length(prompts, side)``); for pairs of equal length both sides share the groups.
 
 With a chat template (logogram.chat), clean and corrupt prompts are each wrapped in it and the
 wrapped text is tokenized whole: the alignment checks, the named positions and the answers all
@@ -33,6 +39,9 @@ class PromptIssue:
         return {"index": self.index, "kind": self.kind, "message": self.message}
 
 
+SIDES = ("clean", "corrupt")
+
+
 @dataclass
 class PreparedPrompt:
     index: int
@@ -41,11 +50,29 @@ class PreparedPrompt:
     corrupt: Tokenized
     answer: Target
     distractor: Target
+    # Each label's token in the clean prompt, and in the corrupt prompt: the same token indices
+    # for a pair of equal length without corrupt_positions, the corrupt prompt's own otherwise.
     labels: dict[str, int] = field(default_factory=dict)
+    corrupt_labels: dict[str, int] = field(default_factory=dict)
 
     @property
     def length(self) -> int:
+        """The clean prompt's length: both prompts' for a pair of equal length."""
         return len(self.clean.ids)
+
+    @property
+    def even(self) -> bool:
+        """Whether both prompts have the same number of tokens, so positions line up by index."""
+        return len(self.clean.ids) == len(self.corrupt.ids)
+
+    def tokens_of(self, side: str) -> Tokenized:
+        return self.clean if side == "clean" else self.corrupt
+
+    def length_of(self, side: str) -> int:
+        return len(self.tokens_of(side).ids)
+
+    def labels_of(self, side: str) -> dict[str, int]:
+        return self.labels if side == "clean" else self.corrupt_labels
 
     @property
     def answer_id(self) -> int:
@@ -57,6 +84,7 @@ class PreparedPrompt:
         return _single_id(self.distractor, "distractor")
 
     def differing_positions(self) -> list[int]:
+        """Positions whose tokens differ, for a pair of equal length."""
         return [
             i
             for i, (a, b) in enumerate(zip(self.clean.ids, self.corrupt.ids, strict=True))
@@ -216,13 +244,15 @@ def prepare_prompt(
     issues: list[PromptIssue] = []
     clean = _tokenize_side(backend, record.clean, prepend_bos, chat, index, "clean", issues)
     corrupt = _tokenize_side(backend, record.corrupt, prepend_bos, chat, index, "corrupt", issues)
-    if len(clean.ids) != len(corrupt.ids):
+    if len(clean.ids) != len(corrupt.ids) and record.corrupt_positions is None:
         issues.append(
             PromptIssue(
                 index,
                 "length_mismatch",
                 f"clean has {len(clean.ids)} tokens and corrupt has {len(corrupt.ids)}, so "
-                "positions can't be aligned. Make both prompts tokenize to the same length.",
+                "positions can't be aligned. Make both prompts tokenize to the same length, or "
+                "label their positions in both prompts (positions and corrupt_positions), which "
+                "matches them label by label.",
             )
         )
     answer = _target(backend, record.answer, "answer", index, continuations, issues)
@@ -262,20 +292,13 @@ def prepare_prompt(
         issues.append(
             PromptIssue(index, "too_long", f"the prompt is longer than the model's {n_ctx} tokens.")
         )
-    labels: dict[str, int] = {}
-    for label, span in (record.positions or {}).items():
-        # Characters of the prompt, counted in the text tokenized: after a template's prefix.
-        pos = label_position(clean, (span[0] + clean.start, span[1] + clean.start))
-        if pos is None:
-            issues.append(
-                PromptIssue(
-                    index,
-                    "label",
-                    f"position {label!r} (characters {span[0]}–{span[1]}) doesn't cover any token.",
-                )
-            )
-        else:
-            labels[label] = pos
+    labels = _labels(clean, record.positions, index, "", issues)
+    # Without corrupt_positions the prompts line up, so a label is at the same token in both.
+    corrupt_labels = (
+        dict(labels)
+        if record.corrupt_positions is None
+        else _labels(corrupt, record.corrupt_positions, index, " of the corrupt prompt", issues)
+    )
     if issues:
         return None, issues, clean, corrupt
     assert answer is not None and distractor is not None
@@ -287,8 +310,35 @@ def prepare_prompt(
         answer=answer,
         distractor=distractor,
         labels=labels,
+        corrupt_labels=corrupt_labels,
     )
     return prepared, [], clean, corrupt
+
+
+def _labels(
+    tokenized: Tokenized,
+    spans: dict[str, tuple[int, int]] | None,
+    index: int,
+    where: str,
+    issues: list[PromptIssue],
+) -> dict[str, int]:
+    """Each label's token in one prompt, with an issue for a span that covers none."""
+    labels: dict[str, int] = {}
+    for label, span in (spans or {}).items():
+        # Characters of the prompt, counted in the text tokenized: after a template's prefix.
+        pos = label_position(tokenized, (span[0] + tokenized.start, span[1] + tokenized.start))
+        if pos is None:
+            issues.append(
+                PromptIssue(
+                    index,
+                    "label",
+                    f"position {label!r} (characters {span[0]}–{span[1]}{where}) doesn't cover "
+                    "any token.",
+                )
+            )
+        else:
+            labels[label] = pos
+    return labels
 
 
 def prepare_prompts(
@@ -312,32 +362,90 @@ def prepare_prompts(
     return prepared
 
 
+class UnevenPairs(ValueError):
+    """Pairs whose prompts have different token lengths reached a computation that lines the two
+    prompts up position by position."""
+
+
 @dataclass
 class LengthGroup:
-    """Prompts of one token length. Batches never mix lengths, so no padding is needed."""
+    """Prompts of one token length. Batches never mix lengths, so no padding is needed.
+
+    A group of pairs of equal length holds both sides' tokens. A group made for one side (see
+    :func:`group_by_length`) holds that side's, and the other side's only where those have the
+    same length too."""
 
     length: int
     members: list[int]  # indices into the prepared prompt list
-    clean: torch.Tensor  # [n_g, length]
-    corrupt: torch.Tensor
+    sides: dict[str, torch.Tensor]  # "clean" and/or "corrupt" -> tokens [n_g, length]
+
+    @property
+    def clean(self) -> torch.Tensor:
+        return self.tokens("clean")
+
+    @property
+    def corrupt(self) -> torch.Tensor:
+        return self.tokens("corrupt")
+
+    def tokens(self, side: str) -> torch.Tensor:
+        """The members' tokens on ``side``, ``[n_g, length]``."""
+        if side not in self.sides:
+            raise UnevenPairs(
+                f"These prompts' {side} prompts don't all have {self.length} tokens: group the "
+                f"prompts by the length of their {side} prompts."
+            )
+        return self.sides[side]
 
 
-def group_by_length(prompts: list[PreparedPrompt]) -> list[LengthGroup]:
+def group_by_length(prompts: list[PreparedPrompt], side: str | None = None) -> list[LengthGroup]:
+    """The prompts grouped by token length, shortest first, each group in prompt order.
+
+    ``side`` groups them by the length of their clean or corrupt prompts. Without it, they are
+    grouped by the length of their pairs, which needs pairs of equal length; for those, every way
+    of grouping gives the same groups."""
+    if side is None:
+        uneven = [p.index for p in prompts if not p.even]
+        if uneven:
+            raise UnevenPairs(
+                f"{uneven_text(uneven, len(prompts))}, so this computation, which reads both "
+                "prompts of a pair position by position, can't use them. Use pairs of equal "
+                "length."
+            )
     by_len: dict[int, list[int]] = defaultdict(list)
     for i, p in enumerate(prompts):
-        by_len[p.length].append(i)
+        by_len[p.length_of(side or "clean")].append(i)
     groups = []
     for length in sorted(by_len):
         members = by_len[length]
-        groups.append(
-            LengthGroup(
-                length=length,
-                members=members,
-                clean=torch.tensor([prompts[i].clean.ids for i in members], dtype=torch.long),
-                corrupt=torch.tensor([prompts[i].corrupt.ids for i in members], dtype=torch.long),
-            )
-        )
+        sides: dict[str, torch.Tensor] = {}
+        for which in SIDES:
+            if all(prompts[i].length_of(which) == length for i in members):
+                ids = [prompts[i].tokens_of(which).ids for i in members]
+                sides[which] = torch.tensor(ids, dtype=torch.long)
+        groups.append(LengthGroup(length=length, members=members, sides=sides))
     return groups
+
+
+def side_groups(
+    groups: list[LengthGroup], prompts: list[PreparedPrompt], side: str
+) -> list[LengthGroup]:
+    """Groups to run ``side``'s prompts in: ``groups`` when every one holds them (pairs of equal
+    length, so the batches are what they always were), else the prompts grouped by that side."""
+    if all(side in g.sides for g in groups):
+        return groups
+    return group_by_length(prompts, side)
+
+
+def uneven_text(indices: list[int], n: int) -> str:
+    """Which pairs have prompts of different token lengths, in words, to start a sentence."""
+    shown = ", ".join(str(i) for i in indices[:5])
+    more = f" and {len(indices) - 5} more" if len(indices) > 5 else ""
+    if len(indices) == 1:
+        return f"Prompt pair {shown} has clean and corrupt prompts of different token lengths"
+    return (
+        f"Prompt pairs {shown}{more} ({len(indices)} of {n}) have clean and corrupt prompts of "
+        "different token lengths"
+    )
 
 
 def common_labels(prompts: list[PreparedPrompt]) -> list[str]:

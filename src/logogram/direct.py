@@ -43,7 +43,7 @@ PRECISION = {"float32": 2.0**-23, "float16": 2.0**-10, "bfloat16": 2.0**-7}
 
 
 def check_direct_sites(
-    sites: list[ResolvedSite], info: ModelInfo, prompts: list[PreparedPrompt]
+    sites: list[ResolvedSite], info: ModelInfo, prompts: list[PreparedPrompt], side: str = "clean"
 ) -> None:
     """Refuse sites, or models, for which a direct effect isn't defined."""
     for prompt in prompts:
@@ -88,7 +88,7 @@ def check_direct_sites(
             continue
         checked.add(key)
         for prompt in prompts:
-            if resolve_position(rs.site.position, prompt) != prompt.length - 1:
+            if resolve_position(rs.site.position, prompt, side) != prompt.length_of(side) - 1:
                 raise ScopeError(
                     "Direct effects are read at the last token, where the logit difference is "
                     f"measured, but {rs.label} is at another position in prompt {prompt.index}. "
@@ -120,15 +120,16 @@ def run_direct_effects(
     info = backend.info
     batch_size = spec.execution.batch_size
     sites, layout = expand_scope(spec, info, prompts)
-    check_direct_sites(sites, info, prompts)
+    which = exp.prompts
+    check_direct_sites(sites, info, prompts, which)
     if on_start is not None:
         on_start(sites, layout)
-    groups = group_by_length(prompts)
+    # Only the chosen prompts are split: they run in batches of their own length.
+    groups = group_by_length(prompts, which)
     baselines = compute_baselines(
         backend, prompts, groups, batch_size, cancel, make_scorer(spec, prompts)
     )
     check_finite(baselines, info.dtype)
-    which = exp.prompts
     n, n_layers = len(prompts), info.n_layers
     heads = any(rs.kind == "head" for rs in sites)
 
@@ -154,7 +155,7 @@ def run_direct_effects(
         )
 
     for group in groups:
-        tokens = group.clean if which == "clean" else group.corrupt
+        tokens = group.tokens(which)
         for sl in _chunks(len(group.members), batch_size):
             if cancel is not None and cancel.is_set():
                 raise Cancelled()

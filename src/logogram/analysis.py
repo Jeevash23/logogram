@@ -19,6 +19,7 @@ from logogram.prompts import (
     group_by_length,
     prepare_prompt,
     prompt_span,
+    side_groups,
 )
 from logogram.spec import (
     METRIC_LABELS,
@@ -63,6 +64,12 @@ def tokenize_pair(
     n = min(len(clean.ids), len(corrupt.ids))
     differs = [i for i in range(n) if clean.ids[i] != corrupt.ids[i]]
     differs += list(range(n, max(len(clean.ids), len(corrupt.ids))))
+    labels = prepared.labels if prepared else {}
+    corrupt_labels = prepared.corrupt_labels if prepared else {}
+    if prepared is None and record.corrupt_positions is not None:
+        # Show the labels of a pair that can't be used yet, as far as they cover tokens.
+        labels = _covered(clean, record.positions)
+        corrupt_labels = _covered(corrupt, record.corrupt_positions)
 
     def answer_info(value: str | list[str]) -> dict[str, Any]:
         if isinstance(value, list):
@@ -91,11 +98,73 @@ def tokenize_pair(
         "prompt": list(prompt_span(clean, len(record.clean))) if chat else None,
         "aligned": len(clean.ids) == len(corrupt.ids),
         "differs": differs,
-        "labels": prepared.labels if prepared else {},
+        "labels": labels,
+        # The corrupt prompt's own labels, when the dataset gives them (corrupt_positions).
+        "corrupt_labels": corrupt_labels if record.corrupt_positions is not None else None,
+        # Pairs of different lengths: the two prompts side by side, each column a clean token, a
+        # corrupt token or both, with each label's tokens in one column where the labels allow.
+        "columns": None
+        if len(clean.ids) == len(corrupt.ids)
+        else align_tokens(clean.ids, corrupt.ids, labels, corrupt_labels),
         "answer": answer_info(record.answer),
         "distractor": answer_info(record.distractor),
         "issues": [i.to_dict() for i in issues],
     }
+
+
+def _covered(tokenized: Any, spans: dict[str, tuple[int, int]] | None) -> dict[str, int]:
+    """Each label's token, for the labels whose spans cover one."""
+    from logogram.prompts import label_position
+
+    out: dict[str, int] = {}
+    for label, (start, end) in (spans or {}).items():
+        pos = label_position(tokenized, (start + tokenized.start, end + tokenized.start))
+        if pos is not None:
+            out[label] = pos
+    return out
+
+
+def align_tokens(
+    clean: list[int], corrupt: list[int], labels: dict[str, int], corrupt_labels: dict[str, int]
+) -> list[list[int | None]]:
+    """Two prompts of different lengths side by side: columns ``[clean token, corrupt token]``,
+    either of them None where that prompt has no token in the column.
+
+    The tokens of each label, and the last tokens, share a column: they are the tokens a run
+    matches from one prompt to the other. Labels whose order differs between the prompts can't
+    all share one; those that keep their order (the most of them) do. Between them, tokens that
+    are the same in both prompts are lined up (the longest run of them in common), and the rest
+    stand alone."""
+    from difflib import SequenceMatcher
+
+    anchors = sorted(
+        {(labels[k], corrupt_labels[k]) for k in labels if k in corrupt_labels}
+        | {(len(clean) - 1, len(corrupt) - 1)}
+    )
+    # The anchors that keep their order in both prompts: the longest chain of them.
+    best: list[list[tuple[int, int]]] = []
+    for a in anchors:
+        chains = [c for c in best if c[-1][0] < a[0] and c[-1][1] < a[1]]
+        best.append([*max(chains, key=len, default=[]), a])
+    chain = max(best, key=lambda c: (len(c), c[-1] == anchors[-1]), default=[])
+    columns: list[list[int | None]] = []
+    i = j = 0
+    for a, b in [*chain, (len(clean), len(corrupt))]:
+        matcher = SequenceMatcher(None, clean[i:a], corrupt[j:b], autojunk=False)
+        x, y = i, j
+        for block in matcher.get_matching_blocks():
+            while x < i + block.a or y < j + block.b:
+                columns.append([x if x < i + block.a else None, y if y < j + block.b else None])
+                x += x < i + block.a
+                y += y < j + block.b
+            for _ in range(block.size):
+                columns.append([x, y])
+                x += 1
+                y += 1
+        if a < len(clean) and b < len(corrupt):
+            columns.append([a, b])
+        i, j = a + 1, b + 1
+    return columns
 
 
 def prepare_with_issues(
@@ -140,7 +209,7 @@ def baseline_report(
     )
     if not prepared:
         return {"n": 0, "prompts": [], "issues": [i.to_dict() for i in issues], "summary": None}
-    groups = group_by_length(prepared)
+    groups = group_by_length(prepared, "clean")
     scorer = Scorer(metric, prepared)
     base = compute_baselines(backend, prepared, groups, batch_size, scorer=scorer)
     top: dict[str, list[list[dict[str, Any]]]] = {
@@ -148,8 +217,8 @@ def baseline_report(
         "corrupt": [[] for _ in prepared],
     }
     for which in ("clean", "corrupt"):
-        for group in groups:
-            tokens = group.clean if which == "clean" else group.corrupt
+        for group in side_groups(groups, prepared, which):
+            tokens = group.tokens(which)
             for start in range(0, len(group.members), batch_size):
                 idx = group.members[start : start + batch_size]
                 logits = backend.final_logits(tokens[start : start + batch_size])
@@ -228,10 +297,9 @@ def attention_report(
     target = next((p for p in prepared if p.index == index), None)
     if target is None:
         raise ValueError(f"Prompt {index} can't be used; fix it in the dataset first.")
-    same = [p for p in prepared if p.length == target.length]
-    tokens = torch.tensor(
-        [(p.clean if which == "clean" else p.corrupt).ids for p in same], dtype=torch.long
-    )
+    length = target.length_of(which)
+    same = [p for p in prepared if p.length_of(which) == length]
+    tokens = torch.tensor([p.tokens_of(which).ids for p in same], dtype=torch.long)
     total = None
     chosen = None
     for start in range(0, len(same), batch_size):
@@ -243,15 +311,15 @@ def attention_report(
                 chosen = pattern[row]
     assert total is not None and chosen is not None
     average = total / len(same)
-    tok = (target.clean if which == "clean" else target.corrupt).tokens
+    tok = target.tokens_of(which).tokens
     # The average mixes prompts, so only labels at the same index in all of them, and tokens
     # identical in all of them, describe its positions.
-    seqs = [(p.clean if which == "clean" else p.corrupt).tokens for p in same]
+    seqs = [p.tokens_of(which).tokens for p in same]
     common_tokens = [t if all(s[i] == t for s in seqs) else None for i, t in enumerate(tok)]
     common_labels = {
         label: pos
-        for label, pos in target.labels.items()
-        if all(p.labels.get(label) == pos for p in same)
+        for label, pos in target.labels_of(which).items()
+        if all(p.labels_of(which).get(label) == pos for p in same)
     }
     return {
         "layer": layer,
@@ -259,14 +327,14 @@ def attention_report(
         "which": which,
         "index": index,
         "tokens": tok,
-        "labels": target.labels,
+        "labels": target.labels_of(which),
         "pattern": chosen.tolist(),
         "average": average.tolist(),
         "average_tokens": common_tokens,
         "average_labels": common_labels,
         "n_average": len(same),
         "n_total": len(prepared),
-        "length": target.length,
+        "length": length,
     }
 
 
@@ -292,14 +360,16 @@ def prediction_report(
     if target_idx is None:
         raise ValueError(f"Prompt {index} can't be used; fix it in the dataset first.")
     target = prepared[target_idx]
+    which = settings.which
+    length = target.length_of(which)
     pos = settings.position.index if isinstance(settings.position, IndexPosition) else -1
-    pos = target.length + pos if pos < 0 else pos
-    if not 0 <= pos < target.length:
-        raise ValueError(f"Token position {pos} is outside this prompt ({target.length} tokens).")
-    group = next(g for g in group_by_length(prepared) if target_idx in g.members)
+    pos = length + pos if pos < 0 else pos
+    if not 0 <= pos < length:
+        raise ValueError(f"Token position {pos} is outside this prompt ({length} tokens).")
+    group = next(g for g in group_by_length(prepared, which) if target_idx in g.members)
     within = group.members.index(target_idx)
     start = (within // batch_size) * batch_size
-    tokens = group.clean if settings.which == "clean" else group.corrupt
+    tokens = group.tokens(which)
     batch = tokens[start : start + batch_size]
     logits = backend.layer_logits(batch, pos, within - start)
     if not torch.isfinite(logits).all():
@@ -336,7 +406,7 @@ def prediction_report(
     return {
         "index": index,
         "position": pos,
-        "tokens": (target.clean if settings.which == "clean" else target.corrupt).tokens,
+        "tokens": target.tokens_of(which).tokens,
         "settings": settings.model_dump(mode="json"),
         "layers": rows,
         "batch_members": [prepared[i].index for i in group.members[start : start + batch_size]],
@@ -394,7 +464,7 @@ def sae_fit_report(
     def written(x: torch.Tensor) -> torch.Tensor:
         return sae.flat(x) if sae.site == "head" else x
 
-    for group in group_by_length(prepared):
+    for group in group_by_length(prepared, "clean"):
         length = group.length
 
         def splice(
@@ -483,7 +553,7 @@ def token_features_report(
         "index": index,
         "which": which,
         "tokens": tokenized.tokens,
-        "labels": target.labels,
+        "labels": target.labels_of(which),
         "features": per_token,
         "active": [int((f[p] > 0).sum()) for p in range(f.shape[0])],
         "first_real_token": _first_real_token(
@@ -514,8 +584,8 @@ def feature_report(
     start = _first_real_token(backend, prepared, prepend_bos, chat_template is not None)
     strongest: list[dict[str, Any]] = []
     along: list[float] = []
-    for group in group_by_length(prepared):
-        tokens = group.clean if which == "clean" else group.corrupt
+    for group in group_by_length(prepared, which):
+        tokens = group.tokens(which)
         for begin in range(0, len(group.members), batch_size):
             idx = group.members[begin : begin + batch_size]
             f, _ = sae.encode(
@@ -573,7 +643,7 @@ def feature_writes_report(
 
     prepared, target = _single(backend, records, index, prepend_bos, chat_template)
     tokenized = target.clean if which == "clean" else target.corrupt
-    at = None if position is None else resolve_position(position, target)
+    at = None if position is None else resolve_position(position, target, which)
     report = feature_writes(
         backend,
         sae,

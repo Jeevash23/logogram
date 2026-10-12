@@ -849,11 +849,20 @@ def create_app(
                 state.backend, records, prepend_bos, chat_template=template
             )
             out["issues"] = [i.to_dict() for i in issues]
-            out["lengths"] = sorted({p.length for p in prepared})
+            out["lengths"] = sorted(
+                {p.length_of(side) for p in prepared for side in ("clean", "corrupt")}
+            )
             # Answers this model reads as continuations of several tokens: only the metrics that
             # read continuations can score them, which the app says before a run is started.
             out["continuations"] = [
                 p.index for p in prepared if p.answer.positions > 1 or p.distractor.positions > 1
+            ]
+            # Pairs of different lengths, matched label by label: the form offers them only the
+            # positions that work.
+            out["uneven"] = [
+                {"index": p.index, "clean": len(p.clean.ids), "corrupt": len(p.corrupt.ids)}
+                for p in prepared
+                if not p.even
             ]
         return out
 
