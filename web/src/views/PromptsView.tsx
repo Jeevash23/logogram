@@ -569,7 +569,7 @@ function DatasetPrompts({ path, dataset, onSaved }: { path: string; dataset: Dat
           </Button>
         </div>
       ) : (
-        <table className={`${s.table} ${p.table}`}>
+        <table className={`${s.table} ${p.table}`} data-tour="prompts">
           <caption className="visually-hidden">
             Prompt pairs in {file}: {rangeText(shown, searching)}
           </caption>

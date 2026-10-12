@@ -15,6 +15,12 @@ import { fakeRuns, otherVersions, TRACEBACK } from "./fakeRuns";
 
 test.use({ bypassCSP: true, reducedMotion: "reduce" });
 
+// The fake runs' handlers fetch the server's own answers: one still waiting as the page closes
+// would fail the test after it passed.
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+});
+
 const AXE = readFileSync(fileURLToPath(new URL("../node_modules/axe-core/axe.min.js", import.meta.url)), "utf8");
 
 interface Violation {

@@ -7,7 +7,7 @@ clash with Logogram's modules: ``load_spec``, not ``spec``.)
 
 from typing import Any
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 # The release date of this version: after a few months the app suggests looking for a newer one
 # (no network needed). Set it with every release.
 __released__ = "2026-10-12"
@@ -33,6 +33,7 @@ _API = (
     "load_spec",
     "load_sweep",
     "look",
+    "open_example",
     "open_project",
     "remove_local_model",
     "run",

@@ -62,7 +62,7 @@ export function ExploreView() {
         <span>{run.running ? "Results arrive layer by layer" : strongest.length ? <>Strongest: {strongest.map((x, i) => <span key={x.index}>{i > 0 && " · "}<button type="button" className={s.reading} onClick={() => select(selectionOfSite(x))}>{x.label} <strong>{signed(x.effect.mean, 2)}</strong></button></span>)}</> : run.id ? `${count(Object.keys(run.results).length)} measured sites` : "Run an experiment to color the model"}</span>
       </div>
       {mode === "atlas" ? <div className={s.atlasRow}>
-        <div className={s.atlas}><ModelMap prominent structureOnly={overlay === "structure"} /><p className={s.hint}>{run.layout?.kind === "site_sets" ? "This run measured sets of sites, which have no single place on the map: its results list each set. " : ""}Double-click a component to open its layer. Arrow keys move through the map. Empty outlines have no measurement in this run.</p></div>
+        <div className={s.atlas} data-tour="map"><ModelMap prominent structureOnly={overlay === "structure"} /><p className={s.hint}>{run.layout?.kind === "site_sets" ? "This run measured sets of sites, which have no single place on the map: its results list each set. " : ""}Double-click a component to open its layer. Arrow keys move through the map. Empty outlines have no measurement in this run.</p></div>
         {run.id && profile && overlay === "data" && <aside className={s.dialPanel} aria-label="Run logogram"><LogogramDial seed={run.id} profile={profile} sites={run.sites} results={run.results} size={150} /></aside>}
       </div> : <div className={s.layerWorkspace}>
         <nav className={s.layerNav} aria-label="Model layers"><span className={s.eyebrow}>Layers</span>

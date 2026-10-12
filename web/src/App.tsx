@@ -3,9 +3,11 @@ import { useEffect } from "react";
 import { connectEvents } from "./api/events";
 import { AboutDialog } from "./components/AboutDialog";
 import { CommandPalette } from "./components/CommandPalette";
+import { GuideDialog } from "./components/GuideDialog";
 import { ReportDialog } from "./components/ReportDialog";
 import { ShortcutsDialog } from "./components/ShortcutsDialog";
 import { Notices } from "./components/Notices";
+import { Walkthrough } from "./components/Walkthrough";
 import { BRAND_SEED, Logogram } from "./components/Logogram";
 import { TooltipProvider } from "./components/ui";
 import { useGlobalKeys } from "./lib/keys";
@@ -71,8 +73,10 @@ export function App() {
       {screen === "workbench" && <Workbench />}
       <CommandPalette />
       <ShortcutsDialog />
+      <GuideDialog />
       <ReportDialog />
       <AboutDialog />
+      <Walkthrough />
       <Notices />
     </TooltipProvider>
   );

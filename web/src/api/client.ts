@@ -187,7 +187,13 @@ export const api = {
   state: () => get<ServerState>("/api/state"),
   update: () => get<UpdateStatus>("/api/update"),
   checkUpdate: () => post<UpdateStatus>("/api/update/check"),
-  settings: (values: { system_check_seen?: boolean; theme?: ThemeSetting; update_check?: boolean; single_key_shortcuts?: boolean }) =>
+  settings: (values: {
+    system_check_seen?: boolean;
+    theme?: ThemeSetting;
+    update_check?: boolean;
+    single_key_shortcuts?: boolean;
+    walkthrough?: "finished" | "skipped";
+  }) =>
     post<Record<string, unknown>>("/api/settings", values),
   system: () => get<SystemReport>("/api/system"),
   /** The versions and devices a rerun here would use, to compare with a run's manifest. */

@@ -6,6 +6,7 @@ import { paletteRuns, runTitle, searchText } from "../lib/runs";
 import { parseHeadQuery } from "../lib/sites";
 import { fieldWords, sweepsOf, sweepsOfRun } from "../lib/sweeps";
 import { useStore, workspaceFor, WORKSPACE_VIEWS } from "../store/app";
+import { openGuide, walkThroughExample } from "../store/help";
 import { MOD, SHIFT } from "./Header";
 import { WORKSPACE_ITEMS } from "./TopBar";
 import { Icon, Kbd } from "./ui";
@@ -146,6 +147,8 @@ function useCommands(query: string): Command[] {
       { id: "projects", label: "All projects", group: "Project", run: () => st.goto("projects") },
       { id: "system", label: "System check", group: "Project", keywords: "gpu cuda doctor hardware", run: () => st.goto("system") },
       { id: "updates", label: "Check for updates", group: "Project", keywords: "version upgrade new release pypi", run: () => void st.checkUpdates() },
+      { id: "guide", label: "Open the guide", group: "Help", keywords: "help learn workspaces map logogram numbers intervals docs", run: () => openGuide() },
+      { id: "walkthrough", label: "Walk me through the example", group: "Help", keywords: "tour tutorial learn start ioi first run", run: () => void walkThroughExample() },
       { id: "shortcuts", label: "Show keyboard shortcuts", group: "Help", keywords: "keys hotkeys keyboard help", shortcut: key("?"), run: () => useStore.setState({ shortcutsOpen: true }) },
       { id: "report", label: "Report a problem…", group: "Help", keywords: "bug issue error support github", run: () => useStore.setState({ helpDialog: "report" }) },
       { id: "about", label: "About Logogram", group: "Help", keywords: "version license source", run: () => useStore.setState({ helpDialog: "about" }) },

@@ -111,8 +111,12 @@ existing ones (attribution patching, steering and path patching are good example
    satisfy (as the sanity tests check that patching every clean activation gives an effect of 1),
    that a rerun is bit-identical, and that it works on the other model families in
    `tests/test_architectures.py`.
-6. **Documentation.** Say in the README what the method measures, where it can mislead, and its
-   fields in the spec table.
+6. **Documentation.** Say what the method measures, where it can mislead and the papers it comes
+   from in a page of `docs/concepts/` (listed in `docs/README.md`), and mention it in the README's
+   Experiments section and spec table. Describe its spec fields in their docstrings in `spec.py`:
+   the reference in `docs/reference/` is written from them by
+   `uv run python scripts/build_reference.py`, and `tests/test_reference.py` fails until it is
+   run again.
 
 A new field on an existing method is required in version 2 specs. For version 1 specs,
 `upgrade_v1` in `spec.py` fills in the value that reproduces what they did before.

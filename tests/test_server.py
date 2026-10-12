@@ -527,3 +527,22 @@ def test_editing_prompts_needs_the_token_its_origin_and_the_project(app, client,
     closed = {**ORIGIN, "x-logogram-project": "none"}
     r = client.post(DERIVE, json={**body, "name": "again"}, headers=closed)
     assert r.status_code == 409 and r.json()["error"] == "Open a project first."
+
+
+def test_how_the_walkthrough_ended_is_kept_in_the_settings(client, tmp_path):
+    headers = {**AUTH, **ORIGIN}
+    assert client.get("/api/state", headers=AUTH).json()["walkthrough"] is None
+    for ended in ("skipped", "finished"):
+        settings = client.post("/api/settings", json={"walkthrough": ended}, headers=headers)
+        assert settings.json()["walkthrough"] == ended
+        assert client.get("/api/state", headers=AUTH).json()["walkthrough"] == ended
+    # Only how it ended can be said, and it is kept with the user's settings, not in a project.
+    refused = client.post("/api/settings", json={"walkthrough": "maybe"}, headers=headers)
+    assert refused.status_code == 422
+    settings_file = tmp_path / "config" / "settings.json"
+    saved = json.loads(settings_file.read_text(encoding="utf-8"))
+    assert saved["walkthrough"] == "finished"
+    # A settings file edited into something else reads as never ended.
+    saved["walkthrough"] = ["finished"]
+    settings_file.write_text(json.dumps(saved), encoding="utf-8")
+    assert client.get("/api/state", headers=AUTH).json()["walkthrough"] is None

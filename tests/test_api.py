@@ -162,3 +162,33 @@ def test_the_command_line_generates_task_datasets(project):
     assert [json.loads(r)["clean"] for r in records] == [r.clean for r in same]
     bad = runner.invoke(app, ["generate", "ioi", "-n", "5", "--seed", "1", "-O", "nope=1", *where])
     assert bad.exit_code == 1 and "options are" in bad.output
+
+
+def test_an_example_opens_from_python_as_a_copy_of_its_own(tmp_path):
+    project = lg.open_example("ioi-gpt2", tmp_path)
+    assert project.root == (tmp_path / "ioi-example").resolve()
+    spec = lg.load_spec(project.root / "experiments/ioi-head-patching/spec.json")
+    assert spec.model.id == "openai-community/gpt2"
+    # Opened again, it is the same copy, as it was left.
+    (project.root / "notes.txt").write_text("mine", encoding="utf-8")
+    again = lg.open_example("ioi-gpt2", tmp_path)
+    assert again.root == project.root and (again.root / "notes.txt").is_file()
+    with pytest.raises(lg.api.LogogramError, match="There is no example called 'nope'"):
+        lg.open_example("nope", tmp_path)
+
+
+def test_look_lists_the_features_that_fire_with_an_sae(tiny_backend, tmp_path):
+    from logogram.inside import look_features
+    from test_sae import exact_sae
+
+    text = "When Mary and John went to the store, John gave a drink to"
+    sae = exact_sae(tmp_path / "sae", tiny_backend.info.d_model)
+    plain = lg.look(tiny_backend, text, top_k=3)
+    assert "features" not in plain
+    report = lg.look(tiny_backend, text, top_k=3, sae=sae)
+    with tiny_backend.lock:
+        same = look_features(tiny_backend, sae, text, prepend_bos=True, top_k=3)
+    assert report["features"] == same["features"] and report["active"] == same["active"]
+    assert report["first_real_token"] == 1
+    added = {"features", "active", "first_real_token"}
+    assert {k: v for k, v in report.items() if k not in added} == plain

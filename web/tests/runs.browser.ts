@@ -8,6 +8,12 @@ import { comparedAcrossMachines, fakeRuns, otherVersions, TRACEBACK, type FakeRu
 
 test.describe.configure({ mode: "serial" });
 
+// The fake runs' handlers fetch the server's own answers: one still waiting as the page closes
+// would fail the test after it passed.
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+});
+
 async function open(page: Page) {
   await page.goto("/?token=browser-test-token");
   await expect(page.getByRole("main").getByRole("heading", { name: "tiny-gpt2", exact: true })).toBeVisible();

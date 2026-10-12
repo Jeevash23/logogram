@@ -182,6 +182,8 @@ class ServerState(_Out):
     first_run: bool
     theme: Literal["light", "dark", "system"]
     single_key_shortcuts: bool = True
+    # How the walkthrough of the example ended, kept in the settings: finished, skipped or never.
+    walkthrough: Literal["finished", "skipped"] | None = None
     projects_parent: str
     update: UpdateStatus
     sae: dict[str, Any] = {"state": "none"}
@@ -198,6 +200,7 @@ class Settings(BaseModel):
     theme: str | None = None
     update_check: bool | None = None
     single_key_shortcuts: bool | None = None
+    walkthrough: str | None = None
 
 
 class OkOut(_Out):

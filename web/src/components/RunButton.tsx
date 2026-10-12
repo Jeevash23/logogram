@@ -57,6 +57,7 @@ export function RunButton({
       disabled={!spec}
       tip={!spec ? (reason ?? undefined) : queue ? `Add to the queue: it starts when the jobs ahead of it end (${MOD}+Enter)` : `Run (${MOD}+Enter)`}
       aria-keyshortcuts="Control+Enter Meta+Enter"
+      data-tour="run"
     >
       {queue ? "Queue" : "Run"}
     </Button>

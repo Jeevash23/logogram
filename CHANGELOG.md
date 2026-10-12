@@ -2,6 +2,98 @@
 
 What changed in each version of Logogram.
 
+## 0.5.0 (2026-10-12)
+
+Chat models on their own template, your own fine-tunes, findings checked across seeds and
+checkpoints, runs that keep what finished, a queue that runs overnight, steering along SAE
+features with what the steered model goes on to say, and documentation for all of it: pages for
+every method, how-to guides, notebooks, a guide in the app and a walkthrough.
+
+### Added
+
+- **Chat templates** (`tokenization.chat_template`). Prompts can be wrapped in the model's own
+  chat template, the one its tokenizer ships: as the person's message followed by the template's
+  opening of the reply, or as the start of the model's reply to a fixed message, with an optional
+  system message. Each prompt must come out of the template unchanged around it, or it is
+  refused with the reason; named positions move with the template, and answers are read after
+  the whole wrapped text. The run, the baseline, the token strip, attention, predictions, the
+  SAE views, the head finder and Your text all wrap prompts the same way. The manifest records
+  the template's SHA-256, the summary its text around each prompt, and the methods text says
+  what the model read.
+- **Local models** (`model.source: "local"`). A folder with `config.json`, the tokenizer and
+  safetensors weights is added under a name (`logogram models add PATH --name NAME`, the model
+  dialog, or `lg.add_local_model`) and found by the hash of its files, so specs, manifests and
+  reports never hold a path. Loading rehashes files whose size or time changed and refuses a
+  folder whose files changed, naming them; pickle-only folders are refused.
+- **One GPU of several** (`model.device: "cuda:N"`). The model dialog offers each GPU with its
+  name and free memory, the estimate uses the chosen one, and the manifest records its index and
+  name. `cuda` is the default GPU, so a spec saying `cuda` and one saying `cuda:0` match.
+- **Steering along an SAE feature.** Steering's direction can be a feature's decoder direction,
+  added where its SAE writes (the residual stream, an attention or MLP output, a transcoder's MLP
+  output, or the heads' outputs). Strength 1 is the feature's typical activation, recorded in
+  the summary. **Steer along this feature** in a feature's panel fills the form.
+- **What a steered model says.** A steering run can record greedy continuations of its first
+  held-out prompts: unsteered, at each strength and with the random control
+  (`continuations.json`, shown under the results and in the report). Your text continues any
+  text, plainly or with a feature added from a chosen token on.
+- **Sweeps.** One spec run across several values of one choice: a seed it states, the dataset
+  (files ticked, or generated one per seed), or the model's revision (training checkpoints in
+  order). The run it was made from stands in for its own value. The Sweeps view in Evidence
+  shows each strong site's effect and interval at every value, the spread across values beside a
+  run's own interval, and which sites keep their sign and size; values without results are
+  missing, never zero. `logogram sweep`, `lg.sweep` and `lg.load_sweep`; CSV export.
+- **Runs that stop early keep what finished.** A run cancelled, interrupted or failing mid-sweep
+  keeps the layers (or sites, or sets) every prompt ran at, with the statistics a finished run
+  gives them; attribution patching and direct logit attribution keep every site over the prompts
+  that finished. The summary says how far the run got and what it leaves out (corrections for
+  the number of sites need every site). The run stays cancelled or failed; the history marks it
+  partial.
+- **A queue that survives restarts.** The run queue is kept in the project
+  (`.logogram/queue.json`), comes back paused when the project opens again, and can be run
+  without the app: `logogram queue add`, `list`, `clear` and `run` (overnight on a remote GPU,
+  say). One process runs a queue at a time.
+- **The head finder.** The Attention view finds previous-token, duplicate-token and induction
+  heads on seeded repeated random tokens (Olsson et al. 2022), each head's score with a bootstrap
+  interval over sequences (`lg.head_kinds`).
+- **Your text**, a new Explore tab: any text's tokens, the next-token predictions after each,
+  the logit lens at a chosen token (where it held for the model), where a head attends, and the
+  SAE features that fire, without making a dataset (`lg.look`).
+- **Documentation** in `docs/`: getting started, a tour of the workbench, a page for each method
+  (what Logogram computes, exactly, and where it comes from), how-to guides (replicating IOI,
+  finding induction heads, working with an SAE, checking robustness, comparing runs, sweeps,
+  the queue, chat models, your own fine-tune, sharing results, a remote GPU), and a reference of
+  every spec field, command and Python function, generated from the code
+  (`scripts/build_reference.py`, checked by a test). Three notebooks, with "Open in Colab":
+  IOI head patching, attribution patching verified by patching, and SAE features.
+- **A guide in the app** (Help, Guide): what each workspace is for, how to read the map and the
+  logogram, what the numbers and intervals mean, and the keyboard, with buttons that open each
+  view. **A walkthrough of the example** in six steps on the real controls (Walk me through it),
+  remembered once finished or skipped. `lg.open_example()` opens the example from Python.
+- **A shareable report**: one self-contained HTML page per run, with its map, strongest sites,
+  methods, notes, every site's numbers, provenance and spec (`logogram report`, `Run.report()`).
+  The figure as SVG, per-site CSV, and per-prompt CSV with the prompts' text. The methods text
+  now comes from one place (`logogram methods`, `Run.methods()`).
+
+### Changed
+
+- Specs are version 3. Version 2 specs read as version 3 with chat templates, local models and
+  the new steering choices off, which is what version 2 did.
+
+### Fixed
+
+- A workspace chosen while a project was opening was undone a moment later.
+- The folder picker could replace a folder you had typed with the one it opened in.
+- Rerunning a saved spec of SAE features with another SAE of the same site loaded used that SAE
+  without saying so. The form now lists the SAE among the differences from the saved spec.
+- The token strip tokenized again, and took the focus off the token in hand, whenever an
+  unrelated choice changed (the form's batch size or prompt limit).
+- A site's bootstrap interval could change in its last digits with the number of sites the run
+  measured: its resampled means came from one matrix product over every site, which BLAS
+  libraries round differently as the number of rows changes (a single row goes through another
+  routine). They now go through products of one fixed shape, so a run that stops early keeps
+  exactly what the whole run gives each site, on every platform. Intervals of earlier runs can
+  differ from a rerun's in their last digits.
+
 ## 0.4.0 (2026-10-12)
 
 Runs you can keep track of and trust across machines, a way to work on a remote GPU, help in the
