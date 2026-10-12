@@ -75,13 +75,21 @@ _PATHS = re.compile(
     + _BODY
     + r"*"
 )
-_URL_CREDENTIALS = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^\s/@:]+(?::[^\s/@]*)?@")
+# Schemes are short, and so are the names and passwords in addresses: bounded, so a long run of
+# letters and dots can't make the search slow.
+_URL_CREDENTIALS = re.compile(
+    r"(?i)\b([a-z][a-z0-9+.-]{0,31}://)[^\s/@:]{1,256}(?::[^\s/@]{0,256})?@"
+)
 _TOKEN_QUERY = re.compile(
     r"(?i)\b(token|access_token|api_key|apikey|password|passwd|secret)=[^\s&'\";,)]+"
 )
 _HF_TOKEN = re.compile(r"\bhf_[A-Za-z0-9]{20,}\b")
 _BEARER = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/-]{8,}=*")
-_EMAIL = re.compile(r"(?<![\w.%+-])[\w.%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b")
+# Bounded as addresses are (64 characters before the @, 63 to a part of the domain), so no text,
+# however long, makes the search slow.
+_EMAIL = re.compile(
+    r"(?<![\w.%+-])[\w.%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){0,8}\.[A-Za-z]{2,24}\b"
+)
 
 
 @dataclass

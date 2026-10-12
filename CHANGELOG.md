@@ -63,6 +63,7 @@ app, examples with the results they should give, and SAE features read more exac
 - History opens failed and cancelled runs on Results, where the reason and **Edit and rerun** are.
 - A run whose spec can't be read is listed as damaged, with what is wrong, instead of vanishing.
 - `logogram list` hides archived runs unless `--archived` is given.
+- Typer 0.16 or later is required: earlier versions can't show `--help` with Click 8.2 or later.
 
 ### Fixed
 
