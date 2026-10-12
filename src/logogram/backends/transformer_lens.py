@@ -167,29 +167,6 @@ def _patch_hooks(patch: Patches) -> list[tuple[str, Callable[..., torch.Tensor]]
 # Lengthening a copy read before its normalization changes the output by about ε / variance times
 # what turning it as far does. Real models' activations are far larger than their normalizations'
 # epsilon; this also allows the small ones of tiny test models.
-SCALE_TOLERANCE = 0.05
-
-
-def _lengthen(share: float) -> Callable[..., torch.Tensor]:
-    def fn(act: torch.Tensor, hook: Any = None) -> torch.Tensor:
-        return act * (1.0 + share)
-
-    return fn
-
-
-def _turn(share: float) -> Callable[..., torch.Tensor]:
-    """Move every copy, at each position, by ``share`` of its length, in fixed random directions
-    (one seeded stream for the whole pass, so the check is the same every time)."""
-    generator = torch.Generator(device="cpu").manual_seed(0)
-
-    def fn(act: torch.Tensor, hook: Any = None) -> torch.Tensor:
-        noise = torch.randn(act.shape, generator=generator).to(device=act.device, dtype=act.dtype)
-        noise = noise / noise.norm(dim=-1, keepdim=True).clamp_min(1e-12)
-        return act + share * act.norm(dim=-1, keepdim=True) * noise
-
-    return fn
-
-
 def _combine(
     hooks: list[tuple[str, Callable[..., torch.Tensor]]],
 ) -> list[tuple[str, Callable[..., torch.Tensor]]]:
@@ -1164,26 +1141,12 @@ class TransformerLensBackend(ModelBackend):
             )
         bridge = self._bridge()
         probe = _probe_tokens(info.d_vocab, str(bridge.cfg.device))
-        n = info.n_layers
-        names = [edge_hook(part, layer) for layer in range(n) for part in ("q", "k", "v", "mlp")]
-        names.append(edge_hook("logits", n))
         try:
             with torch.no_grad():
                 plain = bridge(probe, return_type="logits").float()
                 with self._split_inputs():
                     split = bridge(probe, return_type="logits").float()
-                    # Each copy is read before its normalization, which ignores the copy's
-                    # length: lengthening every copy (each head's, each MLP's and the final
-                    # normalization's) by 5% changes the output only through the normalizations'
-                    # epsilon, while turning each by as much changes it fully. A copy read after
-                    # its normalization would change as much either way.
-                    longer, turned = _lengthen(0.05), _turn(0.05)
-                    scaled = bridge.run_with_hooks(
-                        probe, fwd_hooks=[(name, longer) for name in names], return_type="logits"
-                    ).float()
-                    moved = bridge.run_with_hooks(
-                        probe, fwd_hooks=[(name, turned) for name in names], return_type="logits"
-                    ).float()
+                    stream = self._copies_are_the_stream(bridge, probe)
                     separate = self._separate_copies(bridge, probe)
         except BackendError:
             raise
@@ -1192,21 +1155,16 @@ class TransformerLensBackend(ModelBackend):
                 f"TransformerLens can't give {info.id}'s heads their own copies of their inputs "
                 f"({type(exc).__name__}: {exc}), {why}."
             ) from exc
-        change = float((moved - plain).abs().max())
-        out = {
-            "split": _relative(split, plain),
-            "scale": float((scaled - plain).abs().max()) / change if change > 0 else math.inf,
-            "separate": separate,
-        }
+        out = {"split": _relative(split, plain), "stream": stream, "separate": separate}
         if not out["split"] <= tolerance:
             raise BackendError(
                 f"With each head reading its own copy of its inputs, {info.id} predicts something "
                 f"else (log-probabilities differ by up to {out['split']:.1%} of their range), {why}."
             )
-        if not out["scale"] <= SCALE_TOLERANCE:
+        if not out["stream"] <= tolerance:
             raise BackendError(
-                f"{info.id}'s heads, MLPs or logits don't normalize the residual stream they read "
-                f"before anything else reads it, {why}."
+                f"{info.id}'s heads, MLPs or logits don't each read the residual stream itself and "
+                f"normalize their own copy, {why}."
             )
         if not out["separate"] <= tolerance:
             raise BackendError(
@@ -1215,47 +1173,80 @@ class TransformerLensBackend(ModelBackend):
             )
         return out
 
+    def _copies_are_the_stream(self, bridge: Any, probe: torch.Tensor) -> float:
+        """How far each receiver's own copy is from the residual stream it copies, relative to the
+        stream: 0 when every head's query, key and value, every MLP and the logits read the stream
+        itself and normalize their copy on their own, whatever their normalization's epsilon. A
+        copy taken after a normalization would differ."""
+        info = self.info
+        n = info.n_layers
+        parallel = str(info.extra.get("block_structure")) == "parallel"
+        mlp_reads = "resid_pre" if parallel else "resid_mid"
+        pairs = [
+            (edge_hook(part, layer), hook_name("resid_pre", layer))
+            for layer in range(n)
+            for part in ("q", "k", "v")
+        ]
+        pairs += [(edge_hook("mlp", layer), hook_name(mlp_reads, layer)) for layer in range(n)]
+        pairs.append((edge_hook("logits", n), hook_name("resid_post", n - 1)))
+        names = sorted({name for pair in pairs for name in pair})
+        _, cache = bridge.run_with_cache(probe, names_filter=names)
+        worst = 0.0
+        for copy_name, stream_name in pairs:
+            copy, stream = cache[copy_name], cache[stream_name]
+            if copy.dim() == stream.dim() + 1:  # one copy for each head: [batch, pos, head, d]
+                stream = stream.unsqueeze(2).expand_as(copy)
+            worst = max(worst, _relative(copy, stream))
+        return worst
+
     def _separate_copies(self, bridge: Any, probe: torch.Tensor) -> float:
-        """Move one head's query, key or value copy in the last layer: that head's attention
-        pattern (or output, for the value) must change, and no other head's. The largest change
-        of another head, relative to the moved head's, measured three times (q, k, v)."""
+        """Move one head's query, key or value copy in the last layer: that head's query, key or
+        value (its projection of the copy) must change, and no other head's. The largest change
+        of another head, relative to the moved head's, measured three times (q, k, v). The head
+        moved is the first whose projection responds: a head with no query weights (one that
+        attends evenly) reads its copy without changing."""
         layer = self.info.n_layers - 1
+        heads = self.info.n_heads
         generator = torch.Generator(device="cpu").manual_seed(0)
         worst = 0.0
-        for part, read in (("q", PATTERN_HOOK), ("k", PATTERN_HOOK), ("v", HOOKS["head"])):
-            name = read.format(layer=layer)
-            seen: dict[str, torch.Tensor] = {}
-
-            def keep(act: torch.Tensor, hook: Any = None, seen: Any = seen) -> torch.Tensor:
-                seen["x"] = act.detach().float()
-                return act
-
+        for part in ("q", "k", "v"):
+            name = HOOKS[part].format(layer=layer)  # [B, pos, H, d_head]
             _, base = bridge.run_with_cache(probe, names_filter=[name])
             before = base[name].float()
             shape = (probe.shape[0], probe.shape[1], self.info.d_model)
             delta = torch.randn(shape, generator=generator).to(probe.device)
+            for head in range(heads):
+                seen: dict[str, torch.Tensor] = {}
 
-            def move(
-                act: torch.Tensor, hook: Any = None, delta: torch.Tensor = delta
-            ) -> torch.Tensor:
-                act = act.clone()
-                act[:, :, 0] = act[:, :, 0] + delta.to(act.dtype) * act[:, :, 0].std()
-                return act
+                def keep(act: torch.Tensor, hook: Any = None, seen: Any = seen) -> torch.Tensor:
+                    seen["x"] = act.detach().float()
+                    return act
 
-            bridge.run_with_hooks(
-                probe,
-                fwd_hooks=[(edge_hook(part, layer), move), (name, keep)],
-                return_type=None,
-            )
-            after = seen["x"]
-            # Heads are dim 1 of a pattern [B, H, q, k] and dim 2 of z [B, pos, H, d_head].
-            axis = 1 if read == PATTERN_HOOK else 2
-            change = (after - before).abs().movedim(axis, 0)
-            moved = float(change[0].max())
-            if not moved > 0:
-                return math.inf  # the head didn't read the copy that was moved
-            if change.shape[0] > 1:
-                worst = max(worst, float(change[1:].max()) / moved)
+                def move(
+                    act: torch.Tensor,
+                    hook: Any = None,
+                    delta: torch.Tensor = delta,
+                    head: int = head,
+                ) -> torch.Tensor:
+                    act = act.clone()
+                    copy = act[:, :, head]
+                    act[:, :, head] = copy + delta.to(act.dtype) * copy.std()
+                    return act
+
+                bridge.run_with_hooks(
+                    probe,
+                    fwd_hooks=[(edge_hook(part, layer), move), (name, keep)],
+                    return_type=None,
+                )
+                change = (seen["x"] - before).abs().movedim(2, 0)
+                moved = float(change[head].max())
+                if moved > 0:
+                    others = [h for h in range(heads) if h != head]
+                    if others:
+                        worst = max(worst, float(change[others].max()) / moved)
+                    break
+            else:
+                return math.inf  # no head read the copy that was moved
         return worst
 
     def head_output_weights(self, layer: int) -> torch.Tensor:

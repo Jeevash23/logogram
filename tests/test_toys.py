@@ -401,6 +401,103 @@ def test_every_planted_head_is_in_the_compositions():
         assert [c for c in toy.compositions if c.receiver is None and c.changes]
 
 
+# -- edges: each planted edge alone, and edge attribution's estimates of them ---------------------
+
+
+def _edge(c: toys.Composition) -> dict[str, Any]:
+    sender = (
+        {"kind": "embed"}
+        if c.sender is None
+        else {"kind": "head", "layer": c.sender[0], "head": c.sender[1]}
+    )
+    receiver = (
+        {"kind": "logits"}
+        if c.receiver is None
+        else {"kind": "head", "layer": c.receiver[0], "head": c.receiver[1], "input": c.input}
+    )
+    return {"sender": sender, "receiver": receiver}
+
+
+def _edge_label(c: toys.Composition) -> str:
+    sender = "embeddings" if c.sender is None else f"L{c.sender[0]} H{c.sender[1]}"
+    receiver = "logits" if c.receiver is None else f"L{c.receiver[0]} H{c.receiver[1]} {c.input}"
+    return f"{sender} → {receiver}"
+
+
+@pytest.mark.parametrize("name", list(toys.TOYS))
+def test_each_planted_edge_alone_carries_what_it_was_built_to(name, toy_backend, tmp_path):
+    """The edges scope path-patches each edge alone, every head and MLP held: an edge of the
+    planted circuit along which the prompts differ moves the answer all the way, and any other
+    planted edge not at all, as the toy's compositions say."""
+    toy = toys.get_toy(name)
+    edges = [_edge(c) for c in toy.compositions]
+    receivers = list({json.dumps(e["receiver"], sort_keys=True): e["receiver"] for e in edges})
+    experiment = {
+        "kind": "path_patching",
+        "direction": "clean_to_corrupt",
+        "receivers": [json.loads(r) for r in receivers],
+        "freeze_mlps": True,
+    }
+    spec = _spec(
+        name,
+        _experiment(name, "which-heads"),
+        experiment=experiment,
+        scope={"kind": "edges", "edges": edges},
+        limit=16,
+    )
+    summary = _run(toy_backend(name), _project(tmp_path, name), spec)
+    expect = {_edge_label(c): 1.0 for c in toy.compositions if c.changes}
+    assert set(_effects(summary)) == {_edge_label(c) for c in toy.compositions}
+    _assert_effects(summary, expect)
+
+
+def _edge_attribution(name: str, method: str, steps: int | None) -> Spec:
+    experiment = {
+        "kind": "edge_attribution",
+        "direction": "clean_to_corrupt",
+        "method": method,
+        "steps": steps,
+        "curve": None,
+    }
+    return _spec(
+        name,
+        _experiment(name, "which-heads"),
+        experiment=experiment,
+        scope={"kind": "graph", "layers": None, "logits": True},
+        limit=16,
+    )
+
+
+@pytest.mark.parametrize("name", list(toys.TOYS))
+def test_edge_attribution_is_exact_into_the_logits_and_blind_through_saturated_attention(
+    name, toy_backend, tmp_path
+):
+    """One gradient (EAP) estimates the edge from the head that writes the answer into the logits
+    exactly, as that path is linear, and every edge into a query or key at about 0: the planted
+    attention is saturated, so its gradient vanishes, though patching such an edge alone moves
+    the answer all the way (above). This is what verifying estimates by path patching catches."""
+    toy = toys.get_toy(name)
+    summary = _run(
+        toy_backend(name), _project(tmp_path, name), _edge_attribution(name, "gradient", None)
+    )
+    writer = next(c for c in toy.compositions if c.receiver is None and c.changes)
+    _assert_effects(summary, {_edge_label(writer): 1.0}, 1e-3)
+    blind = [c for c in toy.compositions if c.changes and c.input in ("q", "k")]
+    assert blind and all(abs(_effects(summary)[_edge_label(c)]) < 1e-3 for c in blind)
+
+
+def test_edge_attribution_with_fine_steps_recovers_the_induction_key_edge(toy_backend, tmp_path):
+    """Integrated gradients (EAP-IG) follow the metric from one prompt to the other, through the
+    attention's saturation: with 32 steps the previous-token head's edge into the induction
+    head's key is estimated at about 1, as patching it gives."""
+    summary = _run(
+        toy_backend("induction"),
+        _project(tmp_path, "induction"),
+        _edge_attribution("induction", "integrated_gradients", 32),
+    )
+    assert _effects(summary)["L0 H2 → L1 H1 k"] == pytest.approx(1.0, abs=0.01)
+
+
 # -- attribution patching: exact where linear, blind through saturated attention ---------------
 
 

@@ -209,16 +209,31 @@ def test_an_edges_scope_is_path_patched_with_everything_held(spec_factory: Any) 
 
 def test_the_model_is_measured_before_its_edges_are(tiny_backend: Any, arch_backend: Any) -> None:
     checks = tiny_backend.edge_checks()
-    assert set(checks) == {"split", "scale", "separate"}
+    assert set(checks) == {"split", "stream", "separate"}
     assert 0 <= checks["split"] <= 1e-4 and 0 <= checks["separate"] <= 1e-4
-    # Lengthening every copy does almost nothing next to turning it as far.
-    assert 0 <= checks["scale"] <= 0.01
-    assert arch_backend("gpt_neox").edge_checks()["separate"] <= 1e-4
+    # Every receiver's copy is the residual stream itself, before its normalization.
+    assert checks["stream"] == 0
+    neox = arch_backend("gpt_neox").edge_checks()  # its MLPs read the stream its heads read
+    assert neox["separate"] <= 1e-4 and neox["stream"] == 0
     with pytest.raises(BackendError, match="shares each key and value"):
         arch_backend("llama").edge_checks()
     for arch in ("gemma2", "olmo2"):  # they normalize after combining their heads
         with pytest.raises(BackendError, match="don't add up"):
             arch_backend(arch).edge_checks()
+
+
+def test_a_copy_taken_after_its_normalization_is_refused(
+    tiny_backend: Any, monkeypatch: Any
+) -> None:
+    """A receiver must read the residual stream itself and normalize its own copy, whatever its
+    normalization's epsilon: a copy taken after the normalization isn't the stream, and the
+    model's edges are refused."""
+    from logogram.backends import transformer_lens as tl
+
+    monkeypatch.setitem(tl.EDGE_HOOKS, "mlp", "blocks.{layer}.ln2.hook_normalized")
+    monkeypatch.setattr(tiny_backend, "_edges", None)
+    with pytest.raises(BackendError, match="read the residual stream itself"):
+        tiny_backend.edge_checks()
 
 
 def test_a_model_that_cant_be_measured_is_refused(

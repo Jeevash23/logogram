@@ -151,10 +151,10 @@ function EdgeOverview({ edges, listed }: { edges: EdgeRun; listed: number }) {
         <p className={s.small}>
           Measured on the model first, as the edges rely on it: giving each receiver its own copy of the residual stream
           reproduces the model&rsquo;s output{checks.split !== undefined ? ` (to within ${sci(checks.split)}, relative)` : ""};
-          changing one copy changes no other receiver{checks.separate !== undefined ? ` (to within ${sci(checks.separate)})` : ""};
-          and lengthening a copy changes the output{" "}
-          {checks.scale !== undefined ? `${sci(checks.scale)} times as much as turning it does` : "far less than turning it does"}, so
-          each receiver&rsquo;s normalization recomputes its scale from its own input.{" "}
+          changing one head&rsquo;s copy changes no other head&rsquo;s query, key or value
+          {checks.separate !== undefined ? ` (to within ${sci(checks.separate)})` : ""}; and each copy is the residual stream
+          itself{checks.stream !== undefined ? ` (to within ${sci(checks.stream)})` : ""}, which each receiver normalizes on its
+          own, recomputing the scale from its own input.{" "}
           {edges.structure === "parallel"
             ? "In this model a layer's MLP reads the residual stream its heads read, so a layer's heads have no edge into its own MLP."
             : "A layer's MLP reads what its heads write, so a layer's heads have an edge into its own MLP."}
