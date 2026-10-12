@@ -380,6 +380,40 @@ class RunOwner(_Model):
     token: str = Field(pattern=r"^[0-9a-f]{32}$")
 
 
+# -- .logogram/queue.json and queue-runner.json ------------------------------------------------
+
+
+class QueueEntry(_Model):
+    """A run waiting in a project's queue (see logogram.runqueue)."""
+
+    id: str = Field(pattern=r"^[0-9a-f]{12}$")
+    # When it was added, in UTC (ISO 8601).
+    queued_at: str = Field(pattern=r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+    # The spec as it was queued; checked again when its turn comes.
+    spec: dict[str, Any]
+    # A saved draft it runs in (its folder), and the run it derives from (a rerun or a check).
+    draft_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+    derived_from: DerivedFrom | None = None
+
+
+class QueueFile(_Model):
+    """A project's run queue, first in line first."""
+
+    logogram_queue: Literal[1] = 1
+    runs: list[QueueEntry] = Field(default_factory=list, max_length=10_000)
+
+
+class QueueRunner(_Model):
+    """The process running a project's queue: the app, or ``logogram queue run``. Like a run's
+    owner record (RunOwner): a record whose process has ended holds nothing."""
+
+    logogram_queue_runner: Literal[1] = 1
+    program: Literal["app", "cli"]
+    pid: int = Field(ge=1, lt=2**32, strict=True)
+    started: float = Field(gt=0, allow_inf_nan=False)
+    token: str = Field(pattern=r"^[0-9a-f]{32}$")
+
+
 # -- annotations.json --------------------------------------------------------------------------
 
 
@@ -452,11 +486,22 @@ class QueuedRunInfo(_Model):
     queued_at: float
 
 
+QueueState = Literal["idle", "waiting", "running", "paused"]
+
+
 class QueueChanged(_Model):
-    """The whole queue, first in line first, after any change."""
+    """The whole queue, first in line first, after any change, and how it stands: ``waiting``
+    (its next run starts when the job in progress ends), ``running`` (one of its runs is in
+    progress, here or in another process, and the next follows), ``paused`` (nothing starts until
+    it is started: a queue that comes back with its project is paused) or ``idle`` (empty)."""
 
     project_session: str | None
     runs: list[QueuedRunInfo]
+    state: QueueState = "idle"
+    # Who runs it, when another process does: "`logogram queue run` (process 1234)".
+    runner: str | None = None
+    # Why the project's saved queue can't be read, and how to fix it.
+    error: str | None = None
 
 
 class QueueSkipped(_Model):

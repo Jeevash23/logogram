@@ -1,7 +1,8 @@
 """Command line: ``logogram`` (start the app), ``open``, ``run``, ``doctor``, ``env``, ``serve``,
 commands that read and check runs without the app: ``list``, ``show``, ``compare``, ``diff``,
-``verify``, ``robustness``, ``export``, ``validate``, ``tasks`` and ``generate``, and commands
-that manage them: ``rename``, ``star``, ``archive`` and ``delete``."""
+``verify``, ``robustness``, ``export``, ``validate``, ``tasks`` and ``generate``, commands
+that manage them: ``rename``, ``star``, ``archive`` and ``delete``, and the project's run queue:
+``queue add``, ``queue list``, ``queue clear`` and ``queue run``."""
 
 from __future__ import annotations
 
@@ -1411,6 +1412,233 @@ def _cached_tokenizer(model_id: str) -> tuple[Any, Any]:
         return list(tok(text, add_special_tokens=False)["input_ids"])
 
     return (lambda text: len(ids(text)) == 1), (lambda text: len(ids(text)))
+
+
+# -- the run queue -----------------------------------------------------------------------------
+
+queue_app = typer.Typer(
+    help="The project's run queue, kept in the project: add specs to it, list it, clear it, and "
+    "run it to the end without the app (overnight on a remote GPU, say). The app shows the same "
+    "queue.",
+    no_args_is_help=True,
+    rich_markup_mode=None,
+)
+app.add_typer(queue_app, name="queue")
+
+
+def _queue_standing(project: Any, n: int) -> str:
+    """How the queue stands, in a sentence: who runs it, or that it is paused."""
+    from logogram import runqueue
+
+    runner = runqueue.queue_runner(project)
+    if runner is not None:
+        return f"It is being run by {runqueue.runner_text(runner)}."
+    if n == 0:
+        return "Nothing waits in it."
+    return "It is paused: `logogram queue run` runs it to the end, or start it in the app."
+
+
+@queue_app.command("add")
+def queue_add(
+    spec_path: Annotated[Path, typer.Argument(metavar="SPEC.json", help="An experiment spec.")],
+    project_dir: Annotated[
+        Path | None,
+        typer.Option("--project", help="Project folder (default: the one containing the spec)."),
+    ] = None,
+) -> None:
+    """Add a spec to the end of the project's queue. Nothing runs yet: `logogram queue run` runs
+    the queue, or start it in the app."""
+    from logogram import runqueue
+    from logogram.project import Project, ProjectError
+    from logogram.spec import Spec
+
+    if not spec_path.exists():
+        raise _fail(f"{spec_path} doesn't exist.")
+    root = project_dir or Project.find_root(spec_path.parent)
+    if root is None:
+        raise _fail("no project.json found above the spec. Pass --project PATH.")
+    try:
+        project = Project.open(root)
+        spec = Spec.from_path(project.readable(spec_path.absolute()))
+        # What can be checked now is, as the app checks it: a run that can't start isn't queued.
+        project.resolve_dataset(spec.dataset.path)
+        runqueue.add_to_queue(project, spec)
+        n = len(runqueue.read_queue(project))
+    except (ProjectError, ValueError, OSError) as exc:
+        raise _fail(str(exc)) from exc
+    waiting = "1 run waits" if n == 1 else f"{n} runs wait"
+    typer.echo(f"Queued “{spec.name}”. {waiting} in the queue. {_queue_standing(project, n)}")
+
+
+@queue_app.command("list")
+def queue_list(project_dir: Annotated[Path | None, ProjectOption] = None) -> None:
+    """List the queued runs, first in line first, and say whether the queue is paused or who runs
+    it."""
+    from datetime import UTC, datetime
+
+    from logogram import runqueue
+    from logogram.spec import describe_experiment
+
+    project = _open_project(project_dir)
+    try:
+        queued = runqueue.read_queue(project)
+    except runqueue.QueueError as exc:
+        raise _fail(str(exc)) from exc
+    if not queued:
+        typer.echo(f"The queue is empty. {_queue_standing(project, 0)}".rstrip())
+        return
+    holds = "1 run" if len(queued) == 1 else f"{len(queued)} runs"
+    typer.echo(f"The queue holds {holds}. {_queue_standing(project, len(queued))}")
+    for i, item in enumerate(queued, 1):
+        when = datetime.fromtimestamp(item.queued_at, UTC).strftime("%Y-%m-%d %H:%M UTC")
+        draft = f" · in its draft {item.draft_id}" if item.draft_id else ""
+        typer.echo(f"{i:>3}. {item.title}")
+        typer.echo(
+            f"     {describe_experiment(item.spec)} · {item.spec.model.id} · queued {when}{draft}"
+        )
+
+
+@queue_app.command("clear")
+def queue_clear(
+    yes: Annotated[
+        bool, typer.Option("--yes", "-y", help="Clear it without asking first.")
+    ] = False,
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Take every run out of the queue. A run in progress goes on; nothing starts after it."""
+    from logogram import runqueue
+
+    project = _open_project(project_dir)
+    try:
+        n = len(runqueue.read_queue(project))
+        readable = True
+    except runqueue.QueueError:
+        n, readable = 0, False
+    if readable and n == 0:
+        typer.echo("The queue is already empty.")
+        return
+    if not yes:
+        what = f"the {n} runs waiting in the queue" if n != 1 else "the run waiting in the queue"
+        if not readable:
+            what = "the saved queue, which can't be read"
+        typer.echo(f"This takes out {what}. Their specs aren't kept anywhere else.")
+        if not typer.confirm("Clear the queue?", default=False):
+            typer.echo("The queue is as it was.")
+            raise typer.Exit(1)
+    try:
+        runqueue.clear_queue(project)
+    except (runqueue.QueueError, OSError) as exc:
+        raise _fail(str(exc)) from exc
+    typer.echo("Cleared the queue." if readable else "Cleared the saved queue.")
+
+
+def _queued_folder(project: Any, item: Any) -> str:
+    """The folder a queued run runs in: its draft's, or a new one. What the app checks before a
+    queued run starts is checked first, so a run that can't start leaves no folder behind."""
+    project.resolve_dataset(item.spec.dataset.path)
+    if item.draft_id is None:
+        run_id, _ = project.new_run_dir(item.spec.name)
+        return run_id
+    folder = project.run_dir(item.draft_id)
+    project.readable(folder / "spec.json")
+    if (folder / "manifest.json").exists():
+        raise ValueError(f"{item.draft_id} has already run.")
+    project.prepare_run_dir(item.draft_id)
+    return item.draft_id
+
+
+@queue_app.command("run")
+def queue_run(
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+    verbose: Annotated[
+        bool, typer.Option("--verbose", "-v", help="If a run fails, print its traceback.")
+    ] = False,
+) -> None:
+    """Run the project's queue to the end, one run at a time, headless: overnight on a remote
+    GPU, say. Each run's progress is printed, and runs added meanwhile (here or in the app) run
+    too. A run that fails doesn't stop the queue. Ctrl+C stops the run in progress (it keeps
+    what finished) and leaves the rest queued. The app can't run the queue at the same time."""
+    from logogram import runqueue
+    from logogram.spec import describe_experiment
+
+    project = _open_project(project_dir)
+    try:
+        hold = runqueue.take_queue(project, "cli")
+    except (runqueue.QueueError, ValueError, OSError) as exc:
+        raise _fail(str(exc)) from exc
+    ended: dict[str, int] = {}
+    backend = None
+
+    def left() -> str:
+        try:
+            n = len(runqueue.read_queue(project))
+        except (runqueue.QueueError, OSError):
+            return "The rest stay queued"
+        return "1 run is still queued" if n == 1 else f"{n} runs are still queued"
+
+    try:
+        while True:
+            try:
+                queued = runqueue.read_queue(project)
+            except runqueue.QueueError as exc:
+                raise _fail(str(exc)) from exc
+            if not queued:
+                break
+            item = queued[0]
+            done = sum(ended.values())
+            typer.echo(f"\n[{done + 1} of {done + len(queued)}] {item.title}")
+            typer.echo(f"  {describe_experiment(item.spec)} · {item.spec.model.id}")
+            try:
+                run_id = _queued_folder(project, item)
+            except (ValueError, OSError) as exc:
+                runqueue.remove_from_queue(project, item.id)
+                ended["skipped"] = ended.get("skipped", 0) + 1
+                why = exc.strerror if isinstance(exc, OSError) and exc.strerror else str(exc)
+                typer.echo(f"  It couldn't start and left the queue: {why}", err=True)
+                continue
+            # It has started: it isn't queued any more.
+            runqueue.remove_from_queue(project, item.id)
+            outcome = _run_spec(
+                project,
+                item.spec,
+                verbose=verbose,
+                derived=item.derived_from,
+                run_id=run_id,
+                backend=backend,
+                exit_on_failure=False,
+            )
+            backend = outcome.backend or backend
+            ended[outcome.status] = ended.get(outcome.status, 0) + 1
+            if outcome.status == "finished":
+                seconds = outcome.manifest.get("wall_time_s")
+                typer.echo(f"  Finished in {seconds} s: experiments/{run_id}")
+    except KeyboardInterrupt:  # between two runs
+        typer.echo(f"\nStopped. {left()}: `logogram queue run` runs them.", err=True)
+        raise typer.Exit(130) from None
+    except typer.Exit as exc:
+        if exc.exit_code == 130:  # Ctrl+C during a run, which is recorded as cancelled
+            typer.echo(f"Stopped. {left()}: `logogram queue run` runs them.", err=True)
+        raise
+    finally:
+        with contextlib.suppress(runqueue.QueueError, ValueError, OSError):
+            runqueue.release_queue(project, hold)
+    if not ended:
+        typer.echo("The queue is empty: there was nothing to run.")
+        return
+    ran = sum(ended.values())
+    counts = ", ".join(
+        f"{n} {word}"
+        for word, n in (
+            ("finished", ended.get("finished", 0)),
+            ("failed", ended.get("failed", 0)),
+            ("cancelled", ended.get("cancelled", 0)),
+            ("couldn't start", ended.get("skipped", 0)),
+        )
+        if n
+    )
+    typer.echo(f"\nThe queue is empty. Of its {ran} run{'s' if ran != 1 else ''}: {counts}.")
+    if ended.get("failed") or ended.get("skipped"):
+        raise typer.Exit(1)
 
 
 def main() -> None:

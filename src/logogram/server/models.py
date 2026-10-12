@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from logogram.schema import PartialRun, QueuedRunInfo, RunListing, SiteSummary
+from logogram.schema import PartialRun, QueueChanged, QueuedRunInfo, RunListing, SiteSummary
 from logogram.spec import ModelRef, PredictionSettings
 
 
@@ -176,6 +176,8 @@ class ServerState(_Out):
     sae: dict[str, Any] = {"state": "none"}
     # The runs waiting for the job in progress, first in line first.
     queue: list[QueuedRunInfo] = []
+    # The same runs, and how the queue stands (waiting, running, paused), and who runs it.
+    queue_status: QueueChanged | None = None
 
 
 class Settings(BaseModel):
