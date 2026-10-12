@@ -32,7 +32,7 @@ from logogram.backends.base import ModelBackend, device_type
 from logogram.chat import chat_wrapper
 from logogram.datasets import decode_dataset, parse_jsonl, read_dataset_bytes
 from logogram.engine import Cancelled, run_experiment
-from logogram.fileio import atomic_output, write_text_atomic
+from logogram.fileio import atomic_output, remove_file, write_text_atomic
 from logogram.owner import claim_run, release_run
 from logogram.partial import Progress, keep_finished
 from logogram.project import TRACEBACK_FILE, Project, now_iso
@@ -357,7 +357,7 @@ def run_spec(
     # The spec as executed: written first so a failed run still records what was attempted.
     write_json(folder / "spec.json", spec.model_dump(mode="json"))
     with contextlib.suppress(OSError):  # an earlier attempt's, in a reused folder
-        (folder / TRACEBACK_FILE).unlink(missing_ok=True)
+        remove_file(folder / TRACEBACK_FILE)
     # What the sweep finishes, so a run that stops early keeps it (see logogram.partial).
     progress = Progress()
 
@@ -392,7 +392,7 @@ def run_spec(
             else ()
         )
         for name in (*names, CONTINUATIONS_FILE):
-            (folder / name).unlink(missing_ok=True)
+            remove_file(folder / name)
         if detail is not None:
             # Before the manifest says the run failed, so whoever reads that finds why.
             with contextlib.suppress(OSError):

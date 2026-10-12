@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+from types import SimpleNamespace
 from typing import Any
 
 import psutil
@@ -16,7 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
-from logogram import runqueue
+from logogram import fileio, runqueue
 from logogram.cli import app as cli
 from logogram.project import Project, ProjectError
 from logogram.schema import QueueFile, QueueRunner
@@ -106,6 +107,27 @@ def test_the_queue_file_round_trips(project, spec_factory):
     assert _titles(runqueue.read_queue(project)) == ["Second"]
     assert runqueue.clear_queue(project) == 1
     assert runqueue.read_queue(project) == [] and not path.exists()
+
+
+def test_the_queue_empties_while_a_tab_reads_it(project, spec_factory, monkeypatch):
+    """On Windows the queue file can't be removed while a tab reads it: the last run taken out
+    of the queue still empties it, rather than stopping the queue with the run left in it."""
+    queued = runqueue.add_to_queue(project, _spec(spec_factory, "Last"))
+    path = project.root / ".logogram" / "queue.json"
+    real_unlink = os.unlink
+    refusals = []
+
+    def read_by_a_tab(target, *args, **kwargs):
+        if os.path.basename(target) == "queue.json" and len(refusals) < 3:
+            refusals.append(target)
+            raise PermissionError(13, "The process cannot access the file", str(target))
+        return real_unlink(target, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", read_by_a_tab)
+    # Windows as the file helpers see it (the queue's lock stays this machine's own).
+    monkeypatch.setattr(fileio, "sys", SimpleNamespace(platform="win32"))
+    assert runqueue.remove_from_queue(project, queued.id) == queued
+    assert runqueue.read_queue(project) == [] and not path.exists() and len(refusals) == 3
 
 
 def test_a_queue_file_that_cant_be_read_is_kept_until_cleared(project, spec_factory):

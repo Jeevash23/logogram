@@ -81,6 +81,24 @@ def replace_file(tmp: Path, path: Path) -> None:
             time.sleep(0.02)
 
 
+def remove_file(path: Path) -> None:
+    """Remove the file at ``path``, if there is one (a link is removed itself, never followed).
+
+    On Windows a file can't be removed while another thread or process has it open (a tab reads
+    the queue while the runner empties it), so retry briefly, as ``replace_file`` does.
+    """
+    for attempt in range(50):
+        try:
+            os.unlink(path)
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            if sys.platform != "win32" or attempt == 49:
+                raise
+            time.sleep(0.02)
+
+
 def _create_exclusive(path: Path) -> tuple[int, Path]:
     # O_EXCL never opens an existing file or follows a symlink, so a link planted next to the
     # target can't redirect the write. The mode is filtered by the umask, as for any new file.

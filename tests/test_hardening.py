@@ -570,6 +570,35 @@ def test_a_run_can_be_checked_in_float32(
     assert run["spec"]["experiment"] == spec["experiment"]
 
 
+def test_a_file_being_read_is_removed_once_it_can_be(tmp_path, monkeypatch):
+    """On Windows a file can't be removed while another thread reads it: removing tries again
+    briefly there, and nowhere else. A file that is already gone is fine."""
+    from logogram import fileio
+
+    path = tmp_path / "queue.json"
+    path.write_text("{}", encoding="utf-8")
+    real_unlink = os.unlink
+    refusals = []
+
+    def busy_unlink(target, *args, **kwargs):
+        if len(refusals) < 3:
+            refusals.append(target)
+            raise PermissionError(13, "The process cannot access the file", str(target))
+        return real_unlink(target, *args, **kwargs)
+
+    monkeypatch.setattr(fileio.os, "unlink", busy_unlink)
+    monkeypatch.setattr(fileio.sys, "platform", "win32")
+    fileio.remove_file(path)
+    assert not path.exists() and len(refusals) == 3
+    fileio.remove_file(path)  # gone already
+    path.write_text("{}", encoding="utf-8")
+    refusals.clear()
+    monkeypatch.setattr(fileio.sys, "platform", "linux")
+    with pytest.raises(PermissionError):
+        fileio.remove_file(path)
+    assert path.exists() and len(refusals) == 1
+
+
 def test_a_file_being_replaced_is_read_once_it_can_be(tmp_path, monkeypatch):
     """On Windows a file can't be opened for a moment while another thread replaces it: reading
     tries again briefly there, and nowhere else."""
