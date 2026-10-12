@@ -3,7 +3,7 @@ import { Fragment, useDeferredValue, useEffect, useId, useMemo, useRef, useState
 import { api } from "../api/client";
 import type { Answer, DatasetDetail, PromptRecord, RunDetail, TaskDatasetCreated, TokenStripData } from "../api/types";
 import { TokenGrid } from "../components/TokenStrip";
-import { Button, Callout, ConfirmDialog, Dialog, Field, Icon, Input, Segmented, TextArea, Tip } from "../components/ui";
+import { Button, Callout, Checkbox, ConfirmDialog, Dialog, Field, Icon, Input, Segmented, TextArea, Tip } from "../components/ui";
 import { answerText, count, plural, visibleToken } from "../lib/format";
 import { modelName, useAnalysisContext } from "../lib/hooks";
 import {
@@ -29,6 +29,7 @@ import {
 import {
   PAGE_SIZE,
   foundByMeta,
+  labelsText,
   matchText,
   matchTexts,
   metaText,
@@ -38,6 +39,7 @@ import {
   rowAfterKey,
   searchQuery,
   searchText,
+  wordDiff,
   type RowPage,
 } from "../lib/promptRows";
 import { useStore } from "../store/app";
@@ -192,7 +194,7 @@ function PairForm({ onCreated }: { onCreated: (path: string) => void }) {
         <Field label="Clean prompt" help="The model should show the behavior here.">
           <TextArea rows={2} value={record.clean} onChange={(e) => set("clean")(e.target.value)} />
         </Field>
-        <Field label="Corrupt prompt" help="Same length in tokens, with the behavior removed or reversed.">
+        <Field label="Corrupt prompt" help="With the behavior removed or reversed, in as many tokens. Prompts of different lengths need positions labelled in both: edit the pair once it is saved.">
           <TextArea rows={2} value={record.corrupt} onChange={(e) => set("corrupt")(e.target.value)} />
         </Field>
         <Field label="Answer" help="One token, usually with a leading space. Several tokens are read in order by the log-probability metrics.">
@@ -242,7 +244,8 @@ function ImportForm({ onCreated }: { onCreated: (path: string) => void }) {
       <p className={s.small}>
         One JSON object per line with <code>clean</code>, <code>corrupt</code>, <code>answer</code> and{" "}
         <code>distractor</code>. Optional <code>positions</code> names character spans in the clean prompt, for
-        example <code>{'{"S2": [38, 42]}'}</code>.
+        example <code>{'{"S2": [38, 42]}'}</code>. Prompts of different token lengths also need{" "}
+        <code>corrupt_positions</code>: the same labels in the corrupt prompt.
       </p>
       <Field label="Paste lines, or choose a file">
         <TextArea
@@ -288,12 +291,6 @@ function ImportForm({ onCreated }: { onCreated: (path: string) => void }) {
       {error && <Callout tone="error">{error}</Callout>}
     </div>
   );
-}
-
-function wordDiff(a: string, b: string): { text: string; differs: boolean }[] {
-  const wa = a.split(/(\s+)/);
-  const wb = b.split(/(\s+)/);
-  return wa.map((w, i) => ({ text: w, differs: w.trim() !== "" && w !== wb[i] }));
 }
 
 function Diff({ text, other }: { text: string; other: string }) {
@@ -406,6 +403,8 @@ function DatasetPrompts({ path, dataset, onSaved }: { path: string; dataset: Dat
     return map;
   }, [dataset]);
   const continued = useMemo(() => new Set(dataset.continuations ?? []), [dataset]);
+  // Pairs whose prompts have different lengths for the loaded model, matched label by label.
+  const unevenAt = useMemo(() => new Map((dataset.uneven ?? []).map((u) => [u.index, u])), [dataset]);
   const [busy, setBusy] = useState(false);
   const nIssues = issuesByIndex.size;
   const unusable = [...issuesByIndex.keys()];
@@ -596,6 +595,10 @@ function DatasetPrompts({ path, dataset, onSaved }: { path: string; dataset: Dat
               const tab = i === active ? 0 : -1;
               const issues = isEdited ? undefined : issuesByIndex.get(i);
               const meta = foundByMeta(record, q) ? metaText(record) : "";
+              // Both prompts with their labels where the pair differs in length (as the loaded
+              // model reads it; without one, wherever both prompts are labelled).
+              const uneven = isEdited ? undefined : unevenAt.get(i);
+              const labelled = !!record.corrupt_positions && (isEdited || dataset.uneven === undefined || !!uneven);
               return (
                 <tr key={i} data-clickable aria-selected={i === index} data-edit={isRemoved ? "removed" : isEdited ? "edited" : undefined} onClick={() => setIndex(i)}>
                   <th scope="row" className={s.num}>
@@ -618,11 +621,13 @@ function DatasetPrompts({ path, dataset, onSaved }: { path: string; dataset: Dat
                   </th>
                   <td>
                     <Diff text={record.clean} other={record.corrupt} />
+                    {labelled && <PairLabels text={record.clean} spans={record.positions} tokens={uneven?.clean} />}
                     {issues && <div className={p.issue}>{issues.join(" ")}</div>}
                     {meta && <div className={p.meta}>{meta}</div>}
                   </td>
                   <td>
                     <Diff text={record.corrupt} other={record.clean} />
+                    {labelled && <PairLabels text={record.corrupt} spans={record.corrupt_positions} tokens={uneven?.corrupt} />}
                   </td>
                   {/* The loaded model splits this pair's answer or distractor: read token by token. */}
                   <td>
@@ -698,6 +703,18 @@ function Pager({ page, searching, onPage }: { page: RowPage; searching: boolean;
           </Button>
         </>
       )}
+    </div>
+  );
+}
+
+/** A prompt's labels, under it in the table, and its length in tokens when the pair's prompts
+ * differ in length: each label is matched from one prompt to the other. */
+function PairLabels({ text, spans, tokens }: { text: string; spans?: Record<string, [number, number]>; tokens?: number }) {
+  const labels = labelsText(text, spans);
+  return (
+    <div className={p.labels}>
+      {tokens !== undefined && <span className={p.length}>{plural(tokens, "token")}</span>}
+      {labels || "No labels: matched at the last token"}
     </div>
   );
 }
@@ -781,13 +798,20 @@ function PromptEditor({
           <Field label="Clean prompt" help="The model should show the behavior here.">
             <TextArea rows={3} autoFocus value={draft.clean} onChange={(e) => set({ clean: e.target.value })} />
           </Field>
-          <Field label="Corrupt prompt" help="Same length in tokens, with the behavior removed or reversed.">
+          <Field label="Corrupt prompt" help="With the behavior removed or reversed, in as many tokens, or with its positions labelled too.">
             <TextArea rows={3} value={draft.corrupt} onChange={(e) => set({ corrupt: e.target.value })} />
           </Field>
           <AnswerField label="Answer" value={draft.answer} onChange={(answer) => set({ answer })} />
           <AnswerField label="Distractor" value={draft.distractor} onChange={(distractor) => set({ distractor })} />
         </div>
-        <PositionsField clean={draft.clean} value={draft.positions} onChange={(positions) => set({ positions })} />
+        <PositionsField
+          clean={draft.clean}
+          corrupt={draft.corrupt}
+          value={draft.positions}
+          labelCorrupt={draft.labelCorrupt}
+          onChange={(positions) => set({ positions })}
+          onLabelCorrupt={(labelCorrupt) => set({ labelCorrupt })}
+        />
         <div className={s.grid2}>
           <Field label="ID" help="Optional: a name for this pair, kept in the file.">
             <Input value={draft.id} spellCheck={false} onChange={(e) => set({ id: e.target.value })} />
@@ -835,16 +859,35 @@ function AnswerField({ label, value, onChange }: { label: string; value: AnswerD
   );
 }
 
-/** Named character spans in the clean prompt, each with the text it covers. */
-function PositionsField({ clean, value, onChange }: { clean: string; value: SpanDraft[]; onChange: (value: SpanDraft[]) => void }) {
+/** Named character spans in the clean prompt, each with the text it covers, and with
+ * `labelCorrupt` the same labels' spans in the corrupt prompt. */
+function PositionsField({
+  clean,
+  corrupt,
+  value,
+  labelCorrupt,
+  onChange,
+  onLabelCorrupt,
+}: {
+  clean: string;
+  corrupt: string;
+  value: SpanDraft[];
+  labelCorrupt: boolean;
+  onChange: (value: SpanDraft[]) => void;
+  onLabelCorrupt: (on: boolean) => void;
+}) {
   const set = (k: number, patch: Partial<SpanDraft>) => onChange(value.map((span, i) => (i === k ? { ...span, ...patch } : span)));
   return (
     <fieldset className={p.positions}>
       <legend className={p.legend}>Positions</legend>
       <p className={s.small}>
         Optional: named character spans in the clean prompt. A label points to the last token that overlaps its span, so a
-        run can patch at, say, S2 in prompts of different lengths. Check them after editing the clean prompt.
+        run can patch at, say, S2 in prompts of different templates. Check them after editing a prompt.
       </p>
+      <Checkbox checked={labelCorrupt} onChange={onLabelCorrupt}>
+        Label them in the corrupt prompt too, so the two prompts can have different lengths: a run then matches them
+        label by label
+      </Checkbox>
       {value.length > 0 && (
         <div className={p.spans}>
           <span className={p.spanHead} aria-hidden="true">
@@ -870,16 +913,31 @@ function PositionsField({ clean, value, onChange }: { clean: string; value: Span
                 <Input aria-label={`Position ${name}: end`} inputMode="numeric" value={span.end} onChange={(e) => set(k, { end: e.target.value })} />
                 <span className={p.covers}>{text === null ? "not a span of the clean prompt" : `“${text}”`}</span>
                 <Button size="small" variant="ghost" icon="close" aria-label={`Remove position ${name}`} onClick={() => onChange(value.filter((_, i) => i !== k))} />
+                {labelCorrupt && (
+                  <>
+                    <span className={p.side}>in the corrupt prompt</span>
+                    <Input aria-label={`Position ${name}: start in the corrupt prompt`} inputMode="numeric" value={span.corruptStart} onChange={(e) => set(k, { corruptStart: e.target.value })} />
+                    <Input aria-label={`Position ${name}: end in the corrupt prompt`} inputMode="numeric" value={span.corruptEnd} onChange={(e) => set(k, { corruptEnd: e.target.value })} />
+                    <span className={p.covers}>{coveredText(corrupt, span.corruptStart, span.corruptEnd, "corrupt")}</span>
+                    <span />
+                  </>
+                )}
               </Fragment>
             );
           })}
         </div>
       )}
-      <Button size="small" icon="plus" onClick={() => onChange([...value, { label: "", start: "", end: "" }])}>
+      <Button size="small" icon="plus" onClick={() => onChange([...value, { label: "", start: "", end: "", corruptStart: "", corruptEnd: "" }])}>
         Add a position
       </Button>
     </fieldset>
   );
+}
+
+/** What a span of one prompt covers, as the editor shows it. */
+function coveredText(text: string, start: string, end: string, which: string): string {
+  const covered = spanText(text, { label: "", start, end, corruptStart: "", corruptEnd: "" });
+  return covered === null ? `not a span of the ${which} prompt` : `“${covered}”`;
 }
 
 /** A new IOI dataset from the default templates, with only names that are single tokens for the

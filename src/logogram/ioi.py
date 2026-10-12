@@ -14,6 +14,11 @@ The answer is the IO name and the distractor is the S name. Two corruptions are 
 
 Named positions (IO, S1, S2, end) are recorded as character spans in the clean prompt.
 Randomness uses only ``random.Random.random()``, whose sequence Python guarantees across versions.
+
+With ``full_vocabulary``, every name, place and object is used, including those a model splits into
+several tokens: the two prompts of a pair can then differ in length, so the positions are labelled
+in the corrupt prompt too (``corrupt_positions``), and each record's meta says
+``"vocabulary": "full"``. An answer of several tokens needs a metric that reads continuations.
 """
 
 from __future__ import annotations
@@ -127,6 +132,18 @@ def _fill(template: str, values: dict[str, str]) -> tuple[str, dict[str, tuple[i
     return "".join(out), spans
 
 
+def _positions(
+    text: str, slots: dict[str, tuple[int, int]], io_slot: str, s1_slot: str
+) -> dict[str, tuple[int, int]]:
+    """A prompt's named positions, from the spans of its slots."""
+    return {
+        "IO": slots[io_slot],
+        "S1": slots[s1_slot],
+        "S2": slots["C"],
+        "end": (text.rfind(" ") + 1, len(text)),
+    }
+
+
 def generate_ioi(
     n: int,
     seed: int = 0,
@@ -134,11 +151,13 @@ def generate_ioi(
     patterns: Sequence[Pattern] = ("ABBA", "BABA"),
     corruption: Corruption = "flip",
     single_token: Callable[[str], bool] | None = None,
+    full_vocabulary: bool = False,
 ) -> list[PromptRecord]:
     """Generate ``n`` IOI prompt pairs.
 
     ``single_token``, if given, filters names, places and objects to words that are a single
-    token (with a leading space) for the model that will be used.
+    token (with a leading space) for the model that will be used. With ``full_vocabulary`` every
+    word is used, and both prompts' positions are labelled.
     """
     if n < 1:
         raise IOIError("Choose at least one prompt.")
@@ -158,7 +177,7 @@ def generate_ioi(
         raise IOIError(f"Unknown corruption {corruption!r}; use flip or abc.")
 
     def usable(words: Sequence[str]) -> list[str]:
-        if single_token is None:
+        if single_token is None or full_vocabulary:
             return list(words)
         return [w for w in words if single_token(" " + w)]
 
@@ -190,31 +209,29 @@ def generate_ioi(
         if clean in seen:
             continue
         if corruption == "flip":
-            corrupt, _ = _fill(
+            corrupt, corrupt_spans = _fill(
                 template.text, {"A": a, "B": b, "C": io, "PLACE": place, "OBJECT": obj}
             )
         else:
             x, y, z = _pick_distinct(rng, names, 3, {io, s})
-            corrupt, _ = _fill(
+            corrupt, corrupt_spans = _fill(
                 template.text, {"A": x, "B": y, "C": z, "PLACE": place, "OBJECT": obj}
             )
         seen.add(clean)
         io_slot, s1_slot = ("A", "B") if pattern == "ABBA" else ("B", "A")
-        end_start = clean.rfind(" ") + 1
+        meta = {"template": template.id, "pattern": pattern, "corruption": corruption}
         records.append(
             PromptRecord(
                 clean=clean,
                 corrupt=corrupt,
                 answer=" " + io,
                 distractor=" " + s,
-                positions={
-                    "IO": spans[io_slot],
-                    "S1": spans[s1_slot],
-                    "S2": spans["C"],
-                    "end": (end_start, len(clean)),
-                },
+                positions=_positions(clean, spans, io_slot, s1_slot),
+                corrupt_positions=_positions(corrupt, corrupt_spans, io_slot, s1_slot)
+                if full_vocabulary
+                else None,
                 id=f"ioi-{index:05d}",
-                meta={"template": template.id, "pattern": pattern, "corruption": corruption},
+                meta={**meta, "vocabulary": "full"} if full_vocabulary else meta,
             )
         )
     return records

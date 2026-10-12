@@ -14,6 +14,7 @@ const OPTION_LABELS: Record<string, string> = {
   patterns: "Name order",
   corruption: "Corruption",
   single_token_answers: "Single-token answers",
+  full_vocabulary: "Full vocabulary",
 };
 const VALUE_TEXT: Record<string, Record<string, { title: string; detail?: string }>> = {
   patterns: {
@@ -144,8 +145,8 @@ export function TaskGenerator({ onCreated }: { onCreated: (path: string, created
       )}
       {!modelReady && (
         <p className={s.faint}>
-          With a model loaded, words that aren't single tokens for it are left out, and pairs keep one length. Without one,
-          each word counts as a token: generate again once the model is loaded.
+          With a model loaded, words that aren't single tokens for it are left out, and pairs keep one length (unless the full
+          vocabulary is used). Without one, each word counts as a token: generate again once the model is loaded.
         </p>
       )}
       <div>

@@ -227,6 +227,12 @@ class PromptIssue(_Out):
     message: str
 
 
+class UnevenPair(_Out):
+    index: int
+    clean: int
+    corrupt: int
+
+
 class DatasetDetail(_Out):
     name: str
     path: str
@@ -238,6 +244,10 @@ class DatasetDetail(_Out):
     # With a model loaded: the prompts whose answer or distractor it reads as a continuation of
     # several tokens (dataset indices), which the logit difference can't score.
     continuations: list[int] | None = None
+    # With a model loaded: the pairs whose clean and corrupt prompts have different token lengths
+    # (dataset indices), each with its two lengths. They are matched label by label, so they can
+    # be patched at a label or the last token only.
+    uneven: list[UnevenPair] | None = None
 
 
 class DatasetCreated(_Out):
@@ -306,6 +316,11 @@ class TokenStrip(_Out):
     aligned: bool
     differs: list[int]
     labels: dict[str, int]
+    # The corrupt prompt's own labels, when the dataset gives them (corrupt_positions).
+    corrupt_labels: dict[str, int] | None = None
+    # Prompts of different lengths, side by side: per column, a clean token's index and a corrupt
+    # token's (null where that prompt has none in the column); labelled tokens share a column.
+    columns: list[list[int | None]] | None = None
     answer: AnswerTokens
     distractor: AnswerTokens
     issues: list[PromptIssue]

@@ -15,6 +15,11 @@ row is also reported as a share of that set's effect, from the same resamples: f
 keeps a circuit, 1 - share is its faithfulness, the part of the behavior the circuit carries
 alone (1 when keeping it alone loses nothing, 0 when it does no better than replacing
 everything).
+
+Between prompts of different token lengths, a set is patched at labels and the last token: each
+site's value comes from the source prompt's token at its label. Zero ablation reads no other
+prompt, so it takes any set. Replacing every position, or a position by index, with another
+prompt's values (a complement set, mean or resample ablation) needs pairs of equal length.
 """
 
 from __future__ import annotations
@@ -33,6 +38,7 @@ from logogram.engine import (
     LayerFn,
     ProgressFn,
     _chunks,
+    _LayerSources,
     check_finite,
     check_gap,
     check_values,
@@ -41,8 +47,8 @@ from logogram.engine import (
     empty_values,
     make_scorer,
 )
-from logogram.prompts import LengthGroup, PreparedPrompt, group_by_length
-from logogram.sites import ResolvedSite, ScopeError, resolve_position, site_label
+from logogram.prompts import LengthGroup, PreparedPrompt, group_by_length, uneven_text
+from logogram.sites import ResolvedSite, ScopeError, check_lined_up, resolve_position, site_label
 from logogram.spec import (
     ALL_POSITIONS,
     Ablation,
@@ -127,11 +133,16 @@ def set_rows(scope: SiteSetsScope) -> tuple[list[ResolvedSite], dict[str, Any]]:
 
 
 def replaced(
-    s: SiteSet, universe: Sequence[str] | None, prompt: PreparedPrompt, info: ModelInfo
+    s: SiteSet,
+    universe: Sequence[str] | None,
+    prompt: PreparedPrompt,
+    info: ModelInfo,
+    side: str = "clean",
 ) -> dict[Key, torch.Tensor]:
-    """For one prompt, which entries of each activation the set replaces: per (kind, layer), a
-    boolean mask over positions ([L]) or positions and heads ([L, H])."""
-    L, H = prompt.length, info.n_heads
+    """For one prompt (its ``side``, the receiver run), which entries of each activation the set
+    replaces: per (kind, layer), a boolean mask over positions ([L]) or positions and heads
+    ([L, H])."""
+    L, H = prompt.length_of(side), info.n_heads
 
     def blank(kind: str, value: bool) -> torch.Tensor:
         shape = (L, H) if kind == "head" else (L,)
@@ -147,7 +158,7 @@ def replaced(
         if key not in masks:
             masks[key] = blank(site.kind, False)
         mask = masks[key]
-        pos = resolve_position(site.position, prompt)
+        pos = resolve_position(site.position, prompt, side)
         where: Any = slice(None) if pos is None else pos
         value = not s.complement  # complement sets keep their sites
         if site.kind == "head":
@@ -250,16 +261,8 @@ def run_site_sets(
     for s in scope.sets:  # every position must resolve in every prompt
         for site in s.sites:
             for prompt in prompts:
-                resolve_position(site.position, prompt)
-    if on_start is not None:
-        on_start(sites, layout)
-    groups = group_by_length(prompts)
-    group_of = {i: gi for gi, g in enumerate(groups) for i in g.members}
-    local_of = {i: li for g in groups for li, i in enumerate(g.members)}
-    scorer = make_scorer(spec, prompts)
-    baselines = compute_baselines(backend, prompts, groups, batch_size, cancel, scorer)
-    check_finite(baselines, info.dtype)
-
+                for side in ("clean", "corrupt"):
+                    resolve_position(site.position, prompt, side)
     if isinstance(exp, ActivationPatching):
         receiver, source = (
             ("corrupt", "clean") if exp.direction == "clean_to_corrupt" else ("clean", "corrupt")
@@ -278,6 +281,21 @@ def run_site_sets(
             raise EngineError(f"Unknown baseline {b!r}")
     receiver = receiver_override or receiver
     source = source_override or source
+    # Whether every position lines up between a receiver and where its values come from.
+    lined_up = (
+        kind == "zero" or (kind == "patch" and source == receiver) or all(p.even for p in prompts)
+    )
+    if not lined_up:
+        check_sets_lined_up(scope, prompts, kind)
+    if on_start is not None:
+        on_start(sites, layout)
+    # The receivers run in batches of their own length.
+    groups = group_by_length(prompts, receiver)
+    group_of = {i: gi for gi, g in enumerate(groups) for i in g.members}
+    local_of = {i: li for g in groups for li, i in enumerate(g.members)}
+    scorer = make_scorer(spec, prompts)
+    baselines = compute_baselines(backend, prompts, groups, batch_size, cancel, scorer)
+    check_finite(baselines, info.dtype)
     warnings = check_gap(spec, baselines, prompts, receiver, reference)
 
     n = len(prompts)
@@ -322,13 +340,22 @@ def run_site_sets(
     dtype = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}[
         info.dtype
     ]
+    # Pairs of different lengths: each site's value in the source prompts, at its own token
+    # there, captured in batches of the source prompts' own length.
+    tables = (
+        None
+        if lined_up
+        else _site_tables(backend, prompts, groups, scope, source, batch_size, cancel)
+    )
     for rs in sites:
         s = rs.site_set
         assert s is not None
         for gi, group in enumerate(groups):
-            receiver_tokens = group.clean if receiver == "clean" else group.corrupt
-            source_tokens = group.clean if source == "clean" else group.corrupt
-            masks = {p: replaced(s, scope.universe, prompts[p], info) for p in group.members}
+            receiver_tokens = group.tokens(receiver)
+            source_tokens = group.tokens(source) if tables is None and kind != "zero" else None
+            masks = {
+                p: replaced(s, scope.universe, prompts[p], info, receiver) for p in group.members
+            }
             tails = tail_masks(s, scope.universe, info)
             keys = sorted({key for m in masks.values() for key in m})
             if not keys:
@@ -340,20 +367,34 @@ def run_site_sets(
                 if cancel is not None and cancel.is_set():
                     raise Cancelled()
                 chunk = rows[sl]
-                values = _values(
-                    backend,
-                    kind,
-                    keys,
-                    chunk,
-                    gi,
-                    group,
-                    source_tokens,
-                    local_of,
-                    group_of,
-                    means,
-                    info,
-                    dtype,
-                )
+                if tables is None:
+                    values = _values(
+                        backend,
+                        kind,
+                        keys,
+                        chunk,
+                        gi,
+                        group,
+                        source_tokens,
+                        local_of,
+                        group_of,
+                        means,
+                        info,
+                        dtype,
+                    )
+                else:
+                    values = _values_at_labels(
+                        s,
+                        keys,
+                        chunk,
+                        group,
+                        tables,
+                        prompts,
+                        receiver,
+                        info,
+                        dtype,
+                        backend.device,
+                    )
                 patches = [
                     Patch(
                         kind=key[0],
@@ -373,7 +414,7 @@ def run_site_sets(
                     backend,
                     patches,
                     tails,
-                    None if kind == "zero" else source_tokens[donor],
+                    None if source_tokens is None else source_tokens[donor],
                     group.length,
                 )
                 scores = scorer.score(forward, receiver_tokens[local], [p for p, _ in chunk])
@@ -390,6 +431,93 @@ def run_site_sets(
             on_layer(rs.index, [rs.index], result)
     warnings.extend(check_values(patched, "patched values", info.dtype))
     return result
+
+
+def check_sets_lined_up(scope: SiteSetsScope, prompts: list[PreparedPrompt], kind: str) -> None:
+    """Refuse sets whose values would be carried between prompts of different lengths position by
+    position: by mean or resample ablation (whole activations of other prompts of the same
+    length), a set that keeps its sites and replaces every position of the rest, or a site at
+    every position or a token index."""
+    uneven = [p.index for p in prompts if not p.even]
+    if not uneven:
+        return
+    if kind in ("mean", "resample"):
+        how = (
+            "their mean over prompts of the same length"
+            if kind == "mean"
+            else "a donor prompt's of the same length"
+        )
+        raise ScopeError(
+            f"{uneven_text(uneven, len(prompts))}. {kind.capitalize()} ablation of a set replaces "
+            f"whole activations position by position with {how}, which needs the prompts to line "
+            "up. Patch the sets at labels or the last token, zero-ablate them, or use pairs of "
+            "equal length."
+        )
+    kept = next((s for s in scope.sets if s.complement), None)
+    if kept is not None:
+        raise ScopeError(
+            f"{uneven_text(uneven, len(prompts))}. The set {kept.label!r} keeps its sites and "
+            "patches every other position of the model, which has no meaning across different "
+            "lengths. Patch sets of sites at labels or the last token, or zero-ablate the rest "
+            "of the model, or use pairs of equal length."
+        )
+    check_lined_up([site.position for s in scope.sets for site in s.sites], prompts, "patch")
+
+
+def _site_tables(
+    backend: ModelBackend,
+    prompts: list[PreparedPrompt],
+    groups: list[LengthGroup],
+    scope: SiteSetsScope,
+    source: str,
+    batch_size: int,
+    cancel: threading.Event | None,
+) -> dict[tuple[Key, str], torch.Tensor]:
+    """Each set's sites in the source prompts at their own tokens: ``[n, d]`` (``[n, H, d_head]``
+    for heads) by (kind, layer) and position, captured a layer at a time."""
+    tables: dict[tuple[Key, str], torch.Tensor] = {}
+    every = [site for s in scope.sets for site in s.sites]
+    for layer in sorted({site.layer for site in every}):
+        here = [site for site in every if site.layer == layer]
+        kinds = list(dict.fromkeys(site.kind for site in here))
+        sources = _LayerSources(backend, prompts, groups, layer, kinds, source, batch_size, cancel)
+        for site in here:
+            key = ((site.kind, layer), site.position.model_dump_json())
+            if key not in tables:
+                tables[key] = sources.table(site.kind, ResolvedSite(0, site, 0, 0, ""))
+    return tables
+
+
+def _values_at_labels(
+    s: SiteSet,
+    keys: list[Key],
+    chunk: list[tuple[int, int | None]],
+    group: LengthGroup,
+    tables: dict[tuple[Key, str], torch.Tensor],
+    prompts: list[PreparedPrompt],
+    receiver: str,
+    info: ModelInfo,
+    dtype: torch.dtype,
+    device: torch.device,
+) -> dict[Key, torch.Tensor]:
+    """The replacement activations for a batch of receivers, shaped like theirs (``[B, L, d]`` or
+    ``[B, L, H, d_head]``): each site's token takes the source prompt's value at that site's
+    position (resolved in the source, by ``tables``). Only the masked entries are read."""
+    B, L = len(chunk), group.length
+    out: dict[Key, torch.Tensor] = {}
+    for key in keys:
+        shape = (B, L, info.n_heads, info.d_head) if key[0] == "head" else (B, L, info.d_model)
+        out[key] = torch.zeros(shape, dtype=dtype, device=device)
+    for b, (p, _) in enumerate(chunk):
+        for site in s.sites:
+            key = (site.kind, site.layer)
+            at = resolve_position(site.position, prompts[p], receiver)
+            value = tables[(key, site.position.model_dump_json())][p]
+            if site.kind == "head":
+                out[key][b, at, site.head] = value[site.head].to(device=device, dtype=dtype)
+            else:
+                out[key][b, at] = value.to(device=device, dtype=dtype)
+    return out
 
 
 def _continued(
@@ -452,7 +580,7 @@ def _values(
     chunk: list[tuple[int, int | None]],
     group_index: int,
     group: LengthGroup,
-    source_tokens: torch.Tensor,
+    source_tokens: torch.Tensor | None,
     local_of: dict[int, int],
     group_of: dict[int, int],
     means: _Means | None,
@@ -478,7 +606,7 @@ def _values(
     # Patching reads the other prompt of each pair; resampling reads each row's donor (drawn from
     # the same length group, so positions line up).
     sources = [p if d is None else d for p, d in chunk]
-    assert all(group_of[p] == group_index for p in sources)
+    assert source_tokens is not None and all(group_of[p] == group_index for p in sources)
     local = torch.tensor([local_of[p] for p in sources], dtype=torch.long)
     return backend.capture(source_tokens[local], keys)
 

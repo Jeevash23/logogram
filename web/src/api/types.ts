@@ -1190,8 +1190,18 @@ export interface PromptRecord {
   answer: Answer;
   distractor: Answer;
   positions?: Record<string, [number, number]>;
+  /** The same labels as `positions`, as character spans in the corrupt prompt: with them the two
+   * prompts may have different token lengths, and are matched label by label. */
+  corrupt_positions?: Record<string, [number, number]>;
   id?: string;
   meta?: Record<string, unknown>;
+}
+
+/** A pair whose prompts have different token lengths for the loaded model, and those lengths. */
+export interface UnevenPair {
+  index: number;
+  clean: number;
+  corrupt: number;
 }
 
 export interface PromptIssue {
@@ -1211,6 +1221,9 @@ export interface DatasetDetail {
   /** With a model loaded: the prompts whose answer or distractor is a continuation of several of
    * its tokens, which only the metrics that read continuations can score. */
   continuations?: number[];
+  /** With a model loaded: the pairs whose prompts have different token lengths. They are matched
+   * label by label, so they can be patched at a label or the last token only. */
+  uneven?: UnevenPair[];
 }
 
 /** An answer or distractor as the loaded model reads it: its tokens, or the members of a set. */
@@ -1231,6 +1244,11 @@ export interface TokenStripData {
   aligned: boolean;
   differs: number[];
   labels: Record<string, number>;
+  /** The corrupt prompt's own labels, when the dataset gives them (corrupt_positions). */
+  corrupt_labels?: Record<string, number> | null;
+  /** Prompts of different lengths side by side: per column, a clean token's index and a corrupt
+   * token's (null where that prompt has none there). Labelled tokens share a column. */
+  columns?: [number | null, number | null][] | null;
   answer: AnswerTokens;
   distractor: AnswerTokens;
   issues: PromptIssue[];

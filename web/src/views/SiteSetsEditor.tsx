@@ -55,10 +55,11 @@ export function UniverseChooser({
   );
 }
 
-/** Positions a site typed into a set can take: all, the last token, or a named position. */
-function positionOptions(labels: string[]): { key: string; label: string; position: PositionSpec }[] {
+/** Positions a site typed into a set can take: all (unless the prompts don't line up), the last
+ * token, or a named position. */
+function positionOptions(labels: string[], lined: boolean): { key: string; label: string; position: PositionSpec }[] {
   return [
-    { key: "all", label: "All positions", position: { kind: "all" } },
+    ...(lined ? [{ key: "all", label: "All positions", position: { kind: "all" } as PositionSpec }] : []),
     { key: "last", label: "Last token", position: { kind: "last" } },
     ...labels.map((label) => ({ key: `label:${label}`, label: `Position ${label}`, position: { kind: "label" as const, label } })),
   ];
@@ -72,10 +73,14 @@ export function SiteSetsEditor({
   scope,
   onChange,
   labels,
+  unlined = null,
 }: {
   scope: SiteSetsScope;
   onChange: (scope: SiteSetsScope) => void;
   labels: string[];
+  /** Why a set can't take every position, or keep its sites and replace the rest: prompts of
+   * different lengths, matched at the last token or a label only. */
+  unlined?: string | null;
 }) {
   const model = useStore((st) => st.model.info);
   const staged = useStore((st) => st.stagedSites);
@@ -105,6 +110,7 @@ export function SiteSetsEditor({
               set={set}
               universe={scope.universe}
               labels={labels}
+              unlined={unlined}
               onChange={(next) => update(i, next)}
               onRemove={scope.sets.length > 1 ? () => onChange({ ...scope, sets: scope.sets.filter((_, j) => j !== i) }) : undefined}
             />
@@ -139,6 +145,7 @@ function SetEditor({
   set,
   universe,
   labels,
+  unlined,
   onChange,
   onRemove,
 }: {
@@ -146,12 +153,14 @@ function SetEditor({
   set: SiteSetSpec;
   universe: UniverseKind[] | null;
   labels: string[];
+  unlined: string | null;
   onChange: (set: SiteSetSpec) => void;
   onRemove?: () => void;
 }) {
   const [query, setQuery] = useState("");
-  const [at, setAt] = useState("all");
-  const options = positionOptions(labels);
+  const options = positionOptions(labels, !unlined);
+  const [chosen, setAt] = useState(options[0].key);
+  const at = options.some((o) => o.key === chosen) ? chosen : options[0].key;
   const parsed = parseSiteQuery(query);
   const position = (options.find((o) => o.key === at) ?? options[0]).position;
   const add = () => {
@@ -178,7 +187,7 @@ function SetEditor({
           onChange={(v) => onChange({ ...set, complement: v === "keep" })}
           options={[
             { value: "replace", label: "Replace these sites" },
-            { value: "keep", label: "Keep these, replace the rest" },
+            { value: "keep", label: "Keep these, replace the rest", disabled: !!unlined, reason: unlined ?? undefined },
           ]}
         />
         {onRemove && (

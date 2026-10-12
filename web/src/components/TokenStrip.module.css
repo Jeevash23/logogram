@@ -105,6 +105,20 @@
   border-radius: 3px 3px 0 0;
 }
 
+/* The corrupt prompt's own positions, under its tokens, when the prompts differ in length. */
+.posBelow {
+  padding-top: 0;
+  padding-bottom: 1px;
+  border-radius: 0 0 3px 3px;
+}
+
+/* How prompts of different lengths are lined up. */
+.note {
+  margin: 4px 0 0;
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+
 .cell {
   font-size: var(--text-sm);
   padding: 2px 6px;

@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { isProjectScoped, PROJECT_SCOPED } from "../src/api/client";
 import type { DatasetDetail, ModelStatus, PromptRecord, SAEInfo, SAEStatus, Spec } from "../src/api/types";
 import { analysisContext, sameModel, tokenizationKey } from "../src/lib/analysis";
-import { buildSpec, datasetFacts, metricOf, savedDifferences } from "../src/lib/buildSpec";
+import { buildSpec, carriedBy, datasetFacts, lastInstead, metricOf, savedDifferences, unevenPairsText, unlinedReason } from "../src/lib/buildSpec";
 import { DEFAULT_FORM, formFromSpec, type FormState } from "../src/lib/formState";
 import { gapCheck, METRIC_KINDS, metricWords } from "../src/lib/metrics";
 import { measureWords, saeWritesText, sameDevice, scopeFor, splitCount, steerSiteOf, workload, workloadText } from "../src/lib/spec";
@@ -380,4 +380,56 @@ test("a model is the one a spec names by its files, and cuda is the default GPU"
   expect(savedDifferences(form({ modelRef: named }), loaded, null, null)).toEqual([]);
   expect(savedDifferences(form({ modelRef: { ...named, sha256: "b".repeat(64) } }), loaded, null, null)[0]).toContain("a local model with other files");
   expect(savedDifferences(form({ modelRef: { ...ref, device: "cuda" } }), { ...model, info: { ...info, device: "cuda:0" } }, null, null)).toEqual([]);
+});
+
+test("pairs of different lengths are offered only the positions that are matched between them", () => {
+  const records = [record(), record({ corrupt: "When A and C D" }), record(), record({ clean: "When A and B B" })];
+  const uneven: DatasetDetail = { ...dataset(records), uneven: [{ index: 1, clean: 4, corrupt: 5 }, { index: 3, clean: 5, corrupt: 4 }] };
+  const facts = datasetFacts(uneven, null);
+  expect(facts?.uneven).toEqual([1, 3]);
+  // Without a model, the lengths aren't known; a limit leaves out the pairs it leaves out.
+  expect(datasetFacts(dataset(records), null)?.uneven).toBeNull();
+  expect(datasetFacts(uneven, 2)?.uneven).toEqual([1]);
+  expect(unevenPairsText([1])).toBe("Pair 1");
+  expect(unevenPairsText([1, 3])).toBe("Pairs 1 and 3");
+  expect(unevenPairsText([1, 2, 4, 5, 7, 8, 10])).toBe("Pairs 1, 2, 4, 5, 7 and 2 more");
+
+  // What carries a value from one prompt into another needs the positions to be matched.
+  expect(carriedBy(form())).toBe("patching");
+  expect(carriedBy(form({ kind: "ablation", baseline: { kind: "zero" } }))).toBeNull();
+  expect(carriedBy(form({ kind: "ablation", baseline: { kind: "resample", pool: "corrupt", donors: 2, seed: 0 } }))).toBe("resample ablation");
+  expect(carriedBy(form({ kind: "direct_logit_attribution" }))).toBeNull();
+  expect(carriedBy(form({ kind: "steering", steerDirection: "sae_feature" }))).toBeNull();
+  expect(unlinedReason(form(), facts)).toBe(
+    "Pairs 1 and 3 have prompts of different lengths: patching matches them at the last token or a labelled position, not at every position or a token index.",
+  );
+  expect(unlinedReason(form(), datasetFacts(dataset(records), null))).toBeNull();
+
+  // Every position and token indices are refused, naming the pairs; the last token and labels run.
+  expect(refused(form(), { facts })).toBe(
+    "Pairs 1 and 3 have clean and corrupt prompts of different token lengths, so their positions don't line up by index: patching at every position has no meaning across different lengths. Choose the last token or a labelled position, which are matched from one prompt to the other, or use pairs of equal length.",
+  );
+  const index = form({ scope: { kind: "layer_components", components: ["attn_out"], position: { kind: "index", index: -2 } } });
+  expect(refused(index, { facts })).toContain("patching at token index -2 has no meaning");
+  expect(built(form({ scope: { kind: "heads", position: { kind: "last" } } }), { facts }).scope).toEqual({ kind: "heads", position: { kind: "last" } });
+  expect(built(form({ scope: { kind: "heads", position: { kind: "label", label: "S2" } } }), { facts }).experiment.kind).toBe("activation_patching");
+  expect(built(form({ kind: "ablation", baseline: { kind: "zero" } }), { facts }).scope).toEqual({ kind: "heads", position: { kind: "all" } });
+  const ig = form({ kind: "attribution_patching", atpMethod: "integrated_gradients", atpSteps: 4, scope: { kind: "heads", position: { kind: "last" } } });
+  expect(refused(ig, { facts })).toContain("Integrated gradients run on inputs between the two prompts' embeddings");
+  const keep: FormState["scope"] = { kind: "site_sets", universe: ["head"], sets: [{ label: "rest", sites: [], complement: true }] };
+  expect(refused(form({ scope: keep }), { facts })).toContain("The set “rest” keeps its sites and patches every other position");
+  expect(built(form({ kind: "ablation", baseline: { kind: "zero" }, scope: keep }), { facts }).scope).toEqual(keep);
+  const labelled: FormState["scope"] = {
+    kind: "site_sets",
+    universe: null,
+    sets: [{ label: "S2", sites: [{ kind: "attn_out", layer: 0, head: null, position: { kind: "label", label: "S2" } }], complement: false }],
+  };
+  expect(built(form({ scope: labelled }), { facts }).scope).toEqual(labelled);
+  const meanSets = form({ kind: "ablation", baseline: { kind: "mean", reference: "corrupt" }, scope: labelled });
+  expect(refused(meanSets, { facts })).toContain("Mean ablation of a set replaces whole activations");
+
+  // Choosing a method that carries values moves every position and token index to the last token.
+  expect(lastInstead({ kind: "heads", position: { kind: "all" } })).toEqual({ kind: "heads", position: { kind: "last" } });
+  expect(lastInstead({ kind: "layer_position", site: "resid_pre", positions: "each" })).toEqual({ kind: "layer_position", site: "resid_pre", positions: "labels" });
+  expect(lastInstead(labelled)).toEqual(labelled);
 });

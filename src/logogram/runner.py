@@ -36,7 +36,7 @@ from logogram.fileio import atomic_output, write_text_atomic
 from logogram.owner import claim_run, release_run
 from logogram.partial import Progress, keep_finished
 from logogram.project import TRACEBACK_FILE, Project, now_iso
-from logogram.prompts import prepare_prompts
+from logogram.prompts import prepare_prompts, uneven_text
 from logogram.results import (
     bootstrap_counts,
     build_summary,
@@ -574,6 +574,13 @@ def run_spec(
             if upgraded
             else []
         )
+        uneven = [p.index for p in prompts if not p.even]
+        if uneven:
+            notes.append(
+                f"{uneven_text(uneven, len(prompts))}: their positions were matched between the "
+                "two prompts by label and as the last token, each prompt read at its own token "
+                "there."
+            )
         progress.prepare(
             spec,
             model_shape,

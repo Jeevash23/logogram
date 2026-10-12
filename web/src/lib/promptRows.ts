@@ -122,6 +122,64 @@ export function rangeText(page: RowPage, searching: boolean): string {
   return `${searching ? "Matches" : "Rows"} ${count(page.start + 1)}–${count(page.end)} of ${count(page.total)}`;
 }
 
+// -- showing a pair ---------------------------------------------------------------------------
+
+/** Word pairs compared at most when two prompts have different numbers of words: past it, words are
+ * compared in place, as for prompts of the same length. */
+const DIFF_CELLS = 200_000;
+
+/**
+ * One prompt's words (and the spaces between them), each marked where the other prompt doesn't
+ * have it. Prompts with as many words compare them in place; otherwise the words in common are
+ * the longest sequence of them both prompts share, so a name of two words doesn't mark every word
+ * after it.
+ */
+export function wordDiff(text: string, other: string): { text: string; differs: boolean }[] {
+  const a = text.split(/(\s+)/);
+  const b = other.split(/(\s+)/);
+  if (a.length === b.length || a.length * b.length > DIFF_CELLS) {
+    return a.map((w, i) => ({ text: w, differs: w.trim() !== "" && w !== b[i] }));
+  }
+  const shared = sharedWords(a, b);
+  return a.map((w, i) => ({ text: w, differs: w.trim() !== "" && !shared.has(i) }));
+}
+
+/** Positions in `a` of a longest common subsequence of `a` and `b`. */
+function sharedWords(a: string[], b: string[]): Set<number> {
+  const m = b.length;
+  // longest[i][j]: the longest common subsequence of a[i:] and b[j:], one row after another.
+  const longest = new Int32Array((a.length + 1) * (m + 1));
+  for (let i = a.length - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      longest[i * (m + 1) + j] =
+        a[i] === b[j]
+          ? longest[(i + 1) * (m + 1) + j + 1] + 1
+          : Math.max(longest[(i + 1) * (m + 1) + j], longest[i * (m + 1) + j + 1]);
+    }
+  }
+  const shared = new Set<number>();
+  let i = 0;
+  let j = 0;
+  while (i < a.length && j < m) {
+    if (a[i] === b[j]) {
+      shared.add(i);
+      i++;
+      j++;
+    } else if (longest[(i + 1) * (m + 1) + j] >= longest[i * (m + 1) + j + 1]) i++;
+    else j++;
+  }
+  return shared;
+}
+
+/** A prompt's labelled positions in reading order, each with the text it names: "IO “Mary” · S2
+ * “John”". Empty without positions. */
+export function labelsText(text: string, spans: Record<string, [number, number]> | undefined): string {
+  return Object.entries(spans ?? {})
+    .sort(([la, [a]], [lb, [b]]) => a - b || (la < lb ? -1 : la > lb ? 1 : 0))
+    .map(([label, [start, end]]) => `${label} “${text.slice(start, end)}”`)
+    .join(" · ");
+}
+
 /** What a search found: "34 of 2,000 rows match", "1 of 2,000 rows matches", "No rows match". */
 export function matchText(matches: number, total: number): string {
   if (matches === 0) return "No rows match";

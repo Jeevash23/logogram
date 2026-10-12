@@ -14,6 +14,10 @@ Integrated gradients (as in EAP-IG) average the gradient over runs whose input e
 evenly between the receiver's and the source's, at the midpoints of ``steps`` equal intervals. The
 average follows the metric along the way from one prompt to the other instead of only at its
 start, which corrects much of what a single gradient misses, at ``steps`` times the cost.
+
+Pairs whose prompts have different token lengths are compared at a label or the last token: the
+source prompt's activation at its own token there against the receiver's at its own. Integrated
+gradients interpolate the two prompts position by position, so they need pairs of equal length.
 """
 
 from __future__ import annotations
@@ -33,6 +37,7 @@ from logogram.engine import (
     ProgressFn,
     PromptsFn,
     _chunks,
+    _LayerSources,
     check_finite,
     check_gap,
     check_values,
@@ -40,8 +45,14 @@ from logogram.engine import (
     make_scorer,
 )
 from logogram.metrics import Scorer, extend_tokens
-from logogram.prompts import PreparedPrompt, group_by_length
-from logogram.sites import ResolvedSite, expand_scope, resolve_position
+from logogram.prompts import LengthGroup, PreparedPrompt, group_by_length, uneven_text
+from logogram.sites import (
+    ResolvedSite,
+    ScopeError,
+    check_lined_up,
+    expand_scope,
+    resolve_position,
+)
 from logogram.spec import AllPositions, AttributionPatching, Spec
 
 RESIDUAL = ("resid_pre", "resid_mid", "resid_post")
@@ -153,6 +164,111 @@ def _integrated(
     return {s: g / steps for s, g in total.items()}
 
 
+def check_integrated(exp: AttributionPatching, prompts: list[PreparedPrompt]) -> None:
+    """Refuse integrated gradients on pairs of different lengths: they run on inputs that lie
+    between the two prompts' embeddings position by position, which needs the positions to line
+    up."""
+    if exp.method != "integrated_gradients":
+        return
+    uneven = [p.index for p in prompts if not p.even]
+    if uneven:
+        raise ScopeError(
+            f"{uneven_text(uneven, len(prompts))}. Integrated gradients run on inputs between the "
+            "two prompts' embeddings, position by position, which needs their positions to line "
+            "up. Estimate with one gradient, which compares the prompts at a label or the last "
+            "token, or use pairs of equal length."
+        )
+
+
+def source_tables(
+    backend: ModelBackend,
+    prompts: list[PreparedPrompt],
+    groups: list[LengthGroup],
+    sites: list[ResolvedSite],
+    source: str,
+    batch_size: int,
+    cancel: threading.Event | None,
+) -> dict[tuple[tuple[str, int], str], torch.Tensor]:
+    """Each source prompt's activation at each site's token, ``[n, ...]`` by (kind, layer) and
+    position, captured a layer at a time in batches of the source prompts' own length."""
+    tables: dict[tuple[tuple[str, int], str], torch.Tensor] = {}
+    for layer in sorted({rs.layer for rs in sites}):
+        here = [rs for rs in sites if rs.layer == layer]
+        kinds = list(dict.fromkeys(rs.kind for rs in here))
+        sources = _LayerSources(backend, prompts, groups, layer, kinds, source, batch_size, cancel)
+        for rs in here:
+            key = ((rs.kind, layer), rs.site.position.model_dump_json())
+            if key not in tables:
+                tables[key] = sources.table(rs.kind, rs)
+    return tables
+
+
+def _batch_products(
+    backend: ModelBackend,
+    scorer: Scorer,
+    receiver_tokens: torch.Tensor,
+    source_tokens: torch.Tensor,
+    idx: list[int],
+    prompts: list[PreparedPrompt],
+    sites: list[ResolvedSite],
+    needed: list[tuple[str, int]],
+    steps: int | None,
+    receiver: str,
+) -> np.ndarray:
+    """Every site's estimate ``[S, B]`` for a batch of pairs whose positions line up: the products
+    at every position of each layer once, then each site reads its own part of them."""
+    products, tail = pass_products(
+        backend, scorer, receiver_tokens, source_tokens, idx, needed, steps
+    )
+    rows = torch.arange(len(idx))
+    out = np.zeros((len(sites), len(idx)))
+    for rs in sites:
+        key = (rs.kind, rs.layer)
+        per_position = products[key]
+        if rs.kind == "head":
+            per_position = per_position[:, :, rs.head]
+        if isinstance(rs.site.position, AllPositions):
+            values = per_position.sum(1)
+            if tail is not None:  # every position includes the appended ones
+                values = values + (tail[key][:, rs.head] if rs.kind == "head" else tail[key])
+        else:
+            positions = torch.tensor(
+                [resolve_position(rs.site.position, prompts[p], receiver) for p in idx]
+            )
+            values = per_position[rows, positions]
+        out[rs.index] = values.cpu().numpy()
+    return out
+
+
+def _batch_at_tokens(
+    backend: ModelBackend,
+    scorer: Scorer,
+    receiver_tokens: torch.Tensor,
+    idx: list[int],
+    prompts: list[PreparedPrompt],
+    sites: list[ResolvedSite],
+    needed: list[tuple[str, int]],
+    tables: dict[tuple[tuple[str, int], str], torch.Tensor],
+    receiver: str,
+) -> np.ndarray:
+    """Every site's estimate ``[S, B]`` for a batch of receivers whose pairs may differ in length:
+    (the source's activation at the site's token - the receiver's at its own) · the gradient
+    there, with ``tables`` holding the sources'."""
+    acts, grads = metric_gradients(backend, scorer, receiver_tokens, idx, needed)
+    rows = torch.arange(len(idx))
+    out = np.zeros((len(sites), len(idx)))
+    for rs in sites:
+        key = (rs.kind, rs.layer)
+        at = torch.tensor([resolve_position(rs.site.position, prompts[p], receiver) for p in idx])
+        src = tables[(key, rs.site.position.model_dump_json())][idx]
+        own, grad = acts[key][rows, at], grads[key][rows, at]
+        if rs.kind == "head":
+            src, own, grad = src[:, rs.head], own[:, rs.head], grad[:, rs.head]
+        own, grad = own.to(src.device), grad.to(src.device)
+        out[rs.index] = ((float64(src) - float64(own)) * float64(grad)).sum(-1).cpu().numpy()
+    return out
+
+
 def run_attribution_patching(
     spec: Spec,
     backend: ModelBackend,
@@ -174,18 +290,23 @@ def run_attribution_patching(
     info = backend.info
     batch_size = spec.execution.batch_size
     sites, layout = expand_scope(spec, info, prompts)
-    if on_start is not None:
-        on_start(sites, layout)
-    groups = group_by_length(prompts)
-    scorer = make_scorer(spec, prompts)
-    baselines = compute_baselines(backend, prompts, groups, batch_size, cancel, scorer)
-    check_finite(baselines, info.dtype)
     receiver, source = (
         ("corrupt", "clean") if exp.direction == "clean_to_corrupt" else ("clean", "corrupt")
     )
     reference = source
     receiver = receiver_override or receiver
     source = source_override or source
+    # Pairs of different lengths are compared at a label or the last token, one token each.
+    lined_up = source == receiver or all(p.even for p in prompts)
+    if not lined_up:
+        check_integrated(exp, prompts)
+        check_lined_up([rs.site.position for rs in sites], prompts, "estimate")
+    if on_start is not None:
+        on_start(sites, layout)
+    groups = group_by_length(prompts, receiver)
+    scorer = make_scorer(spec, prompts)
+    baselines = compute_baselines(backend, prompts, groups, batch_size, cancel, scorer)
+    check_finite(baselines, info.dtype)
     warnings = check_gap(spec, baselines, prompts, receiver, reference)
 
     n = len(prompts)
@@ -213,41 +334,32 @@ def run_attribution_patching(
             info.dtype,
         )
 
+    # Pairs of different lengths: the source prompts' activations at each site's token, captured
+    # in batches of their own length, to compare with the receivers' at theirs.
+    tables = (
+        None
+        if lined_up
+        else source_tables(backend, prompts, groups, sites, source, batch_size, cancel)
+    )
+    steps = exp.steps if exp.method == "integrated_gradients" else None
     for group in groups:
-        receiver_tokens = group.clean if receiver == "clean" else group.corrupt
-        source_tokens = group.clean if source == "clean" else group.corrupt
+        receiver_tokens = group.tokens(receiver)
         for sl in _chunks(len(group.members), batch_size):
             if cancel is not None and cancel.is_set():
                 raise Cancelled()
             idx = group.members[sl]
-            # Each layer's products once, then every site reads its own part of them.
-            products, tail = pass_products(
-                backend,
-                scorer,
-                receiver_tokens[sl],
-                source_tokens[sl],
-                idx,
-                needed,
-                exp.steps if exp.method == "integrated_gradients" else None,
-            )
-            rows = torch.arange(len(idx))
-            for rs in sites:
-                key = (rs.kind, rs.layer)
-                per_position = products[key]
-                if rs.kind == "head":
-                    per_position = per_position[:, :, rs.head]
-                if isinstance(rs.site.position, AllPositions):
-                    values = per_position.sum(1)
-                    if tail is not None:  # every position includes the appended ones
-                        values = values + (
-                            tail[key][:, rs.head] if rs.kind == "head" else tail[key]
-                        )
-                else:
-                    positions = torch.tensor(
-                        [resolve_position(rs.site.position, prompts[p]) for p in idx]
-                    )
-                    values = per_position[rows, positions]
-                estimate[rs.index, idx] = values.cpu().numpy()
+            if tables is None:
+                source_tokens = group.tokens(source)
+                values = _batch_products(
+                    backend, scorer, receiver_tokens[sl], source_tokens[sl], idx, prompts, sites,
+                    needed, steps, receiver,
+                )  # fmt: skip
+            else:
+                values = _batch_at_tokens(
+                    backend, scorer, receiver_tokens[sl], idx, prompts, sites, needed, tables,
+                    receiver,
+                )  # fmt: skip
+            estimate[:, idx] = values
             done += len(idx)
             finished.extend(idx)
             if on_progress is not None:
