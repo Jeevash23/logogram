@@ -129,7 +129,9 @@ def test_opening_an_example_copies_it_once_into_its_own_folder(tmp_path: Path):
         assert [d["path"] for d in project.list_datasets()] == [spec.dataset.path]
         # The copy is the user's: opening the example again opens it as it is.
         mine = project.root / "experiments" / experiment / "spec.json"
-        mine.write_text(mine.read_text(encoding="utf-8").replace(spec.name, "Mine"))
+        mine.write_text(
+            mine.read_text(encoding="utf-8").replace(spec.name, "Mine"), encoding="utf-8"
+        )
         again = open_example(tmp_path, example=example.id)
         assert again.root == project.root
         assert Spec.from_path(mine).name == "Mine"
@@ -145,10 +147,10 @@ def test_opening_an_example_copies_it_once_into_its_own_folder(tmp_path: Path):
 def test_an_example_never_replaces_a_folder_that_isnt_its_copy(tmp_path: Path):
     example = get_example(NEW[0])
     (tmp_path / example.folder).mkdir()
-    (tmp_path / example.folder / "mine.txt").write_text("keep")
+    (tmp_path / example.folder / "mine.txt").write_text("keep", encoding="utf-8")
     with pytest.raises(ProjectError, match="isn't a Logogram project"):
         open_example(tmp_path, example=example.id)
-    assert (tmp_path / example.folder / "mine.txt").read_text() == "keep"
+    assert (tmp_path / example.folder / "mine.txt").read_text(encoding="utf-8") == "keep"
     assert not (tmp_path / example.folder / PROJECT_FILE).exists()
 
 
@@ -188,7 +190,9 @@ def test_the_server_lists_and_opens_each_example(client: TestClient, tmp_path: P
         assert opened.status_code == 200, opened.text
         info = opened.json()
         assert Path(info["path"]) == (tmp_path / "work" / example.folder).resolve()
-        name = json.loads((example_source(example.id) / PROJECT_FILE).read_text())["name"]
+        name = json.loads((example_source(example.id) / PROJECT_FILE).read_text(encoding="utf-8"))[
+            "name"
+        ]
         assert info["name"] == name
         assert client.get("/api/project", headers=HEADERS).json()["path"] == info["path"]
     assert all(e["copied"] for e in client.get("/api/examples", headers=HEADERS).json())

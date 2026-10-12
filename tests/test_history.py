@@ -196,6 +196,8 @@ def test_drafts_and_running_runs_can_be_annotated(client, ready, project, spec_f
         ('{"logogram_annotations": 2}', "logogram_annotations"),
         ("[" * 100_000, ""),
     ],
+    # Named, so the deeply nested one's id isn't 100,000 characters (too long for Windows).
+    ids=["not JSON", "a string", "a field", "two lines", "empty", "a list", "a version", "nested"],
 )
 def test_annotations_that_cant_be_read_are_ignored_with_a_note(
     client, ready, project, spec_factory, content, why

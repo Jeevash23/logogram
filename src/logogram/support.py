@@ -62,11 +62,14 @@ _GENERIC_NAMES = {
 _START = r"(?<![^\s'\"`(=\[{,])"
 # The characters of a path outside quotes: anything up to a space, a quote or a bracket.
 _BODY = r"[^\s'\"`<>|;,()\[\]{}]"
-_QUOTED_PATH = re.compile(r"""(['"`])((?:[A-Za-z]:[\\/]|\\\\|/(?=[^\s/'"`])|~[\\/])[^'"`\n]*?)\1""")
+_QUOTED_PATH = re.compile(
+    r"""(['"`])((?:[A-Za-z]:[\\/]|\\\\|\\(?=[^\s\\/'"`])|/(?=[^\s/'"`])|~[\\/])[^'"`\n]*?)\1"""
+)
 _PATHS = re.compile(
     _START
     + r"(?:[A-Za-z]:[\\/]"  # C:\ or C:/
     + r"|\\\\[^\s\\/]+[\\/]"  # \\server\share
+    + r"|\\(?=[^\s\\/'\"`<>|;,()\[\]{}])"  # \rooted, on the current drive (Windows)
     + r"|~[\\/]"  # ~/ (the home folder, after it was written as ~)
     + r"|/(?=[^\s/'\"`<>|;,()\[\]{}]))"  # /absolute (not // or a lone slash)
     + _BODY

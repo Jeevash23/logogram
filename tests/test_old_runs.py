@@ -18,6 +18,7 @@ exports them through the server, the Python API and the command line.
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
 import shutil
@@ -37,6 +38,23 @@ from logogram.server.security import SecurityConfig
 from logogram.spec import Spec
 
 FIXTURE = Path(__file__).parent / "fixtures" / "old-runs"
+# The weights of the tiny test model the fixture's runs were made on. The model is built from a
+# seed, and other versions of PyTorch or Transformers can build other weights from the same seed
+# (the lowest declared versions do): no number can match then.
+FIXTURE_WEIGHTS = "24f50e231d835536efaf21ad52f19da8248a18728d03b6e4e5fe0c5e90b88476"
+
+
+def weights_fingerprint(folder: Path) -> str:
+    from safetensors.torch import load_file
+
+    tensors = load_file(folder / "model.safetensors")
+    digest = hashlib.sha256()
+    for name in sorted(tensors):
+        digest.update(name.encode())
+        digest.update(tensors[name].contiguous().numpy().tobytes())
+    return digest.hexdigest()
+
+
 V1, V2, DRAFT = "made-by-0.1.0", "made-by-0.2.0", "written-for-0.1.0"
 BASE = "http://127.0.0.1:8765"
 AUTH = {"authorization": "Bearer test", "origin": BASE}
@@ -165,20 +183,26 @@ def test_old_runs_through_the_command_line(old, tmp_path):
     assert "This is a version 1 spec" in validated.output and "model.dtype" in validated.output
 
 
-def test_old_specs_still_run(old, tiny_backend):
+def test_old_specs_still_run(old, tiny_backend, tiny_model_dir):
     """The 0.1.0 run's spec, and the version 1 spec written for 0.1.0, run as they are. The run
     of the hand-written one says which choices it left out."""
     rerun = run_spec(Spec.from_path(old.run_dir(V1) / "spec.json"), old, backend=tiny_backend)
     assert rerun.status == "finished", rerun.manifest.get("error")
     comparison = lg.compare_runs(lg.load_run(old, V1), lg.load_run(old, rerun.run_id))
     assert comparison["paired"] and comparison["n_common"] == N_SITES
-    # Other library versions may change the last digits, never more.
     old_effects = pq.read_table(old.run_dir(V1) / "results.parquet").column("effect").to_pylist()
     new_effects = pq.read_table(rerun.folder / "results.parquet").column("effect").to_pylist()
-    assert new_effects == pytest.approx(old_effects, abs=1e-4)
 
     draft = Spec.from_path(old.run_dir(DRAFT) / "spec.json")
     assert 'model.dtype = "float32"' in draft.upgraded_fields
     written = run_spec(draft, old, run_id=DRAFT, backend=tiny_backend)
     assert written.status == "finished", written.manifest.get("error")
     assert written.summary is not None and "version 1" in written.summary["warnings"][0]
+
+    if weights_fingerprint(tiny_model_dir) != FIXTURE_WEIGHTS:
+        pytest.skip(
+            "These versions of PyTorch and Transformers build another tiny model from the same "
+            "seed, so the numbers can't be compared with runs made on the fixture's model."
+        )
+    # On the same model, other library versions may change the last digits, never more.
+    assert new_effects == pytest.approx(old_effects, abs=1e-4)

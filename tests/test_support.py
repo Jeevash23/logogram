@@ -233,6 +233,8 @@ def test_the_last_error_is_scrubbed_of_paths_names_and_secrets(machine, tmp_path
         ("C:\\Projects\\ioi\\datasets\\x.jsonl is missing", "<path> is missing"),
         ("D:/Projects/ioi/x.jsonl is missing", "<path> is missing"),
         ("\\\\fileserver\\share\\lab\\x.jsonl is missing", "<path> is missing"),
+        ("\\srv\\lab\\cache is missing", "<path> is missing"),
+        ("No such file: '\\srv\\My Lab\\x.jsonl'", "No such file: '<path>'"),
         ("~/projects/ioi/x.jsonl is missing", "<path> is missing"),
         # Secrets.
         ("auth Bearer abcdefghijklmnop", "auth Bearer <token>"),
@@ -251,6 +253,7 @@ def test_the_last_error_is_scrubbed_of_paths_names_and_secrets(machine, tmp_path
         ("'/' isn't a dataset name; a / b", "'/' isn't a dataset name; a / b"),
         ("model openai-community/gpt2 at main", "model openai-community/gpt2 at main"),
         ("~3 GB free", "~3 GB free"),
+        ("a \\ b, and 1\\2", "a \\ b, and 1\\2"),
     ],
 )
 def test_scrub(text, expected):
