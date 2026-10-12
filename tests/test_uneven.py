@@ -326,6 +326,10 @@ def test_the_same_spec_twice_gives_identical_results(tiny_backend, uneven_projec
     sb = json.loads((second.folder / "summary.json").read_text(encoding="utf-8"))
     sa.pop("run_id"), sb.pop("run_id")
     assert sa == sb
+    # The run says how its pairs were matched.
+    assert "Prompt pairs 1, 2, 4, 5, 7 and 3 more (8 of 12) have clean and corrupt prompts of " in (
+        " ".join(sa["warnings"])
+    )
 
 
 def test_pairs_of_equal_length_give_what_they_gave_before(tiny_backend, project, spec_factory):
@@ -745,3 +749,86 @@ def test_feature_estimates_on_uneven_pairs_add_up_to_the_site(
     assert info["features_estimate"] == pytest.approx(info["site_estimate"], rel=1e-5, abs=1e-6)
     with pytest.raises(ScopeError, match="Attribution patching compares"):
         run_experiment(every({"kind": "all"}), tiny_backend, uneven, sae=exact)
+
+
+# -- what the app shows ------------------------------------------------------------------------
+
+
+def test_the_token_strip_lines_the_prompts_up_by_their_labels(tiny_backend):
+    from logogram.analysis import align_tokens, tokenize_pair
+
+    record = uneven_records()[1]  # the corrupt prompt names two people where the clean names one
+    strip = tokenize_pair(tiny_backend, record, True)
+    assert not strip["aligned"] and not strip["issues"]
+    clean, corrupt = strip["clean"]["tokens"], strip["corrupt"]["tokens"]
+    labels, corrupt_labels = strip["labels"], strip["corrupt_labels"]
+    columns = strip["columns"]
+    # Every token of each prompt, once and in order.
+    assert [c for c, _ in columns if c is not None] == list(range(len(clean)))
+    assert [d for _, d in columns if d is not None] == list(range(len(corrupt)))
+    # Each label's two tokens share a column, as do the last tokens.
+    for label in LABELS:
+        assert [labels[label], corrupt_labels[label]] in columns
+    assert columns[-1] == [len(clean) - 1, len(corrupt) - 1]
+    # The extra name stands alone; the tokens around it line up.
+    alone = [d for c, d in columns if c is None]
+    assert [corrupt[d] for d in alone] == [corrupt[corrupt_labels["S2"] - 1]]
+    assert all(
+        clean[c] == corrupt[d]
+        for c, d in columns
+        if None not in (c, d) and [c, d] not in [[labels["S2"], corrupt_labels["S2"]]]
+    )
+    # Pairs of equal length line up position by position, as they always did.
+    even = tokenize_pair(tiny_backend, uneven_records()[0], True)
+    assert even["aligned"] and even["columns"] is None
+    # Labels whose order differs between the prompts can't all share a column: most of them do.
+    crossed = align_tokens([1, 2, 3, 4], [1, 3, 2, 9, 4], {"a": 1, "b": 2}, {"a": 2, "b": 1})
+    assert crossed[-1] == [3, 4]
+    assert sum(1 for c in crossed if c in ([1, 2], [2, 1])) == 1
+    assert [c for c, _ in crossed if c is not None] == [0, 1, 2, 3]
+    assert [d for _, d in crossed if d is not None] == [0, 1, 2, 3, 4]
+
+
+def test_the_app_learns_which_pairs_differ_in_length(tiny_backend, tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from logogram.server.app import create_app
+    from logogram.server.security import SecurityConfig
+
+    monkeypatch.setattr("platformdirs.user_config_path", lambda *a, **k: tmp_path / "config")
+    monkeypatch.setattr("logogram.project.config_dir", lambda: tmp_path / "config")
+    app = create_app(SecurityConfig(token="t", port=8765), serve_web=False)
+    base = "http://127.0.0.1:8765"
+    client = TestClient(app, base_url=base)
+    auth = {"authorization": "Bearer t"}
+    headers = {**auth, "origin": base}
+    client.post("/api/projects", json={"name": "Uneven", "parent": str(tmp_path)}, headers=headers)
+    text = "\n".join(json.dumps(r.model_dump(exclude_none=True)) for r in uneven_records()[:4])
+    created = client.post(
+        "/api/datasets/import", json={"name": "uneven", "text": text}, headers=headers
+    )
+    assert created.status_code == 200, created.text
+    params = {"path": "datasets/uneven.jsonl"}
+    assert client.get("/api/dataset", params=params, headers=auth).json()["uneven"] is None
+    app.state.logogram.backend = tiny_backend
+    app.state.logogram.model_status = {"state": "ready"}
+    detail = client.get("/api/dataset", params=params, headers=auth).json()
+    assert detail["issues"] == [] and detail["lengths"] == [15, 16]
+    assert detail["uneven"] == [
+        {"index": 1, "clean": 15, "corrupt": 16},
+        {"index": 2, "clean": 16, "corrupt": 15},
+    ]
+    assert detail["records"][1]["corrupt_positions"]["S2"] == list(
+        uneven_records()[1].corrupt_positions["S2"]
+    )  # type: ignore[index]
+    body = {
+        "dataset": "datasets/uneven.jsonl",
+        "index": 1,
+        "prepend_bos": True,
+        "batch_size": 4,
+        "metric": {"kind": "logit_diff", "normalization": "dataset_gap"},
+    }
+    response = client.post("/api/tokenize", json=body, headers=headers)
+    assert response.status_code == 200, response.text
+    strip = response.json()
+    assert strip["columns"] and strip["corrupt_labels"]["S2"] == 11
