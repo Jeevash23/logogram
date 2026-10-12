@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import threading
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -17,6 +17,15 @@ import torch
 
 STREAM_KINDS = ("resid_pre", "resid_mid", "resid_post", "attn_out", "mlp_out")
 ALL_KINDS = (*STREAM_KINDS, "head")
+# A head's query, key and value: offered only where the backend measured, when the model loaded,
+# that they are all the attention reads and that each head reads its own (see the backend's
+# checks). Keys and values belong to key/value heads, fewer than query heads with grouped-query
+# attention.
+HEAD_INPUT_KINDS = ("q", "k", "v")
+# Sites that are one unit along an axis of their layer's activation: a head of the heads' outputs
+# (z), queries, keys or values (``[B, pos, heads, d_head]``), or a neuron of the MLP's hidden
+# activation (``[B, pos, d_mlp]``, one number per position).
+UNIT_KINDS = ("head", *HEAD_INPUT_KINDS, "neuron")
 
 # Devices with no float64 arithmetic: Apple's Metal has no doubles.
 NO_FLOAT64 = frozenset({"mps"})
@@ -82,13 +91,18 @@ class Tokenized:
 class Patch:
     """Replace one site's activation, row by row, during a forward pass.
 
-    ``heads`` gives each row's head for head sites. ``positions`` gives each row's single
-    position, or is ``None`` to replace every position. ``values`` is ``[B, pos, d]`` when every
-    position is replaced and ``[B, d]`` otherwise (``d`` is ``d_head`` for heads).
+    ``heads`` gives each row's head for head sites (its query head for q sites, its key/value
+    head for k and v sites); ``neurons`` gives each row's neuron for neuron sites. ``positions``
+    gives each row's single position, or is ``None`` to replace every position. ``values`` is
+    ``[B, pos, d]`` when every position is replaced and ``[B, d]`` otherwise (``d`` is ``d_head``
+    for heads, queries, keys and values; a neuron is one number, so its values are ``[B, pos]``
+    or ``[B]``).
 
     With ``mask``, the patch replaces any entries at once: ``values`` is the whole activation,
-    ``[B, pos, d]`` (``[B, pos, H, d_head]`` for heads), and ``mask`` (``[B, pos]``, or
-    ``[B, pos, H]`` for heads) says which entries take it; ``heads`` and ``positions`` are unused.
+    ``[B, pos, d]`` (``[B, pos, H, d_head]`` for heads, queries, keys and values, ``[B, pos,
+    d_mlp]`` for neurons), and ``mask`` (``[B, pos]``, ``[B, pos, H]`` for heads, queries, keys
+    and values, ``[B, pos, d_mlp]`` for neurons) says which entries take it; ``heads``,
+    ``neurons`` and ``positions`` are unused.
 
     A forward pass can be longer than the patch when tokens are appended to the prompt (an
     answer's continuation): every patch covers the prompt's positions only.
@@ -100,6 +114,12 @@ class Patch:
     heads: torch.Tensor | None = None
     positions: torch.Tensor | None = None
     mask: torch.Tensor | None = None
+    neurons: torch.Tensor | None = None
+
+    def units(self) -> torch.Tensor | None:
+        """Each row's unit of the activation: its head (or key/value head) for head, q, k and v
+        sites, its neuron for neuron sites; None for a site that is a whole vector."""
+        return self.neurons if self.kind == "neuron" else self.heads
 
 
 Patches = Patch | list[Patch] | None
@@ -167,7 +187,9 @@ class ModelBackend(ABC):
     def capture(
         self, tokens: torch.Tensor, sites: list[tuple[str, int]]
     ) -> dict[tuple[str, int], torch.Tensor]:
-        """Activations for ``(kind, layer)`` sites: ``[B, pos, d]``, or ``[B, pos, H, d_head]``."""
+        """Activations for ``(kind, layer)`` sites: ``[B, pos, d]``, ``[B, pos, H, d_head]`` for
+        heads' outputs and queries, ``[B, pos, H_kv, d_head]`` for keys and values (``H_kv`` key/
+        value heads), ``[B, pos, d_mlp]`` for neurons."""
 
     @abstractmethod
     def attention_pattern(self, tokens: torch.Tensor, layer: int) -> torch.Tensor:
@@ -245,6 +267,9 @@ class ModelBackend(ABC):
         answers: torch.Tensor,
         distractors: torch.Tensor,
         heads: bool,
+        *,
+        neurons: Sequence[int] = (),
+        values: Sequence[int] = (),
     ) -> dict[str, torch.Tensor]:
         """Direct contributions to logit(answer) - logit(distractor) at the last position.
 
@@ -254,6 +279,14 @@ class ModelBackend(ABC):
         minus every component's term) and ``logit_scale`` ``[B]`` (the larger magnitude of the
         answer's and the distractor's logit, which sets how finely the model's dtype resolves
         them).
+
+        For the layers in ``neurons``, ``neuron`` ``[B, len(neurons), d_mlp]``: each neuron's
+        activation at the last position times its row of the MLP's output projection. For the
+        layers in ``values``, ``value`` ``[B, len(values), H_kv, pos]``: what each key/value
+        head's value at each position adds to the last position's attention output, through
+        every query head that reads it (its attention to that position times the value through
+        the head's share of the output projection; the pattern doesn't depend on the values).
+        Both are read like the heads' terms, and only where the backend measured that they add up.
         """
         raise BackendError("Direct logit attribution isn't supported by this model backend.")
 

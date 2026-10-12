@@ -38,10 +38,17 @@ class SiteRef(_Model):
         "head",
         "sae_feature",
         "site_set",
+        "q",
+        "k",
+        "v",
+        "neuron",
     ]
     layer: int
+    # The head of a head site, the query head of a q site, the key/value head of a k or v site.
     head: int | None
     feature: int | None = None
+    # The MLP neuron of a neuron site.
+    neuron: int | None = None
     position: dict[str, Any]
     position_key: str
     row: int
@@ -85,7 +92,20 @@ class LayoutAxis(BaseModel):
 
 
 class Layout(_Model):
-    kind: Literal["heads", "layer_position", "layer_components", "sites", "steering", "site_sets"]
+    kind: Literal[
+        "heads",
+        "layer_position",
+        "layer_components",
+        "sites",
+        "steering",
+        "site_sets",
+        # Every head's query, key or value (``site``): layer x head, or layer x key/value head,
+        # whose columns name the query heads that read each one.
+        "head_inputs",
+        # Every neuron of the chosen layers: a row per layer, which says how many neurons it has;
+        # there are too many to list as columns.
+        "neurons",
+    ]
     site: str | None = None
     row_title: str
     col_title: str
@@ -143,6 +163,8 @@ class ModelShape(_Model):
     id: str
     n_layers: int
     n_heads: int
+    # Fewer than n_heads with grouped-query attention: each is read by a group of query heads.
+    n_key_value_heads: int | None = None
     d_model: int | None = None
     d_head: int | None = None
     d_mlp: int | None = None

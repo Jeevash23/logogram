@@ -32,7 +32,7 @@ class CompareError(ValueError):
 
 
 def site_key(site: dict[str, Any]) -> tuple[Any, ...]:
-    return (
+    key = (
         site["kind"],
         site["layer"],
         site.get("head"),
@@ -40,6 +40,9 @@ def site_key(site: dict[str, Any]) -> tuple[Any, ...]:
         site["position_key"],
         site.get("variant_key"),
     )
+    # A neuron site also names its neuron (other sites' keys are as they always were).
+    neuron = site.get("neuron")
+    return key if neuron is None else (*key, neuron)
 
 
 def _excludes_zero(effect: dict[str, Any]) -> bool:
@@ -220,6 +223,7 @@ def compare_summaries(
             "layer": sa["layer"],
             "head": sa.get("head"),
             "feature": sa.get("feature"),
+            "neuron": sa.get("neuron"),
             "position_key": sa["position_key"],
             "variant_key": sa.get("variant_key"),
             "index_a": sa["index"],

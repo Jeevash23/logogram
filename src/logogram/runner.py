@@ -539,6 +539,7 @@ def run_spec(
             "id": info.id,
             "n_layers": info.n_layers,
             "n_heads": info.n_heads,
+            "n_key_value_heads": info.extra.get("n_key_value_heads"),
             "d_model": info.d_model,
             "d_head": info.d_head,
             "d_mlp": info.d_mlp,

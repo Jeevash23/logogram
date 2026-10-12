@@ -587,6 +587,9 @@ class RunMemoryOut(_Out):
     available: int
     verdict: Literal["fits", "tight", "wont_fit"]
     explanation: str
+    # The sites the scope has, and what they hold (included in total).
+    sites: int = 0
+    site_bytes: int = 0
 
 
 class EstimateOut(_Out):

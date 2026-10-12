@@ -12,14 +12,17 @@ from typing import Any
 from logogram.backends.base import ModelInfo
 from logogram.prompts import PreparedPrompt, common_labels
 from logogram.spec import (
+    HEAD_INPUTS,
     AllPositions,
     FeaturesScope,
+    HeadInputsScope,
     HeadsScope,
     IndexPosition,
     LabelPosition,
     LastPosition,
     LayerComponentsScope,
     LayerPositionScope,
+    NeuronsScope,
     Site,
     SiteSet,
     SiteSetsScope,
@@ -80,6 +83,7 @@ class ResolvedSite:
             "layer": self.layer,
             "head": self.head,
             "feature": None if self.site_set is not None else self.site.feature,
+            "neuron": None if self.site_set is not None else self.site.neuron,
             "position": self.site.position.model_dump(),
             "position_key": self.position_key(),
             "row": self.row,
@@ -107,7 +111,64 @@ def site_label(site: Site) -> str:
         return f"L{site.layer} H{site.head}{pos}"
     if site.kind == "sae_feature":
         return f"L{site.layer} F{site.feature}{pos}"
+    if site.kind == "q":
+        return f"L{site.layer} H{site.head} q{pos}"
+    if site.kind in ("k", "v"):
+        # A key/value head, which every query head of its group reads.
+        return f"L{site.layer} KV{site.head} {site.kind}{pos}"
+    if site.kind == "neuron":
+        return f"L{site.layer} N{site.neuron}{pos}"
     return f"L{site.layer} {COMPONENT_LABELS[site.kind]}{pos}"
+
+
+def site_unit(site: Site) -> int | None:
+    """The site's unit of its layer's activation: its head (query head, key/value head) for head,
+    q, k and v sites, its neuron for a neuron site; None for a site that is a whole vector."""
+    if site.kind == "neuron":
+        return site.neuron
+    if site.kind == "head" or site.kind in HEAD_INPUTS:
+        return site.head
+    return None
+
+
+def kv_heads(info: ModelInfo) -> int:
+    """The model's key/value heads: as many as its query heads without grouped-query attention."""
+    return int(info.extra.get("n_key_value_heads") or info.n_heads)
+
+
+def unit_count(kind: str, info: ModelInfo) -> int | None:
+    """How many units a layer's activation of ``kind`` has: heads for heads' outputs and queries,
+    key/value heads for keys and values, neurons for neurons; None for a whole vector."""
+    if kind in ("head", "q"):
+        return info.n_heads
+    if kind in ("k", "v"):
+        return kv_heads(info)
+    if kind == "neuron":
+        return info.d_mlp or 0
+    return None
+
+
+def activation_shape(kind: str, info: ModelInfo) -> tuple[int, ...]:
+    """The shape of a layer's activation of ``kind`` at one position."""
+    units = unit_count(kind, info)
+    if units is None:
+        return (info.d_model,)
+    return (units,) if kind == "neuron" else (units, info.d_head)
+
+
+def query_heads(info: ModelInfo, kv_head: int) -> list[int]:
+    """The query heads that read a key/value head: query head h reads key/value head
+    h // (query heads per key/value head), as the backend measured when the model loaded."""
+    group = max(1, info.n_heads // kv_heads(info))
+    return list(range(kv_head * group, (kv_head + 1) * group))
+
+
+def missing_kind(kind: str, info: ModelInfo) -> ScopeError:
+    """Why the loaded model has no ``kind`` sites, as the backend measured it."""
+    note = (info.extra.get("site_notes") or {}).get(kind)
+    if note:
+        return ScopeError(note)
+    return ScopeError(f"This model has no {kind} site in TransformerLens.")
 
 
 def resolve_position(
@@ -142,9 +203,23 @@ def _check_site(site: Site, info: ModelInfo) -> None:
     if site.kind == "sae_feature":
         return  # checked against the SAE, which knows its layer and features
     if site.kind not in info.site_kinds:
-        raise ScopeError(f"This model has no {site.kind} site in TransformerLens.")
-    if site.kind == "head" and site.head is not None and site.head >= info.n_heads:
+        raise missing_kind(site.kind, info)
+    if site.kind in ("head", "q") and site.head is not None and site.head >= info.n_heads:
         raise ScopeError(f"Head {site.head} doesn't exist; this model has {info.n_heads} heads.")
+    if site.kind in ("k", "v") and site.head is not None and site.head >= kv_heads(info):
+        raise ScopeError(
+            f"Key/value head {site.head} doesn't exist; this model has {kv_heads(info)} key/value "
+            f"heads{_shared(info)}."
+        )
+    if site.kind == "neuron" and site.neuron is not None and site.neuron >= (info.d_mlp or 0):
+        raise ScopeError(
+            f"Neuron {site.neuron} doesn't exist; this model's MLPs have {info.d_mlp or 0} neurons."
+        )
+
+
+def _shared(info: ModelInfo) -> str:
+    group = info.n_heads // kv_heads(info)
+    return f", each read by {group} of its {info.n_heads} query heads" if group > 1 else ""
 
 
 def expand_scope(
@@ -238,6 +313,55 @@ def expand_scope(
             "col_title": "",
             "rows": [{"key": str(i), "label": site_label(s)} for i, s in enumerate(scope.sites)],
             "cols": [{"key": "effect", "label": "effect"}],
+        }
+    elif isinstance(scope, HeadInputsScope):
+        kind = scope.input
+        if kind not in info.site_kinds:
+            raise missing_kind(kind, info)
+        count = info.n_heads if kind == "q" else kv_heads(info)
+        for layer in range(info.n_layers):
+            for head in range(count):
+                add(Site(kind=kind, layer=layer, head=head, position=scope.position), layer, head)
+        cols = []
+        for head in range(count):
+            col: dict[str, Any] = {"key": str(head), "label": str(head)}
+            if kind != "q":
+                col["query_heads"] = query_heads(info, head)
+            cols.append(col)
+        layout = {
+            "kind": "head_inputs",
+            "site": kind,
+            "row_title": "Layer",
+            "col_title": "Head" if kind == "q" else "Key/value head",
+            "rows": [{"key": str(r), "label": str(r)} for r in range(info.n_layers)],
+            "cols": cols,
+        }
+    elif isinstance(scope, NeuronsScope):
+        if "neuron" not in info.site_kinds or not info.d_mlp:
+            raise missing_kind("neuron", info)
+        for layer in scope.layers:
+            if layer >= info.n_layers:
+                raise ScopeError(
+                    f"Layer {layer} doesn't exist; this model has {info.n_layers} layers."
+                )
+        for row, layer in enumerate(scope.layers):
+            for neuron in range(info.d_mlp):
+                # Thousands of sites per layer, every field known to be valid: built directly.
+                site = Site.model_construct(
+                    kind="neuron", layer=layer, neuron=neuron, position=scope.position
+                )
+                add(site, row, neuron)
+        layout = {
+            "kind": "neurons",
+            "site": "neuron",
+            "row_title": "Layer",
+            "col_title": "Neuron",
+            # Each layer's neurons are its columns, too many to list: rows say how many.
+            "rows": [
+                {"key": str(layer), "label": str(layer), "neurons": info.d_mlp}
+                for layer in scope.layers
+            ],
+            "cols": [],
         }
     elif isinstance(scope, SiteSetsScope):
         raise ScopeError(

@@ -344,8 +344,11 @@ def heatmap_svg(
 ) -> str:
     """A run's means (the normalized ``effect``, or the change in the metric, ``delta``) as an SVG
     grid in the effect colors on a symmetric scale, fitted to the largest value or fixed at ±1
-    (``unit``, effects only), with a legend, axis labels and each cell's value on hover."""
+    (``unit``, effects only), with a legend, axis labels and each cell's value on hover. A run
+    over every neuron of some layers has too many sites for a grid: see :func:`neurons_svg`."""
     layout = summary["layout"]
+    if layout.get("kind") == "neurons":
+        return neurons_svg(summary, value=value, unit=unit)
     rows, cols = layout["rows"], layout["cols"]
     # Small maps get bigger cells, so a few heads don't make a postage stamp.
     cell = max(cell, min(36, 480 // max(1, len(cols)), 480 // max(1, len(rows))))
@@ -396,20 +399,140 @@ def heatmap_svg(
                 f'height="{cell - 1}" fill="{fill}">{title}</rect>'
             )
     # The legend: the scale from −bound to +bound.
-    ly = top + cell * len(rows) + 18
-    parts.append(
+    parts.append(_legend(left, top + cell * len(rows) + 18, bound, what))
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def _legend(left: int, y: int, bound: float, what: str) -> str:
+    """The effect scale from −bound to +bound, with what it measures."""
+    return (
         '<defs><linearGradient id="effect-scale">'
         f'<stop offset="0" stop-color="{effect_color(-1, 1)}"/>'
         f'<stop offset="0.5" stop-color="{effect_color(0, 1)}"/>'
         f'<stop offset="1" stop-color="{effect_color(1, 1)}"/></linearGradient></defs>'
-        f'<rect x="{left}" y="{ly}" width="120" height="8" fill="url(#effect-scale)"/>'
-        f'<text x="{left}" y="{ly + 22}" fill="currentColor">{_fmt(-bound, 2)}</text>'
-        f'<text x="{left + 60}" y="{ly + 22}" text-anchor="middle" fill="currentColor">0</text>'
-        f'<text x="{left + 120}" y="{ly + 22}" text-anchor="end" fill="currentColor">'
+        f'<rect x="{left}" y="{y}" width="120" height="8" fill="url(#effect-scale)"/>'
+        f'<text x="{left}" y="{y + 22}" fill="currentColor">{_fmt(-bound, 2)}</text>'
+        f'<text x="{left + 60}" y="{y + 22}" text-anchor="middle" fill="currentColor">0</text>'
+        f'<text x="{left + 120}" y="{y + 22}" text-anchor="end" fill="currentColor">'
         f"{_fmt(bound, 2)}</text>"
-        f'<text x="{left + 132}" y="{ly + 8}" fill="currentColor">{what}</text>'
-        "</svg>"
+        f'<text x="{left + 132}" y="{y + 8}" fill="currentColor">{what}</text>'
     )
+
+
+# Per layer of a neurons run: how many of its strongest neurons the figure lists, and how many
+# bins its distribution has.
+NEURONS_LISTED = 6
+NEURON_BINS = 48
+
+
+def neurons_svg(summary: dict[str, Any], value: str = "effect", unit: bool = False) -> str:
+    """A run over every neuron of some layers, layer by layer: the distribution of all its
+    neurons' means (a histogram, each bar in the effect color of its middle, its height the
+    number of neurons there on a square-root scale so a few strong neurons stay visible beside
+    thousands near zero), and its strongest neurons with their intervals."""
+    layout = summary["layout"]
+    rows = layout["rows"]
+    by_row: dict[int, list[dict[str, Any]]] = {}
+    for site in summary["sites"]:
+        by_row.setdefault(site["row"], []).append(site)
+
+    def mean(site: dict[str, Any]) -> float | None:
+        x = site[value]["mean"]
+        return x if x is not None and math.isfinite(x) else None
+
+    finite = [abs(m) for site in summary["sites"] if (m := mean(site)) is not None]
+    bound = 1.0 if unit and value == "effect" else (max(finite) if finite else 1.0)
+    bound = bound or 1.0
+    what = "mean normalized effect" if value == "effect" else "mean change in the metric"
+    esc = html.escape
+    left, hist_w, hist_h, gap = 72, 300, 64, 28
+    list_x = left + hist_w + 36
+    track_x, track_w = list_x + 92, 200
+    row_h = max(hist_h, NEURONS_LISTED * 13) + gap
+    top = 22
+    width = track_x + track_w + 70
+    height = top + row_h * len(rows) + 40
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}" font-family="system-ui, sans-serif" font-size="10" '
+        f'role="img" aria-label="Every neuron of {len(rows)} layer{"s" if len(rows) != 1 else ""}:'
+        f' {what}, layer by layer">',
+        f'<text x="{left}" y="{top - 8}" fill="currentColor">All neurons, by {what}</text>',
+        f'<text x="{list_x}" y="{top - 8}" fill="currentColor">The strongest, with their '
+        "intervals</text>",
+    ]
+    for r, row in enumerate(rows):
+        y0 = top + r * row_h
+        sites = by_row.get(r, [])
+        means = [m for site in sites if (m := mean(site)) is not None]
+        parts.append(
+            f'<text x="{left - 8}" y="{y0 + hist_h / 2:.1f}" text-anchor="end" '
+            f'fill="currentColor">Layer {esc(str(row.get("label", r)))}</text>'
+        )
+        # The distribution: bins over −bound..+bound, bars on a square-root scale.
+        counts = [0] * NEURON_BINS
+        for m in means:
+            b = int((max(-bound, min(bound, m)) + bound) / (2 * bound) * NEURON_BINS)
+            counts[min(NEURON_BINS - 1, b)] += 1
+        tallest = math.sqrt(max(counts) or 1)
+        bin_w = hist_w / NEURON_BINS
+        for b, count in enumerate(counts):
+            if not count:
+                continue
+            h = max(1.0, math.sqrt(count) / tallest * hist_h)
+            middle = -bound + (b + 0.5) * 2 * bound / NEURON_BINS
+            parts.append(
+                f'<rect x="{left + b * bin_w:.1f}" y="{y0 + hist_h - h:.1f}" '
+                f'width="{max(1.0, bin_w - 0.5):.1f}" height="{h:.1f}" '
+                f'fill="{effect_color(middle, bound)}"><title>{count} neuron'
+                f"{'s' if count != 1 else ''} between {_fmt(middle - bound / NEURON_BINS)} and "
+                f"{_fmt(middle + bound / NEURON_BINS)}</title></rect>"
+            )
+        zero_x = left + hist_w / 2
+        parts.append(
+            f'<line x1="{zero_x}" y1="{y0}" x2="{zero_x}" y2="{y0 + hist_h}" '
+            'stroke="currentColor" stroke-width="0.5"/>'
+            f'<line x1="{left}" y1="{y0 + hist_h}" x2="{left + hist_w}" y2="{y0 + hist_h}" '
+            'stroke="currentColor" stroke-width="0.5"/>'
+            f'<text x="{left}" y="{y0 + hist_h + 12}" fill="currentColor">'
+            f"{len(means):,} of {len(sites):,} neurons measured</text>"
+        )
+        # The strongest neurons, each with its interval on a shared track.
+        strongest = sorted(
+            (site for site in sites if mean(site) is not None),
+            key=lambda site: (-abs(mean(site) or 0.0), site["index"]),
+        )[:NEURONS_LISTED]
+
+        def at(x: float) -> float:
+            return track_x + (max(-bound, min(bound, x)) + bound) / (2 * bound) * track_w
+
+        parts.append(
+            f'<line x1="{at(0):.1f}" y1="{y0}" x2="{at(0):.1f}" '
+            f'y2="{y0 + NEURONS_LISTED * 13}" stroke="currentColor" stroke-width="0.5"/>'
+        )
+        for i, site in enumerate(strongest):
+            y = y0 + i * 13 + 9
+            m = mean(site) or 0.0
+            lo, hi = site[value]["lo"], site[value]["hi"]
+            label = f"N{site.get('neuron')}" if site.get("neuron") is not None else site["label"]
+            parts.append(
+                f'<text x="{list_x}" y="{y}" fill="currentColor">{esc(label)}</text>'
+                f'<text x="{track_x - 6}" y="{y}" text-anchor="end" fill="currentColor">'
+                f"{_fmt(m, 2)}</text>"
+            )
+            if lo is not None and hi is not None and math.isfinite(lo) and math.isfinite(hi):
+                parts.append(
+                    f'<line x1="{at(lo):.1f}" y1="{y - 3}" x2="{at(hi):.1f}" y2="{y - 3}" '
+                    'stroke="currentColor" stroke-width="1.5"/>'
+                )
+            parts.append(
+                f'<circle cx="{at(m):.1f}" cy="{y - 3}" r="3" fill="{effect_color(m, bound)}" '
+                f'stroke="currentColor" stroke-width="0.75"><title>{esc(site["label"])}: '
+                f"{_fmt(m)} [{_fmt(lo)} to {_fmt(hi)}]</title></circle>"
+            )
+    parts.append(_legend(left, top + row_h * len(rows) + 4, bound, what))
+    parts.append("</svg>")
     return "".join(parts)
 
 
@@ -606,11 +729,21 @@ def run_report(
 
     layout = summary.get("layout") or {}
     has_map = layout.get("kind") not in (None, "sites", "site_sets")
+    caption = (
+        "For each layer, the distribution of every neuron's mean normalized effect over prompts, "
+        f"and its strongest neurons with their {ci_level}% intervals."
+        if layout.get("kind") == "neurons"
+        else f"Each cell is a site's mean normalized effect over prompts; hover for its "
+        f"{ci_level}% interval.{_readers(layout)}"
+    )
+    title = (
+        "Every neuron, layer by layer"
+        if layout.get("kind") == "neurons"
+        else f"{layout.get('row_title', '')} × {layout.get('col_title') or 'site'}"
+    )
     map_html = (
-        f"<section><h2>{esc(layout.get('row_title', ''))} × {esc(layout.get('col_title') or 'site')}"
-        f"</h2><figure>{heatmap_svg(summary)}<figcaption>Each cell is a site's mean normalized "
-        f"effect over prompts; hover for its {ci_level}% interval. "
-        f"{esc(metric.get('normalized_effect', ''))}</figcaption></figure></section>"
+        f"<section><h2>{esc(title)}</h2><figure>{heatmap_svg(summary)}<figcaption>"
+        f"{esc(caption)} {esc(metric.get('normalized_effect', ''))}</figcaption></figure></section>"
         if has_map
         else ""
     )
@@ -710,6 +843,22 @@ def run_report(
     )
 
 
+def _readers(layout: dict[str, Any]) -> str:
+    """For a map of keys or values with grouped-query attention: which query heads read each
+    key/value head."""
+    cols = layout.get("cols") or []
+    if layout.get("kind") != "head_inputs" or not any(
+        len(c.get("query_heads") or []) > 1 for c in cols
+    ):
+        return ""
+    groups = "; ".join(f"{c['label']}: {', '.join(str(h) for h in c['query_heads'])}" for c in cols)
+    what = "key" if layout.get("site") == "k" else "value"
+    return (
+        f" Each column is a key/value head, whose {what} every query head of its group reads "
+        f"(query heads by key/value head: {groups})."
+    )
+
+
 def sites_table(summary: dict[str, Any]) -> list[dict[str, Any]]:
     """One row per site: its mean, intervals, q-value and counts, as the report lists them."""
     rows = []
@@ -723,6 +872,7 @@ def sites_table(summary: dict[str, Any]) -> list[dict[str, Any]]:
                 "layer": s["layer"],
                 "head": s.get("head"),
                 "feature": s.get("feature"),
+                "neuron": s.get("neuron"),
                 "position": s["position_key"],
                 "variant": s.get("variant_key"),
                 "n": s["n"],

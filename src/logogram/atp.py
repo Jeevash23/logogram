@@ -41,7 +41,7 @@ from logogram.engine import (
 )
 from logogram.metrics import Scorer, extend_tokens
 from logogram.prompts import PreparedPrompt, group_by_length
-from logogram.sites import ResolvedSite, expand_scope, resolve_position
+from logogram.sites import ResolvedSite, expand_scope, resolve_position, site_unit
 from logogram.spec import AllPositions, AttributionPatching, Spec
 
 RESIDUAL = ("resid_pre", "resid_mid", "resid_post")
@@ -91,8 +91,9 @@ def pass_products(
     steps: int | None,
 ) -> tuple[dict[tuple[str, int], torch.Tensor], dict[tuple[str, int], torch.Tensor] | None]:
     """(source - receiver activation) · gradient at every position of ``sites``: at the prompt's
-    positions ``[B, L]`` (``[B, L, heads]`` for heads), and summed over the positions of tokens
-    appended to read continuations (None when nothing was appended).
+    positions ``[B, L]`` (``[B, L, heads]`` for heads' outputs, queries, keys and values, and
+    ``[B, L, d_mlp]`` for neurons, each of which is one number), and summed over the positions
+    of tokens appended to read continuations (None when nothing was appended).
 
     Each forward pass the metric needs (one per continuation) contributes its own products: the
     source prompt runs with the same continuation appended, so the appended positions are compared
@@ -115,9 +116,11 @@ def pass_products(
             receiver_acts = backend.capture(receiver_ext, sites)
             grads = _integrated(backend, receiver_ext, source_ext, sites, score, keep, steps)
         for key in sites:
-            product = (
-                (float64(source_acts[key]) - float64(receiver_acts[key])) * float64(grads[key])
-            ).sum(-1)  # [B, pos] or [B, pos, heads]
+            product = (float64(source_acts[key]) - float64(receiver_acts[key])) * float64(
+                grads[key]
+            )
+            if key[0] != "neuron":  # a neuron is one number: nothing to sum over
+                product = product.sum(-1)  # [B, pos], or [B, pos, heads]
             here = product[:, :length]
             prompt[key] = here if key not in prompt else prompt[key] + here
             if product.shape[1] > length:
@@ -234,14 +237,13 @@ def run_attribution_patching(
             for rs in sites:
                 key = (rs.kind, rs.layer)
                 per_position = products[key]
-                if rs.kind == "head":
-                    per_position = per_position[:, :, rs.head]
+                unit = site_unit(rs.site)
+                if unit is not None:  # one head (key/value head) or neuron of the activation
+                    per_position = per_position[:, :, unit]
                 if isinstance(rs.site.position, AllPositions):
                     values = per_position.sum(1)
                     if tail is not None:  # every position includes the appended ones
-                        values = values + (
-                            tail[key][:, rs.head] if rs.kind == "head" else tail[key]
-                        )
+                        values = values + (tail[key][:, unit] if unit is not None else tail[key])
                 else:
                     positions = torch.tensor(
                         [resolve_position(rs.site.position, prompts[p]) for p in idx]

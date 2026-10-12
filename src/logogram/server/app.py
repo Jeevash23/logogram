@@ -70,6 +70,7 @@ from logogram.spec import (
     ModelRef,
     Position,
     PredictionSettings,
+    Scope,
     Spec,
 )
 from logogram.sweeps import SweepNotFound
@@ -358,6 +359,11 @@ class RunMemoryRequest(BaseModel):
         "path_patching",
         "steering",
     ]
+    # The spec's scope, the prompts it runs and its bootstrap resamples: what its sites hold
+    # (thousands of neurons hold more than a batch). Left out, only a batch is counted.
+    scope: Scope | None = None
+    prompts: int | None = Field(default=None, ge=1, le=10_000_000)
+    bootstrap: int | None = Field(default=None, ge=1, le=100_000)
 
 
 class BaselineRequest(AnalysisRequest):
@@ -1090,12 +1096,26 @@ def create_app(
     @app.post("/api/models/run-memory", response_model=M.RunMemoryOut)
     def run_memory(body: RunMemoryRequest) -> dict[str, Any]:
         """What a run of this batch size needs on the loaded model, against the memory free."""
-        from logogram.system import ALL_LAYER_METHODS, estimate_run_memory
+        from logogram.system import ALL_LAYER_METHODS, estimate_run_memory, scope_footprint
 
         backend = state.backend
         if backend is None:
             raise Conflict("Load a model to estimate what a run on it needs.")
         info = backend.info
+        footprint = (
+            scope_footprint(
+                body.scope,
+                n_layers=info.n_layers,
+                n_heads=info.n_heads,
+                n_kv_heads=int(info.extra.get("n_key_value_heads") or info.n_heads),
+                d_model=info.d_model,
+                d_head=info.d_head,
+                d_mlp=info.d_mlp or 0,
+                seq_len=body.seq_len,
+            )
+            if body.scope is not None
+            else None
+        )
         return estimate_run_memory(
             n_layers=info.n_layers,
             n_heads=info.n_heads,
@@ -1107,6 +1127,10 @@ def create_app(
             batch_size=body.batch_size,
             seq_len=body.seq_len,
             all_layers=body.method in ALL_LAYER_METHODS,
+            footprint=footprint,
+            method=body.method,
+            prompts=body.prompts or 0,
+            bootstrap=body.bootstrap or 0,
         ).to_dict()
 
     @app.post("/api/models/load", response_model=M.JobInfo)

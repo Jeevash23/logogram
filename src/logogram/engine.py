@@ -21,10 +21,10 @@ from typing import Any, cast
 import numpy as np
 import torch
 
-from logogram.backends.base import Cancelled, ModelBackend, Patch, Patches
+from logogram.backends.base import UNIT_KINDS, Cancelled, ModelBackend, Patch, Patches
 from logogram.metrics import Scorer
 from logogram.prompts import LengthGroup, PreparedPrompt, group_by_length
-from logogram.sites import ResolvedSite, expand_scope, resolve_position
+from logogram.sites import ResolvedSite, expand_scope, resolve_position, site_unit
 from logogram.spec import (
     METRIC_LABELS,
     Ablation,
@@ -181,13 +181,19 @@ def continued_forward(
         else:
             key = (patch.kind, patch.layer)
             full = backend.capture(torch.cat([source, tail.to(source.device)], dim=1), [key])[key]
-            if patch.kind == "head":
-                assert patch.heads is not None
+            units = patch.units()
+            if units is not None:  # a head's (or key/value head's) vectors, or a neuron's values
                 rows = torch.arange(full.shape[0], device=full.device)
-                full = full[rows, :, patch.heads.to(full.device)]
+                full = full[rows, :, units.to(full.device)]
             extra = full[:, length:].to(dtype=patch.values.dtype, device=patch.values.device)
         values = torch.cat([patch.values, extra], dim=1)
-        whole = Patch(kind=patch.kind, layer=patch.layer, values=values, heads=patch.heads)
+        whole = Patch(
+            kind=patch.kind,
+            layer=patch.layer,
+            values=values,
+            heads=patch.heads,
+            neurons=patch.neurons,
+        )
         return backend.logits(tokens, whole, keep)
 
     return forward
@@ -434,12 +440,13 @@ class _LayerSources:
         self._means: dict[tuple[str, int], torch.Tensor] = {}
 
     def group_rows(
-        self, kind: str, group_index: int, local: list[int], heads: torch.Tensor | None
+        self, kind: str, group_index: int, local: list[int], units: torch.Tensor | None
     ) -> torch.Tensor:
-        """``[B, L, ...]``: these prompts' activations at every position (of these heads)."""
+        """``[B, L, ...]``: these prompts' activations at every position (of these heads, or
+        neurons: ``[B, L]``)."""
         acts = self.by_group[kind][group_index]
         idx = torch.tensor(local, dtype=torch.long, device=acts.device)
-        rows = acts[idx, :, heads.to(acts.device)] if heads is not None else acts[idx]
+        rows = acts[idx, :, units.to(acts.device)] if units is not None else acts[idx]
         return rows.to(self.device)
 
     def group_mean(self, kind: str, group_index: int) -> torch.Tensor:
@@ -708,23 +715,37 @@ def _build_patch(
     device: torch.device,
 ) -> Patch:
     B = len(rows)
-    is_head = kind == "head"
-    heads = torch.tensor([r.site.head for r in rows], dtype=torch.long) if is_head else None
+    # A head's output, query, key or value is one head's vector of its layer's activation; a
+    # neuron is one number of the MLP's hidden activation. Other sites are whole vectors.
+    is_unit = kind in UNIT_KINDS
+    units = (
+        torch.tensor([site_unit(r.site.site) for r in rows], dtype=torch.long) if is_unit else None
+    )
+    heads, neurons = (None, units) if kind == "neuron" else (units, None)
     positions = None
     if not all_pos:
         positions = torch.tensor(
             [resolve_position(r.site.site.position, prompts[r.prompt]) for r in rows],
             dtype=torch.long,
         )
-    d = d_head if is_head else d_model
+    width: tuple[int, ...] = () if kind == "neuron" else (d_head,) if is_unit else (d_model,)
+
+    def patch(values: torch.Tensor) -> Patch:
+        return Patch(
+            kind=kind,
+            layer=layer,
+            values=values,
+            heads=heads,
+            positions=positions,
+            neurons=neurons,
+        )
 
     if baseline_kind == "zero":
-        shape = (B, length, d) if all_pos else (B, d)
-        values = torch.zeros(shape, dtype=dtype, device=device)
-        return Patch(kind=kind, layer=layer, values=values, heads=heads, positions=positions)
+        shape = (B, length, *width) if all_pos else (B, *width)
+        return patch(torch.zeros(shape, dtype=dtype, device=device))
 
     assert sources is not None
-    dev_heads = heads.to(device) if heads is not None else None
+    dev_units = units.to(device) if units is not None else None
 
     if baseline_kind in ("patch", "resample"):
         if baseline_kind == "patch":
@@ -735,7 +756,7 @@ def _build_patch(
             # Patch pairs share a length; resample donors are drawn from the same length group.
             assert all(group_of[p] == group_index for p in src_prompts)
             values = sources.group_rows(
-                kind, group_index, [local_of[p] for p in src_prompts], dev_heads
+                kind, group_index, [local_of[p] for p in src_prompts], dev_units
             )
         else:
             table = sources.table(kind, rows[0].site)
@@ -743,20 +764,20 @@ def _build_patch(
                 # Rows with different positions (layer x position sweeps) gather from their own table.
                 values = torch.stack(
                     [
-                        _table_row(sources.table(kind, r.site), p, r.site.head if is_head else None)
+                        _table_row(sources.table(kind, r.site), p, site_unit(r.site.site))
                         for r, p in zip(rows, src_prompts, strict=True)
                     ]
                 )
             else:
                 idx = torch.tensor(src_prompts, dtype=torch.long, device=device)
-                values = table[idx, dev_heads] if is_head else table[idx]
-        return Patch(kind=kind, layer=layer, values=values, heads=heads, positions=positions)
+                values = table[idx, dev_units] if is_unit else table[idx]
+        return patch(values)
 
     # Mean ablation.
     if all_pos:
         mean = sources.group_mean(kind, group_index)  # [L, ...]
-        if is_head:
-            values = mean[:, dev_heads].permute(1, 0, 2)  # [B, L, d_head]
+        if is_unit:
+            values = mean[:, dev_units].movedim(1, 0)  # [B, L, d_head], or [B, L] for neurons
         else:
             values = mean.unsqueeze(0).expand(B, *mean.shape)
     else:
@@ -767,11 +788,11 @@ def _build_patch(
             if key not in means:
                 means[key] = sources.table(kind, r.site).float().mean(dim=0)
             m = means[key]
-            out.append(m[r.site.head] if is_head else m)
+            out.append(m[site_unit(r.site.site)] if is_unit else m)
         values = torch.stack(out)
-    return Patch(kind=kind, layer=layer, values=values, heads=heads, positions=positions)
+    return patch(values)
 
 
-def _table_row(table: torch.Tensor, prompt: int, head: int | None) -> torch.Tensor:
+def _table_row(table: torch.Tensor, prompt: int, unit: int | None) -> torch.Tensor:
     row = table[prompt]
-    return row[head] if head is not None else row
+    return row[unit] if unit is not None else row
