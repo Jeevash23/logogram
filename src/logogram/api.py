@@ -152,11 +152,9 @@ def _chat_template(value: Any) -> Any:
     """A spec's tokenization.chat_template from a dict (as a spec writes it), or None."""
     if value is None or not isinstance(value, dict):
         return value
-    from pydantic import TypeAdapter
+    from logogram.spec import read_chat_template
 
-    from logogram.spec import ChatTemplate
-
-    return TypeAdapter(ChatTemplate).validate_python(value)
+    return read_chat_template(value)
 
 
 def load_sae(repo: str, path: str = "", *, model: Any, revision: str | None = None) -> Any:

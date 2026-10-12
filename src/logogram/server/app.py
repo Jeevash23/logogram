@@ -71,6 +71,7 @@ from logogram.spec import (
     Position,
     PredictionSettings,
     Spec,
+    read_chat_template,
 )
 from logogram.sweeps import SweepNotFound
 from logogram.system import SystemReport
@@ -825,9 +826,7 @@ def create_app(
         project = state.require_project()
         template = None
         if chat_template:
-            from pydantic import TypeAdapter
-
-            template = TypeAdapter(ChatTemplate).validate_json(chat_template)
+            template = read_chat_template(chat_template)
             prepend_bos = False
         file = project.resolve_dataset(path) if path else _dataset_path(project, name)
         records = load_dataset(file)

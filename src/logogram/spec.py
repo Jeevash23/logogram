@@ -23,7 +23,7 @@ import re
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, RootModel, model_validator
 from pydantic.functional_validators import ModelWrapValidatorHandler
 
 from logogram.fileio import JSON_LIMIT, read_limited
@@ -660,6 +660,18 @@ class AssistantPrefix(_Strict):
 
 
 ChatTemplate = Annotated[UserTurn | AssistantPrefix, Field(discriminator="kind")]
+
+
+class _ChatTemplateValue(RootModel[ChatTemplate]):
+    pass
+
+
+def read_chat_template(value: Any) -> UserTurn | AssistantPrefix:
+    """A chat template on its own (an analysis request's, a stored form's), checked as a spec's
+    tokenization.chat_template is: from a dict, or from its JSON."""
+    if isinstance(value, str | bytes):
+        return _ChatTemplateValue.model_validate_json(value).root
+    return _ChatTemplateValue.model_validate(value).root
 
 
 class Tokenization(_Strict):

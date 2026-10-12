@@ -54,12 +54,10 @@ class HeadKindSettings:
 def _wrapper(backend: ModelBackend, settings: HeadKindSettings) -> ChatWrapper | None:
     if settings.chat_template is None:
         return None
-    from pydantic import TypeAdapter
-
     from logogram.chat import chat_wrapper
-    from logogram.spec import ChatTemplate
+    from logogram.spec import read_chat_template
 
-    return chat_wrapper(backend, TypeAdapter(ChatTemplate).validate_python(settings.chat_template))
+    return chat_wrapper(backend, read_chat_template(settings.chat_template))
 
 
 def _around(backend: ModelBackend, settings: HeadKindSettings) -> tuple[list[int], list[int]]:
