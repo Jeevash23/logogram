@@ -17,6 +17,35 @@ class RobustnessError(ValueError):
     pass
 
 
+# How a run that hasn't finished stands, in words.
+_UNFINISHED = {
+    "running": "is still running",
+    "draft": "hasn't run",
+    "failed": "failed",
+    "cancelled": "was cancelled",
+}
+
+
+def require_finished(project: Any, run_id: str, action: str) -> None:
+    """Refuse ``action`` ("Checking robustness", "Verifying by patching") on a run that hasn't
+    finished. One that stopped early kept only part of its sweep (see logogram.partial), so what
+    would be checked isn't all there."""
+    from logogram.schema import stopped_text
+
+    listing = project.run_listing(run_id)
+    if listing is None:
+        raise RobustnessError(f"There is no run {run_id} in this project.")
+    if listing.status == "finished":
+        return
+    if listing.partial is not None:
+        raise RobustnessError(
+            f"{action} needs a finished run, and this one {stopped_text(listing.partial)}. Rerun "
+            "it to the end first."
+        )
+    state = _UNFINISHED.get(listing.status, listing.status)
+    raise RobustnessError(f"{action} needs a finished run, and this one {state}.")
+
+
 def robustness_spec(
     original: Spec, *, experiment: dict[str, Any] | None = None, dtype: str | None = None
 ) -> tuple[Spec, str]:

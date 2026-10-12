@@ -1229,9 +1229,14 @@ def create_app(
         return _read_run(state.require_project(), run_id)
 
     def _finished(project: Project, run_id: str) -> None:
+        """A run with results: finished, or stopped early with what finished kept (the files say
+        it is partial)."""
         listing = project.run_listing(run_id)
-        if listing is None or listing.status != "finished":
-            raise Conflict("Only finished runs can be exported. Select a finished run first.")
+        if listing is None or (listing.status != "finished" and listing.partial is None):
+            raise Conflict(
+                "Only a run with results can be exported: a finished run, or one that stopped "
+                "early and kept what finished. Select one first."
+            )
 
     @app.get("/api/runs/{run_id}/export.csv")
     def export_run(run_id: str, text: bool = False) -> StreamingResponse:
@@ -1349,10 +1354,11 @@ def create_app(
 
     @app.post("/api/runs/{run_id}/robustness", response_model=M.StartedRun)
     def robustness(run_id: str, body: RobustnessRequest) -> dict[str, Any]:
-        from logogram.robustness import robustness_spec
+        from logogram.robustness import require_finished, robustness_spec
 
         project = state.require_project()
         original = Spec.from_path(project.readable(project.run_dir(run_id) / "spec.json"))
+        require_finished(project, run_id, "Checking robustness")
         variant, change = robustness_spec(original, experiment=body.experiment, dtype=body.dtype)
         job = state.run_spec_job(
             variant, derived_from={"run": run_id, "kind": "robustness", "change": change}
@@ -1362,10 +1368,12 @@ def create_app(
     @app.post("/api/runs/{run_id}/verify", response_model=M.StartedRun)
     def verify(run_id: str, body: VerifyRequest) -> dict[str, Any]:
         """Patch, for real, the sites an attribution patching run estimated to matter most."""
+        from logogram.robustness import require_finished
         from logogram.verify import verification_spec
 
         project = state.require_project()
         run = _read_run(project, run_id)
+        require_finished(project, run_id, "Verifying by patching")
         if not run["summary"]:
             raise ValueError("Only a finished run can be verified.")
         spec = verification_spec(Spec.model_validate(run["spec"]), run["summary"], body.top)

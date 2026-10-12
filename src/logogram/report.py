@@ -17,6 +17,7 @@ import re
 from typing import Any
 
 from logogram import __version__
+from logogram.schema import stopped_text
 from logogram.spec import (
     Ablation,
     ActivationPatching,
@@ -186,6 +187,14 @@ def methods_text(
         f"Prompts ran in batches of {spec.execution.batch_size}. {_statistics(spec, summary)}",
         _method(spec, summary),
     ]
+    # A run that stopped early: how far it got, and what its numbers cover.
+    partial = (summary or {}).get("partial")
+    if partial:
+        ended = "failed" if partial.get("status") == "failed" else "was cancelled"
+        paragraphs.append(
+            f"The run {ended} before it finished. {partial['note']} Their statistics are computed "
+            "as for a finished run. " + " ".join(partial.get("left_out") or [])
+        )
     # What was expected, as the spec that ran states it, so the result can be read against it.
     if spec.notes.strip():
         paragraphs.append(f"Notes saved with the spec: {spec.notes.strip()}")
@@ -310,6 +319,9 @@ def figure_svg(
     total_w, total_h = max(width, 520), height + head
     body = inner[inner.index(">") + 1 : inner.rindex("</svg>")]
     esc = html.escape
+    # A run that stopped early says so on the figure too: the empty cells weren't measured.
+    partial = summary.get("partial")
+    stopped = f" · {stopped_text(partial)}" if partial else ""
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{total_w}" height="{total_h}" '
         f'viewBox="0 0 {total_w} {total_h}" font-family="system-ui, sans-serif" font-size="10" '
@@ -317,7 +329,7 @@ def figure_svg(
         f'<rect width="{total_w}" height="{total_h}" fill="#ffffff"/>'
         f'<text x="16" y="24" font-size="15" font-weight="600" fill="currentColor">{esc(spec.name)}</text>'
         f'<text x="16" y="42" font-size="11" fill="#5d5d66">{esc(summary.get("description", ""))} · '
-        f"n = {summary.get('n_prompts', '—')}</text>"
+        f"n = {summary.get('n_prompts', '—')}{esc(stopped)}</text>"
         f'<g transform="translate(0 {head})">{body}</g></svg>\n'
     )
 
@@ -442,6 +454,22 @@ def run_report(
         if spec.notes.strip()
         else ""
     )
+    # A run that stopped early: say so before anything else, and what its numbers cover.
+    partial = summary.get("partial")
+    stopped = ""
+    if partial:
+        ended = "failed" if partial.get("status") == "failed" else "was cancelled"
+        reason = manifest.get("error")
+        items = "".join(f"<li>{esc(item)}</li>" for item in partial.get("left_out") or [])
+        stopped = (
+            f"<section class='stopped'><h2>This run {ended} before it finished</h2>"
+            f"<p class='lede'>{esc(partial['note'])} Nothing is drawn for the rest. Their "
+            "statistics are computed as for a finished run."
+            + (f" {esc(reason)}" if reason else "")
+            + "</p>"
+            + (f"<ul>{items}</ul>" if items else "")
+            + "</section>"
+        )
 
     model = manifest.get("model") or {}
     device = manifest.get("device") or {}
@@ -475,6 +503,7 @@ def run_report(
         "<body><main>"
         f"<header><p class='eyebrow'>Logogram report · run {esc(run_id)}</p>"
         f"<h1>{esc(spec.name)}</h1><p class='lede'>{esc(summary.get('description', ''))}</p></header>"
+        f"{stopped}"
         f"{notes}"
         f"<section class='flush'><dl class='figures'>{figure_html}</dl></section>"
         f"{map_html}"
@@ -484,8 +513,13 @@ def run_report(
         f"share of false findings expected among sites this strong.</p></section>"
         f"<section class='methods'><h2>Methods</h2>{methods}</section>"
         + (f"<section><h2>Notes from the run</h2><ul>{warnings}</ul></section>" if warnings else "")
-        + f"<section><h2>Every site</h2><details><summary>All {len(summary['sites'])} sites"
-        f"</summary>{_site_rows(summary['sites'], ci_level)}</details></section>"
+        + "<section><h2>Every site</h2><details><summary>"
+        + (
+            f"The {len(summary['sites'])} sites that finished"
+            if partial
+            else f"All {len(summary['sites'])} sites"
+        )
+        + f"</summary>{_site_rows(summary['sites'], ci_level)}</details></section>"
         f"<section><h2>Where it came from</h2><dl class='provenance'>{provenance_html}</dl>"
         f"<details><summary>The spec</summary><pre>{esc(spec.to_json())}</pre></details></section>"
         f"<footer>Made with Logogram {esc(__version__)}. The per-prompt values behind every "

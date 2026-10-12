@@ -313,15 +313,14 @@ class Project:
             if state == "gone":
                 status, error = "failed", OWNER_STOPPED
             elsewhere = state == "elsewhere"
-        if error or (
-            status == "finished"
-            and (
-                not self.inside(folder / "results.parquet")
-                or not (folder / "results.parquet").is_file()
-            )
-        ):
+        results = self.inside(folder / "results.parquet") and (folder / "results.parquet").is_file()
+        if error or (status == "finished" and not results):
             status = "failed"
             error = error or "Run results are missing or outside the project. Rerun the spec."
+        # A cancelled or failed run that kept what finished (see logogram.partial).
+        partial = (
+            summary_meta.get("partial") if status in ("cancelled", "failed") and results else None
+        )
         return RunListing(
             id=run_id,
             name=spec.name,
@@ -339,8 +338,10 @@ class Project:
             scope=spec.scope.model_dump(),
             derived_from=manifest.get("derived_from"),
             error=error or manifest.get("error"),
-            profile=layer_profile(summary_meta) if status == "finished" else None,
+            # A partial run's glyph is written by the layers that finished.
+            profile=layer_profile(summary_meta) if status == "finished" or partial else None,
             elsewhere=elsewhere and status == "running",
+            partial=partial,
             **annotation_fields(self, folder),
         )
 

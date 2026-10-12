@@ -514,39 +514,74 @@ def run(
 
 
 def _run_spec(
-    project: Any, spec: Any, *, verbose: bool = False, derived: dict[str, Any] | None = None
+    project: Any,
+    spec: Any,
+    *,
+    verbose: bool = False,
+    derived: dict[str, Any] | None = None,
+    run_id: str | None = None,
+    backend: Any = None,
+    exit_on_failure: bool = True,
 ) -> Any:
-    """Run ``spec``, showing its progress. A run that doesn't finish ends the command: it says
-    why, and where the traceback is (printing it with ``verbose``). Ctrl+C records the run as
-    cancelled first."""
+    """Run ``spec`` (in the folder ``run_id``, if given; with ``backend`` when it is the spec's
+    model), showing its progress. A run that doesn't finish ends the command (unless
+    ``exit_on_failure`` is false): it says why, what it kept of what finished, and where the
+    traceback is (printing it with ``verbose``). Ctrl+C records the run as cancelled first,
+    keeping what finished."""
     from logogram.runner import run_spec
 
     printer = _ProgressPrinter()
     try:
-        outcome = run_spec(spec, project, on_event=printer, derived_from=derived)
+        outcome = run_spec(
+            spec, project, run_id=run_id, backend=backend, on_event=printer, derived_from=derived
+        )
     except KeyboardInterrupt:
         printer.close()
-        typer.echo("\nInterrupted. The run is recorded as cancelled; its spec was kept.", err=True)
+        kept = _kept_text(printer.partial, printer.run_id)
+        typer.echo(
+            f"\nInterrupted. The run is recorded as cancelled{'.' if kept else '; its spec was kept.'}"
+            f"{f' {kept}' if kept else ''}",
+            err=True,
+        )
         raise typer.Exit(130) from None
     printer.close()
     if outcome.status != "finished":
         typer.echo(f"The run {outcome.status}: {outcome.manifest.get('error')}", err=True)
+        kept = _kept_text((outcome.summary or {}).get("partial"), outcome.run_id)
+        if kept:
+            typer.echo(kept, err=True)
         if outcome.traceback and verbose:
             typer.echo(f"\n{outcome.traceback.rstrip()}", err=True)
         elif outcome.traceback:
             rel = (outcome.folder / "traceback.txt").relative_to(project.root).as_posix()
             typer.echo(f"Its traceback is in {rel}; --verbose prints it.", err=True)
-        raise typer.Exit(1)
+        if exit_on_failure:
+            raise typer.Exit(1)
     return outcome
+
+
+def _kept_text(partial: dict[str, Any] | None, run_id: str | None) -> str:
+    """What a run that stopped early kept, and how to see it; "" when it kept nothing."""
+    if not partial:
+        return ""
+    show = f" `logogram show {run_id}` prints them." if run_id else ""
+    return f"{partial['note']}{show}"
 
 
 class _ProgressPrinter:
     def __init__(self) -> None:
         self.last = 0.0
         self.active = False
+        # The run in progress, and what it kept if it stopped early.
+        self.run_id: str | None = None
+        self.partial: dict[str, Any] | None = None
 
     def __call__(self, kind: str, data: dict) -> None:  # type: ignore[type-arg]
         now = time.monotonic()
+        if kind == "started":
+            self.run_id = data.get("run_id")
+        if kind in ("cancelled", "failed"):
+            self.partial = data.get("partial")
         if kind == "model":
             stage = data.get("stage")
             if stage == "downloading" and data.get("total"):
@@ -602,6 +637,12 @@ def _print_summary(summary: dict, top: int) -> None:  # type: ignore[type-arg]
     base = summary["baseline"]
     clean = base["clean"]["logit_diff"]["mean"]
     corrupt = base["corrupt"]["logit_diff"]["mean"]
+    partial = summary.get("partial")
+    if partial:
+        # A run that stopped early: what it kept, and what it doesn't.
+        typer.echo(f"\nPartial: {partial['note']}")
+        for item in partial.get("left_out") or []:
+            typer.echo(f"  {item}")
     typer.echo("")
     typer.echo(
         f"Baseline over {summary['n_prompts']} prompts: logit difference clean {_fmt(clean)}, "
@@ -779,12 +820,16 @@ def list_cmd(
     if not runs:
         typer.echo("No runs yet. Run a spec with `logogram run SPEC.json`.")
         return
+    from logogram.schema import stopped_text
+
     shown = runs if archived else [r for r in runs if not r.archived]
     width = max(len(r.id) for r in runs)
     for r in shown:
         name = f"{'★ ' if r.starred else ''}{r.title or r.name}"
         typer.echo(f"{r.id:<{width}}  {r.status:<9}  {name}{' (archived)' if r.archived else ''}")
         where = " · running in another process" if r.elsewhere else ""
+        if r.partial is not None:
+            where += f" · partial: {stopped_text(r.partial)}, kept what finished"
         typer.echo(f"{'':<{width}}  {'':<9}  {r.error if r.damaged else r.description}{where}")
         if r.annotations_error:
             typer.echo(f"{'':<{width}}  {'':<9}  Note: {r.annotations_error}")
@@ -915,12 +960,12 @@ def show(
     top: Annotated[int, typer.Option(help="How many sites to list.")] = 10,
 ) -> None:
     """Print a finished run's method, baseline and strongest sites, or why a run failed, with
-    the traceback it kept."""
+    the traceback it kept. A run that stopped early also prints what it kept of what finished."""
     project = _open_project(project_dir, Path(run) if Path(run).exists() else None)
     run_id = _run_id(project, run)
     summary = project.read_json(project.run_dir(run_id) / "summary.json", optional=True)
+    listing = project.run_listing(run_id)
     if summary is None:
-        listing = project.run_listing(run_id)
         if listing is not None and listing.status in ("failed", "cancelled"):
             _print_failure(project, listing)
             raise typer.Exit(1)
@@ -929,6 +974,14 @@ def show(
             status = "running in another process"
         raise _fail(f"{run_id} has no results ({status}).")
     typer.echo(f"{summary['name']}\n  {summary['description']}")
+    if listing is not None and listing.partial is not None:
+        # How it ended; the traceback stays in its file (`logogram show` of a run that kept
+        # nothing prints it).
+        failed = listing.status == "failed"
+        reason = listing.error or ("No reason was recorded." if failed else "")
+        typer.echo(f"\n{'Failed' if failed else 'Cancelled'}{f': {reason}' if reason else '.'}")
+        if (project.run_dir(run_id) / "traceback.txt").is_file():
+            typer.echo(f"Its traceback is in experiments/{run_id}/traceback.txt.")
     _print_summary(summary, top)
 
 
@@ -953,7 +1006,8 @@ def compare(
     project_dir: Annotated[Path | None, ProjectOption] = None,
 ) -> None:
     """Compare two finished runs: rank correlation, top sites, conclusions that changed, and
-    paired differences where they measured the same prompts."""
+    paired differences where they measured the same prompts. A run that stopped early is
+    compared on what it kept."""
     from logogram.compare import CompareError, compare_runs
 
     project = _open_project(project_dir, Path(run_a) if Path(run_a).exists() else None)
@@ -966,6 +1020,12 @@ def compare(
 
 
 def _print_comparison(result: dict[str, Any]) -> None:
+    from logogram.schema import stopped_text
+
+    for side, run in (("a", result["run_a"]), ("b", result["run_b"])):
+        partial = result.get(f"partial_{side}")
+        if partial:
+            typer.echo(f"{run} {stopped_text(partial)}: the comparison covers what both runs kept.")
     rho = result["spearman"]
     typer.echo(
         f"{result['n_common']} sites in common. Rank correlation of mean effects: "
@@ -1043,12 +1103,17 @@ def verify(
     """Patch, for real, the sites an attribution patching run estimated to matter most, and
     compare the measurement with the estimate."""
     from logogram.compare import compare_runs
+    from logogram.robustness import require_finished
     from logogram.spec import Spec
     from logogram.verify import verification_spec
 
     project = _open_project(project_dir, Path(run) if Path(run).exists() else None)
     run_id = _run_id(project, run)
     folder = project.run_dir(run_id)
+    try:
+        require_finished(project, run_id, "Verifying by patching")
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
     summary = project.read_json(folder / "summary.json", optional=True)
     if summary is None:
         raise _fail("only a finished run can be verified.")
@@ -1084,12 +1149,13 @@ def robustness(
     import json
 
     from logogram.compare import compare_runs
-    from logogram.robustness import robustness_spec
+    from logogram.robustness import require_finished, robustness_spec
     from logogram.spec import Spec
 
     project = _open_project(project_dir, Path(run) if Path(run).exists() else None)
     run_id = _run_id(project, run)
     try:
+        require_finished(project, run_id, "Checking robustness")
         change = json.loads(experiment) if experiment is not None else None
         spec, words = robustness_spec(
             Spec.from_path(project.run_dir(run_id) / "spec.json"), experiment=change, dtype=dtype

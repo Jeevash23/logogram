@@ -42,10 +42,10 @@ def site_detail(
 ) -> dict[str, Any]:
     folder = project.run_dir(run_id)
     summary = load_summary(project, run_id)
-    sites = summary["sites"]
-    if not 0 <= site_index < len(sites):
+    # A run that stopped early reports the sites that finished, each by its index in the sweep.
+    site = next((s for s in summary["sites"] if s.get("index") == site_index), None)
+    if site is None:
         raise RunNotReady(f"Site {site_index} isn't part of this run.")
-    site = sites[site_index]
     spec = Spec.from_path(project.readable(folder / "spec.json"))
     rows = read_site_rows(project.readable(folder / "results.parquet"), site_index)
 

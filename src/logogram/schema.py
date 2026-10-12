@@ -249,6 +249,37 @@ class AttributionInfo(_Model):
     steps: int | None = None
 
 
+class PartialRun(_Model):
+    """What a run that stopped before the end (cancelled, or failed mid-sweep) kept.
+
+    A sweep that goes layer by layer (or site by site, or set by set) keeps the sites at which
+    every prompt ran: ``unit`` is layers, sites or sets. A method that measures every site in one
+    pass per batch of prompts keeps every site, over the prompts that finished: ``unit`` is
+    prompts. Statistics come from the kept rows exactly as for a finished run (see
+    logogram.partial)."""
+
+    status: Literal["cancelled", "failed"]
+    unit: Literal["layers", "sites", "sets", "prompts"]
+    done: int = Field(ge=1)
+    total: int = Field(ge=1)
+    # The sites the summary reports and the sites the sweep has; the prompts measured at each.
+    sites: int = Field(ge=1)
+    sites_total: int = Field(ge=1)
+    prompts: int = Field(ge=1)
+    prompts_total: int = Field(ge=1)
+    # "Stopped after 7 of 12 layers: these are the layers that finished."
+    note: str
+    # What the run doesn't keep, or keeps over the finished part only, in sentences.
+    left_out: list[str] = []
+
+
+def stopped_text(partial: PartialRun | dict[str, Any]) -> str:
+    """How far a run that stopped early got, in words: "stopped after 7 of 12 layers"."""
+    data = partial.model_dump() if isinstance(partial, PartialRun) else partial
+    total, unit = int(data["total"]), str(data["unit"])
+    return f"stopped after {int(data['done']):,} of {total:,} {unit if total != 1 else unit[:-1]}"
+
+
 class Summary(_Model):
     logogram_summary: Literal[1] = 1
     run_id: str
@@ -274,6 +305,8 @@ class Summary(_Model):
     features: FeatureRun | None = None
     circuit: CircuitInfo | None = None
     attribution: AttributionInfo | None = None
+    # A run that stopped before the end: what it kept. None for a finished run.
+    partial: PartialRun | None = None
 
 
 # -- manifest.json -----------------------------------------------------------------------------
@@ -401,6 +434,8 @@ class RunProgress(_Model):
 class RunEnded(_Model):
     run_id: str
     error: str | None = None
+    # A cancelled or failed run that kept what finished.
+    partial: PartialRun | None = None
 
 
 class QueuedRunInfo(_Model):
@@ -497,6 +532,8 @@ class RunListing(_Model):
     annotations_error: str | None = None
     # The run's spec can't be read: error says what is wrong and how to fix it. It can be deleted.
     damaged: bool = False
+    # A cancelled or failed run that kept what finished (its summary's partial).
+    partial: PartialRun | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json")

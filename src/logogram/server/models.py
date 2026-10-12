@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from logogram.schema import QueuedRunInfo, RunListing, SiteSummary
+from logogram.schema import PartialRun, QueuedRunInfo, RunListing, SiteSummary
 from logogram.spec import ModelRef, PredictionSettings
 
 
@@ -632,6 +632,9 @@ class Comparison(_Out):
     n_differs: int = 0
     # Versions or devices that differ: these alone can change results in the last digits.
     environment_differences: list[EnvironmentDifference] = []
+    # A run that stopped early: what it kept (only the sites both runs have are compared).
+    partial_a: PartialRun | None = None
+    partial_b: PartialRun | None = None
 
 
 class EnvironmentOut(_Out):

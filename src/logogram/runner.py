@@ -33,6 +33,7 @@ from logogram.datasets import decode_dataset, parse_jsonl, read_dataset_bytes
 from logogram.engine import Cancelled, run_experiment
 from logogram.fileio import atomic_output, write_text_atomic
 from logogram.owner import claim_run, release_run
+from logogram.partial import Progress, keep_finished
 from logogram.project import TRACEBACK_FILE, Project, now_iso
 from logogram.prompts import prepare_prompts
 from logogram.results import (
@@ -330,8 +331,22 @@ def run_spec(
     write_json(folder / "spec.json", spec.model_dump(mode="json"))
     with contextlib.suppress(OSError):  # an earlier attempt's, in a reused folder
         (folder / TRACEBACK_FILE).unlink(missing_ok=True)
+    # What the sweep finishes, so a run that stops early keeps it (see logogram.partial).
+    progress = Progress()
 
-    def fail(status: str, message: str | None, detail: str | None = None) -> RunOutcome:
+    def keep(status: str, again: list[BaseException]) -> dict[str, Any] | None:
+        """Keep what finished; None when nothing did, or it can't be kept."""
+        try:
+            return keep_finished(progress, folder, run_id, status)
+        except Exception:  # the run's own error is what it reports
+            log.info("The run %s couldn't keep what finished.", run_id, exc_info=True)
+        except BaseException as exc:  # noqa: BLE001 - Ctrl+C again: stop once the run is recorded
+            again.append(exc)
+        return None
+
+    def fail(
+        status: str, message: str | None, detail: str | None = None, *, reraise: bool = True
+    ) -> RunOutcome:
         manifest.update(
             {
                 "status": status,
@@ -340,14 +355,24 @@ def run_spec(
                 "wall_time_s": round(time.perf_counter() - t0, 3),
             }
         )
-        for name in ("results.parquet", "summary.json", "predictions.json"):
+        again: list[BaseException] = []
+        kept = keep(status, again)
+        # A run that kept what finished keeps the predictions it measured before the sweep too.
+        for name in ("results.parquet", "summary.json", "predictions.json") if kept is None else ():
             (folder / name).unlink(missing_ok=True)
         if detail is not None:
             # Before the manifest says the run failed, so whoever reads that finds why.
             with contextlib.suppress(OSError):
                 write_text_atomic(project.writable(folder / TRACEBACK_FILE), detail)
         write_manifest(folder / "manifest.json", manifest)
-        return RunOutcome(run_id, folder, status, None, manifest, backend, detail)
+        if again and reraise:
+            raise again[0]
+        return RunOutcome(run_id, folder, status, kept, manifest, backend, detail)
+
+    def ended(outcome: RunOutcome) -> dict[str, Any]:
+        """What the cancelled or failed event says: the run, and what it kept, if anything."""
+        partial = (outcome.summary or {}).get("partial")
+        return {"run_id": run_id, **({"partial": partial} if partial else {})}
 
     # Recorded before the manifest says "running", and removed once it says how the run ended:
     # whoever reads a running manifest can tell whether this process is still going.
@@ -509,7 +534,18 @@ def run_spec(
                 raise Cancelled()
             write_json(folder / "predictions.json", predictions)
 
+        notes = (
+            [
+                "This spec is version 1, which left some choices out; they took version 1's "
+                f"values: {'; '.join(upgraded)}. The saved spec states every value."
+            ]
+            if upgraded
+            else []
+        )
+        progress.prepare(spec, model_shape, counts_for, notes, len(prompts))
+
         def on_start(sites: list[Any], layout: dict[str, Any]) -> None:
+            progress.started(sites, layout)
             emit(
                 "started",
                 {
@@ -522,6 +558,7 @@ def run_spec(
             )
 
         def on_layer(layer: int, indices: list[int], partial: Any) -> None:
+            progress.finished_sites(indices, partial)
             # A finished site's statistics depend only on its own rows, so they are final.
             stats = compute_stats(spec, partial, counts_for(partial), indices)
             emit(
@@ -549,15 +586,12 @@ def run_spec(
             on_progress=on_progress,
             on_layer=on_layer,
             on_start=on_start,
+            on_prompts=progress.finished_prompts,
             cancel=cancel,
             sae=sae,
         )
-        if upgraded:
-            result.warnings.insert(
-                0,
-                "This spec is version 1, which left some choices out; they took version 1's "
-                f"values: {'; '.join(upgraded)}. The saved spec states every value.",
-            )
+        progress.complete = True
+        result.warnings[:0] = notes
         stats = compute_stats(spec, result, counts_for(result))
         summary = build_summary(spec, result, stats, run_id, model_shape)
         write_results(folder / "results.parquet", results_table(result, stats))
@@ -574,7 +608,7 @@ def run_spec(
         return RunOutcome(run_id, folder, "finished", summary, manifest, backend)
     except Cancelled:
         outcome = fail("cancelled", None)
-        emit("cancelled", {"run_id": run_id})
+        emit("cancelled", ended(outcome))
         return outcome
     except Exception as exc:  # recorded in the manifest and reported
         from logogram.backends.transformer_lens import is_out_of_memory, release_memory
@@ -596,13 +630,14 @@ def run_spec(
             message = str(exc) or type(exc).__name__
         message = scrub_paths(message, project.root)
         outcome = fail("failed", message, detail)
-        emit("failed", {"run_id": run_id, "error": message})
+        emit("failed", {**ended(outcome), "error": message})
         return outcome
     except BaseException:
-        # Ctrl+C, a notebook's interrupt, or the process exiting: say so, then let it stop.
-        fail("cancelled", INTERRUPTED)
+        # Ctrl+C, a notebook's interrupt, or the process exiting: say so, keeping what finished,
+        # then let it stop.
+        outcome = fail("cancelled", INTERRUPTED, reraise=False)
         with contextlib.suppress(Exception):
-            emit("cancelled", {"run_id": run_id, "error": INTERRUPTED})
+            emit("cancelled", {**ended(outcome), "error": INTERRUPTED})
         raise
     finally:
         release_run(project, folder, owner)

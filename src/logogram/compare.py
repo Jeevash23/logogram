@@ -9,6 +9,10 @@ When both runs measured the same prompts, each common site's effects are also co
 prompt: the mean difference (b - a) gets a percentile interval from resamples shared by every
 site, which is far narrower than two separate intervals, and a site whose difference excludes
 zero is flagged.
+
+A run that stopped early (see logogram.partial) is compared on what it kept: the sites both runs
+have, paired prompt by prompt only where both measured the same prompts. The comparison says
+which run is partial (``partial_a``, ``partial_b``), and how far it got.
 """
 
 from __future__ import annotations
@@ -293,7 +297,10 @@ def compare_runs(project: Any, run_a: str, run_b: str) -> dict[str, Any]:
         try:
             summary = load_summary(project, run_id)
         except ValueError as exc:
-            raise CompareError("Both runs need to have finished.") from exc
+            raise CompareError(
+                f"{run_id} has no results to compare: it is still running, or it stopped before "
+                "anything finished. Both runs need results."
+            ) from exc
         summaries.append(summary)
         specs.append(Spec.from_path(project.readable(folder / "spec.json")))
         tables.append(pq.read_table(project.readable(folder / "results.parquet")))
@@ -305,4 +312,6 @@ def compare_runs(project: Any, run_a: str, run_b: str) -> dict[str, Any]:
     paired = paired_differences(tables[0], tables[1], *summaries, *specs)
     result = compare_summaries(summaries[0], summaries[1], specs[0], specs[1], paired=paired)
     result["environment_differences"] = environment_differences(*manifests)
+    # What a run that stopped early kept: only those sites are compared.
+    result["partial_a"], result["partial_b"] = (s.get("partial") for s in summaries)
     return result
