@@ -772,6 +772,26 @@ inputs and outputs, which only their model card says, and they fit poorly as pub
 (layer × head), one stream site at every layer and position (layer × position), or attention
 and MLP outputs per layer.
 
+**Queries, keys, values and neurons** are finer sites: `q` (one head's query), `k` and `v` (one
+key/value head's key or value) and `neuron` (one MLP neuron's activation after its nonlinearity,
+for a gated MLP the gate's activation times the up projection: the input to the MLP's output
+projection), such as `{"kind": "q", "layer": 9, "head": 6, "position": …}` or
+`{"kind": "neuron", "layer": 3, "neuron": 1201, "position": …}`. With grouped-query attention
+(Llama 3, Qwen 2.5 and Gemma 2, among others) a model has fewer key and value heads than query
+heads: a key or value site names a key/value head, which every query head of its group reads, so
+patching it changes all of them. The scopes `head_inputs` and `neurons` sweep every head's query,
+key or value, and every neuron of chosen layers; the app shows the first as a layer × head map,
+and the second layer by layer, each layer's strongest neurons with their intervals beside the
+distribution of all of them. When a model loads, Logogram measures that these sites make up its
+attention and MLP outputs (all queries, keys and values together reproduce the attention output,
+one alone changes only the heads that read it, all neurons together reproduce the MLP output)
+and offers only those that hold: OLMo 2 normalizes every head's queries and keys together, so it
+offers values and neurons but not single queries or keys. Patching, ablation, attribution
+patching and sets of sites take them. Direct logit attribution reads a neuron at the last token
+and a value at any position (through the heads that read it, their attention patterns as in the
+run). It refuses queries and keys, which act only through the softmax, and neurons of models
+that normalize the MLP's output (Gemma 2, OLMo 2), where no neuron writes a term of its own.
+
 **Sets of sites** test a circuit. A `site_sets` scope lists sets of sites, each intervened on at
 once, in one forward pass: one result per set. A set marked `complement` intervenes on every
 component of the scope's `universe` (every head, or every attention and MLP output, at every
@@ -868,7 +888,7 @@ without continuations.
 | `model.process_weights` | Fold LayerNorm and center weights, as TransformerLens does by default. Logit differences don't change. Value biases are folded into the attention output's bias, so zero ablation of head outputs and heads' direct effects do change (by up to several logits in Qwen 2.5, whose value biases are large); a layer's attention output doesn't. |
 | `dataset.sha256` | If set, the run refuses a dataset file that has changed. |
 | `experiment` | `{"kind": "activation_patching", "direction": "clean_to_corrupt" \| "corrupt_to_clean"}`, `{"kind": "ablation", "baseline": …}` with `{"kind": "zero"}`, `{"kind": "mean", "reference": "clean" \| "corrupt"}` or `{"kind": "resample", "pool": "clean" \| "corrupt", "donors": 10, "seed": 0}`, `{"kind": "attribution_patching", "direction": …, "method": "gradient", "steps": null}` (same directions as patching; or `"method": "integrated_gradients", "steps": 8`), `{"kind": "direct_logit_attribution", "prompts": "clean" \| "corrupt"}`, `{"kind": "path_patching", "direction": …, "receivers": [{"kind": "head", "layer": 9, "head": 9, "input": "q" \| "k" \| "v"}, {"kind": "logits"}], "freeze_mlps": false}`, or `{"kind": "steering", "apply_to": "clean" \| "corrupt", "direction": {"kind": "mean_difference"}, "coefficients": [-1, 1, 2], "train_fraction": 0.5, "seed": 0, "control": true, "continuations": null}` with a scope of one residual component per layer (`layer_components`) or residual `sites`, at one token. The direction can instead be one SAE feature's decoder direction, `{"kind": "sae_feature", "feature": 1234}` (with the spec's `sae`, and `sites` naming where the SAE writes), and `continuations` can be `{"prompts": 3, "tokens": 20}` to record what the steered model goes on to say |
-| `scope` | `{"kind": "heads", "position": …}`, `{"kind": "layer_position", "site": "resid_pre", "positions": "each" \| "labels"}`, `{"kind": "layer_components", "components": ["attn_out", "mlp_out"], "position": …}` `{"kind": "sites", "sites": [{"kind": "head", "layer": 9, "head": 9, "position": {"kind": "label", "label": "end"}}]}` (feature sites are `{"kind": "sae_feature", "layer": 8, "feature": 1234, "position": …}`), for attribution patching, `{"kind": "features", "position": …, "top": 50, "choose_on": 0.5, "seed": 0}` (`choose_on` and `seed` both `null` to choose and report on every prompt), or `{"kind": "site_sets", "universe": ["head"], "sets": [{"label": "circuit", "sites": […], "complement": true}]}` |
+| `scope` | `{"kind": "heads", "position": …}`, `{"kind": "layer_position", "site": "resid_pre", "positions": "each" \| "labels"}`, `{"kind": "layer_components", "components": ["attn_out", "mlp_out"], "position": …}` `{"kind": "sites", "sites": [{"kind": "head", "layer": 9, "head": 9, "position": {"kind": "label", "label": "end"}}]}` (feature sites are `{"kind": "sae_feature", "layer": 8, "feature": 1234, "position": …}`), `{"kind": "head_inputs", "input": "q" \| "k" \| "v", "position": …}`, `{"kind": "neurons", "layers": [3, 4], "position": …}`, for attribution patching, `{"kind": "features", "position": …, "top": 50, "choose_on": 0.5, "seed": 0}` (`choose_on` and `seed` both `null` to choose and report on every prompt), or `{"kind": "site_sets", "universe": ["head"], "sets": [{"label": "circuit", "sites": […], "complement": true}]}` |
 | `sae` | The SAE that feature sites belong to: `{"repo": "…", "path": "blocks.8.hook_resid_pre", "revision": "…"}`. The revision is pinned when a run starts. |
 | `metric` | `{"kind": "logit_diff" \| "logprob_diff" \| "logprob" \| "prob" \| "prob_diff", "normalization": …}` or `{"kind": "kl", "target": "clean" \| "corrupt", "normalization": …}` |
 | `metric.normalization` | `dataset_gap` or `prompt_gap` |

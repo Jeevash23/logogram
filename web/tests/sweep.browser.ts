@@ -152,7 +152,7 @@ test("a sweep over a seed: started from a run, read across its values, reached f
   expect(file.suggestedFilename()).toMatch(/^sweep-[A-Za-z0-9._-]+\.csv$/);
   const lines = readFileSync((await file.path()) as string, "utf8").trim().split("\n");
   expect(lines[0]).toBe(
-    "sweep,field,value_index,value,run,status,site_rank,site,kind,layer,head,feature,position,variant,effect,effect_lo,effect_hi,effect_sd,n,verdict,spread_mean,spread_sd",
+    "sweep,field,value_index,value,run,status,site_rank,site,kind,layer,head,feature,neuron,position,variant,effect,effect_lo,effect_hi,effect_sd,n,verdict,spread_mean,spread_sd",
   );
   expect(lines).toHaveLength(1 + 8 * 3);
 

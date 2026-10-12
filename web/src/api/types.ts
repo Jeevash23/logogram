@@ -1000,6 +1000,7 @@ export interface SweepSite {
   layer: number;
   head: number | null;
   feature: number | null;
+  neuron?: number | null;
   position: PositionSpec | null;
   position_key: string;
   variant: SiteBase["variant"];
