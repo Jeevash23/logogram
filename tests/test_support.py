@@ -3,6 +3,7 @@ Report a problem and ``logogram doctor --report``)."""
 
 from __future__ import annotations
 
+import time
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -258,6 +259,27 @@ def test_the_last_error_is_scrubbed_of_paths_names_and_secrets(machine, tmp_path
 )
 def test_scrub(text, expected):
     assert scrub(text, names=False) == expected
+
+
+def test_long_text_is_scrubbed_quickly():
+    """No text makes scrubbing slow: each pattern takes time in proportion to the text."""
+    from logogram.runner import scrub_paths
+
+    n = 100_000
+    for text in (
+        "%" * n,
+        "a." * n + "@",
+        "x@" + "a." * n,
+        "http://" + "a" * n,
+        "/a" * n,
+        "\\a" * n,
+        "C:\\" + "a\\" * n,
+        "a:" * n,
+    ):
+        start = time.perf_counter()
+        scrub(text, names=False)
+        scrub_paths(text)
+        assert time.perf_counter() - start < 2, text[:20]
 
 
 def test_scrub_names_the_project_and_the_hugging_face_cache(tmp_path, monkeypatch):
