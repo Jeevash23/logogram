@@ -407,7 +407,12 @@ export type ScopeSpec =
    * seeded share of the prompts chooses them and the rest report them (both null: every prompt). */
   | { kind: "features"; position: PositionSpec; top: number; choose_on: number | null; seed: number | null }
   /** Sets of sites, each intervened on at once: one result per set (1 to 64 sets). */
-  | { kind: "site_sets"; universe: UniverseKind[] | null; sets: SiteSetSpec[] };
+  | { kind: "site_sets"; universe: UniverseKind[] | null; sets: SiteSetSpec[] }
+  /** The edges of the model's graph, for edge attribution: into the heads and MLPs of `layers`
+   * (null: every layer) from every earlier node, and into the logits with `logits`. */
+  | { kind: "graph"; layers: number[] | null; logits: boolean }
+  /** Edges measured one at a time by path patching, everything else held (1 to 64). */
+  | { kind: "edges"; edges: EdgeSpec[] };
 
 export type BaselineSpec =
   | { kind: "zero" }
@@ -416,8 +421,33 @@ export type BaselineSpec =
 
 export type Direction = "clean_to_corrupt" | "corrupt_to_clean";
 
-/** Where a path ends: a later head's query, key or value, or the logits read directly. */
-export type PathReceiverSpec = { kind: "head"; layer: number; head: number; input: "q" | "k" | "v" } | { kind: "logits" };
+/** Where a path ends: a later head's query, key or value, a later MLP's input (before its
+ * normalization), or the logits read directly. */
+export type PathReceiverSpec =
+  | { kind: "head"; layer: number; head: number; input: "q" | "k" | "v" }
+  | { kind: "mlp"; layer: number }
+  | { kind: "logits" };
+
+/** The node an edge of the model's graph starts from: the embeddings, a head's output or an MLP's. */
+export type EdgeSenderSpec =
+  | { kind: "embed"; layer?: null; head?: null }
+  | { kind: "head"; layer: number; head: number }
+  | { kind: "mlp"; layer: number; head?: null };
+
+/** An edge: a sender's output read directly by one receiver's input, through the residual stream. */
+export interface EdgeSpec {
+  sender: EdgeSenderSpec;
+  receiver: PathReceiverSpec;
+}
+
+/** The faithfulness curve of an edge attribution run: the k strongest edges as a circuit, for each
+ * k of `counts`, patching the chosen edges (`chosen`) or every edge but them (`rest`), beside edges
+ * chosen at random (`draws` seeded shuffles). */
+export interface FaithfulnessCurveSpec {
+  counts: number[];
+  patch: "chosen" | "rest";
+  control: { seed: number; draws: number };
+}
 
 /** How attribution patching estimates: one gradient at the receiver run, or integrated gradients
  * averaged over `steps` runs between the two prompts (2 to 64; null for one gradient). */
@@ -439,6 +469,7 @@ export type ExperimentSpec =
   | { kind: "direct_logit_attribution"; prompts: "clean" | "corrupt" }
   | { kind: "attribution_patching"; direction: Direction; method: AttributionMethod; steps: number | null }
   | { kind: "path_patching"; direction: Direction; receivers: PathReceiverSpec[]; freeze_mlps: boolean }
+  | { kind: "edge_attribution"; direction: Direction; method: AttributionMethod; steps: number | null; curve: FaithfulnessCurveSpec | null }
   | {
       kind: "steering";
       apply_to: "clean" | "corrupt";
@@ -548,9 +579,10 @@ export interface Stat {
   hi: number | null;
 }
 
-/** A site of a run's results: a site of the model, or a set of sites (a row of a site_sets run,
- * whose layer is -1 and whose members are its sites). */
-export type ResultKind = SiteKind | "site_set";
+/** A site of a run's results: a site of the model, a set of sites (a row of a site_sets run,
+ * whose layer is -1 and whose members are its sites), or an edge of the model's graph (whose
+ * layer is its receiver's, the last for the logits). */
+export type ResultKind = SiteKind | "site_set" | "edge";
 
 export interface SiteBase {
   index: number;
@@ -569,6 +601,8 @@ export interface SiteBase {
   variant_key?: string | null;
   /** The sites of a set intervened on together (kind site_set). */
   members?: SiteSpec[] | null;
+  /** An edge's sender and receiver (kind edge). */
+  edge?: EdgeSpec;
 }
 
 export interface SiteResult extends SiteBase {
@@ -602,10 +636,14 @@ export interface LayoutAxis {
   /** Sets of sites: whether the row's set keeps its sites, and how many it holds. */
   complement?: boolean;
   size?: number;
+  /** Edges: the sender (a row) or receiver (a column) it is: its kind, layer and head. */
+  node?: "embed" | "head" | "mlp" | "q" | "k" | "v" | "logits";
+  layer?: number;
+  head?: number | null;
 }
 
 export interface Layout {
-  kind: "heads" | "layer_position" | "layer_components" | "sites" | "steering" | "site_sets";
+  kind: "heads" | "layer_position" | "layer_components" | "sites" | "steering" | "site_sets" | "edges";
   site?: StreamKind;
   row_title: string;
   col_title: string;
@@ -699,6 +737,99 @@ export interface Summary {
   } | null;
   /** A run that stopped before the end: what it kept. Absent or null for a finished run. */
   partial?: PartialRun | null;
+  /** Edge attribution: the graph, how the estimates were taken, what it cost, and the curve. */
+  edges?: EdgeRun | null;
+}
+
+/** One point of a faithfulness curve: k edges and how much of the behavior they carry. */
+export interface EdgeCurvePoint {
+  k: number;
+  faithfulness: Stat;
+  /** The mean metric of the patched runs. */
+  metric: number | null;
+  /** The random control: each draw's mean faithfulness. */
+  draws?: (number | null)[] | null;
+}
+
+/** The k strongest edges as a circuit for each k, beside edges chosen at random, and every edge
+ * of the scope patched (with the whole graph, the source run: `source_difference` is how far its
+ * metric is from the source prompt's, over prompts). */
+export interface EdgeCurve {
+  patch: "chosen" | "rest";
+  counts: number[];
+  dropped: number[];
+  seed: number;
+  draws: number;
+  strongest: EdgeCurvePoint[];
+  random: EdgeCurvePoint[];
+  every: EdgeCurvePoint;
+  source_difference?: number | null;
+  per_prompt: Record<string, (number | null)[][]>;
+}
+
+/** What a run would cost, or cost: per batch of prompts and for the whole run. */
+export interface EdgeCost {
+  edges: number;
+  batches: number;
+  forward_per_batch: number;
+  backward_per_batch: number;
+  patched_per_batch: number;
+  forward: number;
+  backward: number;
+  memory_per_batch: number;
+  values: number;
+  text?: string;
+}
+
+/** An edge attribution run: the graph, how its estimates were taken, the model's measured
+ * properties they rely on, what it cost, and its faithfulness curve. The summary lists the
+ * `reported` strongest edges; edges.parquet holds every edge. */
+export interface EdgeRun {
+  method: AttributionMethod;
+  steps?: number | null;
+  n_edges: number;
+  n_senders: number;
+  n_receivers: number;
+  reported: number;
+  structure: "sequential" | "parallel";
+  gradient: string;
+  checks: Record<string, number>;
+  cost: EdgeCost;
+  curve?: EdgeCurve | null;
+  /** Over every edge, not only those listed: intervals that exclude zero one edge at a time
+   * (single), simultaneous bands that do (banded), and q-values below 1 − the CI level. */
+  corrections?: { edges: number; single: number; banded: number; discoveries: number } | null;
+}
+
+/** An edge attribution spec on the loaded model, before it runs (POST /api/edges/plan). */
+export interface EdgePlan {
+  n_edges: number | null;
+  n_senders: number | null;
+  n_receivers: number | null;
+  structure?: "sequential" | "parallel" | null;
+  cost?: EdgeCost | null;
+  text?: string | null;
+  free?: number | null;
+  /** Why a run would be refused, and how to fix it; null when it would run. */
+  refusal: string | null;
+}
+
+/** An edge attribution run's estimates against its latest verification by path patching. */
+export interface EdgeVerification {
+  run: string;
+  n: number;
+  spearman: number | null;
+  same_sign: number;
+  rows: {
+    label: string;
+    edge: EdgeSpec;
+    estimate: Stat;
+    measured: Stat;
+    estimate_index: number;
+    measured_index: number;
+    estimate_rank?: number | null;
+    measured_rank?: number | null;
+  }[];
 }
 
 export interface SummaryMetric {

@@ -505,8 +505,9 @@ def _node_place(node: dict[str, Any], n_layers: int) -> tuple[int, float | None]
 
 def edge_graph_svg(summary: dict[str, Any], top: int = GRAPH_EDGES) -> str:
     """The strongest edges drawn between the model's nodes, layers left to right: each edge in
-    the effect colors on a symmetric scale (with a legend), wider when stronger, the strongest
-    drawn first. A head's query, key and value inputs end at the top, middle and bottom of it."""
+    the effect colors on a symmetric scale (with a legend), wider when stronger, the strongest on
+    top where edges cross. A head's query, key and value inputs end at the top, middle and bottom
+    of it."""
     model = summary.get("model") or {}
     sites = [s for s in summary["sites"] if s.get("edge") and s["effect"]["mean"] is not None]
     strongest = sorted(sites, key=lambda s: (-abs(s["effect"]["mean"]), s["index"]))[:top]
@@ -532,7 +533,8 @@ def edge_graph_svg(summary: dict[str, Any], top: int = GRAPH_EDGES) -> str:
         f'viewBox="0 0 {width} {height}" font-family="system-ui, sans-serif" font-size="10" '
         f'role="img" aria-label="The {len(strongest)} strongest edges, layers left to right">'
     ]
-    for s in strongest:
+    # An SVG paints in order: the weakest first, so the strongest are on top where edges cross.
+    for s in reversed(strongest):
         e = s["edge"]
         receiver = e["receiver"]
         x1, y1 = place(e["sender"])

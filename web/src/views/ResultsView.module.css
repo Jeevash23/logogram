@@ -165,8 +165,10 @@
 
 .figureLink {
   display: inline-flex;
+  flex-wrap: wrap; /* an edge's long name puts its value on the next line in a narrow window */
   align-items: baseline;
-  gap: 8px;
+  gap: 0 8px;
+  max-width: 100%;
   padding: 0;
   border: 0;
   background: transparent;

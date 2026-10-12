@@ -1,6 +1,7 @@
 // Selections and how they map onto sites of a run.
 
-import type { Layout, ResultKind, SiteBase, SiteKind } from "../api/types";
+import type { EdgeSpec, Layout, ResultKind, SiteBase, SiteKind } from "../api/types";
+import { edgeKey } from "./edges";
 
 /** A component on the model map, optionally at a position (for layer × position runs). */
 export interface Selection {
@@ -18,12 +19,14 @@ export interface Selection {
 }
 
 /** Where a selection sits: a component of the model map, or a set of sites (part "set", named by
- * its label in variantKey), which has no single place on the map. */
-export type MapPart = "resid" | "head" | "attn" | "mlp" | "feature" | "set";
+ * its label in variantKey) or an edge of the model's graph (part "edge", named by its label in
+ * variantKey), which have no single place on the map. */
+export type MapPart = "resid" | "head" | "attn" | "mlp" | "feature" | "set" | "edge";
 export type ResidKind = "resid_pre" | "resid_mid" | "resid_post";
 
 export function partOfKind(kind: ResultKind): MapPart {
   if (kind === "site_set") return "set";
+  if (kind === "edge") return "edge";
   if (kind === "head") return "head";
   if (kind === "sae_feature") return "feature";
   if (kind === "attn_out") return "attn";
@@ -35,7 +38,11 @@ export function isResidKind(kind: ResultKind): kind is ResidKind {
   return kind === "resid_pre" || kind === "resid_mid" || kind === "resid_post";
 }
 
-export function selectionOfSite(site: Pick<SiteBase, "layer" | "kind" | "head" | "position_key" | "variant_key" | "feature">): Selection {
+export function selectionOfSite(
+  site: Pick<SiteBase, "layer" | "kind" | "head" | "position_key" | "variant_key" | "feature"> & { label?: string },
+): Selection {
+  // An edge is named by its label ("L5 H5 → L9 H6 q"): it has no place of its own on the map.
+  if (site.kind === "edge") return { layer: site.layer, part: "edge", variantKey: site.label };
   return {
     layer: site.layer,
     part: partOfKind(site.kind),
@@ -62,6 +69,7 @@ export function sameSelection(a: Selection | null, b: Selection | null): boolean
 
 /** Sites of a run that sit on the same map component as the selection. */
 export function sitesOnComponent<T extends SiteBase>(sites: T[], sel: Selection): T[] {
+  if (sel.part === "edge") return sites.filter((s) => s.kind === "edge" && s.label === sel.variantKey);
   return sites.filter(
     (s) =>
       s.layer === sel.layer &&
@@ -98,8 +106,10 @@ export function fitSelection<T extends SiteBase>(sites: T[], sel: Selection): Se
   return tries.find((t) => findSite(sites, t)) ?? { ...sel, positionKey: undefined };
 }
 
-/** What a site measures, independent of its index in a run: comparable across runs. */
-export function siteKey(site: { kind: ResultKind; layer: number; head?: number | null; feature?: number | null; position_key: string; variant_key?: string | null }): string {
+/** What a site measures, independent of its index in a run: comparable across runs. An edge is
+ * named by its sender and receiver. */
+export function siteKey(site: { kind: ResultKind; layer: number; head?: number | null; feature?: number | null; position_key: string; variant_key?: string | null; edge?: EdgeSpec | null }): string {
+  if (site.kind === "edge" && site.edge) return `edge|${edgeKey(site.edge)}`;
   return `${site.kind}|${site.layer}|${site.head ?? ""}|${site.feature ?? ""}|${site.position_key}|${site.variant_key ?? ""}`;
 }
 
@@ -138,6 +148,8 @@ export function componentLabel(sel: Selection): string {
       return `L${sel.layer} F${sel.feature}${pos}`;
     case "set":
       return sel.variantKey ?? "Set of sites";
+    case "edge":
+      return sel.variantKey ?? "Edge";
     default:
       return `L${sel.layer} ${sel.kind ? KIND_SHORT[sel.kind] : "resid"}${pos}`;
   }
@@ -175,6 +187,8 @@ export function layoutTitle(layout: Layout): string {
       return "Layer × strength";
     case "site_sets":
       return "Sets of sites";
+    case "edges":
+      return "Edges";
     default:
       return "Chosen sites";
   }

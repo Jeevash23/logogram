@@ -847,8 +847,8 @@ export const useStore = create<Store>((set, get) => ({
 
   setTokenPosition: (tokenPosition) => set({ tokenPosition }),
   stageSelection: (selection) => {
-    // A set of sites has no single place in the model to stage.
-    if (selection.part === "set") return;
+    // A set of sites or an edge has no single place in the model to stage.
+    if (selection.part === "set" || selection.part === "edge") return;
     const site = siteFromSelection(selection, selection.kind ?? "resid_pre");
     if (get().tokenPosition !== null) site.position = { kind: "index", index: get().tokenPosition as number };
     const staged = get().stagedSites;
@@ -1106,7 +1106,7 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   prefillExperiment: (kind, sel) => {
-    if (sel.part === "set") return; // a set is patched or ablated as a whole in its own run
+    if (sel.part === "set" || sel.part === "edge") return; // patched as a whole in a run of its own
     const bos = tokenizationKey(analysisContext(get()).options);
     const form = get().form;
     // Use the residual site of the active run when the selection is a residual cell.

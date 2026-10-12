@@ -87,6 +87,11 @@ const ADDED = new Set<keyof FormState>([
   "steerContinue",
   "steerContinuePrompts",
   "steerContinueTokens",
+  "edgeCurve",
+  "edgeCounts",
+  "edgePatch",
+  "edgeSeed",
+  "edgeDraws",
 ]);
 
 /** A sweep stored before it had every field: an every-feature sweep chose and reported its
@@ -176,6 +181,10 @@ const isScope: Check = (v) => {
         (("choose_on" in v) ? orNull(isNumber)(v.choose_on) && orNull(isNumber)(v.seed) : !("seed" in v));
     case "site_sets":
       return orNull(listOf(oneOf("head", "attn_out", "mlp_out")))(v.universe) && listOf(isSiteSet)(v.sets);
+    case "graph":
+      return orNull(listOf(isNumber))(v.layers) && isBoolean(v.logits);
+    case "edges":
+      return listOf(isEdge)(v.edges);
     default:
       return false;
   }
@@ -190,7 +199,18 @@ const isBaseline: Check = (v) => {
 };
 
 const isReceiver: Check = (v) =>
-  isObject(v) && (v.kind === "logits" || (v.kind === "head" && isNumber(v.layer) && isNumber(v.head) && oneOf("q", "k", "v")(v.input)));
+  isObject(v) &&
+  (v.kind === "logits" ||
+    (v.kind === "mlp" && isNumber(v.layer)) ||
+    (v.kind === "head" && isNumber(v.layer) && isNumber(v.head) && oneOf("q", "k", "v")(v.input)));
+
+const isSender: Check = (v) =>
+  isObject(v) &&
+  ((v.kind === "embed" && v.layer == null && v.head == null) ||
+    (v.kind === "mlp" && isNumber(v.layer)) ||
+    (v.kind === "head" && isNumber(v.layer) && isNumber(v.head)));
+
+const isEdge: Check = (v) => isObject(v) && isSender(v.sender) && isReceiver(v.receiver);
 
 const isPredictions: Check = (v) =>
   isObject(v) &&
@@ -219,7 +239,7 @@ const FIELDS: { [K in keyof FormState]-?: Check } = {
   predictions: orNull(isPredictions),
   name: isString,
   nameEdited: isBoolean,
-  kind: oneOf("activation_patching", "ablation", "attribution_patching", "direct_logit_attribution", "path_patching", "steering"),
+  kind: oneOf("activation_patching", "ablation", "attribution_patching", "direct_logit_attribution", "path_patching", "steering", "edge_attribution"),
   direction: oneOf("clean_to_corrupt", "corrupt_to_clean"),
   baseline: orNull(isBaseline),
   dlaPrompts: orNull(SIDES),
@@ -237,6 +257,11 @@ const FIELDS: { [K in keyof FormState]-?: Check } = {
   pathFreezeMlps: isBoolean,
   atpMethod: oneOf("gradient", "integrated_gradients"),
   atpSteps: isNumber,
+  edgeCurve: isBoolean,
+  edgeCounts: isString,
+  edgePatch: orNull(oneOf("chosen", "rest")),
+  edgeSeed: isNumber,
+  edgeDraws: isNumber,
   saeRef: orNull(isSaeRef),
   scope: isScope,
   metric: oneOf("logit_diff", "logprob_diff", "logprob", "prob", "prob_diff", "kl"),

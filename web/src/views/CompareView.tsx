@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
-import type { Comparison, ComparisonChange, Layout, RunDetail, RunListing, SiteBase, SiteResult, SiteSpec } from "../api/types";
+import type { Comparison, ComparisonChange, EdgeSpec, FaithfulnessCurveSpec, Layout, PathReceiverSpec, RunDetail, RunListing, SiteBase, SiteResult, SiteSpec } from "../api/types";
 import { Heatmap, type Axis } from "../components/Heatmap/Heatmap";
 import { ScaleBar } from "../components/Heatmap/ScaleBar";
 import { Button, Callout, Empty, Field, Progress, Segmented, Select } from "../components/ui";
@@ -11,9 +11,10 @@ import { ci, count, num, pct, signed } from "../lib/format";
 import { pickerGroups, runTitle } from "../lib/runs";
 import { siteValue } from "../lib/hooks";
 import { findSite, gridKey, isResidKind, partOfKind, selectionOfSite, siteGrid, siteKey, type Selection } from "../lib/sites";
-import { siteText } from "../lib/spec";
+import { edgeLabel, receiverLabel, siteText } from "../lib/spec";
 import { fieldWords, membershipText, sweepsOf, sweepsOfRun, valueName } from "../lib/sweeps";
 import { HOLDS_RHO } from "../lib/thresholds";
+import { EdgeVerificationPanel } from "./EdgeResults";
 import { FlagMark } from "./Forest";
 import { runView, useStore } from "../store/app";
 import s from "./views.module.css";
@@ -21,6 +22,21 @@ import c from "./CompareView.module.css";
 
 function describeValue(v: unknown): string {
   if (v === null || v === undefined) return "none";
+  if (Array.isArray(v) && v.length > 0 && v.every((x) => x && typeof x === "object" && "sender" in x && "receiver" in x)) {
+    // A list of edges: name them, as the results do.
+    const names = (v as EdgeSpec[]).map(edgeLabel);
+    return `${names.length} edge${names.length === 1 ? "" : "s"}: ${names.slice(0, 6).join(", ")}${names.length > 6 ? ", …" : ""}`;
+  }
+  if (v && typeof v === "object" && "counts" in v && "patch" in v && "control" in v) {
+    // A faithfulness curve.
+    const curve = v as FaithfulnessCurveSpec;
+    return `${curve.counts.join(", ")} edges, patching ${curve.patch === "chosen" ? "the chosen edges" : "every edge but the chosen"}; ${curve.control.draws} random draw${curve.control.draws === 1 ? "" : "s"}, seed ${curve.control.seed}`;
+  }
+  if (Array.isArray(v) && v.length > 0 && v.every((x) => x && typeof x === "object" && "kind" in x && ["head", "mlp", "logits"].includes(String(x.kind)) && !("position" in x))) {
+    // Path patching's receivers.
+    const names = (v as PathReceiverSpec[]).map(receiverLabel);
+    return `${names.slice(0, 6).join(", ")}${names.length > 6 ? `, and ${names.length - 6} more` : ""}`;
+  }
   if (Array.isArray(v) && v.length > 0 && v.every((x) => x && typeof x === "object" && "kind" in x && "layer" in x)) {
     // A list of sites: name them, as the map does.
     const names = (v as SiteSpec[]).map(siteText);
@@ -144,7 +160,9 @@ export function CompareView() {
                   : "Two runs side by side"}
           </h1>
           <p className={s.subtitle}>
-            {verification
+            {verification && layout?.kind === "edges"
+              ? "A estimates every edge to first order; B path-patches the strongest of them, one at a time. Where they disagree, the estimate is flagged."
+              : verification
               ? "A estimates every site to first order; B patches the strongest of them for real. Where they disagree, the estimate is flagged."
               : robust
                 ? "The same sweep rerun with one methodological choice changed. Conclusions that change are flagged on the map."
@@ -242,7 +260,19 @@ export function CompareView() {
 
       {comparison && <Verdict comparison={comparison} robust={robust} verification={verification} />}
 
-      {layout && layout.kind !== "sites" && aId && bId && (
+      {verification && layout?.kind === "edges" && aId && (
+        <EdgeVerificationPanel
+          runId={aId}
+          ciLevel={Math.round((da?.summary?.statistics.ci ?? 0.95) * 100)}
+          selectedIndex={siteA?.index ?? null}
+          onSelect={(index) => {
+            const site = va.sites.find((x) => x.index === index);
+            if (site) select(selectionOfSite(site));
+          }}
+        />
+      )}
+      {/* Edges are drawn in each run's results; here they are compared in the tables. */}
+      {layout && layout.kind !== "sites" && layout.kind !== "edges" && aId && bId && (
         mode === "diff" && comparison?.same_layout ? (
           <div className={c.panel}>
             <div className={c.panelHead}>

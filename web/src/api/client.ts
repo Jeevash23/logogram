@@ -10,6 +10,8 @@ import type {
   DatasetCreated,
   DatasetDetail,
   DeriveRequest,
+  EdgePlan,
+  EdgeVerification,
   Environment,
   EstimateResponse,
   ExampleInfo,
@@ -305,6 +307,12 @@ export const api = {
     post<{ run_id: string; job: Job }>(`/api/runs/${encodeURIComponent(id)}/robustness`, change),
   verify: (id: string, top: number) =>
     post<{ run_id: string; job: Job }>(`/api/runs/${encodeURIComponent(id)}/verify`, { top }),
+  /** An edge attribution spec on the loaded model, before it runs: the graph's size, what a run
+   * costs, and why it would be refused. */
+  edgePlan: (spec: Spec) => post<EdgePlan>("/api/edges/plan", { spec }),
+  /** An edge attribution run's estimates against its latest verification by path patching; null
+   * until one has finished. */
+  edgeVerification: (id: string) => get<EdgeVerification | null>(`/api/runs/${encodeURIComponent(id)}/edge-verification`),
   derived: (id: string) => get<RunListing[]>(`/api/runs/${encodeURIComponent(id)}/derived`),
   /** Rename, star or archive a run: its annotations.json, never its spec. */
   annotateRun: (id: string, change: RunAnnotationsChange) =>
