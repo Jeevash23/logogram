@@ -138,6 +138,24 @@ def test_endpoints_and_commands(tmp_path, monkeypatch, finished, tiny_backend):
     assert result.exit_code == 0 and result.output.startswith("index,label,kind")
 
 
+def test_labels_are_cut_before_they_are_escaped(finished):
+    """A label cut after escaping can end inside an entity (a token of quotes, say), which no
+    SVG reader opens."""
+    import copy
+    from xml.etree import ElementTree
+
+    from logogram.report import figure_svg
+
+    summary = copy.deepcopy(finished.summary)
+    layout = summary["layout"]
+    for axis in ("rows", "cols"):
+        for item in layout[axis]:
+            item["label"] = ' """"""""'
+    svg = figure_svg(finished.spec, summary, "effect")
+    ElementTree.fromstring(svg)  # noqa: S314 -- our own output, checked to be well-formed
+    assert "&quot;&quot;&<" not in svg
+
+
 def test_the_figure_is_a_standalone_svg_on_white(finished):
     from xml.etree import ElementTree
 

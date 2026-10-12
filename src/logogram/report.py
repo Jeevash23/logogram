@@ -374,12 +374,12 @@ def heatmap_svg(
             x = left + c * cell + cell / 2
             parts.append(
                 f'<text x="{x:.1f}" y="{top - 6}" transform="rotate(-50 {x:.1f} {top - 6})" '
-                f'fill="currentColor">{esc(str(col.get("label", c)))[:14]}</text>'
+                f'fill="currentColor">{esc(str(col.get("label", c))[:14])}</text>'
             )
     for r, row in enumerate(rows):
         parts.append(
             f'<text x="{left - 6}" y="{top + r * cell + cell * 0.68:.1f}" text-anchor="end" '
-            f'fill="currentColor">{esc(str(row.get("label", r)))[:12]}</text>'
+            f'fill="currentColor">{esc(str(row.get("label", r))[:12])}</text>'
         )
         for c in range(len(cols)):
             site = by_cell.get((r, c))
