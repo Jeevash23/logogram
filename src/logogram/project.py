@@ -467,13 +467,16 @@ def default_projects_parent() -> Path:
     return platformdirs.user_documents_path() / "Logogram"
 
 
-def example_source() -> Path:
-    return Path(str(resources.files("logogram") / "examples" / "ioi-gpt2"))
+def example_source(example: str = "ioi-gpt2") -> Path:
+    return Path(str(resources.files("logogram") / "examples" / example))
 
 
-def open_example(parent: Path | None = None) -> Project:
-    """Copy the bundled example into a writable folder (once) and open it."""
-    target = (parent or default_projects_parent()) / "ioi-example"
+def open_example(parent: Path | None = None, example: str = "ioi-gpt2") -> Project:
+    """Copy a bundled example (logogram.gallery lists them) into its own folder, once, and open
+    it. A copy made before is opened as it is, never overwritten."""
+    from logogram.gallery import get_example
+
+    target = (parent or default_projects_parent()) / get_example(example).folder
     if (target / PROJECT_FILE).is_file():
         return Project.open(target)
     try:
@@ -482,7 +485,7 @@ def open_example(parent: Path | None = None) -> Project:
                 f"{target} exists and isn't a Logogram project. Move it aside first."
             )
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(example_source(), target, dirs_exist_ok=True)
+        shutil.copytree(example_source(example), target, dirs_exist_ok=True)
     except OSError as exc:
         raise ProjectError(
             f"Logogram can't copy the example to {target}: {exc.strerror or exc}."

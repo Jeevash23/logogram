@@ -164,6 +164,23 @@ export interface RecentProject {
   modified: string;
 }
 
+/** A bundled example (logogram.gallery): what it asks, the result to expect, and its spec. */
+export interface ExampleInfo {
+  id: string;
+  name: string;
+  question: string;
+  expect: string;
+  /** The publication the result is read against. */
+  source: string;
+  /** Where its copy goes in the projects folder, and whether one is there already (opening the
+   * example then opens that copy as it was left). */
+  path: string;
+  copied: boolean;
+  experiment: string;
+  n_prompts: number;
+  spec: Spec;
+}
+
 export interface FolderListing {
   path: string;
   parent: string | null;

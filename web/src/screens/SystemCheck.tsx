@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import type { SystemReport } from "../api/types";
 import { CopyCommand } from "../components/CopyCommand";
+import { ExampleGallery } from "../components/ExampleGallery";
 import { UpdateDetails } from "../components/UpdateNotice";
 import { Button, Callout, Spinner } from "../components/ui";
 import { bytes } from "../lib/format";
@@ -13,7 +14,6 @@ import { Welcome } from "./Welcome";
 export function SystemCheck() {
   const [report, setReport] = useState<SystemReport | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [opening, setOpening] = useState(false);
   const project = useStore((st) => st.project);
   const firstRun = useStore((st) => st.firstRun);
 
@@ -26,15 +26,6 @@ export function SystemCheck() {
       useStore.setState({ firstRun: false });
       void api.settings({ system_check_seen: true }).catch(() => undefined);
     }
-  };
-
-  const openExample = async () => {
-    setOpening(true);
-    markSeen();
-    const st = useStore.getState();
-    const project = await st.guard(() => api.openExample());
-    setOpening(false);
-    if (project) await st.enterProject(project);
   };
 
   const gpu = report?.gpus?.[0];
@@ -132,10 +123,14 @@ export function SystemCheck() {
           <UpdateDetails />
         </section>
 
+        <section className={s.examples} aria-labelledby="examples-title">
+          <h2 id="examples-title" className={s.sectionTitle}>
+            Examples
+          </h2>
+          <ExampleGallery onOpen={markSeen} />
+        </section>
+
         <div className={s.actions}>
-          <Button variant="primary" size="large" onClick={openExample} disabled={opening}>
-            {opening ? "Opening…" : "Open the example project"}
-          </Button>
           <Button
             variant="ghost"
             size="large"

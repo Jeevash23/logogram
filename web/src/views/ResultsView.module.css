@@ -51,6 +51,52 @@
   color: var(--line);
 }
 
+/* The spec's notes: what was expected, in the experimenter's words, quietly under the method. */
+.notes {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  max-width: 760px;
+}
+
+.notesText {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.notesClamped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+}
+
+.notesLabel {
+  color: var(--text);
+  font-weight: 620;
+  margin-right: 2px;
+}
+
+.notesToggle {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.notesToggle:hover {
+  color: var(--text);
+}
+
 /* The run at a glance: four ruled figures. */
 .figures {
   display: grid;

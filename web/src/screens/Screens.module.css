@@ -379,6 +379,13 @@
   text-underline-offset: 3px;
 }
 
+/* The bundled examples, below the projects or the system check. */
+.examples {
+  display: flex;
+  flex-direction: column;
+  margin-top: 18px;
+}
+
 .updates {
   display: flex;
   flex-direction: column;

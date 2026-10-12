@@ -121,6 +121,22 @@ class RecentProject(_Out):
     modified: str
 
 
+class ExampleInfo(_Out):
+    """A bundled example (logogram.gallery): what it asks, the result to expect and its spec."""
+
+    id: str
+    name: str
+    question: str
+    expect: str
+    source: str
+    # Where its copy goes in the projects folder, and whether one is there already.
+    path: str
+    copied: bool
+    experiment: str
+    n_prompts: int
+    spec: dict[str, Any]
+
+
 class FolderEntry(_Out):
     name: str
     path: str

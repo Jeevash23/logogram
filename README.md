@@ -57,8 +57,9 @@ logogram
 
 This starts a local server on 127.0.0.1, prints its address and opens your browser.
 
-1. The first time, a system check shows what Logogram found. Choose **Open the example project**.
-   Logogram copies it to `Documents/Logogram/ioi-example`, an ordinary project folder.
+1. The first time, a system check shows what Logogram found, and the [examples](#examples). Open
+   the IOI example. Logogram copies it to `Documents/Logogram/ioi-example`, an ordinary project
+   folder.
 2. The example contains 32 indirect object identification (IOI) prompts and a ready-made
    experiment: patch each head's output from the clean prompt into the corrupt prompt. Press
    **Run**. GPT-2 small (about 0.5 GB) downloads once from Hugging Face; the sweep then takes
@@ -134,6 +135,26 @@ settings** fills those choices in.
 Finished results offer a per-prompt CSV, a PNG heatmap with a symmetric legend, and a copyable or
 downloadable methods description. The CSV retains every site/prompt row; text fields that could
 be interpreted as spreadsheet formulas are prefixed with an apostrophe.
+
+## Examples
+
+Four example projects come with Logogram. Each is a spec and a dataset made by Logogram's own task
+generators for GPT-2 small, runs on a CPU in about a minute, and asks a question a paper answered
+by a causal experiment, so its result can be read against the paper. The first screens and **All
+projects** list them with the question, the model, the method and the result to expect. Opening
+one copies it into its own folder in `Documents/Logogram`; a copy made before opens as you left
+it, never replaced. Each spec's notes say what was published and what Logogram measured on GPT-2
+small (revision `607a30d`), and the results show them under the run's title.
+
+| Example | Experiment | Published | Measured on GPT-2 small |
+|---|---|---|---|
+| Indirect object identification: which heads carry the name? | Patch each head's output clean → corrupt at every position; logit difference | Name movers 9.9 and 10.0, S-inhibition heads 7.3, 7.9, 8.6 and 8.10, induction heads 5.5 and 6.9; negative name movers 10.7 and 11.10 (Wang et al. 2022) | 5.5 0.33, 8.6 0.30, 8.10 0.25, 7.9 0.21, 9.9 0.17, 10.0 0.11; 10.7 −0.45, 11.10 −0.21 |
+| Greater-than: which layers predict a year after 1732? | Patch each layer's attention and MLP output at the last token from the prompt starting in 01 (corrupt → clean); probability difference | MLPs 8 to 11 compute it, 9 and 10 most, after heads in layers 5 to 9 bring the start year (Hanna et al. 2023) | MLP 9 0.36, MLP 10 0.34, MLP 8 0.20, attention 9 0.16, MLP 11 0.09; layers 0 to 4 nothing |
+| Factual recall: where does France become Paris? | Patch the residual stream before each layer at the country's last token and at the last token, clean → corrupt; logit difference | An early site at the subject's last token, a late site at the last token (Meng et al. 2022) | The country restores 0.93 to 0.95 through layer 6 and 0.82 at layer 9; the last token takes over in layers 10 and 11 (0.48, 0.78). Unlike the paper's MLP windows, single middle-layer MLPs restore 0.04 or less each |
+| Gendered pronouns: which heads write “he”? | Direct logit attribution of every head at the last token | Heads 10.9 and 9.7 (Mathwin et al. 2023, in Conmy et al. 2023) | 10.9 0.35 and 9.7 0.22 of the logit difference, the next head 0.10 |
+
+Once a week, the Golden workflow runs every example on GPT-2 small's real weights and checks these
+findings (see Development).
 
 ## Explore, experiment, evidence
 
@@ -840,7 +861,7 @@ Rather than trusting a list, Logogram checks every model when it loads, on a sho
 * Layer predictions are offered when the final normalization and unembedding, with any logit
   soft-capping, reproduce the model's output.
 
-GPT-2 small is the model the bundled example was made for. Every method has been run end to end
+GPT-2 small is the model the bundled examples were made for. Every method has been run end to end
 with real weights on GPT-2 small (with a SAELens and an OpenAI SAE), Pythia-70m (with an
 EleutherAI SAE) and Qwen 2.5 0.5B, and the test suite runs the sanity checks on tiny random models
 of the Llama, Pythia, Qwen 2, Gemma 2 and OLMo 2 families without downloading anything. What 0.2
@@ -1029,9 +1050,10 @@ rules as well, checks that `uv.lock` matches `pyproject.toml`, keeps test covera
 the tests with every dependency at the lowest version `pyproject.toml` allows, and audits the
 locked Python and web dependencies for known vulnerabilities; its actions are pinned to commits,
 and Dependabot and CodeQL watch them. Once a week, the Golden workflow runs every method on GPT-2
-small's real weights and checks the bundled example against GPT-2 small's published
-indirect-object circuit (`scripts/validate_real_weights.py --golden`; `--golden-only` runs just
-those checks in a few minutes).
+small's real weights and checks the bundled examples against what was published about GPT-2
+small: the indirect-object circuit, greater-than, factual recall and gendered pronouns
+(`scripts/validate_real_weights.py --golden`; `--golden-only` runs just those checks in a few
+minutes).
 
 Releasing: raise `__version__` and set `__released__` to the release date in
 `src/logogram/__init__.py` (the date drives the "this version is getting old" hint), commit, and

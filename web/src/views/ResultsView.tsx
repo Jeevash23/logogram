@@ -1,5 +1,5 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { ExperimentSpec, Layout, Side, SiteBase, SiteResult, Spec, Summary } from "../api/types";
 import { Heatmap, type Axis } from "../components/Heatmap/Heatmap";
@@ -117,6 +117,7 @@ export function ResultsView() {
           <h1 className={r.title}>{title || spec?.name || run.id}</h1>
           {title && spec && title !== spec.name && <p className={r.specName}>Spec name: {spec.name}</p>}
           {spec && <MethodsLine spec={spec} n={summary?.n_prompts ?? run.live?.nPrompts} clusters={summary?.statistics.clusters} />}
+          {spec?.notes?.trim() && <RunNotes text={spec.notes.trim()} />}
           {environmentText && (
             <p className={r.environment} role="note">
               <Icon name="info" size={14} />
@@ -570,6 +571,38 @@ function MethodsLine({ spec, n, clusters }: { spec: Spec; n: number | undefined;
       <span className={r.sep}>·</span>{Math.round(spec.statistics.ci * 100)}% CI{spec.statistics.cluster ? `, resampling ${clusters ? `${count(clusters)} clusters` : "clusters"} of prompts with the same ${spec.statistics.cluster}` : ""}, {count(spec.statistics.bootstrap)} resamples, seed {spec.statistics.seed}
       <span className={r.sep}>·</span>{modelName(spec.model.id)}{spec.model.revision ? ` @ ${shortRevision(spec.model.revision)}` : ""}, {spec.model.dtype}
     </p>
+  );
+}
+
+/**
+ * The spec's notes, which say what was expected so the result can be read against them: three
+ * lines at most until shown in full.
+ */
+function RunNotes({ text }: { text: string }) {
+  const id = useId();
+  const ref = useRef<HTMLParagraphElement>(null);
+  const [open, setOpen] = useState(false);
+  const [long, setLong] = useState(false);
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element || open) return;
+    const measure = () => setLong(element.scrollHeight > element.clientHeight + 1);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [text, open]);
+  return (
+    <div className={r.notes}>
+      <p ref={ref} id={id} className={open ? r.notesText : `${r.notesText} ${r.notesClamped}`}>
+        <span className={r.notesLabel}>Notes</span> {text}
+      </p>
+      {(long || open) && (
+        <button type="button" className={r.notesToggle} aria-expanded={open} aria-controls={id} onClick={() => setOpen(!open)}>
+          {open ? "Show less" : "Show all notes"}
+        </button>
+      )}
+    </div>
   );
 }
 

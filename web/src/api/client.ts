@@ -9,6 +9,7 @@ import type {
   DeriveRequest,
   Environment,
   EstimateResponse,
+  ExampleInfo,
   FolderListing,
   Job,
   MetricSpec,
@@ -178,7 +179,9 @@ export const api = {
   createProject: (name: string, parent: string | null) =>
     post<ProjectInfo>("/api/projects", { name, parent }),
   openProject: (path: string) => post<ProjectInfo>("/api/projects/open", { path }),
-  openExample: () => post<ProjectInfo>("/api/projects/example"),
+  examples: () => get<ExampleInfo[]>("/api/examples"),
+  /** Copy a bundled example into the projects folder, once, and open it (a copy is never replaced). */
+  openExample: (example: string) => post<ProjectInfo>("/api/projects/example", { example }),
   closeProject: () => post<{ ok: boolean }>("/api/projects/close"),
   project: () => get<ProjectInfo>("/api/project"),
 
