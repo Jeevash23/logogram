@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 
 import { api, type AnalysisOptions } from "../api/client";
-import type { LookAttention, LookFeatures, LookReport } from "../api/types";
+import type { LookAttention, LookContinuation, LookFeatureAlong, LookFeatures, LookReport } from "../api/types";
 import { MOD } from "../components/Header";
 import { Heatmap, type Axis } from "../components/Heatmap/Heatmap";
 import { ScaleBar } from "../components/Heatmap/ScaleBar";
 import { Button, Callout, Checkbox, Empty, Field, Input, Segmented, Spinner, TextArea } from "../components/ui";
 import { inkScale } from "../lib/color";
-import { pct, visibleToken } from "../lib/format";
+import { count, num, pct, visibleToken } from "../lib/format";
 import { useAnalysisContext } from "../lib/hooks";
+import { saeWritesText } from "../lib/spec";
 import { useStore } from "../store/app";
+import { SaidLines } from "./Continuations";
 import s from "./views.module.css";
 import t from "./TextView.module.css";
 
@@ -120,6 +122,7 @@ export function TextView() {
         <>
           <Tokens report={report} onChoose={(p) => void read(p)} busy={busy} />
           <NextTokens report={report} />
+          <Continue key={`${kept.text}|${report.prepend_bos}`} text={kept.text} report={report} options={{ ...options, prepend_bos: report.prepend_bos }} />
           <Lens report={report} />
           <Attention text={kept.text} report={report} options={{ ...options, prepend_bos: report.prepend_bos }} theme={theme} initial={selection?.part === "head" && selection.head !== undefined ? { layer: selection.layer, head: selection.head } : null} />
           {sae.state === "ready" ? (
@@ -209,6 +212,135 @@ function NextTokens({ report }: { report: LookReport }) {
         After token {report.position}, <code className={t.tok}>{visibleToken(token) || "∅"}</code>, the model predicts
       </h2>
       <ProbabilityRows tokens={report.predictions[report.position]} label={`The most likely next tokens after token ${report.position}`} />
+    </section>
+  );
+}
+
+/** A whole number typed into a field, or null while it is empty. */
+const typedNumber = (text: string): number | null => (text.trim() === "" ? null : Number(text));
+
+/** What the model writes after the text, greedily; optionally also with an SAE feature added
+ * where the SAE writes, from a chosen token on, the new tokens included. One above the other. */
+function Continue({ text, report, options }: { text: string; report: LookReport; options: AnalysisOptions }) {
+  const sae = useStore((st) => st.sae);
+  const info = sae.state === "ready" ? sae.info ?? null : null;
+  const first = report.prepend_bos ? 1 : 0;
+  const [tokens, setTokens] = useState<number | null>(20);
+  const [steer, setSteer] = useState(false);
+  const [feature, setFeature] = useState<number | null>(null);
+  const [activation, setActivation] = useState("");
+  const [start, setStart] = useState<number | null>(first);
+  const [along, setAlong] = useState<LookFeatureAlong | null>(null);
+  const [result, setResult] = useState<LookContinuation | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const n = report.tokens.length;
+  const validFeature = !!info && feature !== null && Number.isInteger(feature) && feature >= 0 && feature < info.d_sae;
+  const strength = Number(activation);
+
+  // The feature's largest activation on this text: a scale to choose how strongly to add it.
+  useEffect(() => {
+    setAlong(null);
+    if (!steer || !validFeature || feature === null) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      api.lookFeature({ ...options, text, feature }).then(
+        (d) => !cancelled && setAlong(d),
+        () => undefined,
+      );
+    }, 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [steer, validFeature, feature, text, options.prepend_bos, info?.repo, info?.path, info?.revision, JSON.stringify(options.model)]);
+
+  const problem =
+    tokens === null || !Number.isInteger(tokens) || tokens < 1 || tokens > 64
+      ? "Continue it by 1 to 64 tokens."
+      : !steer
+        ? null
+        : !info
+          ? "Load an SAE in Features to add one of its features."
+          : feature === null || !Number.isInteger(feature) || feature < 0
+            ? "Choose the feature to add: a whole number from 0."
+            : feature >= info.d_sae
+              ? `The SAE has ${count(info.d_sae)} features, 0 to ${count(info.d_sae - 1)}.`
+              : activation.trim() === "" || !Number.isFinite(strength)
+                ? "Give the activation to add it at: a number, in the feature's own units."
+                : start === null || !Number.isInteger(start) || start < 0 || start >= n
+                  ? `Choose a token from 0 to ${n - 1} to add it from.`
+                  : null;
+
+  const run = async () => {
+    if (problem || tokens === null) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const out = await api.lookContinue({
+        ...options,
+        text,
+        tokens,
+        steer: steer && feature !== null && start !== null ? { feature, activation: strength, start } : null,
+      });
+      setResult(out);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const added = result?.steer;
+  return (
+    <section className={t.section} aria-labelledby="text-continue">
+      <h2 id="text-continue" className={s.panelTitle}>
+        What the model writes next
+      </h2>
+      <div className={t.controls}>
+        <Field label="New tokens" className={t.number}>
+          <Input type="number" min={1} max={64} step={1} value={tokens ?? ""} onChange={(e) => setTokens(typedNumber(e.target.value))} />
+        </Field>
+        <Checkbox checked={steer} disabled={!info && !steer} onChange={setSteer}>
+          Add an SAE feature while it continues
+        </Checkbox>
+        <Button onClick={() => void run()} disabled={busy || !!problem}>
+          {busy ? "Continuing…" : "Continue the text"}
+        </Button>
+        {busy && <Spinner label="Continuing the text" />}
+      </div>
+      {steer && info && (
+        <div className={t.controls}>
+          <Field label="Feature" className={t.number}>
+            <Input type="number" min={0} max={info.d_sae - 1} step={1} value={feature ?? ""} placeholder="Number" onChange={(e) => setFeature(typedNumber(e.target.value))} />
+          </Field>
+          <Field label="Activation" className={t.number}>
+            <Input type="number" step="any" value={activation} placeholder="Units" onChange={(e) => setActivation(e.target.value)} />
+          </Field>
+          <Field label="From token" className={t.number}>
+            <Input type="number" min={0} max={n - 1} step={1} value={start ?? ""} onChange={(e) => setStart(typedNumber(e.target.value))} />
+          </Field>
+        </div>
+      )}
+      <p className={s.small}>
+        {!info
+          ? "The most likely token each time (ties to the lowest token id). Load an SAE in Features to add one of its features while it continues."
+          : steer
+            ? `The most likely token each time (ties to the lowest token id). The feature's decoder direction times the activation is what it writes when that active; it is added where the SAE writes (${saeWritesText(info)}) at the token chosen and every token after it, the new ones included.${along ? ` Feature ${along.feature} is at most ${num(along.largest, 2)} on this text, at token ${along.position} (${visibleToken(along.tokens[along.position]) || "∅"}).` : ""}`
+            : "The most likely token each time (ties to the lowest token id), the whole text read again for each."}
+      </p>
+      {problem && (steer || tokens === null || tokens < 1 || tokens > 64) && <p className={t.problem}>{problem}</p>}
+      {error && <Callout tone="error">{error}</Callout>}
+      {result && (
+        <SaidLines
+          lines={[
+            { label: "Without steering", said: result.plain },
+            ...(result.steered && added
+              ? [{ label: `F${added.feature} at ${num(added.activation, 2)} from token ${added.start}`, said: result.steered }]
+              : []),
+          ]}
+        />
+      )}
     </section>
   );
 }

@@ -9,12 +9,14 @@ import type {
   ModelInfo,
   ModelRef,
   PositionSpec,
+  SAEInfo,
   ScopeSpec,
   Side,
   SiteSpec,
   Spec,
+  StreamKind,
 } from "../api/types";
-import { count } from "./format";
+import { count, plural } from "./format";
 import { metricWords } from "./metrics";
 import type { Selection } from "./sites";
 
@@ -106,7 +108,10 @@ export function experimentShort(e: ExperimentSpec): string {
     const arrow = e.direction === "clean_to_corrupt" ? "clean→corrupt" : "corrupt→clean";
     return e.method === "integrated_gradients" ? `Estimated ${arrow}, integrated gradients` : `Estimated ${arrow}`;
   }
-  if (e.kind === "steering") return `Steer ${e.apply_to}→${e.apply_to === "clean" ? "corrupt" : "clean"}`;
+  if (e.kind === "steering") {
+    if (e.direction?.kind === "sae_feature") return `Steer ${e.apply_to} along F${e.direction.feature}`;
+    return `Steer ${e.apply_to}→${e.apply_to === "clean" ? "corrupt" : "clean"}`;
+  }
   if (e.kind === "path_patching") return `Paths ${e.direction === "clean_to_corrupt" ? "clean→corrupt" : "corrupt→clean"}`;
   return { zero: "Zero ablation", mean: "Mean ablation", resample: "Resample ablation" }[e.baseline.kind];
 }
@@ -306,15 +311,48 @@ export function workloadText(spec: Spec, rows: number): string {
     }
     return `That is two forward passes and one backward pass for each of the ${count(rows)} prompts, for every site at once.`;
   }
-  if (e.kind === "steering") return `That is ${count(rows)} steered forward passes on the held-out prompts.`;
+  if (e.kind === "steering") {
+    const steered = `That is ${count(rows)} steered forward passes on the held-out prompts.`;
+    if (!e.continuations) return steered;
+    const { prompts, tokens } = e.continuations;
+    return `${steered} Continuing the first ${plural(prompts, "held-out prompt")} by ${plural(tokens, "token")}, without steering and at each strength, takes a forward pass per token.`;
+  }
   if (e.kind === "path_patching") return `That is ${count(rows)} paths, three forward passes each (fewer when senders come after the receivers).`;
   if (spec.scope.kind === "site_sets") return `That is ${count(rows)} patched forward passes, every site of a set at once.`;
   return `That is ${count(rows)} patched forward passes.`;
 }
 
+/** Where steering along a feature of this SAE adds its decoder direction, as a scope names it: the
+ * site the SAE writes. An SAE on the heads' outputs (z) writes them before the output projection,
+ * which turns them into the layer's attention output, so its scope names that. */
+export function steerSiteOf(info: Pick<SAEInfo, "site" | "layer">): { kind: StreamKind; layer: number } {
+  return { kind: info.site === "head" ? "attn_out" : info.site, layer: info.layer };
+}
+
+/** Where an SAE's output is read into the model, in words: where steering adds one of its
+ * features (as src/logogram/spec.py describe_sae_site says it). */
+export function saeWritesText(info: Pick<SAEInfo, "site" | "layer" | "transcoder">): string {
+  const layer = info.layer;
+  if (info.site === "head") return `the outputs (z) of layer ${layer}'s attention heads, side by side, before the output projection`;
+  if (info.transcoder) return `layer ${layer}'s MLP output, which the transcoder writes`;
+  switch (info.site) {
+    case "resid_pre":
+      return `the residual stream entering layer ${layer}`;
+    case "resid_post":
+      return `the residual stream leaving layer ${layer}`;
+    case "attn_out":
+      return `layer ${layer}'s attention output`;
+    case "mlp_out":
+      return `layer ${layer}'s MLP output`;
+    default:
+      return `the ${info.site} of layer ${layer}`;
+  }
+}
+
 /** Fit a sweep to a method. Direct attribution reads what heads, attention and MLP outputs write,
- * at the last token where the logit difference is measured. */
-export function scopeFor(kind: ExperimentKind, scope: ScopeSpec): ScopeSpec {
+ * at the last token where the logit difference is measured. Steering along an SAE feature
+ * (`steerSite`, where its SAE writes) adds it at that one site. */
+export function scopeFor(kind: ExperimentKind, scope: ScopeSpec, steerSite: { kind: StreamKind; layer: number } | null = null): ScopeSpec {
   const last: PositionSpec = { kind: "last" };
   // Only attribution patching sweeps every SAE feature; other methods patch chosen ones.
   if (scope.kind === "features" && kind !== "attribution_patching") return { kind: "heads", position: { kind: "all" } };
@@ -326,6 +364,12 @@ export function scopeFor(kind: ExperimentKind, scope: ScopeSpec): ScopeSpec {
   if (kind === "steering") {
     // Steering adds to one residual stream site per layer, at one token.
     const single = (p: PositionSpec) => (p.kind === "all" ? last : p);
+    if (steerSite) {
+      // Along an SAE feature: where the SAE writes, at the tokens already chosen there.
+      const here = scope.kind === "sites" ? scope.sites.filter((x) => x.kind === steerSite.kind && x.layer === steerSite.layer) : [];
+      const positions = here.length ? here.map((x) => single(x.position)) : "position" in scope ? [single(scope.position)] : [last];
+      return { kind: "sites", sites: positions.map((position) => ({ kind: steerSite.kind, layer: steerSite.layer, head: null, position })) };
+    }
     if (scope.kind === "layer_components") {
       const resid = scope.components.find((c) => c === "resid_pre" || c === "resid_mid" || c === "resid_post") ?? "resid_pre";
       return { kind: "layer_components", components: [resid], position: single(scope.position) };

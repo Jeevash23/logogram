@@ -3,12 +3,12 @@ import { useEffect, useMemo, useState } from "react";
 import type { BaselineSpec, ExperimentKind, PathReceiverSpec, PositionSpec, SAEInfo, ScopeSpec, StreamKind } from "../api/types";
 import { Button, Checkbox, Choices, Field, Input, Segmented, Select, TextArea } from "../components/ui";
 import { MOD } from "../components/Header";
-import { plural, shortRevision } from "../lib/format";
+import { count, plural, shortRevision } from "../lib/format";
 import { modelName } from "../lib/hooks";
 import { EVERYTHING, SET_SITE_KINDS } from "../lib/circuits";
 import { KIND_SHORT, parseHeadQuery } from "../lib/sites";
 import { buildSpec, datasetFacts, parseStrengths, savedDifferences, usesFeatures } from "../lib/buildSpec";
-import { receiverLabel, scopeFor, scopeShort, siteText, suggestName, workload } from "../lib/spec";
+import { receiverLabel, saeWritesText, scopeFor, scopeShort, siteText, steerSiteOf, suggestName, workload } from "../lib/spec";
 import { useStore, type FormState } from "../store/app";
 import { MetricSettings } from "./MetricSettings";
 import { ClusterChooser } from "./StatisticsSettings";
@@ -40,7 +40,7 @@ const METHODS: { value: ExperimentKind; title: string; detail: string }[] = [
   {
     value: "steering",
     title: "Steering",
-    detail: "Add the mean clean–corrupt difference at several strengths, against a random control.",
+    detail: "Add the mean clean–corrupt difference or an SAE feature at several strengths, against a random control.",
   },
 ];
 
@@ -63,6 +63,9 @@ export function ExperimentView() {
   const uniformLength = lengths ? lengths.length === 1 : null;
 
   const sae = useStore((st) => st.sae);
+  const saeInfo = sae.state === "ready" ? sae.info ?? null : null;
+  // Steering along an SAE feature adds it where the SAE writes, at one site.
+  const steersFeature = form.steerDirection === "sae_feature";
   const facts = useMemo(() => datasetFacts(dataset, form.limit), [dataset, form.limit]);
   const built = buildSpec(form, { model, datasetPath, datasetSha: dataset?.sha256 ?? null, sae, facts });
   const differences = savedDifferences(form, model, datasetPath, dataset?.sha256 ?? null, modelName);
@@ -151,12 +154,12 @@ export function ExperimentView() {
           <Choices
             label="Method"
             value={form.kind}
-            onChange={(kind) => setForm({ kind, scope: scopeFor(kind, form.scope) })}
+            onChange={(kind) => setForm({ kind, scope: scopeFor(kind, form.scope, kind === "steering" && steersFeature && saeInfo ? steerSiteOf(saeInfo) : null) })}
             columns={2}
             options={METHODS}
           />
           {form.kind === "steering" ? (
-            <SteeringSettings form={form} onChange={setForm} />
+            <SteeringSettings form={form} onChange={setForm} sae={saeInfo} />
           ) : form.kind === "direct_logit_attribution" ? (
             <div className={e.stack}>
               <Choices
@@ -209,7 +212,8 @@ export function ExperimentView() {
           <h2 className={e.sectionTitle}>What to sweep</h2>
           <ScopeEditor
             method={form.kind}
-            saeLoaded={sae.state === "ready" ? sae.info ?? null : null}
+            saeLoaded={saeInfo}
+            steersFeature={form.kind === "steering" && steersFeature}
             scope={form.scope}
             onChange={(scope) => setForm({ scope })}
             labels={labels}
@@ -444,37 +448,104 @@ function AttributionSettings({ form, onChange, features }: { form: FormState; on
   );
 }
 
-function SteeringSettings({ form, onChange }: { form: FormState; onChange: (patch: Partial<FormState>) => void }) {
+/** A whole number typed into a field, or null while it is empty. */
+const wholeOrNull = (text: string): number | null => (text.trim() === "" ? null : Number(text));
+
+function SteeringSettings({ form, onChange, sae }: { form: FormState; onChange: (patch: Partial<FormState>) => void; sae: SAEInfo | null }) {
   const strengths = parseStrengths(form.steerStrengths);
+  const feature = form.steerDirection === "sae_feature";
+  const named = form.saeRef ? `${form.saeRef.repo}${form.saeRef.path ? `/${form.saeRef.path}` : ""}` : null;
+  const chooseDirection = (steerDirection: FormState["steerDirection"]) => {
+    if (steerDirection === "sae_feature") {
+      // Added where the loaded SAE writes: the scope becomes that site.
+      onChange({
+        steerDirection,
+        ...(sae ? { saeRef: { repo: sae.repo, path: sae.path, revision: sae.revision }, scope: scopeFor("steering", form.scope, steerSiteOf(sae)) } : {}),
+      });
+    } else {
+      onChange({ steerDirection, scope: scopeFor("steering", form.scope) });
+    }
+  };
   return (
     <div className={e.stack}>
+      <Choices
+        label="Direction"
+        value={form.steerDirection}
+        onChange={chooseDirection}
+        columns={2}
+        options={[
+          {
+            value: "mean_difference",
+            title: "The mean difference of the pairs",
+            detail: "The mean of (other prompt − steered prompt) over the training pairs, added to the residual stream.",
+          },
+          {
+            value: "sae_feature",
+            title: "An SAE feature",
+            detail: sae
+              ? `Its decoder direction, added where the SAE writes: ${saeWritesText(sae)}.`
+              : "Its decoder direction, added where its SAE writes. Needs a loaded SAE.",
+          },
+        ]}
+      />
+      {feature && (
+        <div className={s.grid3}>
+          <Field
+            label="Feature"
+            help={
+              sae
+                ? `One of the ${count(sae.d_sae)} features of ${sae.repo}${sae.path ? `/${sae.path}` : ""}.`
+                : named
+                  ? `A feature of ${named}, which isn't loaded. Load it in Explore → Features to check the feature and where it writes.`
+                  : "Load an SAE in Explore → Features first."
+            }
+          >
+            <Input
+              type="number"
+              min={0}
+              max={sae ? sae.d_sae - 1 : undefined}
+              step={1}
+              value={form.steerFeature ?? ""}
+              placeholder="Number"
+              onChange={(ev) => onChange({ steerFeature: wholeOrNull(ev.target.value) })}
+              aria-invalid={form.steerFeature === null}
+            />
+          </Field>
+        </div>
+      )}
+      {feature && form.steerFeature === null && <p className={e.required}>Required: the feature to steer along. Features shows where each one fires.</p>}
       <Choices
         label="Prompts to steer"
         value={form.steerApplyTo}
         onChange={(steerApplyTo) => onChange({ steerApplyTo })}
         columns={2}
-        options={[
-          {
-            value: "corrupt",
-            title: "Steer corrupt prompts toward clean",
-            detail: "Adds the mean of (clean − corrupt). Does this direction bring the behavior back?",
-          },
-          {
-            value: "clean",
-            title: "Steer clean prompts toward corrupt",
-            detail: "Adds the mean of (corrupt − clean). Does it take the behavior away?",
-          },
-        ]}
+        options={
+          feature
+            ? [
+                { value: "corrupt", title: "Steer corrupt prompts", detail: "1 means they moved as far as switching to the clean prompt. Does the feature bring the behavior back?" },
+                { value: "clean", title: "Steer clean prompts", detail: "1 means they moved as far as switching to the corrupt prompt. Does it take the behavior away?" },
+              ]
+            : [
+                { value: "corrupt", title: "Steer corrupt prompts toward clean", detail: "Adds the mean of (clean − corrupt). Does this direction bring the behavior back?" },
+                { value: "clean", title: "Steer clean prompts toward corrupt", detail: "Adds the mean of (corrupt − clean). Does it take the behavior away?" },
+              ]
+        }
       />
-      {!form.steerApplyTo && <p className={e.required}>Required: it decides the direction, so there's no default.</p>}
+      {!form.steerApplyTo && <p className={e.required}>Required: it decides what 1 means, so there's no default.</p>}
       <div className={s.grid3}>
         <Field
           label="Strengths"
-          help={"error" in strengths ? strengths.error : "Multiples of the mean difference. 1 adds the whole difference; negative values push the other way."}
+          help={
+            "error" in strengths
+              ? strengths.error
+              : feature
+                ? "Multiples of the feature's typical activation: the mean of its positive activations at the steered token of the training pairs' prompts. 1 adds what the feature writes when that active; negative values push the other way."
+                : "Multiples of the mean difference. 1 adds the whole difference; negative values push the other way."
+          }
         >
           <Input value={form.steerStrengths} onChange={(ev) => onChange({ steerStrengths: ev.target.value })} spellCheck={false} aria-invalid={"error" in strengths} />
         </Field>
-        <Field label="Pairs that compute the direction" help="The rest are held out, and only they are measured.">
+        <Field label={feature ? "Pairs that measure its typical activation" : "Pairs that compute the direction"} help="The rest are held out, and only they are measured.">
           <Select value={String(form.steerTrain)} onChange={(ev) => onChange({ steerTrain: Number(ev.target.value) })}>
             <option value="0.25">25%</option>
             <option value="0.5">50%</option>
@@ -488,6 +559,26 @@ function SteeringSettings({ form, onChange }: { form: FormState; onChange: (patc
       <Checkbox checked={form.steerControl} onChange={(steerControl) => onChange({ steerControl })}>
         Run a random direction of the same length, at the same strengths, as a control
       </Checkbox>
+      <Checkbox checked={form.steerContinue} onChange={(steerContinue) => onChange({ steerContinue })}>
+        Record what the steered model says
+      </Checkbox>
+      {form.steerContinue && (
+        <>
+          <div className={s.grid3}>
+            <Field label="Held-out prompts to continue" help="The first ones in the split, 1 to 8.">
+              <Input type="number" min={1} max={8} step={1} value={form.steerContinuePrompts} onChange={(ev) => onChange({ steerContinuePrompts: Number(ev.target.value) })} />
+            </Field>
+            <Field label="New tokens" help="For each prompt, 1 to 64.">
+              <Input type="number" min={1} max={64} step={1} value={form.steerContinueTokens} onChange={(ev) => onChange({ steerContinueTokens: Number(ev.target.value) })} />
+            </Field>
+          </div>
+          <p className={s.small}>
+            Greedy: the most likely token each time, ties to the lowest token id. Each prompt is continued without steering, at
+            each strength{form.steerControl ? " and along the random control" : ""}. Every forward pass adds the vector at the
+            steered token of the prompt, as when it is measured; the tokens the model generates aren't steered themselves.
+          </p>
+        </>
+      )}
     </div>
   );
 }
@@ -651,6 +742,7 @@ function HeldOutChoice({ scope, onChange }: { scope: FeaturesScope; onChange: (s
 function ScopeEditor({
   method,
   saeLoaded,
+  steersFeature,
   scope,
   onChange,
   labels,
@@ -660,6 +752,8 @@ function ScopeEditor({
   method: ExperimentKind;
   /** The loaded SAE: attribution patching can then estimate every one of its features. */
   saeLoaded: SAEInfo | null;
+  /** Steering along an SAE feature: added where its SAE writes, at one site. */
+  steersFeature: boolean;
   scope: ScopeSpec;
   onChange: (s: ScopeSpec) => void;
   labels: string[];
@@ -677,7 +771,9 @@ function ScopeEditor({
   // Sets of sites are intervened on together, which patching and ablation do.
   const setsAllowed = method === "activation_patching" || method === "ablation";
   // Why some scopes can't be chosen with this method, said once under the choices.
-  const unavailable = steering
+  const unavailable = steersFeature
+    ? "Steering along an SAE feature adds it where the SAE writes, at one token: one site of one layer."
+    : steering
     ? "Steering adds a direction to the residual stream at one token, so it sweeps no heads, positions or sets of sites."
     : direct
       ? "Direct effects are read at the last token only, and sets of sites need activation patching or ablation."
@@ -702,7 +798,7 @@ function ScopeEditor({
         options={[
           { value: "heads", label: "Layer × head", disabled: steering, reason: unavailable },
           { value: "layer_position", label: "Layer × position", disabled: direct || steering || paths, reason: unavailable },
-          { value: "layer_components", label: steering ? "One site in every layer" : "Attention and MLP per layer" },
+          { value: "layer_components", label: steering ? "One site in every layer" : "Attention and MLP per layer", disabled: steersFeature, reason: unavailable },
           ...(method === "attribution_patching" && (saeLoaded || kind === "features")
             ? [{ value: "features" as const, label: "Every SAE feature" }]
             : []),
@@ -844,7 +940,13 @@ function ScopeEditor({
               />
             </Field>
           ))}
-          <p className={s.faint}>Chosen from the map. Pick another sweep above to go back to a full grid.</p>
+          <p className={s.faint}>
+            {steersFeature
+              ? saeLoaded
+                ? `Where the SAE writes: ${saeWritesText(saeLoaded)}.`
+                : "Where the feature's SAE writes. Load it in Explore → Features to check the site."
+              : "Chosen from the map. Pick another sweep above to go back to a full grid."}
+          </p>
         </div>
       )}
     </div>

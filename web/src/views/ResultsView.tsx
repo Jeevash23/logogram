@@ -1,17 +1,17 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 
-import type { ExperimentSpec, Layout, Side, SiteBase, SiteResult, Spec, Summary } from "../api/types";
+import type { ExperimentSpec, Layout, Side, SiteBase, SiteResult, Spec, SteeringFeature, Summary } from "../api/types";
 import { Heatmap, type Axis } from "../components/Heatmap/Heatmap";
 import { ScaleBar } from "../components/Heatmap/ScaleBar";
 import { Logogram } from "../components/Logogram";
 import { Button, Callout, Checkbox, Empty, Icon, menuClasses, Progress, Segmented } from "../components/ui";
 import { divergingScale, niceBound, SCALE_FLOOR, type ColorScale, type ResolvedTheme } from "../lib/color";
-import { ago, capitalize, ci, count, duration, num, pct, qText, shortRevision, signed } from "../lib/format";
+import { ago, capitalize, ci, count, duration, num, pct, plural, qText, shortRevision, signed } from "../lib/format";
 import { modelName, siteValue, useActiveRun, useRunProfile } from "../lib/hooks";
 import { findSite, gridKey, layoutTitle, selectionOfSite, siteGrid, type Selection } from "../lib/sites";
 import { metricWords } from "../lib/metrics";
-import { baselineText, experimentText, measureOf, measureWords, positionText } from "../lib/spec";
+import { baselineText, experimentText, measureOf, measureWords, positionText, saeWritesText } from "../lib/spec";
 import { useStore } from "../store/app";
 import { Distribution } from "../components/Distribution";
 import { api } from "../api/client";
@@ -21,6 +21,7 @@ import { environmentChanges, environmentNote } from "../lib/environment";
 import { CircuitDialog } from "../components/CircuitDialog";
 import { rankedSites, universeText } from "../lib/circuits";
 import { CircuitResults } from "./CircuitResults";
+import { Continuations } from "./Continuations";
 import { FlagMark, Forest } from "./Forest";
 import s from "./views.module.css";
 import r from "./ResultsView.module.css";
@@ -240,7 +241,7 @@ export function ResultsView() {
                 <dd className="figure">{count(summary.steering.test.length)}</dd>
               </div>
               <div>
-                <dt>Pairs that computed it</dt>
+                <dt>{summary.steering.feature ? "Pairs that measured strength 1" : "Pairs that computed it"}</dt>
                 <dd className="figure">{count(summary.steering.train.length)}</dd>
               </div>
               {(() => {
@@ -261,6 +262,12 @@ export function ResultsView() {
                     {count(summary.steering.control.filter((c) => c.beats_control).length)}
                     <span className={r.figureOf}> of {count(summary.steering.control.length)}</span>
                   </dd>
+                </div>
+              )}
+              {summary.steering.feature && summary.steering.feature.activations.length > 0 && (
+                <div>
+                  <dt>Strength 1: F{summary.steering.feature.feature}'s typical activation</dt>
+                  <dd className="figure">{summary.steering.feature.activations.map((a) => num(a, 2)).join(", ")}</dd>
                 </div>
               )}
             </>
@@ -369,6 +376,8 @@ export function ResultsView() {
       {layout?.kind === "sites" && (
         <Forest ciLevel={run.ciLevel} results={resultList} selectedIndex={selectedSite?.index ?? null} onSelect={(site) => select(selectionOfSite(site))} flagged={flagged} limit={50} />
       )}
+      {summary?.steering?.feature && <SteeredFeature feature={summary.steering.feature} trained={summary.steering.train.length} />}
+      {run.detail?.continuations && <Continuations data={run.detail.continuations} selectedRow={selectedSite?.row ?? null} />}
       {summary && <Corrections summary={summary} />}
 
       {summary?.warnings.map((w) => (
@@ -382,6 +391,24 @@ export function ResultsView() {
 }
 
 const formatCell = (v: number) => num(v, Math.abs(v) >= 10 ? 0 : 2);
+
+/** What steering along an SAE feature added: its decoder direction where the SAE writes, with
+ * strength 1 at its typical activation. */
+function SteeredFeature({ feature, trained }: { feature: SteeringFeature; trained: number }) {
+  const typical = feature.activations.map((a) => num(a, 3)).join(", ");
+  const fired = feature.fired.reduce((a, b) => a + b, 0);
+  const measured = feature.measured.reduce((a, b) => a + b, 0);
+  return (
+    <p className={s.small}>
+      Steered along feature {feature.feature} of {feature.sae.repo}
+      {feature.sae.path ? `/${feature.sae.path}` : ""}: its decoder direction, added where the SAE writes,{" "}
+      {saeWritesText(feature)}. Strength 1 adds what the feature writes at its typical activation, {typical}: the mean of its
+      positive activations at the steered token of the clean and corrupt prompts of the {plural(trained, "training pair")}{" "}
+      (positive in {count(fired)} of {count(measured)}).
+      {feature.standardized ? " The SAE standardizes its inputs, so each prompt's vector is also scaled by the spread of its own activation there." : ""}
+    </p>
+  );
+}
 
 /**
  * Corrections for testing many sites at once: how many sites exclude zero with a band that holds
@@ -559,7 +586,7 @@ function MethodsLine({ spec, n, clusters }: { spec: Spec; n: number | undefined;
               : e.kind === "path_patching"
                 ? `Path patching ${e.direction === "clean_to_corrupt" ? "clean → corrupt" : "corrupt → clean"} into ${e.receivers.map((x) => (x.kind === "logits" ? "logits" : `L${x.layer} H${x.head} ${x.input}`)).join(", ")}${e.freeze_mlps ? ", MLPs held" : ""}`
                 : e.kind === "steering"
-                ? `Steer ${e.apply_to} → ${e.apply_to === "clean" ? "corrupt" : "clean"} (${e.coefficients.map((c) => `×${c}`.replace("-", "−")).join(", ")}${e.control ? ", random control" : ""})`
+                ? `Steer ${e.apply_to} ${e.direction?.kind === "sae_feature" ? `along SAE feature ${e.direction.feature}` : `→ ${e.apply_to === "clean" ? "corrupt" : "clean"}`} (${e.coefficients.map((c) => `×${c}`.replace("-", "−")).join(", ")}${e.control ? ", random control" : ""})`
                 : `Ablate (${baselineText(e.baseline)})`}
       </strong>
       {" "}{site}{scope.kind === "site_sets" ? ", each intervened on at once" : ` at ${position}`}

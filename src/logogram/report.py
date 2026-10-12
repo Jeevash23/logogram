@@ -482,19 +482,14 @@ def _continuations_html(continuations: dict[str, Any] | None) -> str:
         "time, ties to the lowest token id) of the first held-out prompts. Each forward pass adds "
         "the vector at the steered site and token of the prompt, as when it was measured; the "
         "generated tokens aren't steered themselves. Tokens are shown as the model splits them: "
-        "· is a space.</p>"
+        "· is a space, ⏎ a line break.</p>"
     ]
     for prompt in continuations["prompts"]:
         parts.append(f"<h3>Prompt {prompt['index']}</h3><p class='lede'>{esc(prompt['text'])}</p>")
         for row in rows:
-            lines = [
-                (
-                    "Without steering",
-                    prompt["unsteered"]["tokens"],
-                    False,
-                )
-            ] + [
-                (s["key"] + (" (control)" if s["control"] else ""), s["tokens"], s["control"])
+            # The random control's lines are named as its columns are ("random ×1"), and muted.
+            lines = [("Without steering", prompt["unsteered"]["tokens"], False)] + [
+                (s["key"], s["tokens"], s["control"])
                 for s in prompt["steered"]
                 if s["row"] == row["row"]
             ]

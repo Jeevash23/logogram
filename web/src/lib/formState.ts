@@ -13,6 +13,7 @@ import type {
   ScopeSpec,
   Side,
   Spec,
+  SteeringDirection,
 } from "../api/types";
 
 /** Steps of integrated gradients the form offers until changed; the spec allows 2 to 64. */
@@ -36,6 +37,15 @@ export interface FormState {
   steerTrain: number;
   steerSeed: number;
   steerControl: boolean;
+  /** What steering adds: the mean difference of the pairs, or a feature of the SAE (`saeRef`, or
+   * the loaded one) where the SAE writes, `steerFeature` being its number. */
+  steerDirection: SteeringDirection["kind"];
+  steerFeature: number | null;
+  /** Whether the run records what the steered model says: greedy continuations of the first
+   * `steerContinuePrompts` held-out prompts, `steerContinueTokens` new tokens each. */
+  steerContinue: boolean;
+  steerContinuePrompts: number;
+  steerContinueTokens: number;
   /** Path patching: where the paths end (at least one), and whether MLPs are held too. */
   pathReceivers: PathReceiverSpec[];
   pathFreezeMlps: boolean;
@@ -80,6 +90,11 @@ export const DEFAULT_FORM: FormState = {
   steerTrain: 0.5,
   steerSeed: 0,
   steerControl: true,
+  steerDirection: "mean_difference",
+  steerFeature: null,
+  steerContinue: false,
+  steerContinuePrompts: 3,
+  steerContinueTokens: 20,
   pathReceivers: [],
   pathFreezeMlps: false,
   atpMethod: "gradient",
@@ -120,6 +135,12 @@ export function formFromSpec(spec: Spec): FormState {
     steerTrain: e.kind === "steering" ? e.train_fraction : DEFAULT_FORM.steerTrain,
     steerSeed: e.kind === "steering" ? e.seed : DEFAULT_FORM.steerSeed,
     steerControl: e.kind === "steering" ? e.control : DEFAULT_FORM.steerControl,
+    // Specs from before steering had a direction steered along the mean difference.
+    steerDirection: e.kind === "steering" ? (e.direction?.kind ?? "mean_difference") : DEFAULT_FORM.steerDirection,
+    steerFeature: e.kind === "steering" && e.direction?.kind === "sae_feature" ? e.direction.feature : null,
+    steerContinue: e.kind === "steering" && !!e.continuations,
+    steerContinuePrompts: e.kind === "steering" && e.continuations ? e.continuations.prompts : DEFAULT_FORM.steerContinuePrompts,
+    steerContinueTokens: e.kind === "steering" && e.continuations ? e.continuations.tokens : DEFAULT_FORM.steerContinueTokens,
     pathReceivers: e.kind === "path_patching" ? e.receivers : [],
     pathFreezeMlps: e.kind === "path_patching" ? e.freeze_mlps : false,
     atpMethod: e.kind === "attribution_patching" ? (e.method ?? "gradient") : DEFAULT_FORM.atpMethod,

@@ -199,6 +199,17 @@ tokens after each, what each layer would predict at a chosen token (the logit le
 for the model), where a head attends, and, with an SAE loaded, the features that fire. Nothing is
 saved. From Python, `lg.look(model, "some text")` returns the same.
 
+**Continue the text** shows what the model writes next: 1 to 64 new tokens, each the most likely
+one (ties to the lowest token id), the whole text read again for each. With an SAE loaded, a second
+continuation adds one of its features while the model writes: its decoder direction times an
+activation you give, in the feature's own units, which is what the feature writes when that active
+(times each token's spread, for SAEs that standardize their inputs). It is added where the SAE
+writes (see steering along an SAE feature below), at every position from a chosen token on, the new
+tokens included. The view shows the feature's largest activation on the text for scale, and the
+two continuations one above the other. From Python,
+`lg.continue_text(model, "some text", tokens=20, sae=sae, feature=1234, activation=8.0, start=1)`
+returns both.
+
 **Attention** also finds heads by what they attend to, on seeded sequences of random tokens
 repeated twice (as in Olsson et al., 2022): previous-token heads attend to the token just before,
 duplicate-token heads to the earlier copy of the current token, and induction heads to the token
@@ -340,6 +351,17 @@ lg.write_dataset(project, "greater-than", records)
 sae = lg.load_sae("jbloom/GPT2-Small-SAEs-Reformatted", "blocks.8.hook_resid_pre", model=model)
 lg.feature_writes(model, sae, 1234, "When Mary and John went to the store, John gave a drink to",
                   prepend_bos=True)   # the tokens the feature promotes and suppresses directly
+lg.continue_text(model, "When Mary and John went to the store,", tokens=20,
+                 sae=sae, feature=1234, activation=8.0)   # greedy, without and with the feature
+
+steered = lg.run(lg.load_spec({**spec.model_dump(), "experiment": {
+    "kind": "steering", "apply_to": "corrupt", "direction": {"kind": "sae_feature", "feature": 1234},
+    "coefficients": [1, 4], "train_fraction": 0.5, "seed": 0, "control": True,
+    "continuations": {"prompts": 3, "tokens": 20}},
+    "scope": {"kind": "sites", "sites": [{"kind": "resid_pre", "layer": 8, "position": {"kind": "last"}}]},
+    "sae": {"repo": "jbloom/GPT2-Small-SAEs-Reformatted", "path": "blocks.8.hook_resid_pre",
+            "revision": None}}), project, model=model, sae=sae)
+steered.continuations()   # what the steered model said, prompt by prompt and strength by strength
 ```
 
 Tables come back as pandas DataFrames when pandas is installed, and as pyarrow Tables otherwise.
@@ -567,6 +589,39 @@ prompts that mix the ABBA and BABA orders, the difference at the last token flip
 so the mean cancels and steering does no more than the control; generate prompts of one order to
 steer. When no site and strength does more than the control, the results say so.
 
+**Steering along an SAE feature** adds one feature's decoder direction, W_dec[f], instead of the
+mean difference (**Direction** in the form, or **Steer along this feature** in a feature's panel in
+Explore → Features). It is added where the SAE's output is read into the model, and the scope names
+that site alone, at one token of each prompt:
+
+* an SAE on a residual stream site adds it to that site of its layer;
+* an SAE on an attention output adds it to that layer's attention output, which is the same as
+  adding it to the residual stream between attention and MLP (after the layer, in models whose
+  attention and MLP read the same stream);
+* an SAE on an MLP output, and a transcoder (which writes its MLP's output), add it to that MLP's
+  output, the same as adding it to the residual stream after the layer;
+* an SAE on attention heads' outputs adds it to every head's output `z`, before the output
+  projection carries it into the attention output (the scope names that attention output).
+
+Tests measure each of these equivalences on tiny models, through TransformerLens's own hooks.
+W_dec[f] times a is what the feature writes when its activation is a, so strength 1 is the
+feature's **typical activation**: the mean of its positive activations at the steered token of the
+training pairs' clean and corrupt prompts. A run records it (with how often the feature fired
+there), and refuses a feature that never fires there. SAEs that standardize their inputs scale what
+a feature writes by the input's spread, so there each held-out prompt's vector is also multiplied
+by the standard deviation of its own activation at that token. The random control is a random
+direction with the length of the steering vector at strength 1. A scope that doesn't name the SAE's
+site, a feature the SAE doesn't have and an SAE made for another model are refused with the reason.
+
+**What the steered model says**: with `continuations`, a steering run also continues the first
+held-out prompts (in the split's order, up to 8, by up to 64 tokens): without steering, at each
+strength and along the control. Decoding is greedy, the most likely token each time with ties to the
+lowest token id, so the same spec gives the same continuations. Each forward pass adds the vector
+at the steered site and token of the prompt, as when it was measured; the tokens the model
+generates aren't steered themselves. They are saved as `continuations.json` beside the results,
+shown under the results map (each prompt, then one line of tokens per strength, the control's lines
+muted), and included in the HTML report.
+
 **SAE features.** A sparse autoencoder (SAE) rewrites one of the model's activations as a few active
 features out of thousands, each a direction in the model, plus an error it misses. In
 **Explore → Features**, load a published SAE from Hugging Face (Logogram suggests ones made for the
@@ -729,7 +784,7 @@ without continuations.
 | `tokenization.chat_template` | `null` feeds each prompt as raw text. `{"kind": "user_turn", "system": null}` makes each prompt the person's message in the model's own chat template, so the answer is the first token of the reply; `{"kind": "assistant_prefix", "system": null, "user": "…"}` makes it the start of the model's reply to a fixed message. The template is the one the tokenizer ships at the model's revision. With a template, `prepend_bos` is `false`: the template writes the beginning of the text. |
 | `model.process_weights` | Fold LayerNorm and center weights, as TransformerLens does by default. Logit differences don't change. Value biases are folded into the attention output's bias, so zero ablation of head outputs and heads' direct effects do change (by up to several logits in Qwen 2.5, whose value biases are large); a layer's attention output doesn't. |
 | `dataset.sha256` | If set, the run refuses a dataset file that has changed. |
-| `experiment` | `{"kind": "activation_patching", "direction": "clean_to_corrupt" \| "corrupt_to_clean"}`, `{"kind": "ablation", "baseline": …}` with `{"kind": "zero"}`, `{"kind": "mean", "reference": "clean" \| "corrupt"}` or `{"kind": "resample", "pool": "clean" \| "corrupt", "donors": 10, "seed": 0}`, `{"kind": "attribution_patching", "direction": …, "method": "gradient", "steps": null}` (same directions as patching; or `"method": "integrated_gradients", "steps": 8`), `{"kind": "direct_logit_attribution", "prompts": "clean" \| "corrupt"}`, `{"kind": "path_patching", "direction": …, "receivers": [{"kind": "head", "layer": 9, "head": 9, "input": "q" \| "k" \| "v"}, {"kind": "logits"}], "freeze_mlps": false}`, or `{"kind": "steering", "apply_to": "clean" \| "corrupt", "direction": {"kind": "mean_difference"}, "coefficients": [-1, 1, 2], "train_fraction": 0.5, "seed": 0, "control": true, "continuations": null}` with a scope of one residual component per layer (`layer_components`) or residual `sites`, at one token. The direction can instead be one SAE feature's decoder direction, `{"kind": "sae_feature", "feature": 1234}`, and `continuations` can be `{"prompts": 3, "tokens": 20}` to record what the steered model goes on to say |
+| `experiment` | `{"kind": "activation_patching", "direction": "clean_to_corrupt" \| "corrupt_to_clean"}`, `{"kind": "ablation", "baseline": …}` with `{"kind": "zero"}`, `{"kind": "mean", "reference": "clean" \| "corrupt"}` or `{"kind": "resample", "pool": "clean" \| "corrupt", "donors": 10, "seed": 0}`, `{"kind": "attribution_patching", "direction": …, "method": "gradient", "steps": null}` (same directions as patching; or `"method": "integrated_gradients", "steps": 8`), `{"kind": "direct_logit_attribution", "prompts": "clean" \| "corrupt"}`, `{"kind": "path_patching", "direction": …, "receivers": [{"kind": "head", "layer": 9, "head": 9, "input": "q" \| "k" \| "v"}, {"kind": "logits"}], "freeze_mlps": false}`, or `{"kind": "steering", "apply_to": "clean" \| "corrupt", "direction": {"kind": "mean_difference"}, "coefficients": [-1, 1, 2], "train_fraction": 0.5, "seed": 0, "control": true, "continuations": null}` with a scope of one residual component per layer (`layer_components`) or residual `sites`, at one token. The direction can instead be one SAE feature's decoder direction, `{"kind": "sae_feature", "feature": 1234}` (with the spec's `sae`, and `sites` naming where the SAE writes), and `continuations` can be `{"prompts": 3, "tokens": 20}` to record what the steered model goes on to say |
 | `scope` | `{"kind": "heads", "position": …}`, `{"kind": "layer_position", "site": "resid_pre", "positions": "each" \| "labels"}`, `{"kind": "layer_components", "components": ["attn_out", "mlp_out"], "position": …}` `{"kind": "sites", "sites": [{"kind": "head", "layer": 9, "head": 9, "position": {"kind": "label", "label": "end"}}]}` (feature sites are `{"kind": "sae_feature", "layer": 8, "feature": 1234, "position": …}`), for attribution patching, `{"kind": "features", "position": …, "top": 50, "choose_on": 0.5, "seed": 0}` (`choose_on` and `seed` both `null` to choose and report on every prompt), or `{"kind": "site_sets", "universe": ["head"], "sets": [{"label": "circuit", "sites": […], "complement": true}]}` |
 | `sae` | The SAE that feature sites belong to: `{"repo": "…", "path": "blocks.8.hook_resid_pre", "revision": "…"}`. The revision is pinned when a run starts. |
 | `metric` | `{"kind": "logit_diff" \| "logprob_diff" \| "logprob" \| "prob" \| "prob_diff", "normalization": …}` or `{"kind": "kl", "target": "clean" \| "corrupt", "normalization": …}` |
@@ -1107,8 +1162,7 @@ Model access goes through `logogram.backends.base.ModelBackend`. TransformerLens
 backend today; remote execution and other libraries can be added behind the same interface.
 Not built yet, with room left for them: chat templates for models made for chat, attribution
 graphs over transcoders, cross-layer transcoders and crosscoders, the first Gemma Scope's NumPy
-SAE files, steering with SAE features, remote compute, a native desktop wrapper, plugins and
-assistants.
+SAE files, remote compute, a native desktop wrapper, plugins and assistants.
 
 ## License
 

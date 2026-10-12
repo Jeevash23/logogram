@@ -46,8 +46,11 @@ import type {
   PredictionSettings,
   HeadKindsReport,
   LookAttention,
+  LookContinuation,
+  LookFeatureAlong,
   LookFeatures,
   LookReport,
+  LookSteer,
   QueueAdded,
   QueuedRun,
   RunMemory,
@@ -231,6 +234,11 @@ export const api = {
   lookAttention: (body: { text: string; layer: number; head: number } & AnalysisOptions) =>
     post<LookAttention>("/api/look/attention", body),
   lookFeatures: (body: { text: string; top_k: number } & AnalysisOptions) => post<LookFeatures>("/api/look/features", body),
+  /** One feature of the loaded SAE along the text, and its largest activation there. */
+  lookFeature: (body: { text: string; feature: number } & AnalysisOptions) => post<LookFeatureAlong>("/api/look/feature", body),
+  /** What the model writes after the text, greedily; with `steer`, also with a feature added. */
+  lookContinue: (body: { text: string; tokens: number; steer: LookSteer | null } & AnalysisOptions) =>
+    post<LookContinuation>("/api/look/continue", body),
   headKinds: (body: { seed: number; sequences: number; length: number; bootstrap: number; ci: number } & AnalysisOptions) =>
     post<HeadKindsReport>("/api/heads/kinds", body),
   research: () => get<{ logogram_research: 1; notes: ResearchNote[] }>("/api/research"),

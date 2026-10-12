@@ -72,8 +72,20 @@ function upgradeModelRef(ref: Record<string, unknown> | null): Record<string, un
   return { id, source: "hub", revision, sha256: null, ...rest };
 }
 
-/** Fields of the form that a form stored by an earlier version doesn't have. */
-const ADDED = new Set<keyof FormState>(["atpMethod", "atpSteps", "metric", "klTarget", "cluster"]);
+/** Fields of the form that a form stored by an earlier version doesn't have. A form stored before
+ * steering had a direction steered along the mean difference, without continuations. */
+const ADDED = new Set<keyof FormState>([
+  "atpMethod",
+  "atpSteps",
+  "metric",
+  "klTarget",
+  "cluster",
+  "steerDirection",
+  "steerFeature",
+  "steerContinue",
+  "steerContinuePrompts",
+  "steerContinueTokens",
+]);
 
 /** A sweep stored before it had every field: an every-feature sweep chose and reported its
  * features on every prompt. */
@@ -209,6 +221,11 @@ const FIELDS: { [K in keyof FormState]-?: Check } = {
   steerTrain: isNumber,
   steerSeed: isNumber,
   steerControl: isBoolean,
+  steerDirection: oneOf("mean_difference", "sae_feature"),
+  steerFeature: orNull(isNumber),
+  steerContinue: isBoolean,
+  steerContinuePrompts: isNumber,
+  steerContinueTokens: isNumber,
   pathReceivers: listOf(isReceiver),
   pathFreezeMlps: isBoolean,
   atpMethod: oneOf("gradient", "integrated_gradients"),

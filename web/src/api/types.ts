@@ -632,8 +632,15 @@ export interface Summary {
   /** Direct logit attribution: the mean logit difference and what it splits into. */
   direct?: DirectSplit | null;
   /** Steering: the prompts that trained the directions, the held-out ones measured, the length of
-   * each row's direction, and each steered site and strength against its random control. */
-  steering?: { train: number[]; test: number[]; norms: number[]; control?: ControlComparison[] | null } | null;
+   * each row's vector at strength 1, each steered site and strength against its random control,
+   * and for an SAE feature what strength 1 is. */
+  steering?: {
+    train: number[];
+    test: number[];
+    norms: number[];
+    control?: ControlComparison[] | null;
+    feature?: SteeringFeature | null;
+  } | null;
   /** Runs on SAE features: the SAE, its fit on these prompts, and (attribution patching) how much
    * of the site's estimated effect its features account for. */
   features?: {
@@ -689,6 +696,49 @@ export interface PromptSetStats {
 
 /** A steered site and strength against its random control, from the same resamples: the
  * difference of their effects' magnitudes, |direction| − |control|. */
+/** Steering along an SAE feature: the feature and its SAE, where the SAE writes (the site its
+ * decoder direction is added to; "head" is every head's output z), and for each row of the
+ * layout what strength 1 is: the feature's typical activation, the mean of its positive
+ * activations at the row's token of the training pairs' clean and corrupt prompts (`fired` of
+ * the `measured` activations were positive). */
+export interface SteeringFeature {
+  feature: number;
+  sae: SAERef & { revision: string };
+  site: StreamKind | "head";
+  layer: number;
+  transcoder: boolean;
+  /** The SAE standardizes its inputs: each prompt's vector is also scaled by its input's spread. */
+  standardized: boolean;
+  activations: number[];
+  fired: number[];
+  measured: number[];
+}
+
+/** Tokens a model generated, and each as its tokenizer writes it. */
+export interface GeneratedTokens {
+  ids: number[];
+  tokens: string[];
+}
+
+/** A steering run's continuations.json: greedy continuations of the first held-out prompts,
+ * without steering and with each row's vector at each strength (and its random control). */
+export interface ContinuationsFile {
+  logogram_continuations: 1;
+  run_id: string;
+  receiver: Side;
+  tokens: number;
+  decoding: "greedy";
+  rows: { row: number; label: string }[];
+  prompts: {
+    index: number;
+    /** The steered prompt as written, and as the model read it. */
+    text: string;
+    prompt: string[];
+    unsteered: GeneratedTokens;
+    steered: (GeneratedTokens & { row: number; coefficient: number; control: boolean; key: string })[];
+  }[];
+}
+
 export interface ControlComparison {
   row: number;
   coefficient: number;
@@ -817,6 +867,8 @@ export interface RunDetail {
   summary: Summary | null;
   manifest: Manifest | null;
   predictions?: PredictionReport | null;
+  /** What a steering run's model went on to say, when the run recorded it. */
+  continuations?: ContinuationsFile | null;
   listing: RunListing | null;
   folder: string;
   /** A failed run's traceback, without the paths and names of the machine it ran on. */
@@ -998,6 +1050,37 @@ export interface LookFeatures {
   features: { feature: number; activation: number }[][];
   active: number[];
   first_real_token: number;
+}
+
+/** One SAE feature along any text: its activation at each token, and its largest from the first
+ * real token on (POST /api/look/feature). */
+export interface LookFeatureAlong {
+  tokens: string[];
+  feature: number;
+  activations: number[];
+  largest: number;
+  position: number;
+  first_real_token: number;
+}
+
+/** What to add while a text continues: `activation` units of a feature of the loaded SAE, at
+ * every position from token `start` on. */
+export interface LookSteer {
+  feature: number;
+  activation: number;
+  start: number;
+}
+
+/** What the model writes after a text, greedily, and with a feature added if asked
+ * (POST /api/look/continue). */
+export interface LookContinuation {
+  tokens: string[];
+  ids: number[];
+  prepend_bos: boolean;
+  new: number;
+  plain: GeneratedTokens;
+  steer: (LookSteer & { site: string; layer: number; where: string; largest: number; largest_at: number }) | null;
+  steered: GeneratedTokens | null;
 }
 
 export type HeadKindName = "previous_token" | "duplicate_token" | "induction";

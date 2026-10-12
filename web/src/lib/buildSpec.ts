@@ -3,11 +3,26 @@
 // the metric and the answers (src/logogram/direct.py, paths.py, engine.py, features.py and
 // circuits.py) are checked here too, so a run doesn't fail on something the form could have said.
 
-import type { Answer, DatasetDetail, MetricSpec, ModelStatus, PositionSpec, SAEStatus, ScopeSpec, Spec } from "../api/types";
+import type {
+  Answer,
+  Continuations,
+  DatasetDetail,
+  MetricSpec,
+  ModelStatus,
+  PositionSpec,
+  SAEStatus,
+  ScopeSpec,
+  SiteKind,
+  Spec,
+  SteeringDirection,
+} from "../api/types";
 import { siteSetsError } from "./circuits";
-import { plural, shortRevision, visibleToken } from "./format";
+import { count, plural, shortRevision, visibleToken } from "./format";
 import type { FormState } from "./formState";
-import { modelRefOf, splitCount, suggestName } from "./spec";
+import { modelRefOf, saeWritesText, siteText, splitCount, steerSiteOf, suggestName } from "./spec";
+
+/** The residual stream sites the mean difference is added to (src/logogram/steering.py). */
+const RESIDUAL: SiteKind[] = ["resid_pre", "resid_mid", "resid_post"];
 
 /** What the form knows about the prompts it will run on. */
 export interface DatasetFacts {
@@ -136,15 +151,31 @@ export function buildSpec(
     if (!form.steerApplyTo) return { error: "Choose which prompts to steer." };
     const strengths = parseStrengths(form.steerStrengths);
     if ("error" in strengths) return strengths;
+    let direction: SteeringDirection = { kind: "mean_difference" };
+    if (form.steerDirection === "sae_feature") {
+      const feature = form.steerFeature;
+      if (feature === null || !Number.isInteger(feature) || feature < 0) {
+        return { error: "Give the number of the SAE feature to steer along: a whole number from 0." };
+      }
+      direction = { kind: "sae_feature", feature };
+    }
+    let continuations: Continuations | null = null;
+    if (form.steerContinue) {
+      const prompts = form.steerContinuePrompts;
+      const tokens = form.steerContinueTokens;
+      if (!Number.isInteger(prompts) || prompts < 1 || prompts > 8) return { error: "Continue from 1 to 8 of the held-out prompts." };
+      if (!Number.isInteger(tokens) || tokens < 1 || tokens > 64) return { error: "Continue each prompt by 1 to 64 tokens." };
+      continuations = { prompts, tokens };
+    }
     experiment = {
       kind: "steering",
       apply_to: form.steerApplyTo,
-      direction: { kind: "mean_difference" },
+      direction,
       coefficients: strengths.values,
       train_fraction: form.steerTrain,
       seed: form.steerSeed,
       control: form.steerControl,
-      continuations: null,
+      continuations,
     };
   } else if (form.kind === "direct_logit_attribution") {
     if (!form.dlaPrompts) return { error: "Choose which prompts' logit difference to split." };
@@ -279,9 +310,31 @@ export function buildSpec(
       });
   // SAE features belong to an SAE: the loaded one, or the one a saved spec names.
   const features = usesFeatures(scope);
-  const loaded = ctx.sae?.state === "ready" && ctx.sae.info ? { repo: ctx.sae.info.repo, path: ctx.sae.info.path, revision: ctx.sae.info.revision } : null;
-  const sae = features ? (loaded ?? form.saeRef) : null;
+  const steersFeature = experiment.kind === "steering" && experiment.direction.kind === "sae_feature";
+  const loadedInfo = ctx.sae?.state === "ready" && ctx.sae.info ? ctx.sae.info : null;
+  const loaded = loadedInfo ? { repo: loadedInfo.repo, path: loadedInfo.path, revision: loadedInfo.revision } : null;
+  const sae = features || steersFeature ? (loaded ?? form.saeRef) : null;
   if (features && !sae) return { error: "Load the SAE these features belong to (Explore → Features)." };
+  if (experiment.kind === "steering") {
+    const direction = experiment.direction;
+    if (direction.kind === "sae_feature") {
+      if (!sae) return { error: "Load the SAE this feature belongs to (Explore → Features), or steer along the mean difference." };
+      // Added where the SAE writes, and nowhere else (src/logogram/steering.py).
+      if (loadedInfo) {
+        if (direction.feature >= loadedInfo.d_sae) {
+          return { error: `The loaded SAE has ${count(loadedInfo.d_sae)} features (0 to ${count(loadedInfo.d_sae - 1)}), so there is no feature ${direction.feature}.` };
+        }
+        const where = steerSiteOf(loadedInfo);
+        if (scope.kind !== "sites" || scope.sites.some((x) => x.kind !== where.kind || x.layer !== where.layer)) {
+          return {
+            error: `Steering along an SAE feature adds its decoder direction where the SAE writes: ${saeWritesText(loadedInfo)}. Choose that site alone (${siteText({ ...where, position: { kind: "all" } })}), at one token of each prompt.`,
+          };
+        }
+      }
+    } else if (scope.kind === "sites" && scope.sites.some((x) => !RESIDUAL.includes(x.kind))) {
+      return { error: "Steering by the mean difference adds it to the residual stream. Choose residual sites, or steer along an SAE feature where its SAE writes." };
+    }
+  }
   if (scope.kind === "features" && experiment.kind !== "attribution_patching") {
     return { error: "Only attribution patching estimates every SAE feature. Choose it, or patch chosen features." };
   }
