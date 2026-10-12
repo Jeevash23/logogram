@@ -336,7 +336,16 @@ def remove_model(name: str) -> LocalModel:
 
 def missing_message(name: str, sha256: str | None) -> str:
     """What a spec that names a local model this machine doesn't have says."""
+    from logogram.toys import TOYS
+
     start = (sha256 or "")[:12]
+    toy = next((t for t in TOYS.values() if t.sha256 == sha256), None)
+    if toy is not None:
+        return (
+            f"This machine has no local model {name} with the files the spec names (SHA-256 "
+            f"{start}…): it is the {toy.name} toy. `logogram toy {toy.name}` writes its files, "
+            "the same on every machine, and adds them."
+        )
     return (
         f"This machine has no local model {name} with the files the spec names (SHA-256 "
         f"{start}…). Add its folder with `logogram models add PATH --name {name}`, or with "

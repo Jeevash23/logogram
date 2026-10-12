@@ -233,6 +233,38 @@ def arch_backend(tmp_path_factory: pytest.TempPathFactory) -> Any:
     return get
 
 
+@pytest.fixture(scope="session")
+def toy_backend(tmp_path_factory: pytest.TempPathFactory) -> Any:
+    """``toy_backend(name)``: a backend for one of logogram.toys' models ("induction" or "ioi"),
+    written to a folder of its own and loaded as a local model, by the hash of its files: specs
+    that name the toy (``logogram.toys.model_ref``) run on it. The toy's planted heads and
+    compositions are in ``logogram.toys.get_toy(name)``."""
+    from logogram import toys
+    from logogram.backends.transformer_lens import TransformerLensBackend, boot_local
+    from logogram.runner import configure_determinism
+
+    backends: dict[str, Any] = {}
+
+    def get(name: str) -> Any:
+        if name not in backends:
+            toy = toys.get_toy(name)
+            folder = toys.write_model(name, tmp_path_factory.mktemp(f"toy-{name}"))
+            configure_determinism()
+            bridge = boot_local(folder, device="cpu", dtype="float32")
+            backends[name] = TransformerLensBackend.from_bridge(
+                bridge,
+                model_id=toy.model_name,
+                revision=None,
+                dtype="float32",
+                process_weights=True,
+                source="local",
+                sha256=toy.sha256,
+            )
+        return backends[name]
+
+    return get
+
+
 @pytest.fixture
 def project(tmp_path: Path) -> Any:
     from logogram.datasets import write_dataset

@@ -37,6 +37,7 @@ _API = (
     "remove_local_model",
     "run",
     "sweep",
+    "toy_model",
     "verify_run",
     "write_dataset",
 )

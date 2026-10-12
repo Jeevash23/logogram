@@ -828,7 +828,14 @@ class TransformerLensBackend(ModelBackend):
 
     def single_token_id(self, text: str) -> int | None:
         ids = self.tokenizer(text, add_special_tokens=False)["input_ids"]
-        return int(ids[0]) if len(ids) == 1 else None
+        if len(ids) != 1:
+            return None
+        # A word-level tokenizer reads every word it doesn't know as its unknown token, one token
+        # that stands for all of them: not a token of the word's own.
+        unknown = getattr(self.tokenizer, "unk_token_id", None)
+        if unknown is not None and int(ids[0]) == int(unknown) and text != self.tokenizer.unk_token:
+            return None
+        return int(ids[0])
 
     def token_str(self, token_id: int) -> str:
         return self.tokenizer.decode([int(token_id)], clean_up_tokenization_spaces=False)
@@ -1469,6 +1476,16 @@ def load_model(
     if cancel is not None and cancel.is_set():
         backend.close()
         raise Cancelled()
+    if source == "local":
+        # A toy model (logogram.toys), known by the hash of its files, is checked as built: it
+        # solves its prompts and its planted heads attend where they should.
+        from logogram.toys import check_loaded_toy
+
+        try:
+            check_loaded_toy(backend)
+        except BackendError:
+            backend.close()
+            raise
     emit("ready")
     return backend
 
