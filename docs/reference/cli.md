@@ -34,13 +34,14 @@ Commands that read runs use the project in the current folder or above it, or `-
 | [`logogram report`](#logogram-report) | Write a finished run as one HTML page anyone can open: its map, strongest sites, every site's numbers, the methods and where it came from. |
 | [`logogram robustness`](#logogram-robustness) | Rerun with one methodological choice changed, then compare the two runs. |
 | [`logogram run`](#logogram-run) | Run an experiment headlessly and print a summary. |
+| [`logogram saes`](#logogram-saes) | List the published SAEs trained on MODEL, from SAELens's registry as the catalogue that ships with Logogram records it (nothing is fetched), and whether Logogram reads each exactly or why not. |
 | [`logogram serve`](#logogram-serve) | Run the server (use --dev with `npm run dev` when working on the web app). |
 | [`logogram show`](#logogram-show) | Print a finished run's method, baseline and strongest sites, or why a run failed, with the traceback it kept. |
 | [`logogram star`](#logogram-star) | Star a run: ★ in `logogram list`, and found first in the app's history. |
 | [`logogram sweep`](#logogram-sweep) | Run one spec across several values of one choice (seeds, datasets or revisions), one run after another, and show which of its strongest sites keep their sign and size across them. |
 | [`logogram tasks`](#logogram-tasks) | List the tasks Logogram generates prompts for, with their options and metric. |
 | [`logogram validate`](#logogram-validate) | Check a spec without running it, and say what it describes and what it left out. |
-| [`logogram verify`](#logogram-verify) | Patch, for real, the sites an attribution patching run estimated to matter most, and compare the measurement with the estimate. |
+| [`logogram verify`](#logogram-verify) | Patch, for real, the sites an attribution patching run estimated to matter most (or path patch, one at a time, the edges an edge attribution run estimated), and compare the measurement with the estimate. |
 
 ## logogram
 
@@ -425,6 +426,24 @@ logogram run [OPTIONS] SPEC.json
 | `--top` | integer | `10` | How many sites to list. |
 | `--verbose` / `-v` | nothing | off | If the run fails, print its traceback. |
 
+## logogram saes
+
+List the published SAEs trained on MODEL, from SAELens's registry as the catalogue that ships with Logogram records it (nothing is fetched), and whether Logogram reads each exactly or why not.
+
+```text
+logogram saes [OPTIONS] MODEL [SEARCH...]
+```
+
+| Argument | Takes | Description |
+|---|---|---|
+| `MODEL` | text | The model's Hugging Face id, such as openai-community/gpt2. |
+| `SEARCH` | text | Words to search for: a release, a hook, layer 8, a width such as 16k. |
+
+| Option | Takes | Default | Description |
+|---|---|---|---|
+| `--exact` | nothing | off | List only the SAEs Logogram reads exactly. |
+| `--json` | nothing | off | Print them as JSON. |
+
 ## logogram serve
 
 Run the server (use --dev with `npm run dev` when working on the web app).
@@ -523,7 +542,7 @@ logogram validate SPEC.json
 
 ## logogram verify
 
-Patch, for real, the sites an attribution patching run estimated to matter most, and compare the measurement with the estimate.
+Patch, for real, the sites an attribution patching run estimated to matter most (or path patch, one at a time, the edges an edge attribution run estimated), and compare the measurement with the estimate.
 
 ```text
 logogram verify [OPTIONS] RUN
@@ -531,7 +550,7 @@ logogram verify [OPTIONS] RUN
 
 | Argument | Takes | Description |
 |---|---|---|
-| `RUN` | text | An attribution patching run. |
+| `RUN` | text | An attribution or edge attribution run. |
 
 | Option | Takes | Default | Description |
 |---|---|---|---|

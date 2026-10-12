@@ -45,6 +45,7 @@ __all__ = [
     "continue_text",
     "create_project",
     "delete_run",
+    "edge_verification",
     "feature_writes",
     "generate",
     "head_kinds",

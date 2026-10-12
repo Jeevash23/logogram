@@ -204,7 +204,10 @@ class HeadInputsScope(_Strict):
 
     kind: Literal["head_inputs"] = "head_inputs"
     input: HeadInput
+    """The input intervened on: each query head's query (q), or each key/value head's key (k) or
+    value (v)."""
     position: Position
+    """The token or tokens of each prompt whose query, key or value is intervened on."""
 
 
 # Layers a neurons scope can list: more than any model has, few enough to check quickly.
@@ -218,7 +221,9 @@ class NeuronsScope(_Strict):
 
     kind: Literal["neurons"] = "neurons"
     layers: list[Annotated[int, Field(ge=0)]] = Field(min_length=1, max_length=NEURON_LAYERS_MAX)
+    """The layers whose MLP neurons are measured, each listed once."""
     position: Position
+    """The token or tokens of each prompt where every neuron is intervened on."""
 
     @model_validator(mode="after")
     def _distinct(self) -> NeuronsScope:
@@ -409,8 +414,11 @@ class HeadReceiver(_Strict):
 
     kind: Literal["head"] = "head"
     layer: int = Field(ge=0)
+    """The receiving head's layer, from 0."""
     head: int = Field(ge=0)
+    """The receiving head's index in its layer."""
     input: Literal["q", "k", "v"]
+    """The input the path reaches: the head's query, key or value."""
 
 
 class LogitsReceiver(_Strict):
@@ -424,6 +432,7 @@ class MlpReceiver(_Strict):
 
     kind: Literal["mlp"] = "mlp"
     layer: int = Field(ge=0)
+    """The receiving MLP's layer, from 0."""
 
 
 PathReceiver = Annotated[HeadReceiver | LogitsReceiver | MlpReceiver, Field(discriminator="kind")]
@@ -449,7 +458,9 @@ class GraphScope(_Strict):
 
     kind: Literal["graph"] = "graph"
     layers: list[Annotated[int, Field(ge=0)]] | None
+    """The layers whose heads and MLPs receive edges, in order; null for every layer."""
     logits: bool
+    """Include the edges into the logits."""
 
     @model_validator(mode="after")
     def _receives(self) -> GraphScope:
@@ -468,7 +479,9 @@ class EdgeSender(_Strict):
 
     kind: Literal["embed", "head", "mlp"]
     layer: int | None = Field(default=None, ge=0)
+    """The head's or MLP's layer, from 0; null for the embeddings."""
     head: int | None = Field(default=None, ge=0)
+    """The head's index in its layer; null for the embeddings and for an MLP."""
 
     @model_validator(mode="after")
     def _fields_match_kind(self) -> EdgeSender:
@@ -485,7 +498,10 @@ class Edge(_Strict):
     """A sender's output read directly by one receiver's input, through the residual stream."""
 
     sender: EdgeSender
+    """Where the edge starts."""
     receiver: PathReceiver
+    """Where the edge ends: a later head's query, key or value, a later MLP's input, or the
+    logits."""
 
     @model_validator(mode="after")
     def _forward(self) -> Edge:
@@ -524,6 +540,7 @@ class EdgesScope(_Strict):
 
     kind: Literal["edges"] = "edges"
     edges: list[Edge] = Field(min_length=1, max_length=64)
+    """The edges, each measured on its own, none repeated."""
 
     @model_validator(mode="after")
     def _distinct(self) -> EdgesScope:
@@ -674,7 +691,10 @@ class RandomEdges(_Strict):
     estimates."""
 
     seed: Seed
+    """The seed of the shuffles."""
     draws: int = Field(ge=1, le=16)
+    """How many random orders are drawn: each point of the control averages them, prompt by
+    prompt, and keeps each draw's own faithfulness."""
 
 
 class FaithfulnessCurve(_Strict):
@@ -688,8 +708,11 @@ class FaithfulnessCurve(_Strict):
     """
 
     counts: list[Annotated[int, Field(ge=1)]] = Field(min_length=1, max_length=24)
+    """The numbers of edges chosen, increasing: the curve's points."""
     patch: Literal["chosen", "rest"]
+    """Which edges carry the source prompt's values: the chosen ones, or every other one."""
     control: RandomEdges
+    """The same counts of edges chosen at random, the curve to compare with."""
 
     @model_validator(mode="after")
     def _increasing(self) -> FaithfulnessCurve:
@@ -716,8 +739,12 @@ class EdgeAttribution(_Strict):
     kind: Literal["edge_attribution"] = "edge_attribution"
     direction: Direction
     method: Literal["gradient", "integrated_gradients"]
+    """One gradient at the receiver run, or gradients averaged along the way between the two
+    prompts' input embeddings (integrated gradients)."""
     steps: int | None = Field(ge=2, le=64)
+    """The points along the way, for integrated gradients; null for a single gradient."""
     curve: FaithfulnessCurve | None
+    """Patch the strongest edges together for a faithfulness curve; null to only estimate."""
 
     @model_validator(mode="after")
     def _steps_match_method(self) -> EdgeAttribution:
