@@ -28,7 +28,8 @@ import numpy as np
 import torch
 
 from logogram import __version__
-from logogram.backends.base import ModelBackend
+from logogram.backends.base import ModelBackend, device_type
+from logogram.chat import chat_wrapper
 from logogram.datasets import decode_dataset, parse_jsonl, read_dataset_bytes
 from logogram.engine import Cancelled, run_experiment
 from logogram.fileio import atomic_output, write_text_atomic
@@ -150,19 +151,26 @@ def _identity_names() -> list[tuple[re.Pattern[str], str]]:
     return out
 
 
-def scrub_paths(message: str, *roots: Path | str | None) -> str:
+def scrub_paths(
+    message: str, *roots: Path | str | None, places: tuple[tuple[str, str], ...] = ()
+) -> str:
     """``message`` (an error, or a whole traceback) without what identifies this machine or its
     user. Run files are shared, and an error from a library often names a file by its full path,
     which includes the user's name.
 
     Known folders become placeholders, longest first, so a project inside the home folder reads
-    as <project>, not ~/...: the project (``roots``), the Hugging Face cache, <site-packages>,
-    <python> (the standard library), <logogram>, <temp> and the home folder (~). Anyone else's
-    home folder becomes ~ too. Any other absolute path keeps only its file name, after <path>.
-    Last, the account's and the machine's names become <user> and <host> wherever they appear.
+    as <project>, not ~/...: the project (``roots``), other folders given as (path, placeholder)
+    in ``places`` (a local model's), the Hugging Face cache, <site-packages>, <python> (the
+    standard library), <logogram>, <temp> and the home folder (~). Anyone else's home folder
+    becomes ~ too. Any other absolute path keeps only its file name, after <path>. Last, the
+    account's and the machine's names become <user> and <host> wherever they appear.
     """
-    places = sorted(set(_known_places(roots)), key=lambda p: -len(p[0]))
+    known = _known_places(roots)
     for path, label in places:
+        known.append((path, label))
+        with contextlib.suppress(OSError, RuntimeError):
+            known.append((str(Path(path).resolve()), label))
+    for path, label in sorted(set(known), key=lambda p: -len(p[0])):
         pattern = _place_pattern(path)
         if pattern is not None:
             message = pattern.sub(lambda _, label=label: label, message)
@@ -174,9 +182,11 @@ def scrub_paths(message: str, *roots: Path | str | None) -> str:
     return message
 
 
-def failure_detail(exc: BaseException, project_root: Path) -> str:
+def failure_detail(
+    exc: BaseException, project_root: Path, places: tuple[tuple[str, str], ...] = ()
+) -> str:
     """The traceback of ``exc``, scrubbed for sharing, its end kept when it is very long."""
-    text = scrub_paths("".join(traceback.format_exception(exc)), project_root)
+    text = scrub_paths("".join(traceback.format_exception(exc)), project_root, places=places)
     if len(text) > TRACEBACK_CHARS:
         left_out = len(text) - TRACEBACK_CHARS
         text = f"[The first {left_out:,} characters are left out.]\n" + text[-TRACEBACK_CHARS:]
@@ -216,6 +226,10 @@ def environment_versions() -> dict[str, Any]:
 
 
 def model_matches(backend: ModelBackend | None, ref: ModelRef) -> bool:
+    """Whether the loaded model is the one ``ref`` asks for: the same files (a Hugging Face model
+    by id and revision, a local model by the hash of its files, whatever name it was added
+    under), dtype, weight processing and device, the device as it resolves here ("cuda" is the
+    default GPU, so it matches a model on that GPU however it was asked for)."""
     if backend is None:
         return False
     from logogram.backends.transformer_lens import resolve_device
@@ -225,31 +239,54 @@ def model_matches(backend: ModelBackend | None, ref: ModelRef) -> bool:
         device = resolve_device(ref.device)
     except Exception:  # noqa: BLE001
         return False
+    if info.source != ref.source:
+        return False
+    if ref.source == "local":
+        same_files = ref.sha256 is not None and info.sha256 == ref.sha256
+    else:
+        same_files = info.id == ref.id and (ref.revision is None or ref.revision == info.revision)
     return (
-        info.id == ref.id
-        and (ref.revision is None or ref.revision == info.revision)
+        same_files
         and info.dtype == ref.dtype
         and info.device == device
         and info.process_weights == ref.process_weights
     )
 
 
+def device_provenance(info: Any) -> dict[str, Any]:
+    """Where a run ran, as its manifest records it: the device's type (cuda, cpu or mps), which
+    of the machine's GPUs (its index, for cuda:N) and its name, and what makes it deterministic."""
+    on_gpu = device_type(info.device) == "cuda"
+    return {
+        "type": device_type(info.device),
+        **({"index": int(info.device.split(":", 1)[1])} if ":" in info.device else {}),
+        "name": info.device_name,
+        "cuda": torch.version.cuda if on_gpu else None,
+        "threads": torch.get_num_threads(),
+        "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
+    }
+
+
 def not_built_yet(spec: Spec) -> str | None:
     """What a version 3 spec asks for that this build can't run yet, if anything. (Scaffolding
     while version 3 is built: each part leaves this list as it arrives.)"""
-    tokenization, model, experiment = spec.tokenization, spec.model, spec.experiment
-    if tokenization.chat_template is not None:
-        return "Chat templates can't be run yet: set tokenization.chat_template to null."
-    if model.source == "local":
-        return "Local models can't be run yet: use a model from Hugging Face."
-    if model.device.startswith("cuda:"):
-        return "Choosing one GPU of several isn't possible yet: set model.device to cuda or auto."
+    experiment = spec.experiment
     if isinstance(experiment, Steering):
         if experiment.direction.kind != "mean_difference":
             return "Steering along an SAE feature can't be run yet: use the mean difference."
         if experiment.continuations is not None:
             return "Steered continuations can't be recorded yet: set continuations to null."
     return None
+
+
+def _model_places(spec: Spec) -> tuple[tuple[str, str], ...]:
+    """The folder of the spec's local model, for scrubbing it from errors."""
+    if spec.model.source != "local":
+        return ()
+    from logogram.local_models import folder_of
+
+    folder = folder_of(spec.model.sha256)
+    return ((folder, "<model folder>"),) if folder else ()
 
 
 def default_provider(on_event: EventFn | None = None) -> ModelProvider:
@@ -267,6 +304,8 @@ def default_provider(on_event: EventFn | None = None) -> ModelProvider:
             device=ref.device,
             process_weights=ref.process_weights,
             on_progress=progress,
+            source=ref.source,
+            sha256=ref.sha256,
         )
 
     return provide
@@ -414,19 +453,17 @@ def run_spec(
                 "model": {
                     "id": info.id,
                     "revision": info.revision,
+                    # A local model: by the hash of its files, never by its folder.
+                    **(
+                        {"source": "local", "sha256": info.sha256} if info.source == "local" else {}
+                    ),
                     "architecture": info.architecture,
                     "process_weights": info.process_weights,
                     "backend": info.backend,
                     "backend_version": info.backend_version,
                     "chat": info.extra.get("chat"),
                 },
-                "device": {
-                    "type": info.device,
-                    "name": info.device_name,
-                    "cuda": torch.version.cuda if info.device == "cuda" else None,
-                    "threads": torch.get_num_threads(),
-                    "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
-                },
+                "device": device_provenance(info),
                 "dtype": info.dtype,
                 "dataset": {
                     "path": spec.dataset.path,
@@ -463,11 +500,18 @@ def run_spec(
             }
             write_manifest(folder / "manifest.json", manifest)
 
+        # The model's own chat template, when the spec wraps prompts in it: the same text around
+        # every prompt, recorded so the methods can say what the model read.
+        chat = chat_wrapper(backend, spec.tokenization.chat_template)
+        if chat is not None:
+            manifest["chat_template"] = {"kind": chat.kind, "sha256": chat.sha256}
+            write_manifest(folder / "manifest.json", manifest)
         prompts = prepare_prompts(
             backend,
             records,
             spec.tokenization.prepend_bos,
             continuations=spec.metric.kind not in SINGLE_POSITION_METRICS,
+            chat=chat,
         )
         # Bootstrap resamples over the prompts a method measures (steering measures held-out
         # prompts only), drawn once per run so every site shares them.
@@ -504,6 +548,7 @@ def run_spec(
                     settings=spec.predictions,
                     prepend_bos=spec.tokenization.prepend_bos,
                     batch_size=spec.execution.batch_size,
+                    chat_template=spec.tokenization.chat_template,
                 )
             if cancel is not None and cancel.is_set():
                 raise Cancelled()
@@ -559,7 +604,14 @@ def run_spec(
                 f"values: {'; '.join(upgraded)}. The saved spec states every value.",
             )
         stats = compute_stats(spec, result, counts_for(result))
-        summary = build_summary(spec, result, stats, run_id, model_shape)
+        summary = build_summary(
+            spec,
+            result,
+            stats,
+            run_id,
+            model_shape,
+            chat_template=chat.to_dict() if chat is not None else None,
+        )
         write_results(folder / "results.parquet", results_table(result, stats))
         write_json(folder / "summary.json", summary)
         manifest.update(
@@ -581,9 +633,11 @@ def run_spec(
 
         # Shown with --verbose (the server's log); the run's folder keeps a scrubbed copy.
         log.info("The run %s failed.", run_id, exc_info=exc)
-        detail = failure_detail(exc, project.root)
+        # A local model's folder is this machine's business: never in what the run writes.
+        places = _model_places(spec)
+        detail = failure_detail(exc, project.root, places)
         if is_out_of_memory(exc):
-            device = backend.info.device if backend is not None else "the device"
+            device = device_type(backend.info.device) if backend is not None else "the device"
             where = {"cuda": "GPU memory", "mps": "unified memory"}.get(device, "memory")
             message = (
                 f"The run ran out of {where} at a batch of {spec.execution.batch_size} rows. Lower "
@@ -594,7 +648,7 @@ def run_spec(
             release_memory()
         else:
             message = str(exc) or type(exc).__name__
-        message = scrub_paths(message, project.root)
+        message = scrub_paths(message, project.root, places=places)
         outcome = fail("failed", message, detail)
         emit("failed", {"run_id": run_id, "error": message})
         return outcome

@@ -37,6 +37,9 @@ export interface ModelInfo {
     checks?: ModelChecks;
     /** Whether it is made for chat (prompts run as plain text, without its chat template). */
     chat?: ChatFormat;
+    /** The SHA-256 of the chat template its tokenizer uses by default: prompts can be wrapped in
+     * it (a spec's tokenization.chat_template). Null when it has none. */
+    chat_template_sha256?: string | null;
     /** A soft cap on its logits, or null. */
     logit_soft_cap?: number | null;
   };
@@ -62,7 +65,8 @@ export interface ModelPreset {
 export interface ModelStatus {
   state: "none" | "loading" | "ready" | "error";
   id?: string;
-  stage?: "resolving" | "downloading" | "loading" | "processing" | "ready";
+  /** checking: a local model's files are checked against their hash before it loads. */
+  stage?: "resolving" | "downloading" | "checking" | "loading" | "processing" | "ready";
   done?: number;
   total?: number;
   file?: string;
@@ -76,7 +80,7 @@ export interface ModelStatus {
 export interface Job {
   project_session?: string | null;
   id: string;
-  kind: "load_model" | "load_sae" | "run";
+  kind: "load_model" | "load_sae" | "run" | "add_model";
   title: string;
   status: "running" | "finished" | "failed" | "cancelled";
   run_id: string | null;
@@ -216,7 +220,11 @@ export interface SystemReport {
   cpu_threads: number | null;
   memory_total: number;
   memory_available: number;
-  gpus: { name: string; memory_total: number; memory_free: number | null; bf16: boolean }[];
+  /** Each GPU, by its index among those PyTorch sees (a spec names one as cuda:N); Apple's has no
+   * index. */
+  gpus: { name: string; memory_total: number; memory_free: number | null; bf16: boolean; index?: number | null }[];
+  /** The GPU "cuda" (and "auto") runs on. */
+  default_gpu?: number | null;
   backend: "cuda" | "mps" | "cpu";
   torch: string;
   torch_cuda: string | null;
@@ -652,6 +660,16 @@ export interface Summary {
   circuit?: CircuitInfo | null;
   /** Attribution patching: one gradient, or integrated gradients over steps. */
   attribution?: { method: AttributionMethod; steps?: number | null } | null;
+  /** How the prompts were wrapped in the model's own chat template: the template's SHA-256, and
+   * its text before and after each prompt. */
+  chat_template?: {
+    kind: ChatTemplateSpec["kind"];
+    system: string | null;
+    user: string | null;
+    sha256: string;
+    before: string;
+    after: string;
+  } | null;
 }
 
 export interface SummaryMetric {
@@ -742,6 +760,9 @@ export interface Manifest {
   model?: {
     id: string;
     revision: string;
+    /** A local model, by the hash of its files. */
+    source?: "hub" | "local" | null;
+    sha256?: string | null;
     architecture: string;
     process_weights: boolean;
     backend: string;
@@ -751,6 +772,8 @@ export interface Manifest {
   };
   device?: {
     type: string;
+    /** Which of the machine's GPUs (cuda:N). */
+    index?: number | null;
     name: string;
     cuda: string | null;
     threads: number;
@@ -760,6 +783,8 @@ export interface Manifest {
   /** The prompts the run read: its saved copy, and the dataset it was copied from. */
   dataset?: { path: string; sha256: string; n: number; source_path?: string | null };
   derived_from?: DerivedFrom | null;
+  /** The chat template the prompts were wrapped in. */
+  chat_template?: { kind: ChatTemplateSpec["kind"]; sha256: string } | null;
 }
 
 export interface DerivedFrom {
@@ -905,6 +930,9 @@ export interface AnswerTokens {
 export interface TokenStripData {
   clean: { tokens: string[]; ids: number[] };
   corrupt: { tokens: string[]; ids: number[] };
+  /** With a chat template: the clean tokens that hold the prompt (first, one past the last); the
+   * others are the template's. */
+  prompt?: [number, number] | null;
   aligned: boolean;
   differs: number[];
   labels: Record<string, number>;
@@ -977,6 +1005,9 @@ export interface LookReport {
   tokens: string[];
   ids: number[];
   prepend_bos: boolean;
+  /** The chat template the text was wrapped in, and the tokens that hold the text itself. */
+  chat_template?: ChatTemplateSpec | null;
+  text_tokens?: [number, number] | null;
   top_k: number;
   position: number;
   /** After each token: the model's most likely next tokens. */
@@ -1022,7 +1053,7 @@ export interface TopHead {
 
 /** Every head scored by what it attends to on random tokens repeated twice (POST /api/heads/kinds). */
 export interface HeadKindsReport {
-  settings: { seed: number; sequences: number; length: number; prepend_bos: boolean; batch_size: number; bootstrap: number; ci: number };
+  settings: { seed: number; sequences: number; length: number; prepend_bos: boolean; batch_size: number; bootstrap: number; ci: number; chat_template?: ChatTemplateSpec | null };
   n_layers: number;
   n_heads: number;
   kinds: Record<HeadKindName, HeadKindScores>;
@@ -1148,7 +1179,8 @@ export interface MemoryEstimate {
 
 export interface EstimateResponse {
   id: string;
-  revision: string;
+  /** Null for a local model, which has no revisions. */
+  revision: string | null;
   architecture: {
     n_layers: number;
     n_heads: number;
@@ -1215,4 +1247,28 @@ export interface DeriveRequest {
 export interface TaskDatasetCreated extends DatasetCreated {
   /** The metric that reads the new dataset's answers. */
   metric: MetricKind;
+}
+
+/** A prompt in the loaded model's own chat template: the whole text, where the prompt is in it
+ * (null when the template changes the prompt, as `problem` says), the template's text before and
+ * after a prompt, and its SHA-256. */
+export interface ChatWrapped {
+  text: string;
+  start: number | null;
+  end: number | null;
+  before: string;
+  after: string;
+  sha256: string;
+  problem: string | null;
+}
+
+/** A model added from a folder on this machine. Specs name it by its name and the hash of its
+ * files; the folder is shown on this machine only. */
+export interface LocalModel {
+  name: string;
+  folder: string;
+  sha256: string;
+  added: string;
+  size: number;
+  files: number;
 }

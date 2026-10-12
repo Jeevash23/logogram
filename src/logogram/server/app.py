@@ -55,7 +55,10 @@ from logogram.server import models as M
 from logogram.server.security import SecurityConfig, SecurityMiddleware
 from logogram.server.state import AppState, Conflict, EventHub, Job, Missing, request_project
 from logogram.spec import (
+    DEVICE,
+    SHA256,
     SINGLE_POSITION_METRICS,
+    ChatTemplate,
     Metric,
     ModelRef,
     Position,
@@ -286,8 +289,19 @@ class AnalysisRequest(BaseModel):
     model: ModelRef | None = None
     dataset_sha256: str | None = None
     prepend_bos: bool
+    # The chat template prompts are wrapped in, as a spec's tokenization.chat_template says.
+    chat_template: ChatTemplate | None = None
     limit: int | None = Field(default=None, ge=1, le=1_000_000)
     batch_size: int = Field(ge=1, le=4096)
+
+    @model_validator(mode="after")
+    def _one_beginning(self) -> AnalysisRequest:
+        if self.chat_template is not None and self.prepend_bos:
+            raise ValueError(
+                "with a chat template, the template writes the beginning of the text: set "
+                "prepend_bos to false"
+            )
+        return self
 
 
 class TokenizeRequest(AnalysisRequest):
@@ -300,10 +314,28 @@ class TokenizeRequest(AnalysisRequest):
 
 class EstimateRequest(BaseModel):
     id: str
+    # A local model is found by the hash of its files (logogram.local_models).
+    source: Literal["hub", "local"] = "hub"
+    sha256: str | None = Field(default=None, pattern=SHA256.pattern)
     revision: str | None = None
     dtype: Literal["float32", "float16", "bfloat16"] = "float32"
-    device: Literal["auto", "cpu", "cuda", "mps"] = "auto"
+    device: str = Field(default="auto", pattern=DEVICE.pattern)
     process_weights: bool = True
+
+
+class ChatWrapRequest(BaseModel):
+    """A prompt in the loaded model's chat template, to show what the model reads."""
+
+    model: ModelRef | None = None
+    chat_template: ChatTemplate
+    text: str = Field(min_length=1, max_length=4000)
+
+
+class AddModelRequest(BaseModel):
+    """A model folder to hash and add to this machine's local models, under a name."""
+
+    path: str = Field(min_length=1)
+    name: str = Field(min_length=1, max_length=200)
 
 
 class RunMemoryRequest(BaseModel):
@@ -733,9 +765,22 @@ def create_app(
     @app.get("/api/datasets/{name}", response_model=M.DatasetDetail)
     @app.get("/api/dataset", response_model=M.DatasetDetail)
     def get_dataset(
-        name: str = "", path: str | None = None, prepend_bos: bool = True, limit: int | None = None
+        name: str = "",
+        path: str | None = None,
+        prepend_bos: bool = True,
+        limit: int | None = None,
+        chat_template: str | None = None,
     ) -> dict[str, Any]:
+        """A dataset's prompts, and with a model loaded what it makes of them: tokenized with or
+        without the beginning-of-sequence token, or wrapped in the chat template that
+        ``chat_template`` (a spec's tokenization.chat_template, as JSON) describes."""
         project = state.require_project()
+        template = None
+        if chat_template:
+            from pydantic import TypeAdapter
+
+            template = TypeAdapter(ChatTemplate).validate_json(chat_template)
+            prepend_bos = False
         file = project.resolve_dataset(path) if path else _dataset_path(project, name)
         records = load_dataset(file)
         if limit is not None:
@@ -752,7 +797,9 @@ def create_app(
         if state.backend is not None:
             from logogram.analysis import prepare_with_issues
 
-            prepared, issues = prepare_with_issues(state.backend, records, prepend_bos)
+            prepared, issues = prepare_with_issues(
+                state.backend, records, prepend_bos, chat_template=template
+            )
             out["issues"] = [i.to_dict() for i in issues]
             out["lengths"] = sorted({p.length for p in prepared})
             # Answers this model reads as continuations of several tokens: only the metrics that
@@ -870,7 +917,33 @@ def create_app(
             record,
             body.prepend_bos,
             continuations=body.metric.kind not in SINGLE_POSITION_METRICS,
+            chat_template=body.chat_template,
         )
+
+    @app.post("/api/chat/wrap", response_model=M.ChatWrapped)
+    def chat_wrap(body: ChatWrapRequest) -> dict[str, Any]:
+        """A prompt as the loaded model reads it in its own chat template: the whole text, where
+        the prompt is in it, and the template's SHA-256."""
+        from logogram.chat import WrapError, chat_wrapper
+
+        backend = _analysis_backend(body)
+        with backend.lock:
+            chat = chat_wrapper(backend, body.chat_template)
+            assert chat is not None
+            try:
+                text, start = chat.wrap(backend, body.text)
+                problem = None
+            except WrapError as exc:
+                text, start, problem = exc.text, None, str(exc)
+        return {
+            "text": text,
+            "start": start,
+            "end": None if start is None else start + len(body.text),
+            "before": chat.before,
+            "after": chat.after,
+            "sha256": chat.sha256,
+            "problem": problem,
+        }
 
     # -- models ------------------------------------------------------------------------------
 
@@ -880,27 +953,34 @@ def create_app(
 
     @app.post("/api/models/estimate", response_model=M.EstimateOut)
     def estimate(body: EstimateRequest) -> dict[str, Any]:
+        """What loading a model would take: its size, and whether it fits in the memory free on
+        the device chosen (one GPU's, for cuda:N). A local model is read from its folder."""
         from logogram.backends import hub
         from logogram.backends.transformer_lens import architecture_support, resolve_device
         from logogram.system import estimate_memory
 
         device = resolve_device(body.device)
-        repo = hub.resolve(body.id, body.revision)
-        config = hub.fetch_config(body.id, repo.revision)
+        if body.source == "local":
+            files, revision, n_params, config = _local_estimate(body)
+            download = 0
+            gated = False
+        else:
+            repo = hub.resolve(body.id, body.revision)
+            config = hub.fetch_config(body.id, repo.revision)
+            files, revision, n_params, gated = repo.files, repo.revision, repo.n_params, repo.gated
+            download = 0
+            from huggingface_hub import try_to_load_from_cache
+
+            for filename, size in repo.files:
+                if not isinstance(
+                    try_to_load_from_cache(body.id, filename, revision=repo.revision), str
+                ):
+                    download += size
         arch = hub.read_architecture(config)
         support_note = architecture_support(arch.architecture)
-        n_params = repo.n_params
         if n_params is None:
-            weights = sum(s for f, s in repo.files if f.endswith(".safetensors"))
+            weights = sum(s for f, s in files if f.endswith(".safetensors"))
             n_params = weights // 2  # stored size is a fallback; most checkpoints are 16-bit
-        download = 0
-        from huggingface_hub import try_to_load_from_cache
-
-        for filename, size in repo.files:
-            if not isinstance(
-                try_to_load_from_cache(body.id, filename, revision=repo.revision), str
-            ):
-                download += size
         loaded = 0
         if state.backend is not None and state.backend.info.device == device:
             loaded = state.backend.memory_in_use() or 0
@@ -918,15 +998,38 @@ def create_app(
         )
         return {
             "id": body.id,
-            "revision": repo.revision,
+            "revision": revision,
             "architecture": arch.__dict__,
             "download_bytes": download,
-            "total_bytes": sum(s for _, s in repo.files),
-            "gated": repo.gated,
+            "total_bytes": sum(s for _, s in files),
+            "gated": gated,
             "supported": support_note is None,
             "support_note": support_note,
             "estimate": est.to_dict(),
         }
+
+    def _local_estimate(
+        body: EstimateRequest,
+    ) -> tuple[list[tuple[str, int]], None, int | None, dict[str, Any]]:
+        """A local model's files, its stored values and its config, read from its folder."""
+        import json
+
+        from logogram.backends.hub import count_stored_values
+        from logogram.local_models import find_model, missing_message
+
+        model = find_model(sha256=body.sha256) if body.sha256 else find_model(name=body.id)
+        if model is None:
+            raise Missing(missing_message(body.id, body.sha256))
+        folder = Path(model.folder)
+        try:
+            config = json.loads((folder / "config.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise BackendError(
+                f"The config.json of {model.name} can't be read ({exc}). Check its folder."
+            ) from exc
+        files = [(f.path, f.size) for f in model.files]
+        weights = [name for name, _ in files if name.endswith(".safetensors")]
+        return files, None, count_stored_values(folder, weights), config
 
     @app.post("/api/models/run-memory", response_model=M.RunMemoryOut)
     def run_memory(body: RunMemoryRequest) -> dict[str, Any]:
@@ -954,6 +1057,33 @@ def create_app(
     def load(body: ModelRef) -> dict[str, Any]:
         return state.load_model_job(body).to_dict()
 
+    # -- local models: folders on this machine, found by the hash of their files ---------------
+
+    @app.get("/api/models/local", response_model=list[M.LocalModelOut])
+    def local_models() -> list[dict[str, Any]]:
+        """The models added from folders on this machine (their folders are shown here only)."""
+        from logogram.local_models import list_models
+
+        return [m.to_dict() for m in list_models()]
+
+    @app.post("/api/models/local", response_model=M.JobInfo)
+    def add_local_model(body: AddModelRequest) -> dict[str, Any]:
+        """Hash a model folder and add it, as a job with progress (big folders take a while)."""
+        from logogram.local_models import check_name, model_files
+
+        name = check_name(body.name)
+        folder = Path(body.path).expanduser().resolve()
+        model_files(folder)  # refuse a folder that isn't a model before starting a job
+        return state.add_model_job(folder, name).to_dict()
+
+    @app.delete("/api/models/local/{name}", response_model=list[M.LocalModelOut])
+    def remove_local_model(name: str) -> list[dict[str, Any]]:
+        """Forget a local model; its folder is left as it is."""
+        from logogram.local_models import list_models, remove_model
+
+        remove_model(name)
+        return [m.to_dict() for m in list_models()]
+
     @app.post("/api/models/unload", response_model=M.ModelStatus)
     def unload() -> dict[str, Any]:
         state.unload_model()
@@ -961,13 +1091,13 @@ def create_app(
 
     # -- analyses ----------------------------------------------------------------------------
 
-    def _analysis_backend(body: AnalysisRequest):  # type: ignore[no-untyped-def]
+    def _analysis_backend(body: AnalysisRequest | ChatWrapRequest):  # type: ignore[no-untyped-def]
         from logogram.runner import model_matches
 
         backend = state.require_backend()
         if body.model is not None and not model_matches(backend, body.model):
             raise Conflict(
-                "The loaded model doesn't match these experiment settings. Load the experiment's model, revision, dtype and weight processing before inspecting it."
+                "The loaded model doesn't match these experiment settings. Load the experiment's model, revision, dtype, device and weight processing before inspecting it."
             )
         return backend
 
@@ -984,6 +1114,7 @@ def create_app(
                 prepend_bos=body.prepend_bos,
                 batch_size=body.batch_size,
                 metric=body.metric,
+                chat_template=body.chat_template,
             )
 
     @app.post("/api/attention", response_model=M.AttentionData)
@@ -1002,6 +1133,7 @@ def create_app(
                 which=body.which,
                 prepend_bos=body.prepend_bos,
                 batch_size=body.batch_size,
+                chat_template=body.chat_template,
             )
 
     @app.post("/api/heads/kinds", response_model=M.HeadKinds)
@@ -1017,6 +1149,9 @@ def create_app(
             batch_size=body.batch_size,
             bootstrap=body.bootstrap,
             ci=body.ci,
+            chat_template=(
+                None if body.chat_template is None else body.chat_template.model_dump(mode="json")
+            ),
         )
         with backend.lock:
             return head_kind_scores(backend, settings)
@@ -1033,6 +1168,7 @@ def create_app(
                 prepend_bos=body.prepend_bos,
                 top_k=body.top_k,
                 position=body.position,
+                chat_template=body.chat_template,
             )
 
     @app.post("/api/look/attention", response_model=M.LookAttention)
@@ -1042,7 +1178,12 @@ def create_app(
         backend = _analysis_backend(body)
         with backend.lock:
             return attention(
-                backend, body.text, prepend_bos=body.prepend_bos, layer=body.layer, head=body.head
+                backend,
+                body.text,
+                prepend_bos=body.prepend_bos,
+                layer=body.layer,
+                head=body.head,
+                chat_template=body.chat_template,
             )
 
     @app.post("/api/look/features", response_model=M.LookFeatures)
@@ -1051,7 +1192,14 @@ def create_app(
 
         backend, sae = _analysis_backend(body), _sae()
         with backend.lock:
-            return features(backend, sae, body.text, prepend_bos=body.prepend_bos, top_k=body.top_k)
+            return features(
+                backend,
+                sae,
+                body.text,
+                prepend_bos=body.prepend_bos,
+                top_k=body.top_k,
+                chat_template=body.chat_template,
+            )
 
     @app.post("/api/predictions", response_model=M.PredictionReport)
     def predictions(body: PredictionRequest) -> dict[str, Any]:
@@ -1067,6 +1215,7 @@ def create_app(
                 settings=body.settings,
                 prepend_bos=body.prepend_bos,
                 batch_size=body.batch_size,
+                chat_template=body.chat_template,
             )
 
     # -- sparse autoencoders -----------------------------------------------------------------
@@ -1114,7 +1263,12 @@ def create_app(
         records = _records(body.dataset, body.limit, body.dataset_sha256)
         with backend.lock:
             fit = sae_fit_report(
-                backend, sae, records, prepend_bos=body.prepend_bos, batch_size=body.batch_size
+                backend,
+                sae,
+                records,
+                prepend_bos=body.prepend_bos,
+                batch_size=body.batch_size,
+                chat_template=body.chat_template,
             )
         state.hub.publish("sae", state.sae_payload())
         return fit
@@ -1134,6 +1288,7 @@ def create_app(
                 which=body.which,
                 prepend_bos=body.prepend_bos,
                 top_k=body.top_k,
+                chat_template=body.chat_template,
             )
 
     @app.post("/api/sae/feature")
@@ -1152,6 +1307,7 @@ def create_app(
                 which=body.which,
                 prepend_bos=body.prepend_bos,
                 batch_size=body.batch_size,
+                chat_template=body.chat_template,
             )
 
     @app.post("/api/sae/writes")
@@ -1172,6 +1328,7 @@ def create_app(
                 prepend_bos=body.prepend_bos,
                 position=body.position,
                 top=body.top,
+                chat_template=body.chat_template,
             )
 
     # -- runs --------------------------------------------------------------------------------

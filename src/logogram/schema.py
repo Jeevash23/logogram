@@ -249,6 +249,19 @@ class AttributionInfo(_Model):
     steps: int | None = None
 
 
+class ChatTemplateInfo(_Model):
+    """How the prompts were wrapped in the model's own chat template (logogram.chat): as the
+    person's message, or as the start of the model's reply to a fixed message; the template's
+    SHA-256, and its text before and after each prompt."""
+
+    kind: Literal["user_turn", "assistant_prefix"]
+    system: str | None
+    user: str | None
+    sha256: str
+    before: str
+    after: str
+
+
 class Summary(_Model):
     logogram_summary: Literal[1] = 1
     run_id: str
@@ -274,6 +287,7 @@ class Summary(_Model):
     features: FeatureRun | None = None
     circuit: CircuitInfo | None = None
     attribution: AttributionInfo | None = None
+    chat_template: ChatTemplateInfo | None = None
 
 
 # -- manifest.json -----------------------------------------------------------------------------
@@ -282,6 +296,9 @@ class Summary(_Model):
 class ModelProvenance(_Model):
     id: str
     revision: str | None
+    # A local model (logogram.local_models), by the hash of its files; never its folder.
+    source: Literal["hub", "local"] | None = None
+    sha256: str | None = None
     architecture: str
     process_weights: bool
     backend: str
@@ -293,6 +310,8 @@ class ModelProvenance(_Model):
 
 class DeviceInfo(_Model):
     type: str
+    # Which of the machine's GPUs, for a model on a GPU (as cuda:N names it).
+    index: int | None = None
     name: str
     cuda: str | None
     threads: int
@@ -304,6 +323,11 @@ class DatasetProvenance(_Model):
     sha256: str | None
     n: int
     source_path: str | None = None
+
+
+class ChatTemplateProvenance(_Model):
+    kind: Literal["user_turn", "assistant_prefix"]
+    sha256: str
 
 
 class DerivedFrom(_Model):
@@ -329,6 +353,8 @@ class Manifest(_Model):
     dtype: str | None = None
     dataset: DatasetProvenance | None = None
     sae: dict[str, Any] | None = None
+    # The chat template the prompts were wrapped in: how, and its SHA-256.
+    chat_template: ChatTemplateProvenance | None = None
 
 
 # -- owner.json --------------------------------------------------------------------------------

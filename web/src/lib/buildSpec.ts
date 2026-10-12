@@ -1,4 +1,4 @@
-// The experiment form as a version 2 spec, or what is missing. Every choice that can change a
+// The experiment form as a version 3 spec, or what is missing. Every choice that can change a
 // number is written out; nothing the form doesn't show is assumed. Restrictions a method places on
 // the metric and the answers (src/logogram/direct.py, paths.py, engine.py, features.py and
 // circuits.py) are checked here too, so a run doesn't fail on something the form could have said.
@@ -6,8 +6,29 @@
 import type { Answer, DatasetDetail, MetricSpec, ModelStatus, PositionSpec, SAEStatus, ScopeSpec, Spec } from "../api/types";
 import { siteSetsError } from "./circuits";
 import { plural, shortRevision, visibleToken } from "./format";
-import type { FormState } from "./formState";
-import { modelRefOf, splitCount, suggestName } from "./spec";
+import { formTokenization, type FormState } from "./formState";
+import { modelRefOf, sameDevice, splitCount, suggestName } from "./spec";
+
+/** What the system message and the person's message of a chat template may hold (spec.py). */
+const CHAT_TEXT_MAX = 4000;
+
+/** Why the form's chat template can't be used, or null: the start of a reply answers a message,
+ * and the loaded model must ship a template. */
+export function chatTemplateError(form: Pick<FormState, "chatTemplate">, model: ModelStatus): string | null {
+  const t = form.chatTemplate;
+  if (!t) return null;
+  if (t.kind === "assistant_prefix" && !t.user.trim()) {
+    return "Write the person's message that the reply answers (Chat template, under Data and model), or wrap prompts as the person's message.";
+  }
+  if ((t.system?.length ?? 0) > CHAT_TEXT_MAX || (t.kind === "assistant_prefix" && t.user.length > CHAT_TEXT_MAX)) {
+    return "Keep the chat template's messages under 4,000 characters each.";
+  }
+  const info = model.info;
+  if (info && info.extra?.chat_template_sha256 === null) {
+    return `${info.id} has no chat template, so its prompts can only be read as plain text. Choose None under Chat template, or load a model made for chat.`;
+  }
+  return null;
+}
 
 /** What the form knows about the prompts it will run on. */
 export interface DatasetFacts {
@@ -263,6 +284,8 @@ export function buildSpec(
     }
   }
   if (!Number.isInteger(form.batchSize) || form.batchSize < 1 || form.batchSize > 4096) return { error: "Use a batch size from 1 to 4,096." };
+  const chatError = chatTemplateError(form, ctx.model);
+  if (chatError) return { error: chatError };
 
   const info = ctx.model.info;
   const ref = ctx.model.ref;
@@ -291,7 +314,7 @@ export function buildSpec(
     notes: form.notes,
     model,
     dataset: { path: ctx.datasetPath, sha256: ctx.datasetSha, limit: form.limit },
-    tokenization: { prepend_bos: form.prependBos, chat_template: null },
+    tokenization: formTokenization(form),
     experiment,
     scope: scope.kind === "site_sets" ? { ...scope, sets: scope.sets.map((set) => ({ ...set, label: set.label.trim() })) } : scope,
     metric,
@@ -315,7 +338,10 @@ export function savedDifferences(
   const ref = form.modelRef;
   const info = model.info;
   if (ref && info) {
-    if (ref.id !== info.id) {
+    const local = ref.source === "local" || info.source === "local";
+    if (local && (ref.source !== info.source || ref.sha256 !== info.sha256)) {
+      out.push(`It was written for ${name(ref.id)}${ref.source === "local" ? ", a local model" : ""}; the loaded model is ${name(info.id)}${info.source === "local" ? ", a local model with other files" : ""}.`);
+    } else if (!local && ref.id !== info.id) {
       out.push(`It was written for ${name(ref.id)}; the loaded model is ${name(info.id)}.`);
     } else {
       if (ref.revision && ref.revision !== info.revision) {
@@ -323,7 +349,7 @@ export function savedDifferences(
       }
       if (ref.dtype !== info.dtype) out.push(`It was written for ${ref.dtype}; the model is loaded in ${info.dtype}.`);
       if (ref.process_weights !== info.process_weights) out.push("Weight processing differs from the saved spec.");
-      if (ref.device !== "auto" && ref.device !== info.device) out.push(`It was written for ${ref.device}; the model is loaded on ${info.device}.`);
+      if (!sameDevice(ref.device, info.device)) out.push(`It was written for ${ref.device}; the model is loaded on ${info.device}.`);
     }
   }
   const saved = form.savedDataset;

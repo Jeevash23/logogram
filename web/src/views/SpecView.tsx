@@ -173,7 +173,8 @@ export function SpecView() {
                     <>
                       <dt>device</dt>
                       <dd>
-                        {manifest.device.type} · {manifest.device.name}
+                        {manifest.device.type}
+                        {typeof manifest.device.index === "number" ? `:${manifest.device.index}` : ""} · {manifest.device.name}
                       </dd>
                     </>
                   )}
@@ -183,10 +184,21 @@ export function SpecView() {
                       <dd>{manifest.dtype}</dd>
                     </>
                   )}
-                  {manifest.model && (
+                  {manifest.model && (manifest.model.source === "local" ? (
+                    <>
+                      <dt>model files</dt>
+                      <dd title={manifest.model.sha256 ?? undefined}>{manifest.model.sha256?.slice(0, 12)}</dd>
+                    </>
+                  ) : (
                     <>
                       <dt>revision</dt>
                       <dd title={manifest.model.revision}>{manifest.model.revision?.slice(0, 12)}</dd>
+                    </>
+                  ))}
+                  {manifest.chat_template && (
+                    <>
+                      <dt>chat template</dt>
+                      <dd title={manifest.chat_template.sha256}>{manifest.chat_template.sha256.slice(0, 12)}</dd>
                     </>
                   )}
                   {manifest.wall_time_s !== undefined && (

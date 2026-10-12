@@ -10,6 +10,7 @@ import { KIND_SHORT, parseHeadQuery } from "../lib/sites";
 import { buildSpec, datasetFacts, parseStrengths, savedDifferences, usesFeatures } from "../lib/buildSpec";
 import { receiverLabel, scopeFor, scopeShort, siteText, suggestName, workload } from "../lib/spec";
 import { useStore, type FormState } from "../store/app";
+import { ChatTemplateSettings } from "./ChatTemplateSettings";
 import { MetricSettings } from "./MetricSettings";
 import { ClusterChooser } from "./StatisticsSettings";
 import { SiteSetsEditor } from "./SiteSetsEditor";
@@ -264,7 +265,10 @@ export function ExperimentView() {
             <dd>
               {model.info ? (
                 <>
-                  {modelName(model.info.id)} <span className="faint">@ {shortRevision(model.info.revision)} · {model.info.dtype} · {model.ref?.device ?? model.info.device}{model.info.process_weights ? " · weights processed" : ""}</span>
+                  {modelName(model.info.id)}{" "}
+                  <span className="faint">
+                    {model.info.source === "local" ? `· local folder, files ${model.info.sha256?.slice(0, 12)}…` : `@ ${shortRevision(model.info.revision)}`} · {model.info.dtype} · {model.ref?.device ?? model.info.device}{model.info.process_weights ? " · weights processed" : ""}
+                  </span>
                 </>
               ) : (
                 <>
@@ -289,10 +293,23 @@ export function ExperimentView() {
             />
             <span className={s.small}>prompts</span>
             <span style={{ flex: 1 }} />
-            <Checkbox checked={form.prependBos} disabled={noBos && !form.prependBos} onChange={(prependBos) => setForm({ prependBos })}>
-              {noBos ? "Prepend a beginning-of-sequence token (this model has none)" : "Prepend the beginning-of-sequence token"}
+            <Checkbox
+              checked={form.prependBos && !form.chatTemplate}
+              disabled={!!form.chatTemplate || (noBos && !form.prependBos)}
+              onChange={(prependBos) => setForm({ prependBos })}
+            >
+              {form.chatTemplate
+                ? "Prepend the beginning-of-sequence token (the chat template writes the beginning)"
+                : noBos
+                  ? "Prepend a beginning-of-sequence token (this model has none)"
+                  : "Prepend the beginning-of-sequence token"}
             </Checkbox>
           </div>
+          <ChatTemplateSettings
+            value={form.chatTemplate}
+            onChange={(chatTemplate) => setForm({ chatTemplate, ...(chatTemplate || !noBos ? {} : { prependBos: false }) })}
+            firstPrompt={dataset?.records[0]?.clean ?? null}
+          />
         </section>
 
       </div>

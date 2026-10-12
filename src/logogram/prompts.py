@@ -3,6 +3,10 @@
 A usable pair has clean and corrupt prompts of the same token length (so positions line up), and
 an answer and a distractor the metric can read: single tokens, sets of single tokens, or (for the
 log-probability and probability metrics) continuations of several tokens.
+
+With a chat template (logogram.chat), clean and corrupt prompts are each wrapped in it and the
+wrapped text is tokenized whole: the alignment checks, the named positions and the answers all
+read the wrapped tokens, and the answer is read after the whole wrapped text.
 """
 
 from __future__ import annotations
@@ -14,6 +18,7 @@ import numpy as np
 import torch
 
 from logogram.backends.base import ModelBackend, Tokenized
+from logogram.chat import ChatWrapper, WrapError
 from logogram.datasets import PromptRecord
 from logogram.metrics import Target
 
@@ -141,18 +146,76 @@ def _target(
     return Target(ids=tuple(int(i) for i in pieces))
 
 
+def tokenize_prompt(
+    backend: ModelBackend,
+    text: str,
+    prepend_bos: bool,
+    chat: ChatWrapper | None = None,
+) -> Tokenized:
+    """A prompt's tokens as the model reads them: as it is (after the beginning-of-sequence token
+    with ``prepend_bos``), or wrapped in a chat template and tokenized whole, without adding
+    special tokens. Its offsets count characters of the text tokenized, and ``start`` says where
+    the prompt begins in it. Raises :class:`logogram.chat.WrapError` for a prompt the template
+    doesn't keep as it is."""
+    if chat is None:
+        return backend.tokenize(text, prepend_bos)
+    wrapped, start = chat.wrap(backend, text)
+    tokenized = backend.tokenize(wrapped, prepend_bos=False)
+    tokenized.start = start
+    return tokenized
+
+
+def first_real_token(
+    backend: ModelBackend, ids: list[int], prepend_bos: bool, wrapped: bool
+) -> int:
+    """Where a prompt's real tokens start: after the beginning-of-sequence token when the text
+    begins with one, prepended or (``wrapped`` in a chat template) written by the template. SAEs
+    aren't trained on that token, whose activations are unlike any other's."""
+    if not wrapped:
+        return 1 if prepend_bos else 0
+    bos = backend.bos_token_id
+    return 1 if bos is not None and ids[:1] == [bos] else 0
+
+
+def prompt_span(tokenized: Tokenized, length: int) -> tuple[int, int]:
+    """The tokens that hold the prompt (``length`` characters from ``tokenized.start``): the
+    first and one past the last whose characters overlap it. The rest are a chat template's (or
+    the beginning-of-sequence token)."""
+    start, end = tokenized.start, tokenized.start + length
+    inside = [i for i, (a, b) in enumerate(tokenized.offsets) if b > a and a < end and b > start]
+    return (inside[0], inside[-1] + 1) if inside else (0, 0)
+
+
+def _tokenize_side(
+    backend: ModelBackend,
+    text: str,
+    prepend_bos: bool,
+    chat: ChatWrapper | None,
+    index: int,
+    side: str,
+    issues: list[PromptIssue],
+) -> Tokenized:
+    try:
+        return tokenize_prompt(backend, text, prepend_bos, chat)
+    except WrapError as exc:
+        issues.append(PromptIssue(index, "chat_template", f"in the {side} prompt, {exc}"))
+        # What the template made of it, so a token strip shows what the model would read.
+        return backend.tokenize(exc.text, prepend_bos=False)
+
+
 def prepare_prompt(
     backend: ModelBackend,
     record: PromptRecord,
     index: int,
     prepend_bos: bool,
     continuations: bool = False,
+    chat: ChatWrapper | None = None,
 ) -> tuple[PreparedPrompt | None, list[PromptIssue], Tokenized, Tokenized]:
     """Tokenize one pair and check it. ``continuations``: whether the metric can read answers and
-    distractors of several tokens."""
+    distractors of several tokens. ``chat``: the chat template both prompts are wrapped in."""
     issues: list[PromptIssue] = []
-    clean = backend.tokenize(record.clean, prepend_bos)
-    corrupt = backend.tokenize(record.corrupt, prepend_bos)
+    clean = _tokenize_side(backend, record.clean, prepend_bos, chat, index, "clean", issues)
+    corrupt = _tokenize_side(backend, record.corrupt, prepend_bos, chat, index, "corrupt", issues)
     if len(clean.ids) != len(corrupt.ids):
         issues.append(
             PromptIssue(
@@ -201,7 +264,8 @@ def prepare_prompt(
         )
     labels: dict[str, int] = {}
     for label, span in (record.positions or {}).items():
-        pos = label_position(clean, span)
+        # Characters of the prompt, counted in the text tokenized: after a template's prefix.
+        pos = label_position(clean, (span[0] + clean.start, span[1] + clean.start))
         if pos is None:
             issues.append(
                 PromptIssue(
@@ -232,11 +296,14 @@ def prepare_prompts(
     records: list[PromptRecord],
     prepend_bos: bool,
     continuations: bool = False,
+    chat: ChatWrapper | None = None,
 ) -> list[PreparedPrompt]:
     prepared: list[PreparedPrompt] = []
     issues: list[PromptIssue] = []
     for i, record in enumerate(records):
-        p, prompt_issues, _, _ = prepare_prompt(backend, record, i, prepend_bos, continuations)
+        p, prompt_issues, _, _ = prepare_prompt(
+            backend, record, i, prepend_bos, continuations, chat
+        )
         issues.extend(prompt_issues)
         if p is not None:
             prepared.append(p)

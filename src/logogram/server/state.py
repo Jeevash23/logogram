@@ -368,6 +368,8 @@ class AppState:
                 process_weights=ref.process_weights,
                 on_progress=on_progress,
                 cancel=cancel,
+                source=ref.source,
+                sha256=ref.sha256,
             )
         except Cancelled:
             self._set_model_status(state="none")
@@ -613,6 +615,26 @@ class AppState:
             self.load_model(ref, cancel=job.cancel)
 
         return self.start_job("load_model", f"Load {ref.id}", work)
+
+    def add_model_job(self, folder: Path, name: str) -> Job:
+        """Hash a model folder and add it to the local models, reporting progress in bytes."""
+        from logogram.local_models import add_model
+
+        def work(job: Job) -> None:
+            last = {"time": 0.0}
+
+            def progress(done: int, total: int, file: str) -> None:
+                now = time.monotonic()
+                if done == total or now - last["time"] >= 0.1:
+                    last["time"] = now
+                    job.update(progress={"done": done, "total": total, "file": file})
+                    self.hub.publish("job", job.to_dict())
+
+            model = add_model(folder, name, progress, job.cancel)
+            job.update(progress={"done": model.size, "total": model.size, "file": ""})
+            self.hub.publish("local_models", {"added": model.name})
+
+        return self.start_job("add_model", f"Add the model folder {name}", work)
 
     def cancel_job(self) -> Job | None:
         """Cancel the job in progress. The queue stays: its next run starts when this one ends."""

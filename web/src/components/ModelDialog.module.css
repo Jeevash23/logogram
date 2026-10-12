@@ -165,3 +165,18 @@
     grid-column: 2 / -1;
   }
 }
+
+/* A model folder being added: its folder, the name it is added under, and the hashing. */
+.adding {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.adding .row {
+  align-items: flex-end;
+  flex-wrap: wrap;
+}

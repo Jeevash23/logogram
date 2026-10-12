@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import type { NoteInput, ResearchNote, RunListing, SiteSpec } from "../api/types";
 import { Button, Callout, Dialog, Empty, Field, Input, Spinner, TextArea } from "../components/ui";
+import { sameModel } from "../lib/analysis";
 import { ago, shortRevision } from "../lib/format";
 import { modelName } from "../lib/hooks";
 import { runTitle } from "../lib/runs";
@@ -50,7 +51,7 @@ export function ResearchView() {
       } else {
         const info = useStore.getState().model.info;
         const m = note.model;
-        if (!info || info.id !== m.id || (m.revision && m.revision !== info.revision) || info.dtype !== m.dtype || info.process_weights !== m.process_weights || (m.device !== "auto" && m.device !== info.device)) {
+        if (!info || !sameModel(m, info)) {
           throw new Error(note.run_id
             ? "This note’s run is no longer in the project. Load the note’s model with the recorded revision, dtype, device and weight processing to open its selection on the model map."
             : "Load this note’s model with the recorded revision, dtype, device and weight processing, then open the selection again.");

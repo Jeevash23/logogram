@@ -37,7 +37,7 @@ def main() -> None:
     import uvicorn
 
     import logogram.project as projects
-    from conftest import _build_tiny_model, build_tiny_architecture, make_spec
+    from conftest import _build_tiny_model, build_tiny_architecture, give_chat_template, make_spec
     from logogram.backends.transformer_lens import TransformerLensBackend, boot_local
     from logogram.datasets import write_dataset
     from logogram.ioi import generate_ioi
@@ -58,6 +58,8 @@ def main() -> None:
             _build_tiny_model(folder)
         else:
             build_tiny_architecture(folder, arch)
+        # A chat template of its own, so prompts can be wrapped in it (Configure, Your text).
+        give_chat_template(folder)
         configure_determinism()
         backend = TransformerLensBackend.from_bridge(
             boot_local(folder, device="cpu", dtype="float32"),

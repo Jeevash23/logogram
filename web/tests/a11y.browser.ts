@@ -92,6 +92,26 @@ test("every view has no accessibility violations", async ({ page }) => {
     await open(page, view);
     await expectAccessible(page, `Experiment, ${view}`);
   }
+  // The prompts wrapped in the model's chat template, the first shown as the model reads it.
+  await open(page, "Configure");
+  const template = page.getByRole("radiogroup", { name: "Chat template" });
+  await template.getByRole("radio", { name: "The start of the reply" }).click();
+  await page.getByRole("textbox", { name: "The person's message the reply answers" }).fill("Hello");
+  await expect(page.getByRole("figure", { name: /reads for the first prompt/ }).locator("mark")).toBeVisible();
+  await expectAccessible(page, "Experiment, Configure, prompts in the chat template");
+  await template.getByRole("radio", { name: "None" }).click();
+  // The model dialog, with a model folder about to be added.
+  await page.getByRole("button", { name: /^tiny-gpt2 · / }).click();
+  const models = page.getByRole("dialog", { name: "Load a model" });
+  await expect(models.getByRole("radiogroup", { name: "Model" })).toBeVisible();
+  await expectAccessible(page, "The model dialog");
+  await models.getByRole("button", { name: "Add a model folder" }).click();
+  await page.getByRole("dialog", { name: "Choose a model folder" }).getByRole("button", { name: "Choose this folder" }).click();
+  await expect(models.getByRole("region", { name: "Add a model folder" })).toBeVisible();
+  await expectAccessible(page, "The model dialog, adding a model folder");
+  await models.getByRole("region", { name: "Add a model folder" }).getByRole("button", { name: "Cancel" }).click();
+  await page.keyboard.press("Escape");
+  await expect(models).toBeHidden();
   // A prompt pair being edited, and edits waiting to be saved as a new dataset.
   await open(page, "Prompts");
   await page.getByRole("button", { name: "Edit prompt 0", exact: true }).click();

@@ -1,7 +1,8 @@
 """Command line: ``logogram`` (start the app), ``open``, ``run``, ``doctor``, ``env``, ``serve``,
 commands that read and check runs without the app: ``list``, ``show``, ``compare``, ``diff``,
-``verify``, ``robustness``, ``export``, ``validate``, ``tasks`` and ``generate``, and commands
-that manage them: ``rename``, ``star``, ``archive`` and ``delete``."""
+``verify``, ``robustness``, ``export``, ``validate``, ``tasks`` and ``generate``, commands
+that manage them: ``rename``, ``star``, ``archive`` and ``delete``, and ``models add``, ``models
+list`` and ``models remove`` for model folders on this machine."""
 
 from __future__ import annotations
 
@@ -390,7 +391,13 @@ def doctor(
     ]
     for gpu in report.gpus:
         free = f", {format_bytes(gpu.memory_free)} free" if gpu.memory_free is not None else ""
-        rows.append(("GPU", f"{gpu.name} · {format_bytes(gpu.memory_total)}{free}"))
+        # Several GPUs: each by the device a spec names it with, and which is the default.
+        which = (
+            f"cuda:{gpu.index}{' (default)' if gpu.index == report.default_gpu else ''} · "
+            if gpu.index is not None and len(report.gpus) > 1
+            else ""
+        )
+        rows.append(("GPU", f"{which}{gpu.name} · {format_bytes(gpu.memory_total)}{free}"))
     if not report.gpus:
         rows.append(("GPU", "none detected"))
     backend = {"cuda": "CUDA", "mps": "Apple Metal (MPS)", "cpu": "CPU"}[report.backend]
@@ -554,6 +561,11 @@ class _ProgressPrinter:
                     self.last = now
                     pct = 100 * data["done"] / data["total"]
                     self._line(f"  downloading {pct:5.1f}% of {data['total'] / 1e6:,.0f} MB")
+            elif stage in ("hashing", "checking") and data.get("total"):
+                if now - self.last > 0.25 or data.get("done") == data.get("total"):
+                    self.last = now
+                    pct = 100 * data["done"] / data["total"]
+                    self._line(f"  {stage} files {pct:5.1f}% of {data['total'] / 1e6:,.0f} MB")
             elif stage in ("resolving", "loading", "processing"):
                 self._line(f"  model: {stage}")
         elif kind == "progress":
@@ -1345,6 +1357,87 @@ def _cached_tokenizer(model_id: str) -> tuple[Any, Any]:
         return list(tok(text, add_special_tokens=False)["input_ids"])
 
     return (lambda text: len(ids(text)) == 1), (lambda text: len(ids(text)))
+
+
+# -- local models ------------------------------------------------------------------------------
+
+models_app = typer.Typer(
+    add_completion=False,
+    no_args_is_help=True,
+    rich_markup_mode=None,
+    help="Model folders on this machine: add one under a name, list them, remove one. Specs name "
+    "a local model by its name and the hash of its files, never by its folder.",
+)
+app.add_typer(models_app, name="models")
+
+
+@models_app.command("add")
+def models_add(
+    path: Annotated[
+        Path,
+        typer.Argument(help="The model's folder: config.json, tokenizer files, safetensors."),
+    ],
+    name: Annotated[str, typer.Option("--name", help="What specs call it, such as my-fine-tune.")],
+) -> None:
+    """Hash a model folder's files and add it under NAME."""
+    from logogram.backends.base import BackendError
+    from logogram.local_models import add_model
+    from logogram.system import format_bytes
+
+    printer = _ProgressPrinter()
+
+    def progress(done: int, total: int, file: str) -> None:
+        printer("model", {"stage": "hashing", "done": done, "total": total, "file": file})
+
+    try:
+        model = add_model(path, name, progress)
+    except BackendError as exc:
+        printer.close()
+        raise _fail(str(exc)) from exc
+    except KeyboardInterrupt:
+        printer.close()
+        typer.echo("\nInterrupted. Nothing was added.", err=True)
+        raise typer.Exit(130) from None
+    printer.close()
+    typer.echo(f"Added {model.name}: {len(model.files)} files, {format_bytes(model.size)}.")
+    typer.echo(f"  SHA-256 of its files: {model.sha256}")
+    typer.echo(
+        f'  Specs name it "model": {{"id": "{model.name}", "source": "local", '
+        f'"sha256": "{model.sha256}", "revision": null, ...}}.'
+    )
+
+
+@models_app.command("list")
+def models_list() -> None:
+    """List the model folders added on this machine."""
+    from logogram.backends.base import BackendError
+    from logogram.local_models import list_models
+    from logogram.system import format_bytes
+
+    try:
+        models = list_models()
+    except BackendError as exc:
+        raise _fail(str(exc)) from exc
+    if not models:
+        typer.echo("No local models. Add a folder with: logogram models add PATH --name NAME")
+        return
+    for m in models:
+        typer.echo(f"{m.name}  {m.sha256[:12]}  {format_bytes(m.size)}  {m.folder}")
+
+
+@models_app.command("remove")
+def models_remove(
+    name: Annotated[str, typer.Argument(help="The name it was added under.")],
+) -> None:
+    """Forget a local model. Its folder and files are left as they are."""
+    from logogram.backends.base import BackendError
+    from logogram.local_models import remove_model
+
+    try:
+        model = remove_model(name)
+    except BackendError as exc:
+        raise _fail(str(exc)) from exc
+    typer.echo(f"Removed {model.name} from the local models. Its folder is untouched.")
 
 
 def main() -> None:

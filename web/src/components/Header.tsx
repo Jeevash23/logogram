@@ -89,7 +89,16 @@ export function ModelChip() {
   if (model.state === "ready" && model.info) {
     const info = model.info;
     return (
-      <Tip text={info.revision ? `${info.id}, revision ${info.revision}` : info.id} side="bottom">
+      <Tip
+        text={
+          info.source === "local"
+            ? `${info.id}, a local model, files SHA-256 ${info.sha256 ?? ""}`
+            : info.revision
+              ? `${info.id}, revision ${info.revision}`
+              : info.id
+        }
+        side="bottom"
+      >
       <button type="button" className={s.chip} onClick={open}>
         <span className={s.live} aria-hidden="true" />
         <span>

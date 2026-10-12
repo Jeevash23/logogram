@@ -166,7 +166,7 @@ export function AttentionView() {
         </div>
       </div>
       <p className={s.small}>{context.label}</p>
-      {context.error && <Callout tone="error" title="The loaded model differs">{context.error}</Callout>}
+      {context.error && <Callout tone="error" title={context.errorTitle}>{context.error}</Callout>}
       {error && <p className={s.small}>{error}</p>}
       {data && (
         <>

@@ -38,6 +38,9 @@ class ModelInfoOut(_Out):
     backend: str
     backend_version: str
     extra: dict[str, Any]
+    # Hugging Face ("hub"), or a folder on this machine ("local", by the hash of its files).
+    source: Literal["hub", "local"] = "hub"
+    sha256: str | None = None
 
 
 class ModelStatus(_Out):
@@ -57,7 +60,7 @@ class ModelStatus(_Out):
 
 class JobInfo(_Out):
     id: str
-    kind: Literal["load_model", "load_sae", "run"]
+    kind: Literal["load_model", "load_sae", "run", "add_model"]
     title: str
     status: Literal["running", "finished", "failed", "cancelled"]
     run_id: str | None
@@ -287,6 +290,9 @@ class AnswerTokens(_Out):
 class TokenStrip(_Out):
     clean: TokenRow
     corrupt: TokenRow
+    # With a chat template: the clean tokens that hold the prompt (first, one past the last);
+    # the others are the template's.
+    prompt: list[int] | None = None
     aligned: bool
     differs: list[int]
     labels: dict[str, int]
@@ -395,6 +401,32 @@ class MethodsText(_Out):
     text: str
 
 
+class ChatWrapped(_Out):
+    """A prompt in the model's own chat template: the whole text, where the prompt is in it
+    (characters; None when the template changes the prompt, as ``problem`` says), the template's
+    text before and after a prompt, and its SHA-256."""
+
+    text: str
+    start: int | None
+    end: int | None
+    before: str
+    after: str
+    sha256: str
+    problem: str | None
+
+
+class LocalModelOut(_Out):
+    """A model added from a folder on this machine. The folder is shown on this machine only;
+    specs and runs name the model by its name and the hash of its files."""
+
+    name: str
+    folder: str
+    sha256: str
+    added: str
+    size: int
+    files: int
+
+
 class LookToken(_Out):
     id: int
     token: str
@@ -410,6 +442,10 @@ class LookReport(_Out):
     tokens: list[str]
     ids: list[int]
     prepend_bos: bool
+    # The chat template the text was wrapped in, if any, and the tokens that hold the text
+    # itself (first, one past the last).
+    chat_template: dict[str, Any] | None = None
+    text_tokens: list[int] | None = None
     top_k: int
     position: int
     # After each token: the model's most likely next tokens.
@@ -507,7 +543,8 @@ class RunMemoryOut(_Out):
 
 class EstimateOut(_Out):
     id: str
-    revision: str
+    # None for a local model, which has no revisions.
+    revision: str | None
     architecture: ArchitectureOut
     download_bytes: int
     total_bytes: int

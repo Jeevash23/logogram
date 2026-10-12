@@ -55,7 +55,15 @@ export function Workbench() {
   const supportsInspector = ["explore", "attention", "results"].includes(view);
   const showInspector = !narrow && inspector && supportsInspector;
   useEffect(() => { const resize = () => setWidth(window.innerWidth); window.addEventListener("resize", resize); return () => window.removeEventListener("resize", resize); }, []);
-  useEffect(() => { lastView.current[workspace] = view; setDrawer(null); }, [workspace, view, project]);
+  // Another project or view closes the drawer; the place restored as a project opens doesn't close
+  // one opened meanwhile (a place chosen then wins over the restored one, too).
+  const drawerProject = useRef(project);
+  useEffect(() => {
+    lastView.current[workspace] = view;
+    const switched = drawerProject.current !== project;
+    drawerProject.current = project;
+    if (switched || !useStore.getState().entering) setDrawer(null);
+  }, [workspace, view, project]);
   useEffect(() => { viewPane.current?.scrollTo({ top: 0, left: 0 }); }, [view, exploreMode, activeRunId]);
   useEffect(() => {
     if (!inspectorFocus) return;

@@ -58,6 +58,17 @@
   white-space: pre;
 }
 
+/* A token the chat template wrote around the text. */
+.templateToken .tokenText {
+  font-weight: 450;
+  color: var(--muted);
+}
+
+.message {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
 .prediction {
   font-size: var(--text-xs);
   color: var(--muted);

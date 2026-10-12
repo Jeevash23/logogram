@@ -48,7 +48,8 @@ export function environmentChanges(
   }
   const ran = manifest.device?.type;
   if (ran) {
-    const wanted = spec?.model.device;
+    // One GPU of several (cuda:1) is a CUDA device: manifests record the type and the GPU apart.
+    const wanted = spec?.model.device.split(":")[0];
     const rerun = wanted && wanted !== "auto" && env.devices.includes(wanted) ? wanted : env.default_device;
     if (rerun !== ran) out.push({ key: "device", label: "Device", recorded: deviceText(ran), here: deviceText(rerun) });
   }

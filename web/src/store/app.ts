@@ -3,7 +3,7 @@
 import { create } from "zustand";
 
 import { api, ApiError, setProjectSession } from "../api/client";
-import { analysisContext, analysisSourceFor } from "../lib/analysis";
+import { analysisContext, analysisSourceFor, tokenizationKey } from "../lib/analysis";
 import type {
   BaselineReport,
   DatasetDetail,
@@ -508,12 +508,12 @@ export const useStore = create<Store>((set, get) => ({
 
   goto: (screen) => set({ screen }),
   setView: (view) => {
-    const bos = analysisContext(get()).options.prepend_bos;
+    const bos = tokenizationKey(analysisContext(get()).options);
     set({ view });
     followAnalysisSource(bos);
   },
   setMapOverlay: (mapOverlay) => {
-    const bos = analysisContext(get()).options.prepend_bos;
+    const bos = tokenizationKey(analysisContext(get()).options);
     set({ mapOverlay });
     followAnalysisSource(bos);
   },
@@ -674,7 +674,8 @@ export const useStore = create<Store>((set, get) => ({
     const project = projectSeq;
     set({ datasetPath: path, dataset: null, promptIndex: 0, tokenPosition: null, stagedSites: [], analysisSource: source });
     if (!path) return;
-    const detail = await get().guard(() => api.dataset(path, analysisContext(get()).options.prepend_bos));
+    const { prepend_bos, chat_template } = analysisContext(get()).options;
+    const detail = await get().guard(() => api.dataset(path, prepend_bos, chat_template ?? null));
     if (detail && seq === datasetSeq && project === projectSeq) set({ dataset: detail });
   },
 
@@ -684,7 +685,8 @@ export const useStore = create<Store>((set, get) => ({
     if (!path || !get().project) return;
     const seq = ++datasetSeq;
     const project = projectSeq;
-    const detail = await api.dataset(path, analysisContext(get()).options.prepend_bos).catch(() => null);
+    const { prepend_bos, chat_template } = analysisContext(get()).options;
+    const detail = await api.dataset(path, prepend_bos, chat_template ?? null).catch(() => null);
     if (detail && seq === datasetSeq && project === projectSeq) set({ dataset: detail });
   },
 
@@ -736,7 +738,7 @@ export const useStore = create<Store>((set, get) => ({
     const seq = ++openSeq;
     const detail = await get().loadRun(id, true);
     if (!detail || seq !== openSeq) return;
-    const bos = analysisContext(get()).options.prepend_bos;
+    const bos = tokenizationKey(analysisContext(get()).options);
     const form = { ...formFromSpec(detail.spec), draftId: id };
     set({ view: "experiment", activeRunId: id, analysisSource: "form" });
     savedForm = form;
@@ -919,7 +921,7 @@ export const useStore = create<Store>((set, get) => ({
     const before = st.form;
     const form = { ...before, ...patch };
     if (sameData(form, before)) return;
-    const bos = analysisContext(st).options.prepend_bos;
+    const bos = tokenizationKey(analysisContext(st).options);
     let history = st.formHistory;
     if (options.record !== false) {
       const at = Date.now();
@@ -928,13 +930,14 @@ export const useStore = create<Store>((set, get) => ({
       lastEdit = { fields, at };
     }
     set({ form, formHistory: history, analysisSource: "form" });
-    // Staged positions count tokens as they were tokenized; BOS moves every token.
-    if (form.prependBos !== before.prependBos) set({ stagedSites: [] });
+    // Staged positions count tokens as they were tokenized; BOS or a chat template moves every
+    // token.
+    if (form.prependBos !== before.prependBos || !sameData(form.chatTemplate, before.chatTemplate)) set({ stagedSites: [] });
     analysisChanged(bos);
   },
 
   replaceForm: (form, options) => {
-    const bos = analysisContext(get()).options.prepend_bos;
+    const bos = tokenizationKey(analysisContext(get()).options);
     const changed = swapForm(form, options);
     if (changed) analysisChanged(bos);
     return changed;
@@ -949,7 +952,7 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   editRun: (spec) => {
-    const bos = analysisContext(get()).options.prepend_bos;
+    const bos = tokenizationKey(analysisContext(get()).options);
     set({ view: "experiment", analysisSource: "form" });
     swapForm(formFromSpec(spec));
     analysisChanged(bos);
@@ -957,7 +960,7 @@ export const useStore = create<Store>((set, get) => ({
 
   prefillExperiment: (kind, sel) => {
     if (sel.part === "set") return; // a set is patched or ablated as a whole in its own run
-    const bos = analysisContext(get()).options.prepend_bos;
+    const bos = tokenizationKey(analysisContext(get()).options);
     const form = get().form;
     // Use the residual site of the active run when the selection is a residual cell.
     // A residual cell names its site; otherwise use the residual site the active run measured.
@@ -1037,6 +1040,7 @@ export const useStore = create<Store>((set, get) => ({
           void get().refreshRuns();
           if (job.status === "failed" && job.error) get().notify(job.error, "error");
           if (job.kind === "load_model" && job.status === "finished") get().notify("Model loaded.");
+          if (job.kind === "add_model" && job.status === "finished") get().notify(`${job.title.replace(/^Add /, "Added ")}. Choose it in Load a model.`);
           if (job.kind === "load_sae" && job.status === "finished") get().notify("SAE loaded. Measure its fit on these prompts before trusting its features.", "info", { persist: true });
         }
         break;
@@ -1246,7 +1250,7 @@ function applyAnnotations(listing: RunListing): void {
  */
 function forgetRun(id: string): void {
   const st = useStore.getState();
-  const bos = analysisContext(st).options.prepend_bos;
+  const bos = tokenizationKey(analysisContext(st).options);
   const { [id]: _detail, ...runDetails } = st.runDetails;
   const { [id]: _live, ...live } = st.live;
   const [a, b] = st.compareIds;
@@ -1299,7 +1303,7 @@ function stepForm(step: typeof undoHistory): void {
     if (step === redoHistory && st.formHistory.future.length) useStore.setState({ formHistory: { ...st.formHistory, future: [] } });
     return;
   }
-  const bos = analysisContext(st).options.prepend_bos;
+  const bos = tokenizationKey(analysisContext(st).options);
   useStore.setState({ form: next.form, formHistory: next.history });
   analysisChanged(bos);
 }
@@ -1309,7 +1313,7 @@ function stepForm(step: typeof undoHistory): void {
  * that is the active run, read its prompts, from its dataset, as it did. Changing BOS moves every
  * token, so a chosen token no longer means the same one.
  */
-function followAnalysisSource(bosBefore: boolean): void {
+function followAnalysisSource(bosBefore: string): void {
   const st = useStore.getState();
   const source = analysisSourceFor(st);
   if (source !== st.analysisSource) useStore.setState({ analysisSource: source });
@@ -1333,7 +1337,7 @@ function formShown(st: Store, runId?: string): FormState {
  * staged sites went into it: they leave the tray, and Undo returns them, beside any staged since. */
 function configureForm(form: FormState, fromTray: boolean): void {
   const st = useStore.getState();
-  const bos = analysisContext(st).options.prepend_bos;
+  const bos = tokenizationKey(analysisContext(st).options);
   const staged = fromTray ? st.stagedSites : [];
   useStore.setState({ view: "experiment", analysisSource: "form", ...(fromTray ? { stagedSites: [] } : {}) });
   swapForm({ ...form, draftId: null, nameEdited: false, name: "" }, {
@@ -1346,11 +1350,12 @@ function configureForm(form: FormState, fromTray: boolean): void {
   analysisChanged(bos);
 }
 
-/** After anything that can change the analysis context: tokens move when BOS changes, so the
- * prompts are read again; the prompt index stays within the prompts used. */
-function analysisChanged(bosBefore: boolean): void {
+/** After anything that can change the analysis context: tokens move when BOS or the chat
+ * template changes (`bosBefore` is tokenizationKey's before), so the prompts are read again; the
+ * prompt index stays within the prompts used. */
+function analysisChanged(bosBefore: string): void {
   const st = useStore.getState();
-  if (analysisContext(st).options.prepend_bos !== bosBefore) {
+  if (tokenizationKey(analysisContext(st).options) !== bosBefore) {
     useStore.setState({ tokenPosition: null });
     void st.reloadDataset();
   }

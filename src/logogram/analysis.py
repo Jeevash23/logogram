@@ -8,18 +8,31 @@ import numpy as np
 import torch
 
 from logogram.backends.base import ModelBackend, float64
+from logogram.chat import ChatWrapper, chat_wrapper
 from logogram.datasets import PromptRecord
 from logogram.engine import compute_baselines, patched_forward
 from logogram.metrics import Scorer
-from logogram.prompts import PreparedPrompt, PromptIssue, group_by_length, prepare_prompt
+from logogram.prompts import (
+    PreparedPrompt,
+    PromptIssue,
+    first_real_token,
+    group_by_length,
+    prepare_prompt,
+    prompt_span,
+)
 from logogram.spec import (
     METRIC_LABELS,
     SINGLE_POSITION_METRICS,
+    AssistantPrefix,
     IndexPosition,
     LogProbDiffMetric,
     PredictionSettings,
+    UserTurn,
     describe_metric,
 )
+
+# A spec's tokenization.chat_template: how prompts are wrapped (None: read as they are).
+ChatTemplate = UserTurn | AssistantPrefix | None
 
 
 def _f(x: float) -> float | None:
@@ -36,11 +49,16 @@ def answer_text(value: str | list[str]) -> str:
 
 
 def tokenize_pair(
-    backend: ModelBackend, record: PromptRecord, prepend_bos: bool, continuations: bool = True
+    backend: ModelBackend,
+    record: PromptRecord,
+    prepend_bos: bool,
+    continuations: bool = True,
+    chat_template: ChatTemplate = None,
 ) -> dict[str, Any]:
     """Everything the token strip shows for one prompt pair, including what's wrong with it."""
+    chat = chat_wrapper(backend, chat_template)
     prepared, issues, clean, corrupt = prepare_prompt(
-        backend, record, 0, prepend_bos, continuations
+        backend, record, 0, prepend_bos, continuations, chat
     )
     n = min(len(clean.ids), len(corrupt.ids))
     differs = [i for i in range(n) if clean.ids[i] != corrupt.ids[i]]
@@ -69,6 +87,8 @@ def tokenize_pair(
     return {
         "clean": {"tokens": clean.tokens, "ids": clean.ids},
         "corrupt": {"tokens": corrupt.tokens, "ids": corrupt.ids},
+        # The tokens that hold the clean prompt; with a chat template, the rest are the template's.
+        "prompt": list(prompt_span(clean, len(record.clean))) if chat else None,
         "aligned": len(clean.ids) == len(corrupt.ids),
         "differs": differs,
         "labels": prepared.labels if prepared else {},
@@ -83,10 +103,18 @@ def prepare_with_issues(
     records: list[PromptRecord],
     prepend_bos: bool,
     continuations: bool = True,
+    chat_template: ChatTemplate | ChatWrapper = None,
 ) -> tuple[list[PreparedPrompt], list[PromptIssue]]:
+    chat = (
+        chat_template
+        if isinstance(chat_template, ChatWrapper)
+        else chat_wrapper(backend, chat_template)
+    )
     prepared, issues = [], []
     for i, record in enumerate(records):
-        p, prompt_issues, _, _ = prepare_prompt(backend, record, i, prepend_bos, continuations)
+        p, prompt_issues, _, _ = prepare_prompt(
+            backend, record, i, prepend_bos, continuations, chat
+        )
         issues.extend(prompt_issues)
         if p is not None:
             prepared.append(p)
@@ -101,12 +129,15 @@ def baseline_report(
     batch_size: int,
     metric: Any = None,
     top_k: int = 5,
+    chat_template: ChatTemplate = None,
 ) -> dict[str, Any]:
     """Run clean and corrupt prompts unpatched: the metric, the preference (log P(answer) −
     log P(distractor), the logit difference for single tokens), probabilities and top tokens."""
     metric = metric or LogProbDiffMetric(kind="logprob_diff", normalization="dataset_gap")
     continuations = metric.kind not in SINGLE_POSITION_METRICS
-    prepared, issues = prepare_with_issues(backend, records, prepend_bos, continuations)
+    prepared, issues = prepare_with_issues(
+        backend, records, prepend_bos, continuations, chat_template
+    )
     if not prepared:
         return {"n": 0, "prompts": [], "issues": [i.to_dict() for i in issues], "summary": None}
     groups = group_by_length(prepared)
@@ -185,6 +216,7 @@ def attention_report(
     which: str = "clean",
     prepend_bos: bool = True,
     batch_size: int = 64,
+    chat_template: ChatTemplate = None,
 ) -> dict[str, Any]:
     """The head's attention on one prompt, and averaged over prompts of the same token length."""
     info = backend.info
@@ -192,7 +224,7 @@ def attention_report(
         raise ValueError(f"L{layer} H{head} doesn't exist in this model.")
     if not 0 <= index < len(records):
         raise ValueError(f"There is no prompt {index}.")
-    prepared, _ = prepare_with_issues(backend, records, prepend_bos)
+    prepared, _ = prepare_with_issues(backend, records, prepend_bos, chat_template=chat_template)
     target = next((p for p in prepared if p.index == index), None)
     if target is None:
         raise ValueError(f"Prompt {index} can't be used; fix it in the dataset first.")
@@ -246,13 +278,16 @@ def prediction_report(
     settings: PredictionSettings,
     prepend_bos: bool,
     batch_size: int,
+    chat_template: ChatTemplate = None,
 ) -> dict[str, Any]:
     """A descriptive logit lens, preserving the baseline's length groups and batch shape."""
     if index != settings.prompt_index:
         raise ValueError("The prompt index must match the prediction settings in the spec.")
     if not 0 <= index < len(records):
         raise ValueError(f"There is no prompt {index}.")
-    prepared, issues = prepare_with_issues(backend, records, prepend_bos)
+    prepared, issues = prepare_with_issues(
+        backend, records, prepend_bos, chat_template=chat_template
+    )
     target_idx = next((i for i, p in enumerate(prepared) if p.index == index), None)
     if target_idx is None:
         raise ValueError(f"Prompt {index} can't be used; fix it in the dataset first.")
@@ -321,10 +356,14 @@ def _reading(target: Any) -> str:
 # -- sparse autoencoder features -------------------------------------------------------------
 
 
-def _first_real_token(prepend_bos: bool) -> int:
+def _first_real_token(
+    backend: ModelBackend, prepared: list[PreparedPrompt], prepend_bos: bool, wrapped: bool
+) -> int:
     """Where real tokens start: SAEs aren't trained on the beginning-of-sequence token, whose
-    activations are unlike any other, so fits and splices leave it alone."""
-    return 1 if prepend_bos else 0
+    activations are unlike any other, so fits and splices leave it alone. A chat template writes
+    the same beginning before every prompt."""
+    ids = prepared[0].clean.ids if prepared else []
+    return first_real_token(backend, ids, prepend_bos, wrapped)
 
 
 def sae_fit_report(
@@ -334,16 +373,19 @@ def sae_fit_report(
     *,
     prepend_bos: bool,
     batch_size: int,
+    chat_template: ChatTemplate = None,
 ) -> dict[str, Any]:
     """How well the SAE fits these prompts: the variance of the activations it explains, how many
     features fire per token, and what the logit difference becomes when the model runs on the
     SAE's reconstruction instead of the activation (its error removed)."""
     from logogram.sae import fit_on
 
-    prepared, issues = prepare_with_issues(backend, records, prepend_bos)
+    prepared, issues = prepare_with_issues(
+        backend, records, prepend_bos, chat_template=chat_template
+    )
     if not prepared:
         raise ValueError("None of these prompts can be used with the loaded model.")
-    start = _first_real_token(prepend_bos)
+    start = _first_real_token(backend, prepared, prepend_bos, chat_template is not None)
     key = (sae.site_in, sae.layer)
     out_key = (sae.site, sae.layer)
     acts, outs, clean, spliced = [], [], [], []
@@ -396,8 +438,14 @@ def sae_fit_report(
     return fit
 
 
-def _single(backend: ModelBackend, records: list[PromptRecord], index: int, prepend_bos: bool):  # type: ignore[no-untyped-def]
-    prepared, _ = prepare_with_issues(backend, records, prepend_bos)
+def _single(  # type: ignore[no-untyped-def]
+    backend: ModelBackend,
+    records: list[PromptRecord],
+    index: int,
+    prepend_bos: bool,
+    chat_template: ChatTemplate = None,
+):
+    prepared, _ = prepare_with_issues(backend, records, prepend_bos, chat_template=chat_template)
     target = next((p for p in prepared if p.index == index), None)
     if target is None:
         raise ValueError(f"Prompt {index} can't be used; fix it in the dataset first.")
@@ -413,9 +461,10 @@ def token_features_report(
     which: str,
     prepend_bos: bool,
     top_k: int = 8,
+    chat_template: ChatTemplate = None,
 ) -> dict[str, Any]:
     """The features that fire most on each token of one prompt."""
-    _, target = _single(backend, records, index, prepend_bos)
+    prepared, target = _single(backend, records, index, prepend_bos, chat_template)
     tokenized = target.clean if which == "clean" else target.corrupt
     tokens = torch.tensor([tokenized.ids], dtype=torch.long)
     key = (sae.site_in, sae.layer)
@@ -437,7 +486,9 @@ def token_features_report(
         "labels": target.labels,
         "features": per_token,
         "active": [int((f[p] > 0).sum()) for p in range(f.shape[0])],
-        "first_real_token": _first_real_token(prepend_bos),
+        "first_real_token": _first_real_token(
+            backend, prepared, prepend_bos, chat_template is not None
+        ),
     }
 
 
@@ -452,14 +503,15 @@ def feature_report(
     prepend_bos: bool,
     batch_size: int,
     top: int = 10,
+    chat_template: ChatTemplate = None,
 ) -> dict[str, Any]:
     """Where one feature fires: along one prompt's tokens, and on which prompts of the dataset
     most strongly (all computed here, from the project's own prompts)."""
     if not 0 <= feature < sae.d_sae:
         raise ValueError(f"The SAE has {sae.d_sae} features; there is no feature {feature}.")
-    prepared, target = _single(backend, records, index, prepend_bos)
+    prepared, target = _single(backend, records, index, prepend_bos, chat_template)
     key = (sae.site_in, sae.layer)
-    start = _first_real_token(prepend_bos)
+    start = _first_real_token(backend, prepared, prepend_bos, chat_template is not None)
     strongest: list[dict[str, Any]] = []
     along: list[float] = []
     for group in group_by_length(prepared):
@@ -511,6 +563,7 @@ def feature_writes_report(
     prepend_bos: bool,
     position: Any = None,
     top: int = 10,
+    chat_template: ChatTemplate = None,
 ) -> dict[str, Any]:
     """The tokens one feature promotes and suppresses directly, read at one token of one prompt:
     ``position`` (a spec position, such as a site's), or where the feature fires most in the
@@ -518,7 +571,7 @@ def feature_writes_report(
     from logogram.features import feature_writes
     from logogram.sites import resolve_position
 
-    _, target = _single(backend, records, index, prepend_bos)
+    prepared, target = _single(backend, records, index, prepend_bos, chat_template)
     tokenized = target.clean if which == "clean" else target.corrupt
     at = None if position is None else resolve_position(position, target)
     report = feature_writes(
@@ -527,7 +580,7 @@ def feature_writes_report(
         feature,
         tokenized.ids,
         position=at,
-        first=_first_real_token(prepend_bos),
+        first=_first_real_token(backend, prepared, prepend_bos, chat_template is not None),
         top=top,
     )
     return {**report, "index": index, "which": which, "tokens": tokenized.tokens}

@@ -38,6 +38,8 @@ class GPU:
     memory_total: int
     memory_free: int | None
     bf16: bool
+    # Its index among the GPUs PyTorch sees (a spec's model.device "cuda:N"); None for Apple's.
+    index: int | None = None
 
 
 @dataclass
@@ -61,6 +63,8 @@ class SystemReport:
     hf_cache_free: int | None
     mps_available: bool = False
     issues: list[Issue] = field(default_factory=list)
+    # The GPU a spec's model.device "cuda" (and "auto") runs on: torch's current device.
+    default_gpu: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -163,8 +167,11 @@ def system_report() -> SystemReport:
     gpus: list[GPU] = []
     backend = "cpu"
     mps = bool(getattr(torch.backends, "mps", None) and torch.backends.mps.is_available())
+    default_gpu = None
     if torch.cuda.is_available():
         backend = "cuda"
+        with contextlib.suppress(Exception):
+            default_gpu = int(torch.cuda.current_device())
         for i in range(torch.cuda.device_count()):
             props = torch.cuda.get_device_properties(i)
             free = None
@@ -176,6 +183,7 @@ def system_report() -> SystemReport:
                     memory_total=int(props.total_memory),
                     memory_free=int(free) if free is not None else None,
                     bf16=bool(torch.cuda.is_bf16_supported()),
+                    index=i,
                 )
             )
     elif mps:
@@ -295,6 +303,7 @@ def system_report() -> SystemReport:
         hf_cache_free=cache_free,
         mps_available=mps,
         issues=issues,
+        default_gpu=default_gpu,
     )
 
 
@@ -442,10 +451,12 @@ class MemoryEstimate:
 
 
 def available_memory(device: str) -> int:
+    """Memory free on ``device``: on one GPU (cuda:N, or the default GPU for cuda), Apple's
+    unified memory, or RAM."""
     import torch
 
-    if device == "cuda" and torch.cuda.is_available():
-        free, _ = torch.cuda.mem_get_info()
+    if device.split(":")[0] == "cuda" and torch.cuda.is_available():
+        free, _ = torch.cuda.mem_get_info(torch.device(device))
         return int(free)
     if device == "mps":
         try:
@@ -632,7 +643,7 @@ def estimate_run_memory(
 
 
 def _overhead(device: str) -> int:
-    return 512 * 1024**2 if device == "cuda" else 256 * 1024**2
+    return 512 * 1024**2 if device.split(":")[0] == "cuda" else 256 * 1024**2
 
 
 def _verdict(total: int, available: int) -> str:
@@ -642,6 +653,8 @@ def _verdict(total: int, available: int) -> str:
 
 
 def _where(device: str) -> str:
+    if device.startswith("cuda:"):
+        return f"memory on GPU {device.split(':')[1]}"
     return {"cuda": "GPU memory", "mps": "unified memory", "cpu": "RAM"}.get(device, "memory")
 
 

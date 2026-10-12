@@ -33,6 +33,7 @@ const DETAILED: FormState = {
   saeRef: { repo: "owner/sae", path: "layer_9", revision: null },
   limit: 12,
   prependBos: false,
+  chatTemplate: { kind: "assistant_prefix", system: "Answer in one word.", user: "Finish the sentence." },
   notes: "Expect the name movers to carry most of it.",
   modelRef: { id: "gpt2", source: "hub", revision: "abc", sha256: null, dtype: "float32", device: "auto", process_weights: true },
   savedDataset: { path: "datasets/ioi.jsonl", sha256: null },
@@ -93,6 +94,8 @@ test("anything that isn't exactly a form is ignored", () => {
     variant((d) => { d.form.baseline = { kind: "resample", pool: "corrupt" }; }),
     variant((d) => { d.form.pathReceivers = [{ kind: "head", layer: 1, head: 2, input: "z" }]; }),
     variant((d) => { d.form.modelRef = { id: 7 }; }),
+    variant((d) => { d.form.chatTemplate = { kind: "assistant_prefix", system: null }; }),
+    variant((d) => { d.form.chatTemplate = { kind: "system_turn", system: null }; }),
     variant((d) => { d.form = "a form"; }),
   ]) {
     expect(parseStoredForm(text), String(text).slice(0, 80)).toBeNull();
@@ -104,7 +107,7 @@ test("anything that isn't exactly a form is ignored", () => {
  * feature choice existed. */
 function olderForm(): Record<string, unknown> {
   const data = JSON.parse(serializeForm(DETAILED, 7));
-  for (const key of ["metric", "klTarget", "cluster", "atpMethod", "atpSteps"]) delete data.form[key];
+  for (const key of ["metric", "klTarget", "cluster", "atpMethod", "atpSteps", "chatTemplate"]) delete data.form[key];
   delete data.form.modelRef.source;
   delete data.form.modelRef.sha256;
   data.form.kind = "attribution_patching";
@@ -112,7 +115,7 @@ function olderForm(): Record<string, unknown> {
   return data;
 }
 
-test("a form stored before the metric, clusters, integrated gradients and local models existed takes the form's starting values for them", () => {
+test("a form stored before the metric, clusters, integrated gradients, local models and chat templates existed takes the form's starting values for them", () => {
   const stored = parseStoredForm(JSON.stringify(olderForm()));
   expect(stored?.form).toEqual({
     ...DETAILED,
@@ -123,6 +126,7 @@ test("a form stored before the metric, clusters, integrated gradients and local 
     cluster: null,
     atpMethod: "gradient",
     atpSteps: DEFAULT_FORM.atpSteps,
+    chatTemplate: null,
   });
   // Fields that existed then must still be there and well formed.
   const broken = olderForm();

@@ -14,6 +14,7 @@ __released__ = "2026-10-12"
 
 _API = (
     "Run",
+    "add_local_model",
     "check_robustness",
     "compare_runs",
     "create_project",
@@ -21,6 +22,7 @@ _API = (
     "feature_writes",
     "generate",
     "head_kinds",
+    "list_local_models",
     "list_runs",
     "load_model",
     "load_run",
@@ -28,6 +30,7 @@ _API = (
     "load_spec",
     "look",
     "open_project",
+    "remove_local_model",
     "run",
     "verify_run",
     "write_dataset",

@@ -142,6 +142,43 @@ def _statistics(spec: Spec, summary: dict[str, Any] | None) -> str:
     return text
 
 
+def _quoted(text: str) -> str:
+    """Text as JSON writes it: in quotes, with its newlines and other controls escaped."""
+    return json.dumps(text, ensure_ascii=False)
+
+
+def _tokenized(spec: Spec, summary: dict[str, Any] | None) -> str:
+    """How the prompts were tokenized: with or without a beginning-of-sequence token, or wrapped
+    in the model's own chat template, and then exactly as what text."""
+    template = spec.tokenization.chat_template
+    if template is None:
+        bos = "with" if spec.tokenization.prepend_bos else "without"
+        return f"tokenized {bos} a beginning-of-sequence token"
+    chat = (summary or {}).get("chat_template") or {}
+    sha = f" (SHA-256 {chat['sha256']})" if chat.get("sha256") else ""
+    system = (
+        f", after the system message {_quoted(template.system)}"
+        if template.system is not None
+        else ""
+    )
+    if template.kind == "user_turn":
+        text = (
+            f"wrapped in the model's own chat template{sha} as the person's message{system}, "
+            "followed by the template's opening of the model's reply, so the answer is the "
+            "reply's first token"
+        )
+    else:
+        text = (
+            f"wrapped in the model's own chat template{sha} as the start of the model's reply "
+            f"to the person's message {_quoted(template.user)}{system}, so the model goes on "
+            "from the prompt"
+        )
+    if "before" in chat:
+        after = f" + {_quoted(chat['after'])}" if chat.get("after") else ""
+        text += f": each prompt was read as {_quoted(chat['before'])} + the prompt{after}"
+    return text + ", tokenized whole without adding special tokens"
+
+
 def methods_text(
     spec: Spec, summary: dict[str, Any] | None, manifest: dict[str, Any] | None, run_id: str
 ) -> str:
@@ -169,18 +206,22 @@ def methods_text(
     )
     pinned = f" (SHA-256 {d.sha256})" if d.sha256 else " (not pinned by a checksum)"
     first = f", the first {d.limit} of the file" if d.limit else ""
-    bos = "with" if spec.tokenization.prepend_bos else "without"
     normalized = (
         "Effects were normalized by the mean clean–corrupt gap over the dataset"
         if spec.metric.normalization == "dataset_gap"
         else "Effects were normalized by each prompt's own clean–corrupt gap"
     )
     formula = ((summary or {}).get("metric") or {}).get("normalized_effect")
+    model = (
+        f"{m.id}, a local model whose files hash to SHA-256 {m.sha256} (Logogram's hash of the "
+        "files it loads)"
+        if m.source == "local"
+        else f"{m.id} at {revision}"
+    )
     paragraphs = [
         f"{describe_experiment(spec)}.",
-        f"The model was {m.id} at {revision}, run in {m.dtype} on {device}, {weights}.",
-        f"{pairs} read from {source}{pinned}{first}, and tokenized {bos} a "
-        "beginning-of-sequence token.",
+        f"The model was {model}, run in {m.dtype} on {device}, {weights}.",
+        f"{pairs} read from {source}{pinned}{first}, and {_tokenized(spec, summary)}.",
         f"The metric, for each prompt, was {describe_metric(spec.metric)}. "
         f"{normalized}{f': {formula}' if formula else ''}.",
         f"Prompts ran in batches of {spec.execution.batch_size}. {_statistics(spec, summary)}",
@@ -446,12 +487,15 @@ def run_report(
     model = manifest.get("model") or {}
     device = manifest.get("device") or {}
     dataset = manifest.get("dataset") or {}
+    pinned_at = model.get("revision") or spec.model.revision or "an unpinned revision"
     provenance: list[tuple[str, str]] = [
         ("Run", run_id),
         ("Finished", manifest.get("finished_at") or "—"),
         (
             "Model",
-            f"{spec.model.id} at {model.get('revision') or spec.model.revision or 'an unpinned revision'}",
+            f"{spec.model.id}, a local model, files SHA-256 {spec.model.sha256}"
+            if spec.model.source == "local"
+            else f"{spec.model.id} at {pinned_at}",
         ),
         ("Architecture", model.get("architecture") or "—"),
         ("Precision", spec.model.dtype),
@@ -459,6 +503,15 @@ def run_report(
     ]
     if hardware and device.get("name"):
         provenance.append(("Hardware", device["name"]))
+    chat = manifest.get("chat_template") or {}
+    if spec.tokenization.chat_template is not None:
+        how = (
+            "the person's message"
+            if spec.tokenization.chat_template.kind == "user_turn"
+            else "the start of the model's reply"
+        )
+        sha = f", SHA-256 {chat['sha256']}" if chat.get("sha256") else ""
+        provenance.append(("Chat template", f"the model's own, prompts as {how}{sha}"))
     provenance += [
         ("Dataset", f"{dataset.get('path') or spec.dataset.path}, {dataset.get('n', '—')} prompts"),
         ("Dataset SHA-256", dataset.get("sha256") or spec.dataset.sha256 or "not pinned"),

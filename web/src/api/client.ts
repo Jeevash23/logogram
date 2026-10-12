@@ -3,6 +3,9 @@
 import type {
   AttentionData,
   BaselineReport,
+  ChatTemplateSpec,
+  ChatWrapped,
+  LocalModel,
   Comparison,
   DatasetCreated,
   DatasetDetail,
@@ -75,6 +78,8 @@ export interface AnalysisOptions {
   model?: Spec["model"];
   dataset_sha256?: string | null;
   prepend_bos: boolean;
+  /** The chat template prompts are wrapped in, as a spec's tokenization.chat_template says. */
+  chat_template?: ChatTemplateSpec | null;
   limit: number | null;
   batch_size: number;
 }
@@ -190,7 +195,13 @@ export const api = {
   closeProject: () => post<{ ok: boolean }>("/api/projects/close"),
   project: () => get<ProjectInfo>("/api/project"),
 
-  dataset: (path: string, prependBos = true) => get<DatasetDetail>(`/api/dataset?path=${encodeURIComponent(path)}&prepend_bos=${prependBos}`),
+  /** A dataset, and what the loaded model makes of its prompts: with or without the
+   * beginning-of-sequence token, or wrapped in a chat template. */
+  dataset: (path: string, prependBos = true, chatTemplate: ChatTemplateSpec | null = null) =>
+    get<DatasetDetail>(
+      `/api/dataset?path=${encodeURIComponent(path)}&prepend_bos=${chatTemplate ? false : prependBos}` +
+        (chatTemplate ? `&chat_template=${encodeURIComponent(JSON.stringify(chatTemplate))}` : ""),
+    ),
   tasks: () => get<TaskInfo[]>("/api/tasks"),
   /** Generate a task's prompts into a new dataset; the reply names the metric that reads them. */
   generateTask: (body: { task: string; name: string; n: number; seed: number; options: Record<string, unknown>; overwrite?: boolean }) =>
@@ -210,8 +221,16 @@ export const api = {
       presets: ModelPreset[];
       suggestions: string[];
     }>("/api/models/presets"),
-  estimate: (body: { id: string; revision?: string | null; dtype: Dtype; device: Device; process_weights: boolean }) =>
+  estimate: (body: { id: string; source?: "hub" | "local"; sha256?: string | null; revision?: string | null; dtype: Dtype; device: Device; process_weights: boolean }) =>
     post<EstimateResponse>("/api/models/estimate", body),
+  /** The models added from folders on this machine. */
+  localModels: () => get<LocalModel[]>("/api/models/local"),
+  /** Hash a model folder and add it under a name: a job, with progress in bytes. */
+  addLocalModel: (path: string, name: string) => post<Job>("/api/models/local", { path, name }),
+  /** Forget a local model; its folder is left as it is. */
+  removeLocalModel: (name: string) => request<LocalModel[]>("DELETE", `/api/models/local/${encodeURIComponent(name)}`),
+  /** A prompt as the loaded model reads it in its own chat template. */
+  chatWrap: (body: { chat_template: ChatTemplateSpec; text: string; model?: ModelRef }) => post<ChatWrapped>("/api/chat/wrap", body),
   /** What a run of this batch size would need on the loaded model, against the memory free. */
   runMemory: (body: { batch_size: number; seq_len: number; method: ExperimentKind }) => post<RunMemory>("/api/models/run-memory", body),
   loadModel: (body: ModelRef) => post<Job>("/api/models/load", body),

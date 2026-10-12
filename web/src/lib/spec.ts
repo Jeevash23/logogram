@@ -2,6 +2,7 @@
 
 import type {
   BaselineSpec,
+  ChatTemplateSpec,
   ExperimentKind,
   PathReceiverSpec,
   ExperimentSpec,
@@ -50,6 +51,20 @@ export function receiverLabel(r: PathReceiverSpec): string {
 /** A steering strength as the results write it, for example ×2 or ×−0.5. */
 export function strengthText(c: number): string {
   return `×${String(c).replace("-", "−")}`;
+}
+
+/** Whether a model loaded on `loaded` (cpu, mps, or cuda:N, one GPU) is on the device a spec asks
+ * for. "auto" takes what is there; "cuda" is the default GPU, which the server knows: any GPU is
+ * taken for it here, and the server checks it exactly. */
+export function sameDevice(asked: string, loaded: string): boolean {
+  if (asked === "auto" || asked === loaded) return true;
+  return asked === "cuda" && (loaded === "cuda" || loaded.startsWith("cuda:"));
+}
+
+/** How a chat template wraps prompts, in a few words. */
+export function chatTemplateText(t: ChatTemplateSpec | null | undefined): string {
+  if (!t) return "plain text";
+  return t.kind === "user_turn" ? "in the chat template, as the person's message" : "in the chat template, as the start of the reply";
 }
 
 /** The spec's model as the loaded one: where its weights came from, and the device asked for. */
