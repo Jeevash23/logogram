@@ -11,7 +11,7 @@ import { modelName, useAnalysisContext } from "../lib/hooks";
 import { metricWords } from "../lib/metrics";
 import { experimentText, scopeText, workloadText } from "../lib/spec";
 import { behaviorPresent, PRESENT_GAP } from "../lib/thresholds";
-import { useStore } from "../store/app";
+import { runnerName, runWouldQueue, useStore } from "../store/app";
 import e from "./ExperimentView.module.css";
 
 /**
@@ -45,7 +45,8 @@ export function RunSummary({
   onQueue: (spec: Spec) => void;
 }) {
   const titleId = useId();
-  const waiting = useStore((st) => st.job?.status === "running" || st.queue.length > 0);
+  const waiting = useStore(runWouldQueue);
+  const runner = useStore((st) => st.queueRunner);
   const loaded = useStore((st) => (st.model.state === "ready" ? st.model.info : undefined));
   // The loaded model runs the spec, so what is known about it applies when the spec names it.
   const chat = loaded && (!spec || spec.model.id === loaded.id) ? chatReason(loaded) : null;
@@ -95,7 +96,11 @@ export function RunSummary({
         <RunButton spec={spec} reason={error} onRun={onRun} onQueue={onQueue} />
         <span className={e.runHint}>
           {waiting ? (
-            "Another job is running: this one waits in the queue for its turn."
+            runner ? (
+              `The queue is being run by ${runnerName(runner)}: this one joins its end.`
+            ) : (
+              "Another job is running: this one waits in the queue for its turn."
+            )
           ) : (
             <>
               or <Kbd>{MOD}</Kbd> <Kbd>Enter</Kbd>

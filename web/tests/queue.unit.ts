@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 
-import type { Job, ProjectInfo, QueuedRun, Spec } from "../src/api/types";
-import { useStore } from "../src/store/app";
+import type { Job, ProjectInfo, QueuedRun, QueueStatus, Spec } from "../src/api/types";
+import { runnerName, runWouldQueue, useStore } from "../src/store/app";
 
 const project = (id: string): ProjectInfo => ({ session_id: id, name: id, path: `projects/${id}`, datasets: [], description: "" });
 
@@ -127,6 +127,57 @@ test("a removed run leaves the queue at once, and the notice names it", async ()
     await store.removeQueuedRun("q2");
     expect(titles()).toEqual(["Second look"]);
     expect(lastNotice()).toMatchObject({ tone: "error", text: started });
+  } finally {
+    restore();
+    store.leaveProject();
+  }
+});
+
+test("the queue says how it stands, and a paused one holds no new run back", async () => {
+  const status = (state: QueueStatus["state"], runs: QueuedRun[], runner: string | null = null): QueueStatus => ({
+    project_session: "one",
+    runs,
+    state,
+    runner,
+    error: null,
+  });
+  const waiting = [queued("q1", "Ablation", "one"), queued("q2", "Second look", "one")];
+  const restore = stubApi({
+    "GET /api/queue/state": () => status("paused", waiting),
+    "POST /api/queue/start": () => status("running", waiting.slice(1)),
+  });
+  const store = useStore.getState();
+  try {
+    store.leaveProject();
+    // A project whose queue comes back paused: it says so, and offers to start it.
+    await store.enterProject(project("one"));
+    expect(useStore.getState()).toMatchObject({ queueState: "paused", queueRunner: null });
+    expect(titles()).toEqual(["Ablation", "Second look"]);
+    const notice = lastNotice();
+    expect(notice?.text).toBe(
+      "2 runs wait in the queue from before. It is paused: nothing starts until you start it. The history lists the queue, where you can clear it.",
+    );
+    expect(notice?.action?.label).toBe("Start the queue");
+    // Paused, it doesn't hold a new run back; waiting, or run by another process, it does.
+    expect(runWouldQueue(useStore.getState())).toBe(false);
+    useStore.setState({ job: running("Heads sweep", "r1", "one") });
+    expect(runWouldQueue(useStore.getState())).toBe(true);
+    useStore.setState({ job: null });
+    store.handleEvent({ type: "queue", ...status("running", waiting, "`logogram queue run` (process 42)") });
+    expect(useStore.getState()).toMatchObject({ queueState: "running", queueRunner: "`logogram queue run` (process 42)" });
+    expect(runWouldQueue(useStore.getState())).toBe(true);
+    expect(runnerName(useStore.getState().queueRunner ?? "")).toBe("logogram queue run (process 42)");
+    // Started here, its first run leaves the queue as it starts.
+    notice?.action?.run();
+    await expect.poll(() => useStore.getState().queueState).toBe("running");
+    await expect.poll(titles).toEqual(["Second look"]);
+    expect(useStore.getState().queueRunner).toBeNull();
+    expect(lastNotice()?.text).toBe("Started the queue. Its runs follow one another.");
+    // Another project's state isn't this tab's.
+    store.handleEvent({ type: "queue", ...status("idle", []), project_session: "two" });
+    expect(titles()).toEqual(["Second look"]);
+    store.leaveProject();
+    expect(useStore.getState()).toMatchObject({ queue: [], queueState: "idle", queueRunner: null, queueError: null });
   } finally {
     restore();
     store.leaveProject();

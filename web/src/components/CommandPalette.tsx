@@ -106,7 +106,7 @@ function useCommands(query: string): Command[] {
           label: `Open ${r.status === "draft" ? "draft" : "run"}: ${runTitle(r)}${r.archived ? " (archived)" : ""}`,
           group: r.starred && !r.archived ? "Starred runs" : "Runs",
           keywords: searchText(r),
-          run: () => void (r.status === "draft" ? st.openDraft(r.id) : st.openRun(r.id, r.status === "finished" ? "results" : undefined)),
+          run: () => void (r.status === "draft" ? st.openDraft(r.id) : st.openRun(r.id, r.status === "finished" || r.partial ? "results" : undefined)),
         });
       }
     }

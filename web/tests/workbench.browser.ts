@@ -118,7 +118,7 @@ test("cancelling a run asks first, with the focus on keeping it", async ({ page 
   await page.reload();
   await page.locator("footer").getByRole("button", { name: "Cancel", exact: true }).click();
   const dialog = page.getByRole("alertdialog", { name: "Cancel this run?" });
-  await expect(dialog).toContainText("none of them are saved");
+  await expect(dialog).toContainText("What it has finished is kept and marked as partial");
   await expect(dialog.getByRole("button", { name: "Keep running" })).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(dialog).not.toBeVisible();

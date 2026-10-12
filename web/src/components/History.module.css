@@ -310,9 +310,26 @@
 
 .groupHeader {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  padding: 0 14px 2px;
+  gap: 4px 8px;
+  padding: 0 10px 4px 14px;
+}
+
+/* How the queue stands: waiting, running (here or in another process), or paused. */
+.queueState {
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+
+/* The project's saved queue can't be read: what is wrong, and how to fix it. */
+.queueProblem {
+  margin: 0;
+  padding: 0 14px 6px;
+  font-size: var(--text-xs);
+  line-height: 1.45;
+  color: var(--alert);
+  overflow-wrap: anywhere;
 }
 
 .groupTitle {

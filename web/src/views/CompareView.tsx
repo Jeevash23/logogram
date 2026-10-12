@@ -69,7 +69,8 @@ export function CompareView() {
     };
   }, [aId, bId, bothFinished]);
 
-  const finished = runs.filter((r) => r.status === "finished" || r.id === aId || r.id === bId);
+  // Runs with results: finished, or stopped early with what finished kept.
+  const finished = runs.filter((r) => r.status === "finished" || r.partial || r.id === aId || r.id === bId);
   // What each run is called: the title given to it, or its spec's name.
   const titleOf = (id: string | null, detail: RunDetail | undefined) => {
     const listed = id ? runs.find((r) => r.id === id) : undefined;
@@ -224,6 +225,17 @@ export function CompareView() {
         </section>
       )}
       {error && <Callout tone="error">{error}</Callout>}
+      {comparison && (comparison.partial_a || comparison.partial_b) && (
+        <Callout title="A run here stopped before it finished">
+          {[
+            comparison.partial_a ? `Run A: ${comparison.partial_a.note}` : null,
+            comparison.partial_b ? `Run B: ${comparison.partial_b.note}` : null,
+          ]
+            .filter(Boolean)
+            .join(" ")}{" "}
+          Only what both runs kept is compared.
+        </Callout>
+      )}
 
       {comparison && <Verdict comparison={comparison} robust={robust} verification={verification} />}
 
@@ -302,6 +314,7 @@ function RunOptions({ runs }: { runs: RunListing[] }) {
   const option = (r: RunListing) => (
     <option key={r.id} value={r.id}>
       {runTitle(r)} · {r.id}
+      {r.partial ? " · partial" : ""}
     </option>
   );
   return (

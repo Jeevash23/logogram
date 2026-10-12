@@ -15,7 +15,13 @@ export function StatusLine() {
   const connectionError = useStore((st) => st.connectionError);
   const live = useStore((st) => (st.job?.run_id ? st.live[st.job.run_id] : undefined));
   const queued = useStore((st) => st.queue.length);
+  const queueState = useStore((st) => st.queueState);
+  const queueRunner = useStore((st) => st.queueRunner);
   const said = useMilestones();
+  // The queue, and how it stands: shown while a job runs, and while it waits paused or another
+  // process runs it.
+  const queueWord = queueRunner ? "run by another process" : queueState === "paused" ? "paused" : queueState === "running" ? "running" : "waiting";
+  const queueText = queued > 0 ? `${count(queued)} queued · ${queueWord}` : "";
 
   const running = job?.status === "running";
   let text = "Ready";
@@ -72,7 +78,7 @@ export function StatusLine() {
         {running && <Spinner />}
         <span className={s.text}>{text}</span>
         {detail && <span className={s.detail}>{detail}</span>}
-        {running && queued > 0 && <span className={s.queued}>{queued} queued</span>}
+        {queueText && (running || queueState === "paused" || queueRunner) && <span className={s.queued}>{queueText}</span>}
         {running && (
           <div className={s.bar}>
             <Progress value={progress} label={job.kind === "run" ? "Progress of the run" : "Progress of the job"} />

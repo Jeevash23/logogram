@@ -50,6 +50,7 @@ import type {
   LookReport,
   QueueAdded,
   QueuedRun,
+  QueueStatus,
   RunMemory,
   ExperimentKind,
   UpdateStatus,
@@ -254,6 +255,14 @@ export const api = {
   queueRun: (spec: Spec, draftId: string | null = null) =>
     post<QueueAdded>("/api/queue", { spec, draft_id: draftId }),
   removeQueuedRun: (id: string) => request<QueuedRun[]>("DELETE", `/api/queue/${encodeURIComponent(id)}`),
+  /** The queue as the project keeps it, and how it stands (another process may have changed it). */
+  queueStatus: () => get<QueueStatus>("/api/queue/state"),
+  /** Run the queue here: its next run starts now if nothing is running. */
+  startQueue: () => post<QueueStatus>("/api/queue/start"),
+  /** Start no more of the queue's runs; the run in progress goes on. */
+  pauseQueue: () => post<QueueStatus>("/api/queue/pause"),
+  /** Take every run out of the queue. */
+  clearQueue: () => request<QueueStatus>("DELETE", "/api/queue"),
   saveDraft: (spec: Spec, draftId: string | null = null) =>
     post<{ run_id: string; path: string }>("/api/drafts", { spec, draft_id: draftId }),
   rerun: (id: string) =>
