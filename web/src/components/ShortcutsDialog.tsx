@@ -77,6 +77,14 @@ const SECTIONS: { title: string; rows: [ReactNode, string][] }[] = [
     ],
   },
   {
+    title: "A sweep's chart",
+    rows: [
+      [<Keys keys={["↑", "↓"]} />, "Move between sites."],
+      [<Keys keys={["←", "→"]} />, "Move between values. Home and End go to the first and last value."],
+      [<Keys keys={["Enter"]} />, "Open that value's run at the site."],
+    ],
+  },
+  {
     title: "Experiment form (Configure)",
     rows: [
       [<Keys keys={[MOD, "Enter"]} />, "Run the experiment, or queue it while another job runs."],

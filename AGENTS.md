@@ -120,6 +120,7 @@ src/logogram/
   runqueue.py          the project's run queue (.logogram/queue.json) and the one process running it
   history.py           what people say about runs (titles, stars, the archive), and deleting runs
   robustness.py        the spec that reruns a run with one choice changed
+  sweeps.py            one spec run across several seeds, datasets or revisions, and its table
   compare.py           run comparisons, paired prompt by prompt where they can be
   api.py               the Python API for notebooks (imported lazily by logogram/__init__.py)
   analysis.py          token strip, baseline check, attention patterns

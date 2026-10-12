@@ -192,11 +192,25 @@ The workbench has three workspaces:
   interact** runs each alone and both together. On a finished run, **Test the top sites as a
   circuit** keeps its strongest 1, 2, 4, 8 … sites alone, for a curve of faithfulness against
   circuit size.
-* **Evidence** contains the full result heatmap, run comparisons, and research notes. Selecting
-  an effect opens its per-prompt evidence and recorded method in the inspector, with its
+* **Evidence** contains the full result heatmap, run comparisons, sweeps and research notes.
+  Selecting an effect opens its per-prompt evidence and recorded method in the inspector, with its
   simultaneous band and q-value. A run of sets of sites shows each set's faithfulness, what each
   site adds and how sites interact, beside a chart of faithfulness against the number of sites
   kept.
+
+A finding that holds for one seed, one sample of prompts or one checkpoint may not hold for
+others. **Sweep…** on a finished run runs its spec once for each of several values of one choice:
+a seed it states, the dataset (several files, which it offers to generate with a task's
+generator, one per seed), or the model's revision (commits, tags or branches, such as Pythia's
+training checkpoints, listed from Hugging Face when you ask). The runs wait in the queue and run
+one after another; the run swept stands in for its own value. **Sweeps** then shows, for the
+strongest sites (chosen on the first value or on all of them, as it says), each site's effect and
+its interval at every value, with the spread of its means across values beside a run's own
+interval, since a run's interval leaves out what changes with the seed or the prompts. It says
+plainly which sites keep their sign and size and which don't: a sign that flips with both
+intervals excluding zero, or intervals that exclude each other. Revisions are drawn in the order
+given, as checkpoints over training. A run that failed or never ran is missing, never zero. The
+table exports as CSV; a sweep's runs say so in the results, the history and comparisons.
 
 The experiment form shows every choice that changes a number: the method (attribution patching
 with one gradient or integrated gradients), the metric and, for the KL divergence, the prompt it
@@ -292,6 +306,7 @@ logogram compare RUN RUN      how two runs agree, with paired differences where 
 logogram diff A B             every choice that differs between two runs or spec files
 logogram verify RUN           patch the strongest sites of an attribution patching run, and compare
 logogram robustness RUN       rerun with one choice changed (--experiment JSON, or --dtype)
+logogram sweep SPEC_OR_RUN    the same spec across seeds, datasets or revisions, one run each (--csv FILE)
 logogram export RUN           a run's per-prompt values as CSV (-o FILE; --sites, --prompt-text)
 logogram report RUN           a run as one HTML page anyone can open (-o FILE, --hardware)
 logogram methods RUN          a run's methods paragraph
@@ -345,6 +360,25 @@ Face cache (`--tokenizer openai-community/gpt2`); it never downloads one. Withou
 assumed to be single tokens, so generate the dataset again in the app once the model is loaded,
 which keeps only words that are single tokens for it.
 
+`logogram sweep` runs one spec once for each of several values of one choice, one run after
+another, then prints which of its strongest sites keep their sign and size across the values:
+
+```text
+logogram sweep RUN --field statistics.seed --values 0,1,2,3           # the bootstrap's seed
+logogram sweep RUN --field experiment.baseline.seed --values 0,1,2,3  # resample ablation's donors
+logogram sweep SPEC.json --datasets ioi-seed1.jsonl,ioi-seed2.jsonl,ioi-seed3.jsonl
+logogram sweep RUN --revisions step1000,step8000,step64000,step143000  # Pythia's checkpoints
+```
+
+Each run is an ordinary spec that differs from the original in that one field (a dataset's hash
+follows its path), and its manifest records the sweep. A finished run stands in for its own value,
+which isn't run again. A revision runs as the commit it points to when its run starts, and the
+run's spec pins that commit. The seeds a sweep can vary are the ones a spec states:
+`statistics.seed`, `experiment.baseline.seed` (resample ablation), `experiment.seed` (steering's
+split) and `scope.seed` (the features' split). Sites are chosen on the first value unless
+`--choose all` chooses them on all values; `--top N` shows more of them, and `--csv FILE` writes
+each shown site at every value.
+
 ## Python
 
 The same runs from a notebook or a script. They go through the same code as the app and
@@ -372,6 +406,8 @@ estimate = lg.run(lg.load_spec({**spec.model_dump(), "experiment": {
 checked = lg.verify_run(estimate, top=10)     # patch the strongest estimates for real
 lg.compare_runs(estimate, checked)            # rank correlation, paired differences
 lg.check_robustness(run, experiment={"kind": "ablation", "baseline": {"kind": "zero"}})
+seeds = lg.sweep(run, field="statistics.seed", values=[0, 1, 2, 3])  # one run per value
+seeds.table()        # the strongest sites at every value, and whether they keep sign and size
 
 records = lg.generate("greater_than", 200, seed=0, model=model)
 lg.write_dataset(project, "greater-than", records)
@@ -406,7 +442,9 @@ reads the traceback it kept. Interrupting the kernel records the run as cancelle
 finished: `run.partial` says how far a run that stopped early got and what it doesn't keep.
 `run.rename("Name movers")`, `run.star()` and `run.archive()` change what the history shows
 (`run.title`, `run.starred`, `run.archived`), and `lg.delete_run(project, run)` deletes a run's
-folder for good.
+folder for good. `lg.sweep` returns a sweep's runs, one per value; a run that fails keeps its
+status there and the next value runs. `sweep.summary()` holds what the app's sweep view shows,
+and `lg.load_sweep(project, sweep.id)` reads a sweep back.
 
 ## Running on a remote GPU
 

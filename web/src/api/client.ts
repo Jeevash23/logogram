@@ -59,6 +59,12 @@ import type {
   QueueStatus,
   RunMemory,
   ExperimentKind,
+  Revisions,
+  SweepField,
+  SweepPlan,
+  SweepRequest,
+  SweepStarted,
+  SweepTable,
   UpdateStatus,
 } from "./types";
 
@@ -118,6 +124,7 @@ export const PROJECT_SCOPED = [
   "/api/drafts",
   "/api/compare",
   "/api/queue",
+  "/api/sweeps",
   // Not on the server's list, but closing must name the project the tab means to close.
   "/api/projects/close",
 ];
@@ -322,6 +329,18 @@ export const api = {
     get<SiteDetail>(`/api/runs/${encodeURIComponent(id)}/sites/${site}`),
   compare: (a: string, b: string) =>
     get<Comparison>(`/api/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`),
+  /** The fields a run's spec can be swept over, with its own value of each. */
+  sweepFields: (id: string) => get<SweepField[]>(`/api/runs/${encodeURIComponent(id)}/sweep-fields`),
+  /** The runs a sweep would make, without making them. */
+  planSweep: (body: SweepRequest) => post<SweepPlan>("/api/sweeps/plan", body),
+  /** Queue a sweep's runs: the first starts at once when nothing is running. */
+  startSweep: (body: SweepRequest) => post<SweepStarted>("/api/sweeps", body),
+  sweep: (id: string, choose: "first" | "all", top: number) =>
+    get<SweepTable>(`/api/sweeps/${encodeURIComponent(id)}?choose=${choose}&top=${top}`),
+  exportSweep: (id: string, choose: "first" | "all", top: number) =>
+    request<Blob>("GET", `/api/sweeps/${encodeURIComponent(id)}/table.csv?choose=${choose}&top=${top}`, undefined, "blob"),
+  /** A model's branches and tags on Hugging Face (one request to Hugging Face, when asked). */
+  revisions: (id: string) => get<Revisions>(`/api/models/revisions?id=${encodeURIComponent(id)}`),
   cancelJob: () => post<{ job: Job | null }>("/api/jobs/cancel"),
 };
 

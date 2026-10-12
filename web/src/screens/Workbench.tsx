@@ -9,6 +9,7 @@ import { ModelDialog } from "../components/ModelDialog";
 import { RobustnessDialog } from "../components/RobustnessDialog";
 import { Splitter } from "../components/Splitter";
 import { StatusLine } from "../components/StatusLine";
+import { SweepDialog } from "../components/SweepDialog";
 import { TokenStrip } from "../components/TokenStrip";
 import { TopBar } from "../components/TopBar";
 import { Button, Dialog, escapeStaysInFields, Icon, Tip } from "../components/ui";
@@ -26,6 +27,7 @@ import { PromptsView } from "../views/PromptsView";
 import { ResearchView, NoteEditorDialog } from "../views/ResearchView";
 import { ResultsView } from "../views/ResultsView";
 import { SpecView } from "../views/SpecView";
+import { SweepView } from "../views/SweepView";
 import { TextView } from "../views/TextView";
 import s from "./Workbench.module.css";
 
@@ -91,7 +93,7 @@ export function Workbench() {
     <div className={s.body}>
       <main className={s.center} id="main" tabIndex={-1}>
         <div className={s.view} ref={viewPane}><ErrorBoundary key={view} name="This view"><ActiveView view={view} /></ErrorBoundary></div>
-        {!["notes", "compare", "spec", "features", "text"].includes(view) && <ErrorBoundary name="The token strip" resetKey={view}><TokenStrip /></ErrorBoundary>}
+        {!["notes", "compare", "sweep", "spec", "features", "text"].includes(view) && <ErrorBoundary name="The token strip" resetKey={view}><TokenStrip /></ErrorBoundary>}
       </main>
       {showInspector && <aside className={s.inspectorPane} aria-label="Inspector"><Splitter orientation="vertical" label="Resize the inspector" value={inspectorWidth} min={280} max={480} onReset={() => setInspectorWidth(320)} onResize={(delta, phase) => {
         if (phase === "start") { startWidth.current = inspectorWidth; return; }
@@ -103,6 +105,7 @@ export function Workbench() {
     <CancelRunDialog />
     <ModelDialog />
     <RobustnessDialog />
+    <SweepDialog />
     <NoteEditorDialog />
     <Dialog open={drawer !== null} onOpenChange={open => { if (!open) setDrawer(null); }} title={drawer === "history" ? "Experiment history" : "Inspector"} wide onEscapeKeyDown={escapeStaysInFields}><div className={s.drawer}>{drawer === "history" ? <ErrorBoundary name="The history"><History onOpen={() => setDrawer(null)} /></ErrorBoundary> : <SafeInspector />}</div></Dialog>
   </div>;
@@ -154,6 +157,7 @@ function ActiveView({ view }: { view: View }) {
     case "results": return <ResultsView />;
     case "attention": return <AttentionView />;
     case "compare": return <CompareView />;
+    case "sweep": return <SweepView />;
     case "spec": return <SpecView />;
     case "text": return <TextView />;
   }

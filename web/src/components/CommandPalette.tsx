@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { architectureOf } from "../lib/keys";
 import { paletteRuns, runTitle, searchText } from "../lib/runs";
 import { parseHeadQuery } from "../lib/sites";
+import { fieldWords, sweepsOf, sweepsOfRun } from "../lib/sweeps";
 import { useStore, workspaceFor, WORKSPACE_VIEWS } from "../store/app";
 import { MOD, SHIFT } from "./Header";
 import { WORKSPACE_ITEMS } from "./TopBar";
@@ -53,6 +54,14 @@ function useCommands(query: string): Command[] {
           disabled: !st.activeRunId || !st.runDetails[st.activeRunId]?.summary,
           run: () => useStore.setState({ robustnessDialogOpen: true }),
         },
+        {
+          id: "sweep-run",
+          label: "Sweep this run over seeds, datasets or revisions…",
+          group: "Actions",
+          keywords: "sweep seeds datasets revisions checkpoints values across",
+          disabled: !st.activeRunId || !st.runDetails[st.activeRunId]?.summary,
+          run: () => useStore.setState({ sweepDialogRun: st.activeRunId }),
+        },
         { id: "compare", label: "Compare two runs", group: "Actions", run: () => st.setView("compare") },
         { id: "spec", label: "Show the spec", group: "Actions", keywords: "json cli", run: () => { useStore.setState({ specSource: "run" }); st.setView("spec"); } },
         {
@@ -97,6 +106,29 @@ function useCommands(query: string): Command[] {
           { id: "attention", label: "Open attention", group: "Selected component", shortcut: key("A"), disabled: sel.part !== "head", run: () => st.setView("attention") },
           { id: "across", label: "Compare across runs", group: "Selected component", shortcut: key("C"), run: () => st.focusInspector("runs") },
         );
+      }
+      // The sweep the active run is a value of, and every sweep (the newest few until something is
+      // typed).
+      const sweeps = sweepsOf(st.runs);
+      const active = st.activeRunId ? sweepsOfRun(sweeps, st.activeRunId) : [];
+      for (const { sweep } of active) {
+        const words = fieldWords(sweep.field);
+        cmds.push({
+          id: `this-sweep-${sweep.id}`,
+          label: active.length > 1 ? `Show this run's sweep over ${words.plural}` : "Show this run's sweep",
+          group: "Sweeps",
+          run: () => st.openSweep(sweep.id),
+        });
+      }
+      for (const sweep of query.trim() ? sweeps : sweeps.slice(0, 5)) {
+        const words = fieldWords(sweep.field);
+        cmds.push({
+          id: `sweep-${sweep.id}`,
+          label: `Open sweep: ${sweep.name} over ${sweep.values.length} ${words.plural}`,
+          group: "Sweeps",
+          keywords: `sweep ${sweep.id} ${sweep.field} ${words.plural}`,
+          run: () => st.openSweep(sweep.id),
+        });
       }
       // With nothing typed, the starred runs and the newest others; once something is typed,
       // every run, archived ones too, found by title, name, id, method, model or dataset.

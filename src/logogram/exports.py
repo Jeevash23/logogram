@@ -65,3 +65,16 @@ def sites_csv(rows: list[dict[str, Any]]) -> str:
         for row in rows:
             writer.writerow([_cell(v) for v in row.values()])
     return buffer.getvalue()
+
+
+def sweep_csv(rows: list[dict[str, Any]]) -> str:
+    """A sweep's table, one row per site and value (sweeps.table_rows), as CSV. A value without
+    results has empty cells, never zeros."""
+    from logogram.sweeps import TABLE_COLUMNS
+
+    buffer = io.StringIO(newline="")
+    writer = csv.writer(buffer, lineterminator="\n")
+    writer.writerow(TABLE_COLUMNS)
+    for row in rows:
+        writer.writerow([_cell(row.get(name)) for name in TABLE_COLUMNS])
+    return buffer.getvalue()

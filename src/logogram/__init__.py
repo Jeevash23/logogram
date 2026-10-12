@@ -14,6 +14,7 @@ __released__ = "2026-10-12"
 
 _API = (
     "Run",
+    "Sweep",
     "add_local_model",
     "check_robustness",
     "compare_runs",
@@ -29,10 +30,12 @@ _API = (
     "load_run",
     "load_sae",
     "load_spec",
+    "load_sweep",
     "look",
     "open_project",
     "remove_local_model",
     "run",
+    "sweep",
     "verify_run",
     "write_dataset",
 )

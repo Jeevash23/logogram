@@ -31,10 +31,11 @@ import type {
   ThemeSetting,
   SiteSpec,
   NoteInput,
+  SweepRequest,
   UpdateStatus,
 } from "../api/types";
 import type { ResolvedTheme } from "../lib/color";
-import { count } from "../lib/format";
+import { count, plural } from "../lib/format";
 import { METRICS } from "../lib/metrics";
 import { siteFromSelection } from "../lib/spec";
 import { DEFAULT_FORM, formFromSpec, type FormState } from "../lib/formState";
@@ -69,6 +70,7 @@ export type View =
   | "results"
   | "attention"
   | "compare"
+  | "sweep"
   | "spec"
   | "text";
 
@@ -102,6 +104,7 @@ export const WORKSPACE_VIEWS: { id: Workspace; views: { id: View; label: string 
     views: [
       { id: "results", label: "Results" },
       { id: "compare", label: "Compare runs" },
+      { id: "sweep", label: "Sweeps" },
       { id: "notes", label: "Research notes" },
     ],
   },
@@ -233,6 +236,8 @@ interface Store {
   /** What is known about newer versions; checked only as the user allows. */
   update: UpdateStatus | null;
   compareIds: [string | null, string | null];
+  /** The sweep the sweep view shows: one spec run across several values of one choice. */
+  sweepId: string | null;
   /** True while a project is being opened: its several steps are one place, not many. */
   entering: boolean;
   /** Where the URL the page was opened with asks to be: the project opens there. */
@@ -250,6 +255,8 @@ interface Store {
   paletteOpen: boolean;
   modelDialogOpen: boolean;
   robustnessDialogOpen: boolean;
+  /** The run whose spec the sweep dialog sweeps, while it is open. */
+  sweepDialogRun: string | null;
   /** Asking whether to cancel the running job (it keeps what finished). */
   cancelConfirmOpen: boolean;
   /** The sheet of keyboard shortcuts (? or the command palette). */
@@ -324,6 +331,10 @@ interface Store {
   startRobustness: (runId: string, change: RobustnessChange) => Promise<void>;
   /** Patch, for real, the strongest sites an attribution patching run estimated. */
   startVerification: (runId: string, top: number) => Promise<void>;
+  /** Show a sweep in the sweep view. */
+  openSweep: (id: string | null) => void;
+  /** Queue a sweep's runs, then show the sweep. Returns whether it was queued. */
+  startSweep: (body: SweepRequest) => Promise<boolean>;
   /** Rename, star or archive a run: what is said about it, kept beside its spec, which never
    * changes. Returns whether it was saved. */
   annotateRun: (id: string, change: RunAnnotationsChange) => Promise<boolean>;
@@ -442,6 +453,7 @@ export const useStore = create<Store>((set, get) => ({
   cellValues: false,
   update: null,
   compareIds: [null, null],
+  sweepId: null,
   entering: false,
   pendingRoute: null,
   compareMode: "side",
@@ -456,6 +468,7 @@ export const useStore = create<Store>((set, get) => ({
   paletteOpen: false,
   modelDialogOpen: false,
   robustnessDialogOpen: false,
+  sweepDialogRun: null,
   cancelConfirmOpen: false,
   shortcutsOpen: false,
   helpDialog: null,
@@ -607,6 +620,7 @@ export const useStore = create<Store>((set, get) => ({
       view: "prompts",
       inspectorFocus: null,
       robustnessDialogOpen: false,
+      sweepDialogRun: null,
       cancelConfirmOpen: false,
       notices: [],
       screen: "workbench",
@@ -617,6 +631,7 @@ export const useStore = create<Store>((set, get) => ({
       live: {},
       selection: null,
       compareIds: [null, null],
+      sweepId: null,
       entering: true,
       flags: {},
       form: DEFAULT_FORM,
@@ -644,6 +659,7 @@ export const useStore = create<Store>((set, get) => ({
     const draft = runs.find((r) => r.status === "draft");
     if (running) set((s) => ({ live: { ...s.live, [running.id]: s.live[running.id] ?? emptyLive(running.id) } }));
     if (wanted?.compare && runOf(wanted.compare[0]) && runOf(wanted.compare[1])) set({ compareIds: wanted.compare });
+    if (wanted?.sweep) set({ sweepId: wanted.sweep });
     // A place chosen while the project was opening (a workspace clicked as the page loads) wins
     // over the one restored here.
     const chosen = get().view !== "prompts" ? get().view : undefined;
@@ -684,8 +700,8 @@ export const useStore = create<Store>((set, get) => ({
       tokenPosition: null, stagedSites: [], headPins: [], noteEditor: null, researchVersion: 0,
       job: get().job?.project_session ? null : get().job, queue: [], queueState: "idle", queueRunner: null, queueError: null,
       runs: [], runDetails: {}, activeRunId: null, pendingRunId: null, live: {}, selection: null,
-      compareIds: [null, null], entering: false, flags: {}, form: DEFAULT_FORM, formHistory: EMPTY_HISTORY, baselines: {}, specSource: "run",
-      analysisSource: "form", view: "prompts", inspectorFocus: null, robustnessDialogOpen: false,
+      compareIds: [null, null], sweepId: null, entering: false, flags: {}, form: DEFAULT_FORM, formHistory: EMPTY_HISTORY, baselines: {}, specSource: "run",
+      analysisSource: "form", view: "prompts", inspectorFocus: null, robustnessDialogOpen: false, sweepDialogRun: null,
       cancelConfirmOpen: false, notices: [],
     });
   },
@@ -1002,6 +1018,27 @@ export const useStore = create<Store>((set, get) => ({
     await get().refreshRuns();
   },
 
+  openSweep: (id) => {
+    set({ sweepId: id });
+    get().setView("sweep");
+  },
+
+  startSweep: async (body) => {
+    const seq = projectSeq;
+    const out = await get().guard(() => api.startSweep(body));
+    if (!out || seq !== projectSeq) return false;
+    if (out.job) get().applyJob(out.job);
+    // The queue event says so too; the sweep view counts the values still waiting from it.
+    set({ queue: out.queue });
+    const made = out.plan.runs.filter((r) => !r.original).length;
+    const kept = out.plan.runs.find((r) => r.original);
+    const stands = kept ? `; this run stands in for ${out.plan.label} ${kept.label}` : "";
+    get().notify(`Queued ${plural(made, "run")} of the sweep over ${out.plan.plural}${stands}. They run one after another.`);
+    await get().refreshRuns();
+    if (seq === projectSeq) get().openSweep(out.sweep);
+    return true;
+  },
+
   annotateRun: async (id, change) => {
     const seq = projectSeq;
     const listing = await get().guard(() => api.annotateRun(id, change));
@@ -1218,7 +1255,7 @@ export const useStore = create<Store>((set, get) => ({
           // A finished robustness check paints its flags onto the original run.
           const detail = get().runDetails[runId];
           const from = detail?.manifest?.derived_from;
-          if (status === "finished" && (from?.kind === "robustness" || from?.kind === "verification")) {
+          if (status === "finished" && from && (from.kind === "robustness" || from.kind === "verification")) {
             const cmp = await api.compare(from.run, runId).catch(() => null);
             if (cmp) set((s) => ({ flags: { ...s.flags, [from.run]: { against: runId, sites: cmp.flagged } } }));
           }

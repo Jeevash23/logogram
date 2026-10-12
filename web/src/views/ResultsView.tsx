@@ -20,6 +20,7 @@ import { downloadBlob, exportFigure } from "../lib/export";
 import { environmentChanges, environmentNote } from "../lib/environment";
 import { CircuitDialog } from "../components/CircuitDialog";
 import { rankedSites, universeText } from "../lib/circuits";
+import { membershipText, sweepsOf, sweepsOfRun } from "../lib/sweeps";
 import { CircuitResults } from "./CircuitResults";
 import { Continuations } from "./Continuations";
 import { FlagMark, Forest } from "./Forest";
@@ -122,6 +123,7 @@ export function ResultsView() {
           {title && spec && title !== spec.name && <p className={r.specName}>Spec name: {spec.name}</p>}
           {spec && <MethodsLine spec={spec} n={summary?.n_prompts ?? run.live?.nPrompts} clusters={summary?.statistics.clusters} />}
           {spec?.notes?.trim() && <RunNotes text={spec.notes.trim()} />}
+          <SweepNote runId={run.id} />
           {environmentText && (
             <p className={r.environment} role="note">
               <Icon name="info" size={14} />
@@ -149,6 +151,12 @@ export function ResultsView() {
               )}
               <Button onClick={() => useStore.setState({ robustnessDialogOpen: true })} icon="refresh">
                 Check robustness
+              </Button>
+              <Button
+                onClick={() => useStore.setState({ sweepDialogRun: run.id })}
+                tip="Run this spec once for each of several seeds, datasets or revisions, and see which sites hold"
+              >
+                Sweep…
               </Button>
               {run.detail && <ExportMenu runId={run.id} detail={run.detail} />}
               <Button variant="ghost" onClick={() => { useStore.setState({ specSource: "run" }); useStore.getState().setView("spec"); }}>
@@ -626,6 +634,26 @@ function MethodsLine({ spec, n, clusters }: { spec: Spec; n: number | undefined;
       <span className={r.sep}>·</span>{Math.round(spec.statistics.ci * 100)}% CI{spec.statistics.cluster ? `, resampling ${clusters ? `${count(clusters)} clusters` : "clusters"} of prompts with the same ${spec.statistics.cluster}` : ""}, {count(spec.statistics.bootstrap)} resamples, seed {spec.statistics.seed}
       <span className={r.sep}>·</span>{modelName(spec.model.id)}{spec.model.revision ? ` @ ${shortRevision(spec.model.revision)}` : ""}, {spec.model.dtype}
     </p>
+  );
+}
+
+/** The sweeps this run is a value of, each with a way to it. */
+function SweepNote({ runId }: { runId: string }) {
+  const runs = useStore((st) => st.runs);
+  const openSweep = useStore((st) => st.openSweep);
+  const memberships = useMemo(() => sweepsOfRun(sweepsOf(runs), runId), [runs, runId]);
+  if (memberships.length === 0) return null;
+  return (
+    <div className={r.sweeps}>
+      {memberships.map(({ sweep, index }) => (
+        <p key={sweep.id} className={r.sweepLine}>
+          {membershipText(sweep, index)}{" "}
+          <button type="button" className={r.sweepLink} onClick={() => openSweep(sweep.id)}>
+            Show the sweep
+          </button>
+        </p>
+      ))}
+    </div>
   );
 }
 

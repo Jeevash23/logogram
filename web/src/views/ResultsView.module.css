@@ -97,6 +97,32 @@
   color: var(--text);
 }
 
+/* The sweeps the run is a value of. */
+.sweeps {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 760px;
+}
+
+.sweepLine {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+}
+
+.sweepLink {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: var(--text-sm);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
 /* The run at a glance: four ruled figures. */
 .figures {
   display: grid;
