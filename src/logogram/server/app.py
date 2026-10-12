@@ -50,18 +50,30 @@ from logogram.research import (
     read_notebook,
     save_note,
 )
-from logogram.schema import Manifest, QueuedRunInfo, RunListing, Summary
+from logogram.schema import (
+    ContinuationsFile,
+    Manifest,
+    QueueChanged,
+    QueuedRunInfo,
+    RunListing,
+    Summary,
+)
 from logogram.server import models as M
 from logogram.server.security import SecurityConfig, SecurityMiddleware
 from logogram.server.state import AppState, Conflict, EventHub, Job, Missing, request_project
 from logogram.spec import (
+    DEVICE,
+    SHA256,
     SINGLE_POSITION_METRICS,
+    ChatTemplate,
     Metric,
     ModelRef,
     Position,
     PredictionSettings,
     Spec,
+    read_chat_template,
 )
+from logogram.sweeps import SweepNotFound
 from logogram.system import SystemReport
 
 log = logging.getLogger(__name__)
@@ -286,8 +298,19 @@ class AnalysisRequest(BaseModel):
     model: ModelRef | None = None
     dataset_sha256: str | None = None
     prepend_bos: bool
+    # The chat template prompts are wrapped in, as a spec's tokenization.chat_template says.
+    chat_template: ChatTemplate | None = None
     limit: int | None = Field(default=None, ge=1, le=1_000_000)
     batch_size: int = Field(ge=1, le=4096)
+
+    @model_validator(mode="after")
+    def _one_beginning(self) -> AnalysisRequest:
+        if self.chat_template is not None and self.prepend_bos:
+            raise ValueError(
+                "with a chat template, the template writes the beginning of the text: set "
+                "prepend_bos to false"
+            )
+        return self
 
 
 class TokenizeRequest(AnalysisRequest):
@@ -300,10 +323,28 @@ class TokenizeRequest(AnalysisRequest):
 
 class EstimateRequest(BaseModel):
     id: str
+    # A local model is found by the hash of its files (logogram.local_models).
+    source: Literal["hub", "local"] = "hub"
+    sha256: str | None = Field(default=None, pattern=SHA256.pattern)
     revision: str | None = None
     dtype: Literal["float32", "float16", "bfloat16"] = "float32"
-    device: Literal["auto", "cpu", "cuda", "mps"] = "auto"
+    device: str = Field(default="auto", pattern=DEVICE.pattern)
     process_weights: bool = True
+
+
+class ChatWrapRequest(BaseModel):
+    """A prompt in the loaded model's chat template, to show what the model reads."""
+
+    model: ModelRef | None = None
+    chat_template: ChatTemplate
+    text: str = Field(min_length=1, max_length=4000)
+
+
+class AddModelRequest(BaseModel):
+    """A model folder to hash and add to this machine's local models, under a name."""
+
+    path: str = Field(min_length=1)
+    name: str = Field(min_length=1, max_length=200)
 
 
 class RunMemoryRequest(BaseModel):
@@ -331,6 +372,58 @@ class AttentionRequest(AnalysisRequest):
     layer: int
     head: int
     which: Literal["clean", "corrupt"] = "clean"
+
+
+class HeadKindsRequest(AnalysisRequest):
+    """Score every head as a previous-token, duplicate-token and induction head on seeded random
+    sequences repeated twice. Every choice that changes the scores is stated."""
+
+    seed: int = Field(ge=0, lt=2**32)
+    sequences: int = Field(ge=2, le=512)
+    length: int = Field(ge=2, le=4096)
+    bootstrap: int = Field(ge=100, le=100_000)
+    ci: float = Field(gt=0.5, lt=1.0)
+
+
+class LookRequest(AnalysisRequest):
+    """Any text, read without making a dataset."""
+
+    text: str = Field(min_length=1, max_length=4000)
+
+
+class LookPredictionsRequest(LookRequest):
+    top_k: int = Field(ge=1, le=20)
+    # The token whose layer-by-layer predictions to read; the last one when absent.
+    position: int | None = Field(default=None, ge=0)
+
+
+class LookAttentionRequest(LookRequest):
+    layer: int = Field(ge=0)
+    head: int = Field(ge=0)
+
+
+class LookFeaturesRequest(LookRequest):
+    top_k: int = Field(ge=1, le=20)
+
+
+class LookFeatureRequest(LookRequest):
+    """One feature of the loaded SAE, along the text."""
+
+    feature: int = Field(ge=0)
+
+
+class LookSteer(BaseModel):
+    """A feature of the loaded SAE to add while the text continues: ``activation`` units of it
+    (in the feature's own units), at every position from token ``start`` on."""
+
+    feature: int = Field(ge=0)
+    activation: float = Field(allow_inf_nan=False)
+    start: int = Field(ge=0)
+
+
+class LookContinueRequest(LookRequest):
+    tokens: int = Field(ge=1, le=64)
+    steer: LookSteer | None = None
 
 
 class PredictionRequest(AnalysisRequest):
@@ -393,6 +486,24 @@ class VerifyRequest(BaseModel):
     top: int = Field(default=10, ge=1, le=200)
 
 
+class SweepRequest(BaseModel):
+    """A sweep: a run (or a spec) and the values of one of its fields to run it across, in the
+    order given. logogram.sweeps checks the field and the values."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run: str | None = None
+    spec: dict[str, Any] | None = None
+    field: str = Field(min_length=1, max_length=64)
+    values: list[int | str] = Field(max_length=256)
+
+    @model_validator(mode="after")
+    def _one_source(self) -> SweepRequest:
+        if (self.run is None) == (self.spec is None):
+            raise ValueError("Sweep either a run or a spec.")
+        return self
+
+
 class AnnotateRequest(BaseModel):
     """What to change in what is said about a run (its annotations.json: the spec never changes).
     Fields left out stay as they are; a title of null or "", or the spec's own name, clears it."""
@@ -412,6 +523,15 @@ class SettingsRequest(BaseModel):
     # Whether single keys (1 to 5, [ and ], P, B, A, C and ?) act as shortcuts. On until turned
     # off, for someone who uses speech input or presses keys by accident.
     single_key_shortcuts: bool | None = None
+    # How the walkthrough of the example ended, so the first screens stop offering it.
+    walkthrough: Literal["finished", "skipped"] | None = None
+
+
+def walkthrough_ended(settings: dict[str, Any]) -> str | None:
+    """How the walkthrough ended ("finished" or "skipped"), or None if it never did. A settings
+    file edited by hand into anything else reads as never."""
+    value = settings.get("walkthrough")
+    return value if value in ("finished", "skipped") else None
 
 
 class ReportRequest(BaseModel):
@@ -458,6 +578,7 @@ def create_app(
 
     @app.exception_handler(Missing)
     @app.exception_handler(RunNotFound)
+    @app.exception_handler(SweepNotFound)
     async def _missing(_: Request, exc: Missing) -> JSONResponse:
         return JSONResponse({"error": str(exc)}, status_code=409)
 
@@ -491,17 +612,19 @@ def create_app(
     def get_state() -> dict[str, Any]:
         settings = state.settings()
         # Before the job: a run leaves the queue only once its job has started.
-        queue = state.queued_runs()
+        queue = state.queue_status()
         return {
             "version": __version__,
             "project": state.project.to_dict() if state.project else None,
             "model": state.model_payload(),
             "job": state.job.to_dict() if state.job else None,
-            "queue": queue,
+            "queue": queue["runs"],
+            "queue_status": queue,
             "first_run": not settings.get("system_check_seen", False),
             # Until someone picks one, the app follows the computer's light or dark setting.
             "theme": settings.get("theme", "system"),
             "single_key_shortcuts": settings.get("single_key_shortcuts", True),
+            "walkthrough": walkthrough_ended(settings),
             "projects_parent": str(default_projects_parent()),
             "update": state.update_status(),
             "sae": state.sae_payload(),
@@ -701,9 +824,20 @@ def create_app(
     @app.get("/api/datasets/{name}", response_model=M.DatasetDetail)
     @app.get("/api/dataset", response_model=M.DatasetDetail)
     def get_dataset(
-        name: str = "", path: str | None = None, prepend_bos: bool = True, limit: int | None = None
+        name: str = "",
+        path: str | None = None,
+        prepend_bos: bool = True,
+        limit: int | None = None,
+        chat_template: str | None = None,
     ) -> dict[str, Any]:
+        """A dataset's prompts, and with a model loaded what it makes of them: tokenized with or
+        without the beginning-of-sequence token, or wrapped in the chat template that
+        ``chat_template`` (a spec's tokenization.chat_template, as JSON) describes."""
         project = state.require_project()
+        template = None
+        if chat_template:
+            template = read_chat_template(chat_template)
+            prepend_bos = False
         file = project.resolve_dataset(path) if path else _dataset_path(project, name)
         records = load_dataset(file)
         if limit is not None:
@@ -720,7 +854,9 @@ def create_app(
         if state.backend is not None:
             from logogram.analysis import prepare_with_issues
 
-            prepared, issues = prepare_with_issues(state.backend, records, prepend_bos)
+            prepared, issues = prepare_with_issues(
+                state.backend, records, prepend_bos, chat_template=template
+            )
             out["issues"] = [i.to_dict() for i in issues]
             out["lengths"] = sorted({p.length for p in prepared})
             # Answers this model reads as continuations of several tokens: only the metrics that
@@ -838,7 +974,33 @@ def create_app(
             record,
             body.prepend_bos,
             continuations=body.metric.kind not in SINGLE_POSITION_METRICS,
+            chat_template=body.chat_template,
         )
+
+    @app.post("/api/chat/wrap", response_model=M.ChatWrapped)
+    def chat_wrap(body: ChatWrapRequest) -> dict[str, Any]:
+        """A prompt as the loaded model reads it in its own chat template: the whole text, where
+        the prompt is in it, and the template's SHA-256."""
+        from logogram.chat import WrapError, chat_wrapper
+
+        backend = _analysis_backend(body)
+        with backend.lock:
+            chat = chat_wrapper(backend, body.chat_template)
+            assert chat is not None
+            try:
+                text, start = chat.wrap(backend, body.text)
+                problem = None
+            except WrapError as exc:
+                text, start, problem = exc.text, None, str(exc)
+        return {
+            "text": text,
+            "start": start,
+            "end": None if start is None else start + len(body.text),
+            "before": chat.before,
+            "after": chat.after,
+            "sha256": chat.sha256,
+            "problem": problem,
+        }
 
     # -- models ------------------------------------------------------------------------------
 
@@ -848,27 +1010,34 @@ def create_app(
 
     @app.post("/api/models/estimate", response_model=M.EstimateOut)
     def estimate(body: EstimateRequest) -> dict[str, Any]:
+        """What loading a model would take: its size, and whether it fits in the memory free on
+        the device chosen (one GPU's, for cuda:N). A local model is read from its folder."""
         from logogram.backends import hub
         from logogram.backends.transformer_lens import architecture_support, resolve_device
         from logogram.system import estimate_memory
 
         device = resolve_device(body.device)
-        repo = hub.resolve(body.id, body.revision)
-        config = hub.fetch_config(body.id, repo.revision)
+        if body.source == "local":
+            files, revision, n_params, config = _local_estimate(body)
+            download = 0
+            gated = False
+        else:
+            repo = hub.resolve(body.id, body.revision)
+            config = hub.fetch_config(body.id, repo.revision)
+            files, revision, n_params, gated = repo.files, repo.revision, repo.n_params, repo.gated
+            download = 0
+            from huggingface_hub import try_to_load_from_cache
+
+            for filename, size in repo.files:
+                if not isinstance(
+                    try_to_load_from_cache(body.id, filename, revision=repo.revision), str
+                ):
+                    download += size
         arch = hub.read_architecture(config)
         support_note = architecture_support(arch.architecture)
-        n_params = repo.n_params
         if n_params is None:
-            weights = sum(s for f, s in repo.files if f.endswith(".safetensors"))
+            weights = sum(s for f, s in files if f.endswith(".safetensors"))
             n_params = weights // 2  # stored size is a fallback; most checkpoints are 16-bit
-        download = 0
-        from huggingface_hub import try_to_load_from_cache
-
-        for filename, size in repo.files:
-            if not isinstance(
-                try_to_load_from_cache(body.id, filename, revision=repo.revision), str
-            ):
-                download += size
         loaded = 0
         if state.backend is not None and state.backend.info.device == device:
             loaded = state.backend.memory_in_use() or 0
@@ -886,15 +1055,46 @@ def create_app(
         )
         return {
             "id": body.id,
-            "revision": repo.revision,
+            "revision": revision,
             "architecture": arch.__dict__,
             "download_bytes": download,
-            "total_bytes": sum(s for _, s in repo.files),
-            "gated": repo.gated,
+            "total_bytes": sum(s for _, s in files),
+            "gated": gated,
             "supported": support_note is None,
             "support_note": support_note,
             "estimate": est.to_dict(),
         }
+
+    def _local_estimate(
+        body: EstimateRequest,
+    ) -> tuple[list[tuple[str, int]], None, int | None, dict[str, Any]]:
+        """A local model's files, its stored values and its config, read from its folder."""
+        import json
+
+        from logogram.backends.hub import count_stored_values
+        from logogram.local_models import find_model, missing_message
+
+        model = find_model(sha256=body.sha256) if body.sha256 else find_model(name=body.id)
+        if model is None:
+            raise Missing(missing_message(body.id, body.sha256))
+        folder = Path(model.folder)
+        try:
+            config = json.loads((folder / "config.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise BackendError(
+                f"The config.json of {model.name} can't be read ({exc}). Check its folder."
+            ) from exc
+        files = [(f.path, f.size) for f in model.files]
+        weights = [name for name, _ in files if name.endswith(".safetensors")]
+        return files, None, count_stored_values(folder, weights), config
+
+    @app.get("/api/models/revisions", response_model=M.RevisionsOut)
+    def model_revisions(id: str) -> dict[str, Any]:
+        """A model's branches and tags on Hugging Face, to sweep over (one request, when asked)."""
+        from logogram.backends import hub
+
+        revisions = hub.list_revisions(id)
+        return {"id": id, "revisions": [r.__dict__ for r in revisions]}
 
     @app.post("/api/models/run-memory", response_model=M.RunMemoryOut)
     def run_memory(body: RunMemoryRequest) -> dict[str, Any]:
@@ -922,6 +1122,33 @@ def create_app(
     def load(body: ModelRef) -> dict[str, Any]:
         return state.load_model_job(body).to_dict()
 
+    # -- local models: folders on this machine, found by the hash of their files ---------------
+
+    @app.get("/api/models/local", response_model=list[M.LocalModelOut])
+    def local_models() -> list[dict[str, Any]]:
+        """The models added from folders on this machine (their folders are shown here only)."""
+        from logogram.local_models import list_models
+
+        return [m.to_dict() for m in list_models()]
+
+    @app.post("/api/models/local", response_model=M.JobInfo)
+    def add_local_model(body: AddModelRequest) -> dict[str, Any]:
+        """Hash a model folder and add it, as a job with progress (big folders take a while)."""
+        from logogram.local_models import check_name, model_files
+
+        name = check_name(body.name)
+        folder = Path(body.path).expanduser().resolve()
+        model_files(folder)  # refuse a folder that isn't a model before starting a job
+        return state.add_model_job(folder, name).to_dict()
+
+    @app.delete("/api/models/local/{name}", response_model=list[M.LocalModelOut])
+    def remove_local_model(name: str) -> list[dict[str, Any]]:
+        """Forget a local model; its folder is left as it is."""
+        from logogram.local_models import list_models, remove_model
+
+        remove_model(name)
+        return [m.to_dict() for m in list_models()]
+
     @app.post("/api/models/unload", response_model=M.ModelStatus)
     def unload() -> dict[str, Any]:
         state.unload_model()
@@ -929,13 +1156,13 @@ def create_app(
 
     # -- analyses ----------------------------------------------------------------------------
 
-    def _analysis_backend(body: AnalysisRequest):  # type: ignore[no-untyped-def]
+    def _analysis_backend(body: AnalysisRequest | ChatWrapRequest):  # type: ignore[no-untyped-def]
         from logogram.runner import model_matches
 
         backend = state.require_backend()
         if body.model is not None and not model_matches(backend, body.model):
             raise Conflict(
-                "The loaded model doesn't match these experiment settings. Load the experiment's model, revision, dtype and weight processing before inspecting it."
+                "The loaded model doesn't match these experiment settings. Load the experiment's model, revision, dtype, device and weight processing before inspecting it."
             )
         return backend
 
@@ -952,6 +1179,7 @@ def create_app(
                 prepend_bos=body.prepend_bos,
                 batch_size=body.batch_size,
                 metric=body.metric,
+                chat_template=body.chat_template,
             )
 
     @app.post("/api/attention", response_model=M.AttentionData)
@@ -970,6 +1198,110 @@ def create_app(
                 which=body.which,
                 prepend_bos=body.prepend_bos,
                 batch_size=body.batch_size,
+                chat_template=body.chat_template,
+            )
+
+    @app.post("/api/heads/kinds", response_model=M.HeadKinds)
+    def head_kinds(body: HeadKindsRequest) -> dict[str, Any]:
+        from logogram.heads import HeadKindSettings, head_kind_scores
+
+        backend = _analysis_backend(body)
+        settings = HeadKindSettings(
+            seed=body.seed,
+            sequences=body.sequences,
+            length=body.length,
+            prepend_bos=body.prepend_bos,
+            batch_size=body.batch_size,
+            bootstrap=body.bootstrap,
+            ci=body.ci,
+            chat_template=(
+                None if body.chat_template is None else body.chat_template.model_dump(mode="json")
+            ),
+        )
+        with backend.lock:
+            return head_kind_scores(backend, settings)
+
+    @app.post("/api/look", response_model=M.LookReport)
+    def look(body: LookPredictionsRequest) -> dict[str, Any]:
+        from logogram.inside import look_report
+
+        backend = _analysis_backend(body)
+        with backend.lock:
+            return look_report(
+                backend,
+                body.text,
+                prepend_bos=body.prepend_bos,
+                top_k=body.top_k,
+                position=body.position,
+                chat_template=body.chat_template,
+            )
+
+    @app.post("/api/look/attention", response_model=M.LookAttention)
+    def look_attention(body: LookAttentionRequest) -> dict[str, Any]:
+        from logogram.inside import look_attention as attention
+
+        backend = _analysis_backend(body)
+        with backend.lock:
+            return attention(
+                backend,
+                body.text,
+                prepend_bos=body.prepend_bos,
+                layer=body.layer,
+                head=body.head,
+                chat_template=body.chat_template,
+            )
+
+    @app.post("/api/look/features", response_model=M.LookFeatures)
+    def look_features(body: LookFeaturesRequest) -> dict[str, Any]:
+        from logogram.inside import look_features as features
+
+        backend, sae = _analysis_backend(body), _sae()
+        with backend.lock:
+            return features(
+                backend,
+                sae,
+                body.text,
+                prepend_bos=body.prepend_bos,
+                top_k=body.top_k,
+                chat_template=body.chat_template,
+            )
+
+    @app.post("/api/look/feature", response_model=M.LookFeatureAlong)
+    def look_feature(body: LookFeatureRequest) -> dict[str, Any]:
+        """One feature's activation at each token of the text, and its largest."""
+        from logogram.inside import look_feature as along
+
+        backend, sae = _analysis_backend(body), _sae()
+        with backend.lock:
+            return along(
+                backend,
+                sae,
+                body.text,
+                prepend_bos=body.prepend_bos,
+                feature=body.feature,
+                chat_template=body.chat_template,
+            )
+
+    @app.post("/api/look/continue", response_model=M.LookContinuation)
+    def look_continue(body: LookContinueRequest) -> dict[str, Any]:
+        """What the model writes after the text, greedily; with ``steer``, also with a feature of
+        the loaded SAE added where the SAE writes."""
+        from logogram.inside import continue_text
+
+        backend = _analysis_backend(body)
+        steer = body.steer
+        sae = _sae() if steer is not None else None
+        with backend.lock:
+            return continue_text(
+                backend,
+                body.text,
+                prepend_bos=body.prepend_bos,
+                tokens=body.tokens,
+                sae=sae,
+                feature=None if steer is None else steer.feature,
+                activation=None if steer is None else steer.activation,
+                start=None if steer is None else steer.start,
+                chat_template=body.chat_template,
             )
 
     @app.post("/api/predictions", response_model=M.PredictionReport)
@@ -986,6 +1318,7 @@ def create_app(
                 settings=body.settings,
                 prepend_bos=body.prepend_bos,
                 batch_size=body.batch_size,
+                chat_template=body.chat_template,
             )
 
     # -- sparse autoencoders -----------------------------------------------------------------
@@ -1033,7 +1366,12 @@ def create_app(
         records = _records(body.dataset, body.limit, body.dataset_sha256)
         with backend.lock:
             fit = sae_fit_report(
-                backend, sae, records, prepend_bos=body.prepend_bos, batch_size=body.batch_size
+                backend,
+                sae,
+                records,
+                prepend_bos=body.prepend_bos,
+                batch_size=body.batch_size,
+                chat_template=body.chat_template,
             )
         state.hub.publish("sae", state.sae_payload())
         return fit
@@ -1053,6 +1391,7 @@ def create_app(
                 which=body.which,
                 prepend_bos=body.prepend_bos,
                 top_k=body.top_k,
+                chat_template=body.chat_template,
             )
 
     @app.post("/api/sae/feature")
@@ -1071,6 +1410,7 @@ def create_app(
                 which=body.which,
                 prepend_bos=body.prepend_bos,
                 batch_size=body.batch_size,
+                chat_template=body.chat_template,
             )
 
     @app.post("/api/sae/writes")
@@ -1091,6 +1431,7 @@ def create_app(
                 prepend_bos=body.prepend_bos,
                 position=body.position,
                 top=body.top,
+                chat_template=body.chat_template,
             )
 
     # -- runs --------------------------------------------------------------------------------
@@ -1100,7 +1441,7 @@ def create_app(
         if not (folder / "spec.json").is_file():
             raise Missing(f"There is no run {run_id}.")
         out: dict[str, Any] = {"id": run_id}
-        for name in ("spec", "summary", "manifest", "predictions"):
+        for name in ("spec", "summary", "manifest", "predictions", "continuations"):
             path = folder / f"{name}.json"
             try:
                 data = project.read_json(path, optional=name != "spec")
@@ -1109,6 +1450,7 @@ def create_app(
                     "summary": Summary,
                     "manifest": Manifest,
                     "predictions": M.PredictionReport,
+                    "continuations": ContinuationsFile,
                 }[name]
                 out[name] = (
                     schema.model_validate(data).model_dump(mode="json")
@@ -1147,22 +1489,114 @@ def create_app(
     def get_run(run_id: str) -> dict[str, Any]:
         return _read_run(state.require_project(), run_id)
 
+    def _finished(project: Project, run_id: str) -> None:
+        """A run with results: finished, or stopped early with what finished kept (the files say
+        it is partial)."""
+        listing = project.run_listing(run_id)
+        if listing is None or (listing.status != "finished" and listing.partial is None):
+            raise Conflict(
+                "Only a run with results can be exported: a finished run, or one that stopped "
+                "early and kept what finished. Select one first."
+            )
+
     @app.get("/api/runs/{run_id}/export.csv")
-    def export_run(run_id: str) -> StreamingResponse:
+    def export_run(run_id: str, text: bool = False) -> StreamingResponse:
+        """Every site and prompt, one row each; with ``text``, each row carries its prompt."""
         from logogram.exports import results_csv
+        from logogram.runs import run_records
 
         project = state.require_project()
-        listing = project.run_listing(run_id)
-        if listing is None or listing.status != "finished":
-            raise Conflict("Only finished runs can be exported. Select a finished run first.")
-        path = project.readable(project.run_dir(run_id) / "results.parquet")
+        _finished(project, run_id)
+        folder = project.run_dir(run_id)
+        path = project.readable(folder / "results.parquet")
+        records = None
+        if text:
+            records = run_records(project, Spec.from_path(project.readable(folder / "spec.json")))
+            if records is None:
+                raise Conflict(
+                    "This run's prompts are gone or have changed since it ran, so its rows can't "
+                    "carry their text. Export without prompt text."
+                )
         return StreamingResponse(
-            results_csv(path),
+            results_csv(path, records),
             media_type="text/csv",
             headers={
                 "content-disposition": f'attachment; filename="{run_id}.csv"',
             },
         )
+
+    @app.get("/api/runs/{run_id}/sites.csv")
+    def export_sites(run_id: str) -> Response:
+        """One row per site: its mean, intervals, q-value and counts."""
+        from logogram.exports import sites_csv
+        from logogram.report import sites_table
+        from logogram.runs import load_summary
+
+        project = state.require_project()
+        _finished(project, run_id)
+        return Response(
+            sites_csv(sites_table(load_summary(project, run_id))),
+            media_type="text/csv",
+            headers={"content-disposition": f'attachment; filename="{run_id}-sites.csv"'},
+        )
+
+    @app.get("/api/runs/{run_id}/report.html")
+    def report_run(run_id: str, hardware: bool = False) -> Response:
+        """The run as one self-contained HTML page, to download and pass on."""
+        from logogram.report import run_report
+        from logogram.runs import load_continuations, load_summary
+
+        project = state.require_project()
+        _finished(project, run_id)
+        folder = project.run_dir(run_id)
+        spec = Spec.from_path(project.readable(folder / "spec.json"))
+        manifest = project.read_json(folder / "manifest.json", optional=True) or {}
+        page = run_report(
+            spec,
+            load_summary(project, run_id),
+            manifest,
+            run_id,
+            hardware=hardware,
+            continuations=load_continuations(project, run_id),
+        )
+        return Response(
+            page,
+            media_type="text/html; charset=utf-8",
+            headers={"content-disposition": f'attachment; filename="{run_id}.html"'},
+        )
+
+    @app.get("/api/runs/{run_id}/figure.svg")
+    def figure_run(
+        run_id: str, value: Literal["effect", "delta"] = "effect", unit: bool = False
+    ) -> Response:
+        """The run's map as a vector figure: the normalized effect or the change in the metric,
+        on a fitted scale or fixed at ±1."""
+        from logogram.report import figure_svg
+        from logogram.runs import load_summary
+
+        project = state.require_project()
+        _finished(project, run_id)
+        summary = load_summary(project, run_id)
+        if (summary.get("layout") or {}).get("kind") in ("sites", "site_sets"):
+            raise Conflict("This run has no map to draw: its results are a list. Export a CSV.")
+        spec = Spec.from_path(project.readable(project.run_dir(run_id) / "spec.json"))
+        return Response(
+            figure_svg(spec, summary, value, unit),
+            media_type="image/svg+xml",
+            headers={"content-disposition": f'attachment; filename="{run_id}.svg"'},
+        )
+
+    @app.get("/api/runs/{run_id}/methods", response_model=M.MethodsText)
+    def run_methods(run_id: str) -> dict[str, Any]:
+        """The methods paragraph, as the app copies it and the report prints it."""
+        from logogram.report import methods_text
+
+        project = state.require_project()
+        folder = project.run_dir(run_id)
+        spec = Spec.from_path(project.readable(folder / "spec.json"))
+        summary = project.read_json(folder / "summary.json", optional=True)
+        manifest = project.read_json(folder / "manifest.json", optional=True) or {}
+        return {"text": methods_text(spec, summary, manifest, run_id)}
 
     @app.post("/api/runs", response_model=M.StartedRun)
     def start_run(body: RunRequest) -> dict[str, Any]:
@@ -1188,10 +1622,11 @@ def create_app(
 
     @app.post("/api/runs/{run_id}/robustness", response_model=M.StartedRun)
     def robustness(run_id: str, body: RobustnessRequest) -> dict[str, Any]:
-        from logogram.robustness import robustness_spec
+        from logogram.robustness import require_finished, robustness_spec
 
         project = state.require_project()
         original = Spec.from_path(project.readable(project.run_dir(run_id) / "spec.json"))
+        require_finished(project, run_id, "Checking robustness")
         variant, change = robustness_spec(original, experiment=body.experiment, dtype=body.dtype)
         job = state.run_spec_job(
             variant, derived_from={"run": run_id, "kind": "robustness", "change": change}
@@ -1201,10 +1636,12 @@ def create_app(
     @app.post("/api/runs/{run_id}/verify", response_model=M.StartedRun)
     def verify(run_id: str, body: VerifyRequest) -> dict[str, Any]:
         """Patch, for real, the sites an attribution patching run estimated to matter most."""
+        from logogram.robustness import require_finished
         from logogram.verify import verification_spec
 
         project = state.require_project()
         run = _read_run(project, run_id)
+        require_finished(project, run_id, "Verifying by patching")
         if not run["summary"]:
             raise ValueError("Only a finished run can be verified.")
         spec = verification_spec(Spec.model_validate(run["spec"]), run["summary"], body.top)
@@ -1218,6 +1655,104 @@ def create_app(
             },
         )
         return {"run_id": job.run_id, "job": job.to_dict()}
+
+    # -- sweeps: one spec across several values of one field (logogram.sweeps) ------------------
+
+    def _swept_run(project: Project, run_id: str) -> tuple[Spec, RunListing]:
+        listing = project.run_listing(run_id)
+        if listing is None:
+            raise Missing(f"There is no run {run_id}. It may have been deleted.")
+        if listing.damaged:
+            raise ValueError(listing.error or "This run's spec can't be read.")
+        return Spec.from_path(project.readable(project.run_dir(run_id) / "spec.json")), listing
+
+    def _sweep_source(project: Project, body: SweepRequest) -> tuple[Spec, RunListing | None]:
+        if body.run is None:
+            return Spec.model_validate(body.spec), None
+        return _swept_run(project, body.run)
+
+    @app.get("/api/runs/{run_id}/sweep-fields", response_model=list[M.SweepFieldOut])
+    def sweep_fields(run_id: str) -> list[dict[str, Any]]:
+        """The fields this run's spec can be swept over, with its own value of each."""
+        from logogram.sweeps import suggested_values, sweepable_fields, value_label
+
+        project = state.require_project()
+        spec, listing = _swept_run(project, run_id)
+        out = []
+        for f, current in sweepable_fields(spec):
+            suggested = suggested_values(project, spec, f, listing)
+            # A run's dataset is a saved copy: name it by the file of the project it matches.
+            shown = suggested[0] if f.kind == "dataset" and suggested else current
+            out.append(
+                {
+                    "field": f.path,
+                    "kind": f.kind,
+                    "label": f.label,
+                    "plural": f.plural,
+                    "description": f.description,
+                    "current": current,
+                    "current_label": None if shown is None else value_label(f, shown),
+                    "suggested": suggested,
+                }
+            )
+        return out
+
+    @app.post("/api/sweeps/plan", response_model=M.SweepPlanOut)
+    def plan_sweep(body: SweepRequest) -> dict[str, Any]:
+        """The runs a sweep would make, without making them: what the app shows before Queue."""
+        from logogram.sweeps import plan_sweep as plan
+
+        project = state.require_project()
+        spec, original = _sweep_source(project, body)
+        return plan(project, spec, body.field, body.values, original=original).to_dict()
+
+    @app.post("/api/sweeps", response_model=M.SweepStarted)
+    def start_sweep(body: SweepRequest) -> dict[str, Any]:
+        """Queue a sweep's runs, in the order of its values: the first starts at once when nothing
+        is running. The run it is made from stands in for its own value."""
+        from logogram.sweeps import plan_sweep as plan
+
+        project = state.require_project()
+        spec, original = _sweep_source(project, body)
+        made = plan(project, spec, body.field, body.values, original=original)
+        started: Job | None = None
+        # One hold for all of them, so they line up together, in order.
+        with state._job_lock:
+            for item in made.runs:
+                if item.spec is not None:
+                    out = state.queue_run(item.spec, derived_from=item.derived_from)
+                    if isinstance(out, Job):
+                        started = out
+        return {
+            "sweep": made.id,
+            "plan": made.to_dict(),
+            "run_id": started.run_id if started else None,
+            "job": started.to_dict() if started else None,
+            "queue": state.queued_runs(),
+        }
+
+    @app.get("/api/sweeps/{sweep_id}", response_model=M.SweepTable)
+    def get_sweep(
+        sweep_id: str, choose: Literal["first", "all"] = "first", top: int = 10
+    ) -> dict[str, Any]:
+        from logogram.sweeps import sweep_table
+
+        return sweep_table(state.require_project(), sweep_id, choose=choose, top=top)
+
+    @app.get("/api/sweeps/{sweep_id}/table.csv")
+    def export_sweep(
+        sweep_id: str, choose: Literal["first", "all"] = "first", top: int = 10
+    ) -> Response:
+        """The sweep's table, one row per site and value."""
+        from logogram.exports import sweep_csv
+        from logogram.sweeps import sweep_table, table_rows
+
+        table = sweep_table(state.require_project(), sweep_id, choose=choose, top=top)
+        return Response(
+            sweep_csv(table_rows(table)),
+            media_type="text/csv",
+            headers={"content-disposition": f'attachment; filename="sweep-{table["sweep"]}.csv"'},
+        )
 
     @app.get("/api/runs/{run_id}/derived", response_model=list[RunListing])
     def derived(run_id: str) -> list[dict[str, Any]]:
@@ -1284,6 +1819,28 @@ def create_app(
     @app.delete("/api/queue/{queued_id}", response_model=list[QueuedRunInfo])
     def remove_queued_run(queued_id: str) -> list[dict[str, Any]]:
         return state.remove_queued_run(queued_id)
+
+    @app.get("/api/queue/state", response_model=QueueChanged)
+    def queue_status() -> dict[str, Any]:
+        """The queue and how it stands: waiting, running (here or in another process, which it
+        names), paused or idle. It is kept in the project, so another process can change it."""
+        state.require_project()
+        return state.queue_status()
+
+    @app.post("/api/queue/start", response_model=QueueChanged)
+    def start_queue() -> dict[str, Any]:
+        """Run the queue here: its next run starts now if nothing is running."""
+        return state.start_queue()
+
+    @app.post("/api/queue/pause", response_model=QueueChanged)
+    def pause_queue() -> dict[str, Any]:
+        """Start no more of the queue's runs; the run in progress goes on."""
+        return state.pause_queue()
+
+    @app.delete("/api/queue", response_model=QueueChanged)
+    def clear_queue() -> dict[str, Any]:
+        """Take every run out of the queue."""
+        return state.clear_queue()
 
     # -- events ------------------------------------------------------------------------------
 
@@ -1412,6 +1969,7 @@ PROJECT_SCOPED = (
     "/api/drafts",
     "/api/compare",
     "/api/queue",
+    "/api/sweeps",
 )
 
 

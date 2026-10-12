@@ -1,0 +1,94 @@
+/* The walkthrough: a step floats beside a real control, which an ink outline marks. Nothing dims
+   the page, and the outline takes no clicks. Both sit under dialogs (z-index 50 and up), so a
+   dialog opened during a step covers them. */
+
+.outline {
+  position: fixed;
+  z-index: 44;
+  border: 2px solid var(--text);
+  border-radius: var(--radius-lg);
+  pointer-events: none;
+}
+
+.step {
+  z-index: 45;
+  width: min(340px, calc(100vw - 32px));
+  border: 1px solid var(--text);
+  border-radius: var(--radius-lg);
+  background: var(--raised);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+/* A step appears with a short fade, unless less motion was asked for. */
+@media (prefers-reduced-motion: no-preference) {
+  .step {
+    animation: appear 160ms var(--ease);
+  }
+}
+
+@keyframes appear {
+  from {
+    opacity: 0;
+  }
+}
+
+.inner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px 16px 14px;
+  border-radius: inherit;
+}
+
+.inner:focus {
+  outline: none;
+}
+
+.inner:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+.count {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.title {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: 620;
+  font-stretch: var(--display-stretch);
+  line-height: 1.25;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  word-spacing: var(--word-space);
+}
+
+.body p {
+  margin: 0;
+}
+
+.body strong {
+  font-weight: 620;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.spacer {
+  flex: 1;
+}

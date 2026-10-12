@@ -27,9 +27,11 @@ import torch
 
 from logogram.backends.base import Cancelled, ModelBackend, float64
 from logogram.engine import (
+    Baselines,
     EngineResult,
     LayerFn,
     ProgressFn,
+    PromptsFn,
     _chunks,
     check_finite,
     check_gap,
@@ -162,7 +164,11 @@ def run_attribution_patching(
     on_start: Callable[[list[ResolvedSite], dict[str, Any]], None] | None = None,
     receiver_override: str | None = None,
     source_override: str | None = None,
+    on_prompts: PromptsFn | None = None,
 ) -> EngineResult:
+    """Estimate every site at once, batch by batch of prompts. Each finished batch is reported
+    through ``on_prompts``, so a run that stops early keeps every site's estimate over the prompts
+    that finished."""
     exp = spec.experiment
     assert isinstance(exp, AttributionPatching)
     info = backend.info
@@ -186,6 +192,27 @@ def run_attribution_patching(
     needed = list(dict.fromkeys((rs.kind, rs.layer) for rs in sites))
     estimate = np.zeros((len(sites), n))
     done = 0
+    finished: list[int] = []
+
+    def over(at: list[int]) -> EngineResult:
+        """Every site's estimates over the prompts at positions ``at``, as a run of only those
+        prompts gives them: their own gap normalizes them, and is checked as a run's is."""
+        chosen = [prompts[i] for i in at]
+        base = baselines.subset(at)
+        notes = check_gap(spec, base, chosen, receiver, reference)
+        return _estimates(
+            exp,
+            sites,
+            layout,
+            chosen,
+            base,
+            receiver,
+            reference,
+            estimate[:, at],
+            notes,
+            info.dtype,
+        )
+
     for group in groups:
         receiver_tokens = group.clean if receiver == "clean" else group.corrupt
         source_tokens = group.clean if source == "clean" else group.corrupt
@@ -222,9 +249,35 @@ def run_attribution_patching(
                     values = per_position[rows, positions]
                 estimate[rs.index, idx] = values.cpu().numpy()
             done += len(idx)
+            finished.extend(idx)
             if on_progress is not None:
                 on_progress(done, n, info.n_layers - 1)
+            if on_prompts is not None:
+                at = sorted(finished)
+                on_prompts(at, lambda at=at: over(at))
 
+    result = _estimates(
+        exp, sites, layout, prompts, baselines, receiver, reference, estimate, warnings, info.dtype
+    )
+    if on_layer is not None:
+        for layer in sorted({rs.layer for rs in sites}):
+            on_layer(layer, [rs.index for rs in sites if rs.layer == layer], result)
+    return result
+
+
+def _estimates(
+    exp: AttributionPatching,
+    sites: list[ResolvedSite],
+    layout: dict[str, Any],
+    prompts: list[PreparedPrompt],
+    baselines: Baselines,
+    receiver: str,
+    reference: str,
+    estimate: np.ndarray,
+    warnings: list[str],
+    dtype: str,
+) -> EngineResult:
+    """The result of estimating ``sites`` on ``prompts``: ``estimate`` is [sites, prompts]."""
     if any(rs.kind in RESIDUAL for rs in sites):
         warnings.append(
             "Estimates at residual stream sites can miss effects where patching replaces a whole "
@@ -233,9 +286,9 @@ def run_attribution_patching(
             "slightly negative. Verifying the top estimates can't catch such a miss; Check "
             "robustness patches every site."
         )
-    warnings.extend(check_values(estimate, "estimates", info.dtype))
-    nan = np.full((len(sites), n), np.nan)
-    result = EngineResult(
+    warnings.extend(check_values(estimate, "estimates", dtype))
+    nan = np.full(estimate.shape, np.nan)
+    return EngineResult(
         sites=sites,
         layout=layout,
         prompts=prompts,
@@ -252,7 +305,3 @@ def run_attribution_patching(
         delta=estimate,
         extra={"attribution": {"method": exp.method, "steps": exp.steps}},
     )
-    if on_layer is not None:
-        for layer in sorted({rs.layer for rs in sites}):
-            on_layer(layer, [rs.index for rs in sites if rs.layer == layer], result)
-    return result

@@ -1,5 +1,6 @@
-"""Version 2 specs state every choice; version 1 specs are read and say what they left out. And
-runs that go wrong say so plainly, without leaking this machine's paths."""
+"""Specs state every choice; version 1 specs are read and say what they left out, and version 2
+specs read as version 3 with its additions off. And runs that go wrong say so plainly, without
+leaking this machine's paths."""
 
 from __future__ import annotations
 
@@ -12,7 +13,18 @@ import torch
 from pydantic import ValidationError
 
 from logogram.runner import run_spec, scrub_paths
-from logogram.spec import Spec, upgrade_v1
+from logogram.spec import Spec, upgrade_v1, upgrade_v2
+
+MODEL = {
+    "id": "tiny-gpt2",
+    "source": "hub",
+    "revision": "test",
+    "sha256": None,
+    "dtype": "float32",
+    "device": "cpu",
+    "process_weights": True,
+}
+LOCAL = {**MODEL, "id": "my fine-tune", "source": "local", "revision": None, "sha256": "ab" * 32}
 
 V1_MINIMAL = {
     "logogram_spec": 1,
@@ -27,7 +39,7 @@ V1_MINIMAL = {
 
 def test_version_1_specs_list_what_they_left_out():
     spec = Spec.model_validate(V1_MINIMAL)
-    assert spec.logogram_spec == 2
+    assert spec.logogram_spec == 3
     filled = "\n".join(spec.upgraded_fields)
     for expected in (
         'model.dtype = "float32"',
@@ -49,7 +61,34 @@ def test_version_1_specs_list_what_they_left_out():
     assert Spec.model_validate(dumped).upgraded_fields == []
 
 
-def test_version_2_specs_must_state_every_choice():
+def test_version_2_specs_read_as_version_3_with_its_additions_off():
+    v2 = Spec.model_validate(V1_MINIMAL).model_dump(mode="json")
+    v2["logogram_spec"] = 2
+    del v2["tokenization"]["chat_template"], v2["model"]["source"], v2["model"]["sha256"]
+    steering = {
+        "kind": "steering",
+        "apply_to": "corrupt",
+        "coefficients": [1.0],
+        "train_fraction": 0.5,
+        "seed": 0,
+        "control": False,
+    }
+    for experiment in (v2["experiment"], steering):
+        spec = Spec.model_validate({**v2, "experiment": experiment})
+        assert spec.logogram_spec == 3 and spec.upgraded_fields == []
+        assert spec.tokenization.chat_template is None
+        assert (spec.model.source, spec.model.sha256) == ("hub", None)
+    assert spec.experiment.model_dump() == {
+        **steering,
+        "direction": {"kind": "mean_difference"},
+        "continuations": None,
+    }
+    before = json.loads(json.dumps(v2))
+    upgrade_v2(v2)
+    assert v2 == before  # the input is left as it was
+
+
+def test_specs_must_state_every_choice():
     full = Spec.model_validate(V1_MINIMAL).model_dump(mode="json")
     assert Spec.model_validate(full).upgraded_fields == []
     for path in (
@@ -58,8 +97,11 @@ def test_version_2_specs_must_state_every_choice():
         ("statistics", "cluster"),
         ("execution",),
         ("tokenization",),
+        ("tokenization", "chat_template"),
         ("model", "dtype"),
         ("model", "revision"),
+        ("model", "source"),
+        ("model", "sha256"),
         ("dataset", "limit"),
         ("experiment", "baseline", "donors"),
         ("scope", "position"),
@@ -100,12 +142,59 @@ def test_version_2_specs_must_state_every_choice():
             "less than",
         ),
         ({"statistics": {"bootstrap": 200, "ci": 0.95, "seed": 0, "cluster": "a b"}}, "meta"),
+        ({"model": {**MODEL, "device": "cuda:x"}}, "cuda:N"),
+        ({"model": {**MODEL, "device": "gpu"}}, "cuda:N"),
+        ({"model": {**MODEL, "sha256": "0" * 64}}, "pinned by its revision"),
+        ({"model": {**MODEL, "source": "local"}}, "hash of its files"),
+        ({"model": {**MODEL, "source": "local", "sha256": "A" * 64}}, "hash of its files"),
+        ({"model": {**LOCAL, "revision": "main"}}, "no revisions"),
+        ({"model": {**LOCAL, "id": "runs/step-1000"}}, "without slashes"),
+        (
+            {
+                "tokenization": {
+                    "prepend_bos": True,
+                    "chat_template": {"kind": "user_turn", "system": None},
+                }
+            },
+            "the template writes the beginning",
+        ),
+        (
+            {
+                "tokenization": {
+                    "prepend_bos": False,
+                    "chat_template": {"kind": "assistant_prefix", "system": None, "user": ""},
+                }
+            },
+            "at least 1 character",
+        ),
+        (
+            {
+                "experiment": {
+                    "kind": "steering",
+                    "apply_to": "corrupt",
+                    "direction": {"kind": "sae_feature", "feature": 3},
+                    "coefficients": [1.0],
+                    "train_fraction": 0.5,
+                    "seed": 0,
+                    "control": False,
+                    "continuations": None,
+                }
+            },
+            "the SAE they belong to",
+        ),
     ],
 )
 def test_specs_are_checked(change, message):
     data = {**Spec.model_validate(V1_MINIMAL).model_dump(mode="json"), **change}
     with pytest.raises(ValidationError, match=message):
         Spec.model_validate(data)
+
+
+def test_a_local_model_on_one_of_several_gpus_is_a_valid_spec():
+    data = {**Spec.model_validate(V1_MINIMAL).model_dump(mode="json"), "model": LOCAL}
+    data["model"]["device"] = "cuda:1"
+    spec = Spec.model_validate(data)
+    assert (spec.model.source, spec.model.device) == ("local", "cuda:1")
 
 
 def test_attribution_patching_states_its_method():
@@ -130,7 +219,7 @@ def test_a_version_1_run_says_what_it_assumed(tiny_backend, project):
     assert "This spec is version 1" in outcome.summary["warnings"][0]
     assert "statistics.seed = 0" in outcome.summary["warnings"][0]
     saved = json.loads((outcome.folder / "spec.json").read_text(encoding="utf-8"))
-    assert saved["logogram_spec"] == 2 and saved["statistics"]["cluster"] is None
+    assert saved["logogram_spec"] == 3 and saved["statistics"]["cluster"] is None
 
 
 def test_upgrading_never_changes_the_input():

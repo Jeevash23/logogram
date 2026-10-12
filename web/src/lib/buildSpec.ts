@@ -1,13 +1,50 @@
-// The experiment form as a version 2 spec, or what is missing. Every choice that can change a
+// The experiment form as a version 3 spec, or what is missing. Every choice that can change a
 // number is written out; nothing the form doesn't show is assumed. Restrictions a method places on
 // the metric and the answers (src/logogram/direct.py, paths.py, engine.py, features.py and
 // circuits.py) are checked here too, so a run doesn't fail on something the form could have said.
 
-import type { Answer, DatasetDetail, MetricSpec, ModelStatus, PositionSpec, SAEStatus, ScopeSpec, Spec } from "../api/types";
+import type {
+  Answer,
+  Continuations,
+  DatasetDetail,
+  MetricSpec,
+  ModelStatus,
+  PositionSpec,
+  SAERef,
+  SAEStatus,
+  ScopeSpec,
+  SiteKind,
+  Spec,
+  SteeringDirection,
+} from "../api/types";
 import { siteSetsError } from "./circuits";
-import { plural, shortRevision, visibleToken } from "./format";
-import type { FormState } from "./formState";
-import { splitCount, suggestName } from "./spec";
+import { count, plural, shortRevision, visibleToken } from "./format";
+import { formTokenization, type FormState } from "./formState";
+import { modelRefOf, saeWritesText, sameDevice, siteText, splitCount, steerSiteOf, suggestName } from "./spec";
+
+/** The residual stream sites the mean difference is added to (src/logogram/steering.py). */
+const RESIDUAL: SiteKind[] = ["resid_pre", "resid_mid", "resid_post"];
+
+/** What the system message and the person's message of a chat template may hold (spec.py). */
+const CHAT_TEXT_MAX = 4000;
+
+/** Why the form's chat template can't be used, or null: the start of a reply answers a message,
+ * and the loaded model must ship a template. */
+export function chatTemplateError(form: Pick<FormState, "chatTemplate">, model: ModelStatus): string | null {
+  const t = form.chatTemplate;
+  if (!t) return null;
+  if (t.kind === "assistant_prefix" && !t.user.trim()) {
+    return "Write the person's message that the reply answers (Chat template, under Data and model), or wrap prompts as the person's message.";
+  }
+  if ((t.system?.length ?? 0) > CHAT_TEXT_MAX || (t.kind === "assistant_prefix" && t.user.length > CHAT_TEXT_MAX)) {
+    return "Keep the chat template's messages under 4,000 characters each.";
+  }
+  const info = model.info;
+  if (info && info.extra?.chat_template_sha256 === null) {
+    return `${info.id} has no chat template, so its prompts can only be read as plain text. Choose None under Chat template, or load a model made for chat.`;
+  }
+  return null;
+}
 
 /** What the form knows about the prompts it will run on. */
 export interface DatasetFacts {
@@ -136,13 +173,31 @@ export function buildSpec(
     if (!form.steerApplyTo) return { error: "Choose which prompts to steer." };
     const strengths = parseStrengths(form.steerStrengths);
     if ("error" in strengths) return strengths;
+    let direction: SteeringDirection = { kind: "mean_difference" };
+    if (form.steerDirection === "sae_feature") {
+      const feature = form.steerFeature;
+      if (feature === null || !Number.isInteger(feature) || feature < 0) {
+        return { error: "Give the number of the SAE feature to steer along: a whole number from 0." };
+      }
+      direction = { kind: "sae_feature", feature };
+    }
+    let continuations: Continuations | null = null;
+    if (form.steerContinue) {
+      const prompts = form.steerContinuePrompts;
+      const tokens = form.steerContinueTokens;
+      if (!Number.isInteger(prompts) || prompts < 1 || prompts > 8) return { error: "Continue from 1 to 8 of the held-out prompts." };
+      if (!Number.isInteger(tokens) || tokens < 1 || tokens > 64) return { error: "Continue each prompt by 1 to 64 tokens." };
+      continuations = { prompts, tokens };
+    }
     experiment = {
       kind: "steering",
       apply_to: form.steerApplyTo,
+      direction,
       coefficients: strengths.values,
       train_fraction: form.steerTrain,
       seed: form.steerSeed,
       control: form.steerControl,
+      continuations,
     };
   } else if (form.kind === "direct_logit_attribution") {
     if (!form.dlaPrompts) return { error: "Choose which prompts' logit difference to split." };
@@ -261,39 +316,59 @@ export function buildSpec(
     }
   }
   if (!Number.isInteger(form.batchSize) || form.batchSize < 1 || form.batchSize > 4096) return { error: "Use a batch size from 1 to 4,096." };
+  const chatError = chatTemplateError(form, ctx.model);
+  if (chatError) return { error: chatError };
 
   const info = ctx.model.info;
   const ref = ctx.model.ref;
   const model: Spec["model"] = info
-    ? {
-        id: info.id,
-        revision: info.revision,
-        dtype: info.dtype,
-        device: ref?.device ?? info.device,
-        process_weights: info.process_weights,
-      }
+    ? modelRefOf(info, ref?.device ?? info.device)
     : (form.modelRef ?? {
         id: "openai-community/gpt2",
+        source: "hub",
         revision: null,
+        sha256: null,
         dtype: "float32",
         device: "auto",
         process_weights: true,
       });
   // SAE features belong to an SAE: the loaded one, or the one a saved spec names.
   const features = usesFeatures(scope);
-  const loaded = ctx.sae?.state === "ready" && ctx.sae.info ? { repo: ctx.sae.info.repo, path: ctx.sae.info.path, revision: ctx.sae.info.revision } : null;
-  const sae = features ? (loaded ?? form.saeRef) : null;
+  const steersFeature = experiment.kind === "steering" && experiment.direction.kind === "sae_feature";
+  const loadedInfo = ctx.sae?.state === "ready" && ctx.sae.info ? ctx.sae.info : null;
+  const loaded = loadedInfo ? { repo: loadedInfo.repo, path: loadedInfo.path, revision: loadedInfo.revision } : null;
+  const sae = features || steersFeature ? (loaded ?? form.saeRef) : null;
   if (features && !sae) return { error: "Load the SAE these features belong to (Explore → Features)." };
+  if (experiment.kind === "steering") {
+    const direction = experiment.direction;
+    if (direction.kind === "sae_feature") {
+      if (!sae) return { error: "Load the SAE this feature belongs to (Explore → Features), or steer along the mean difference." };
+      // Added where the SAE writes, and nowhere else (src/logogram/steering.py).
+      if (loadedInfo) {
+        if (direction.feature >= loadedInfo.d_sae) {
+          return { error: `The loaded SAE has ${count(loadedInfo.d_sae)} features (0 to ${count(loadedInfo.d_sae - 1)}), so there is no feature ${direction.feature}.` };
+        }
+        const where = steerSiteOf(loadedInfo);
+        if (scope.kind !== "sites" || scope.sites.some((x) => x.kind !== where.kind || x.layer !== where.layer)) {
+          return {
+            error: `Steering along an SAE feature adds its decoder direction where the SAE writes: ${saeWritesText(loadedInfo)}. Choose that site alone (${siteText({ ...where, position: { kind: "all" } })}), at one token of each prompt.`,
+          };
+        }
+      }
+    } else if (scope.kind === "sites" && scope.sites.some((x) => !RESIDUAL.includes(x.kind))) {
+      return { error: "Steering by the mean difference adds it to the residual stream. Choose residual sites, or steer along an SAE feature where its SAE writes." };
+    }
+  }
   if (scope.kind === "features" && experiment.kind !== "attribution_patching") {
     return { error: "Only attribution patching estimates every SAE feature. Choose it, or patch chosen features." };
   }
   const spec: Spec = {
-    logogram_spec: 2,
+    logogram_spec: 3,
     name: form.name.trim() || suggestName({ experiment, scope }),
     notes: form.notes,
     model,
     dataset: { path: ctx.datasetPath, sha256: ctx.datasetSha, limit: form.limit },
-    tokenization: { prepend_bos: form.prependBos },
+    tokenization: formTokenization(form),
     experiment,
     scope: scope.kind === "site_sets" ? { ...scope, sets: scope.sets.map((set) => ({ ...set, label: set.label.trim() })) } : scope,
     metric,
@@ -305,19 +380,24 @@ export function buildSpec(
   return { spec };
 }
 
-/** How what will run differs from the saved spec the form was opened from. */
+/** How what will run differs from the saved spec the form was opened from. A loaded SAE takes the
+ * place of the one the form's features belong to (see buildSpec), so another one is said too. */
 export function savedDifferences(
   form: FormState,
   model: ModelStatus,
   datasetPath: string | null,
   datasetSha: string | null,
   name: (id: string) => string = (id) => id,
+  sae?: SAEStatus,
 ): string[] {
   const out: string[] = [];
   const ref = form.modelRef;
   const info = model.info;
   if (ref && info) {
-    if (ref.id !== info.id) {
+    const local = ref.source === "local" || info.source === "local";
+    if (local && (ref.source !== info.source || ref.sha256 !== info.sha256)) {
+      out.push(`It was written for ${name(ref.id)}${ref.source === "local" ? ", a local model" : ""}; the loaded model is ${name(info.id)}${info.source === "local" ? ", a local model with other files" : ""}.`);
+    } else if (!local && ref.id !== info.id) {
       out.push(`It was written for ${name(ref.id)}; the loaded model is ${name(info.id)}.`);
     } else {
       if (ref.revision && ref.revision !== info.revision) {
@@ -325,7 +405,7 @@ export function savedDifferences(
       }
       if (ref.dtype !== info.dtype) out.push(`It was written for ${ref.dtype}; the model is loaded in ${info.dtype}.`);
       if (ref.process_weights !== info.process_weights) out.push("Weight processing differs from the saved spec.");
-      if (ref.device !== "auto" && ref.device !== info.device) out.push(`It was written for ${ref.device}; the model is loaded on ${info.device}.`);
+      if (!sameDevice(ref.device, info.device)) out.push(`It was written for ${ref.device}; the model is loaded on ${info.device}.`);
     }
   }
   const saved = form.savedDataset;
@@ -333,5 +413,21 @@ export function savedDifferences(
     if (saved.path !== datasetPath) out.push(`It used ${saved.path}; the prompts chosen now are ${datasetPath}.`);
     else if (saved.sha256 && datasetSha && saved.sha256 !== datasetSha) out.push(`${saved.path} has changed since it was saved.`);
   }
+  // Its features are numbered in its own SAE: in another, the same number is another feature.
+  const written = form.saeRef;
+  const loaded = sae?.state === "ready" ? sae.info : undefined;
+  const steersFeature = form.kind === "steering" && form.steerDirection === "sae_feature";
+  if (written && loaded && (usesFeatures(form.scope) || steersFeature)) {
+    const folder = (ref: SAERef) => `${ref.repo}${trimPath(ref.path) ? `/${trimPath(ref.path)}` : ""}`;
+    if (written.repo !== loaded.repo || trimPath(written.path) !== trimPath(loaded.path)) {
+      out.push(`It was written for the SAE ${folder(written)}; the loaded SAE is ${folder(loaded)}, where the same feature numbers are other features.`);
+    } else if (written.revision && written.revision !== loaded.revision) {
+      const now = loaded.revision ? `revision ${shortRevision(loaded.revision)}` : "unpinned";
+      out.push(`It was written for revision ${shortRevision(written.revision)} of the SAE ${folder(written)}; the loaded one is ${now}.`);
+    }
+  }
   return out;
 }
+
+/** An SAE's folder in its repository, without the slashes around it. */
+const trimPath = (path: string) => path.replace(/^\/+|\/+$/g, "");

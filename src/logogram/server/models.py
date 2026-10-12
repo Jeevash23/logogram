@@ -6,7 +6,15 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from logogram.schema import QueuedRunInfo, RunListing, SiteSummary
+from logogram.schema import (
+    ContinuationsFile,
+    GeneratedTokens,
+    PartialRun,
+    QueueChanged,
+    QueuedRunInfo,
+    RunListing,
+    SiteSummary,
+)
 from logogram.spec import ModelRef, PredictionSettings
 
 
@@ -38,6 +46,9 @@ class ModelInfoOut(_Out):
     backend: str
     backend_version: str
     extra: dict[str, Any]
+    # Hugging Face ("hub"), or a folder on this machine ("local", by the hash of its files).
+    source: Literal["hub", "local"] = "hub"
+    sha256: str | None = None
 
 
 class ModelStatus(_Out):
@@ -57,7 +68,7 @@ class ModelStatus(_Out):
 
 class JobInfo(_Out):
     id: str
-    kind: Literal["load_model", "load_sae", "run"]
+    kind: Literal["load_model", "load_sae", "run", "add_model"]
     title: str
     status: Literal["running", "finished", "failed", "cancelled"]
     run_id: str | None
@@ -171,11 +182,15 @@ class ServerState(_Out):
     first_run: bool
     theme: Literal["light", "dark", "system"]
     single_key_shortcuts: bool = True
+    # How the walkthrough of the example ended, kept in the settings: finished, skipped or never.
+    walkthrough: Literal["finished", "skipped"] | None = None
     projects_parent: str
     update: UpdateStatus
     sae: dict[str, Any] = {"state": "none"}
     # The runs waiting for the job in progress, first in line first.
     queue: list[QueuedRunInfo] = []
+    # The same runs, and how the queue stands (waiting, running, paused), and who runs it.
+    queue_status: QueueChanged | None = None
 
 
 class Settings(BaseModel):
@@ -185,6 +200,7 @@ class Settings(BaseModel):
     theme: str | None = None
     update_check: bool | None = None
     single_key_shortcuts: bool | None = None
+    walkthrough: str | None = None
 
 
 class OkOut(_Out):
@@ -287,6 +303,9 @@ class AnswerTokens(_Out):
 class TokenStrip(_Out):
     clean: TokenRow
     corrupt: TokenRow
+    # With a chat template: the clean tokens that hold the prompt (first, one past the last);
+    # the others are the template's.
+    prompt: list[int] | None = None
     aligned: bool
     differs: list[int]
     labels: dict[str, int]
@@ -365,6 +384,147 @@ class AttentionData(_Out):
     length: int
 
 
+class HeadKindScores(_Out):
+    description: str
+    # [layer][head]: the mean over sequences and its bootstrap interval.
+    mean: list[list[float]]
+    lo: list[list[float]]
+    hi: list[list[float]]
+    # [sequence][layer][head]: the values the statistics come from.
+    per_sequence: list[list[list[float]]]
+
+
+class TopHead(_Out):
+    layer: int
+    head: int
+    mean: float
+    lo: float
+    hi: float
+
+
+class HeadKinds(_Out):
+    settings: dict[str, Any]
+    n_layers: int
+    n_heads: int
+    kinds: dict[Literal["previous_token", "duplicate_token", "induction"], HeadKindScores]
+    top: dict[Literal["previous_token", "duplicate_token", "induction"], list[TopHead]]
+
+
+class MethodsText(_Out):
+    text: str
+
+
+class ChatWrapped(_Out):
+    """A prompt in the model's own chat template: the whole text, where the prompt is in it
+    (characters; None when the template changes the prompt, as ``problem`` says), the template's
+    text before and after a prompt, and its SHA-256."""
+
+    text: str
+    start: int | None
+    end: int | None
+    before: str
+    after: str
+    sha256: str
+    problem: str | None
+
+
+class LocalModelOut(_Out):
+    """A model added from a folder on this machine. The folder is shown on this machine only;
+    specs and runs name the model by its name and the hash of its files."""
+
+    name: str
+    folder: str
+    sha256: str
+    added: str
+    size: int
+    files: int
+
+
+class LookToken(_Out):
+    id: int
+    token: str
+    prob: float
+
+
+class LookLayer(_Out):
+    layer: int
+    top: list[LookToken]
+
+
+class LookReport(_Out):
+    tokens: list[str]
+    ids: list[int]
+    prepend_bos: bool
+    # The chat template the text was wrapped in, if any, and the tokens that hold the text
+    # itself (first, one past the last).
+    chat_template: dict[str, Any] | None = None
+    text_tokens: list[int] | None = None
+    top_k: int
+    position: int
+    # After each token: the model's most likely next tokens.
+    predictions: list[list[LookToken]]
+    # At ``position``: what each layer's residual stream would predict, when the lens holds.
+    lens: list[LookLayer] | None
+    lens_note: str | None
+
+
+class LookAttention(_Out):
+    tokens: list[str]
+    layer: int
+    head: int
+    pattern: list[list[float]]
+
+
+class LookFeature(_Out):
+    feature: int
+    activation: float
+
+
+class LookFeatures(_Out):
+    tokens: list[str]
+    features: list[list[LookFeature]]
+    active: list[int]
+    first_real_token: int
+
+
+class LookFeatureAlong(_Out):
+    """One SAE feature along the text: its activation at each token, and its largest from the
+    first real token on."""
+
+    tokens: list[str]
+    feature: int
+    activations: list[float]
+    largest: float
+    position: int
+    first_real_token: int
+
+
+class LookSteerOut(_Out):
+    """The feature added while the text continued: how much of it, from which token, where the
+    SAE writes, and its largest activation on the text for reference."""
+
+    feature: int
+    activation: float
+    start: int
+    site: str
+    layer: int
+    where: str
+    largest: float
+    largest_at: int
+
+
+class LookContinuation(_Out):
+    """What the model writes after the text: greedily, and with a feature added if asked."""
+
+    tokens: list[str]
+    ids: list[int]
+    prepend_bos: bool
+    new: int
+    plain: GeneratedTokens
+    steer: LookSteerOut | None
+    steered: GeneratedTokens | None
+
+
 class PredictionLayer(_Out):
     layer: int
     top: list[TopToken]
@@ -434,7 +594,8 @@ class RunMemoryOut(_Out):
 
 class EstimateOut(_Out):
     id: str
-    revision: str
+    # None for a local model, which has no revisions.
+    revision: str | None
     architecture: ArchitectureOut
     download_bytes: int
     total_bytes: int
@@ -456,6 +617,8 @@ class RunDetail(_Out):
     summary: dict[str, Any] | None
     manifest: dict[str, Any] | None
     predictions: PredictionReport | None = None
+    # A steering run's continuations.json: what the steered model went on to say.
+    continuations: ContinuationsFile | None = None
     listing: RunListing | None
     folder: str
     # A failed run's traceback, as kept in its folder (with the machine's paths scrubbed).
@@ -559,6 +722,9 @@ class Comparison(_Out):
     n_differs: int = 0
     # Versions or devices that differ: these alone can change results in the last digits.
     environment_differences: list[EnvironmentDifference] = []
+    # A run that stopped early: what it kept (only the sites both runs have are compared).
+    partial_a: PartialRun | None = None
+    partial_b: PartialRun | None = None
 
 
 class EnvironmentOut(_Out):
@@ -573,3 +739,177 @@ class EnvironmentOut(_Out):
     torch_cuda: str | None
     devices: list[str]
     default_device: str
+
+
+# -- sweeps ------------------------------------------------------------------------------------
+
+# A swept value: a seed, or a dataset's path or a revision as given.
+SweepValueOut = int | str
+SweepKind = Literal["seed", "dataset", "revision"]
+
+
+class SweepFieldOut(_Out):
+    """A field a run's spec can be swept over, with the spec's own value and the values the app
+    offers at first."""
+
+    field: str
+    kind: SweepKind
+    label: str
+    plural: str
+    description: str
+    current: SweepValueOut | None
+    current_label: str | None
+    suggested: list[SweepValueOut]
+
+
+class SweepPlanRun(_Out):
+    index: int
+    value: SweepValueOut
+    label: str
+    # The run's spec name; None where the run the sweep is made from stands in for the value.
+    name: str | None
+    original: bool
+
+
+class SweepPlanOut(_Out):
+    """The runs a sweep makes, one per value in the order given (logogram.sweeps.plan_sweep)."""
+
+    sweep: str
+    field: str
+    kind: SweepKind
+    label: str
+    plural: str
+    values: list[SweepValueOut]
+    labels: list[str]
+    original: str | None
+    stands_in: int | None
+    runs: list[SweepPlanRun]
+
+
+class SweepStarted(_Out):
+    """A sweep sent to the queue: its first run started at once when nothing was running (``run_id``
+    and ``job``); the rest wait their turn in ``queue``."""
+
+    sweep: str
+    plan: SweepPlanOut
+    run_id: str | None
+    job: JobInfo | None
+    queue: list[QueuedRunInfo]
+
+
+class SweepValueRow(_Out):
+    index: int
+    value: SweepValueOut
+    label: str
+    run: str | None
+    # missing: no run (it never started, or was taken out of the queue); deleted: the run the
+    # sweep was made from, which stood in for this value, was deleted.
+    status: Literal["finished", "failed", "cancelled", "running", "draft", "missing", "deleted"]
+    original: bool
+    title: str | None
+    error: str | None
+    n_prompts: int | None
+    # What a revision or a dataset resolved to: the commit the run pinned, the prompts it read.
+    revision: str | None
+    dataset_sha256: str | None
+
+
+class SweepPoint(_Out):
+    """One site at one value: the run's mean effect, its interval and SD over prompts, and n."""
+
+    mean: float | None
+    lo: float | None
+    hi: float | None
+    sd: float | None
+    n: int | None
+
+
+class SweepSpread(_Out):
+    """The spread of a site's means across the values that measured it."""
+
+    mean: float
+    sd: float | None
+    min: float
+    max: float
+
+
+class SweepSite(_Out):
+    key: str
+    rank: int
+    label: str
+    kind: str
+    layer: int
+    head: int | None
+    feature: int | None
+    position: dict[str, Any] | None
+    position_key: str
+    variant: dict[str, Any] | None
+    variant_key: str | None
+    # One per value; None where the value has no results for this site (never zero).
+    points: list[SweepPoint | None]
+    measured: int
+    spread: SweepSpread | None
+    # The median half-width of the runs' own intervals.
+    half_width: float | None
+    # Values whose interval lies above zero, below it; a pair of values with confident opposite
+    # signs; a pair whose intervals exclude each other; values without results.
+    above: list[int]
+    below: list[int]
+    sign: list[int] | None
+    apart: list[int] | None
+    missing: list[int]
+    # Where its intervals exclude zero: at every value that measured it, at some, or at none.
+    excludes_zero: Literal["every", "some", "none"]
+    verdict: Literal["holds", "size", "sign", "unknown"]
+    text: str
+
+
+class SweepCounts(_Out):
+    holds: int
+    size: int
+    sign: int
+    unknown: int
+
+
+class SweepTable(_Out):
+    """A sweep read back (logogram.sweeps.sweep_table)."""
+
+    sweep: str
+    field: str
+    kind: SweepKind
+    label: str
+    plural: str
+    description: str
+    name: str
+    created: str | None
+    original: str | None
+    stands_in: int | None
+    values: list[SweepValueRow]
+    finished: int
+    choose: Literal["first", "all"]
+    top: int
+    chosen: str
+    problem: str | None
+    n_sites: int
+    sites: list[SweepSite]
+    counts: SweepCounts
+    headline: str
+    spread: str
+    notes: list[str]
+    ci: float | None
+    measure: str | None
+    metric: dict[str, Any] | None
+    experiment: dict[str, Any] | None
+
+
+class RevisionOut(_Out):
+    name: str
+    commit: str
+    kind: Literal["branch", "tag"]
+
+
+class RevisionsOut(_Out):
+    """A Hugging Face model's branches and tags, each with its commit."""
+
+    id: str
+    revisions: list[RevisionOut]

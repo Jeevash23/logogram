@@ -32,7 +32,8 @@ function historyKey(e: KeyboardEvent): "undo" | "redo" | null {
 
 // Controls that use arrow keys themselves.
 const ARROW_WIDGETS = "[role=menu], [role=menubar], [role=listbox], [role=separator], [role=slider], [role=radiogroup], [role=tablist], [role=grid], [data-arrow-keys]";
-const OVERLAYS = "[role=dialog], [role=alertdialog], [role=menu], [role=listbox]";
+// A step of the walkthrough is a dialog that leaves the page usable: the keys still work there.
+const OVERLAYS = "[role=dialog]:not([data-tour-step]), [role=alertdialog], [role=menu], [role=listbox]";
 
 /** Whether the arrow keys would scroll something around the focused element. */
 function scrollsWithArrows(el: HTMLElement | null): boolean {
@@ -75,7 +76,7 @@ export function useGlobalKeys(): void {
         useStore.setState({ shortcutsOpen: true });
         return;
       }
-      if (st.screen !== "workbench" || st.paletteOpen || st.modelDialogOpen || st.robustnessDialogOpen || st.cancelConfirmOpen || st.shortcutsOpen) return;
+      if (st.screen !== "workbench" || st.paletteOpen || st.modelDialogOpen || st.robustnessDialogOpen || st.sweepDialogRun || st.cancelConfirmOpen || st.shortcutsOpen) return;
       // Undo and redo the experiment form while it is open, except in a text field, whose own
       // undo goes first.
       const step = historyKey(e);

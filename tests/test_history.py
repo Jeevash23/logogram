@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
 import logogram as lg
+from logogram import runqueue
 from logogram.api import LogogramError
 from logogram.cli import app as cli
 from logogram.history import ANNOTATIONS, annotate_run, delete_run
@@ -21,7 +22,7 @@ from logogram.project import Project, ProjectError
 from logogram.runner import run_spec
 from logogram.server.app import create_app
 from logogram.server.security import SecurityConfig
-from logogram.server.state import Job, QueuedRun
+from logogram.server.state import Job
 
 TOKEN = "test-token"
 BASE = "http://127.0.0.1:8765"
@@ -380,10 +381,10 @@ def test_a_run_in_progress_or_in_the_queue_is_never_deleted(
     r = client.delete(f"/api/runs/{draft}", headers=HEADERS)
     assert r.status_code == 409 and r.json()["error"].startswith("“Next” is running.")
     ready.job.update(status="finished")
-    ready._queue.append(QueuedRun(_quick(spec_factory), project.session_id, draft_id=draft))
+    runqueue.add_to_queue(project, _quick(spec_factory), draft_id=draft)
     r = client.delete(f"/api/runs/{draft}", headers=HEADERS)
     assert r.status_code == 409 and "waiting in the queue" in r.json()["error"]
-    ready._queue.clear()
+    runqueue.clear_queue(project)
     assert (project.run_dir(draft) / "spec.json").is_file()
 
     # A run another process is running (its manifest says so) is refused too.

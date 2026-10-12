@@ -1,0 +1,59 @@
+.wrap {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
+/* The tracks' canvas, with hover and the selected cell drawn on a second canvas exactly above. */
+.stage {
+  position: relative;
+  width: max-content;
+}
+
+.scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.canvas {
+  display: block;
+  border-radius: var(--radius-sm);
+}
+
+.canvas:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+.overlay {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+}
+
+.help,
+.readout {
+  font-size: var(--text-xs);
+  color: var(--muted);
+  margin: 6px 0 0;
+}
+
+.readout {
+  min-height: 1.5em;
+  color: var(--text);
+}
+
+.tooltip {
+  position: fixed;
+  z-index: 40;
+  pointer-events: none;
+  padding: 7px 10px;
+  border-radius: var(--radius);
+  background: var(--text);
+  color: var(--on-ink);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  max-width: 300px;
+  box-shadow: var(--shadow);
+}

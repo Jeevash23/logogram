@@ -1,17 +1,20 @@
 import { test, expect, type Locator, type Page } from "@playwright/test";
 
-// Help, in the top bar: a menu that works from the keyboard, links to the guide that open the
-// repository's README in a new tab, a problem report that quotes the last error without its paths
-// and copies it, and About. Nothing in these checks leaves the machine: links are read, never
-// followed, any request for another host is refused, and the update check is answered here.
+// Help, in the top bar: a menu that works from the keyboard, links to the documentation that open
+// the repository's pages in a new tab, a problem report that quotes the last error without its
+// paths and copies it, and About. The guide and the walkthrough it opens have checks of their own
+// (guide.browser.ts, walkthrough.browser.ts). Nothing in these checks leaves the machine: links are
+// read, never followed, any request for another host is refused, and the update check is answered
+// here.
 
 const REPOSITORY = "https://github.com/Jeevash23/logogram";
-const GUIDE: [string, string][] = [
-  ["Quickstart", "quickstart"],
-  ["Running on a remote GPU", "running-on-a-remote-gpu"],
-  ["Troubleshooting", "troubleshooting"],
-  ["The spec", "the-spec"],
-  ["Command line", "command-line"],
+const DOCS: [string, string][] = [
+  ["Getting started", `${REPOSITORY}/blob/main/docs/getting-started.md`],
+  ["Concepts", `${REPOSITORY}/blob/main/docs/README.md#concepts`],
+  ["How-to guides", `${REPOSITORY}/blob/main/docs/README.md#how-to-guides`],
+  ["Reference", `${REPOSITORY}/blob/main/docs/README.md#reference`],
+  ["Running on a remote GPU", `${REPOSITORY}#running-on-a-remote-gpu`],
+  ["Troubleshooting", `${REPOSITORY}#troubleshooting`],
 ];
 
 test.beforeEach(async ({ page }) => {
@@ -29,27 +32,30 @@ function row(scope: Locator, label: string): Locator {
   return scope.locator("dl > div").filter({ has: scope.page().locator("dt", { hasText: new RegExp(`^${label}$`) }) }).locator("dd");
 }
 
-test("the Help menu works from the keyboard, and its guide opens on GitHub in a new tab", async ({ page }) => {
+test("the Help menu works from the keyboard, and its documentation opens on GitHub in a new tab", async ({ page }) => {
   const help = helpButton(page);
   await help.focus();
   await page.keyboard.press("Enter");
   const menu = page.getByRole("menu");
   await expect(menu).toBeVisible();
-  await expect(menu.getByRole("menuitem", { name: "Keyboard shortcuts" })).toBeFocused();
+  await expect(menu.getByRole("menuitem", { name: "Guide", exact: true })).toBeFocused();
   await expect(menu.getByRole("menuitem")).toHaveText([
+    "Guide",
+    "Walk me through the example",
     /^Keyboard shortcuts/,
-    ...GUIDE.map(([title]) => new RegExp(`^${title}`)),
+    ...DOCS.map(([title]) => new RegExp(`^${title}`)),
     "Report a problem…",
     "System check",
     "About Logogram",
   ]);
   await page.keyboard.press("ArrowDown");
-  await expect(menu.getByRole("menuitem", { name: /^Quickstart/ })).toBeFocused();
+  await expect(menu.getByRole("menuitem", { name: "Walk me through the example" })).toBeFocused();
 
-  const guide = menu.getByRole("group", { name: "The guide, on GitHub" });
-  for (const [title, anchor] of GUIDE) {
-    const link = guide.getByRole("menuitem", { name: `${title} (opens in a new tab)`, exact: true });
-    await expect(link).toHaveAttribute("href", `${REPOSITORY}#${anchor}`);
+  const docs = menu.getByRole("group", { name: "The documentation, on GitHub" });
+  await expect(docs.getByRole("menuitem")).toHaveCount(DOCS.length);
+  for (const [title, href] of DOCS) {
+    const link = docs.getByRole("menuitem", { name: `${title} (opens in a new tab)`, exact: true });
+    await expect(link).toHaveAttribute("href", href);
     await expect(link).toHaveAttribute("target", "_blank");
     await expect(link).toHaveAttribute("rel", "noopener noreferrer");
   }
@@ -61,6 +67,11 @@ test("the Help menu works from the keyboard, and its guide opens on GitHub in a 
 
   // Keyboard shortcuts opens the sheet; closing it returns the focus to Help, too.
   await page.keyboard.press("Enter");
+  await expect(menu.getByRole("menuitem", { name: "Guide", exact: true })).toBeFocused();
+  // Radix moves the focus after the key, so each step is awaited before the next.
+  await page.keyboard.press("ArrowDown");
+  await expect(menu.getByRole("menuitem", { name: "Walk me through the example" })).toBeFocused();
+  await page.keyboard.press("ArrowDown");
   await expect(menu.getByRole("menuitem", { name: "Keyboard shortcuts" })).toBeFocused();
   await page.keyboard.press("Enter");
   const shortcuts = page.getByRole("dialog", { name: "Keyboard shortcuts" });

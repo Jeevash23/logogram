@@ -4,7 +4,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { architectureOf } from "../lib/keys";
 import { paletteRuns, runTitle, searchText } from "../lib/runs";
 import { parseHeadQuery } from "../lib/sites";
+import { fieldWords, sweepsOf, sweepsOfRun } from "../lib/sweeps";
 import { useStore, workspaceFor, WORKSPACE_VIEWS } from "../store/app";
+import { openGuide, walkThroughExample } from "../store/help";
 import { MOD, SHIFT } from "./Header";
 import { WORKSPACE_ITEMS } from "./TopBar";
 import { Icon, Kbd } from "./ui";
@@ -53,6 +55,14 @@ function useCommands(query: string): Command[] {
           disabled: !st.activeRunId || !st.runDetails[st.activeRunId]?.summary,
           run: () => useStore.setState({ robustnessDialogOpen: true }),
         },
+        {
+          id: "sweep-run",
+          label: "Sweep this run over seeds, datasets or revisions…",
+          group: "Actions",
+          keywords: "sweep seeds datasets revisions checkpoints values across",
+          disabled: !st.activeRunId || !st.runDetails[st.activeRunId]?.summary,
+          run: () => useStore.setState({ sweepDialogRun: st.activeRunId }),
+        },
         { id: "compare", label: "Compare two runs", group: "Actions", run: () => st.setView("compare") },
         { id: "spec", label: "Show the spec", group: "Actions", keywords: "json cli", run: () => { useStore.setState({ specSource: "run" }); st.setView("spec"); } },
         {
@@ -98,6 +108,29 @@ function useCommands(query: string): Command[] {
           { id: "across", label: "Compare across runs", group: "Selected component", shortcut: key("C"), run: () => st.focusInspector("runs") },
         );
       }
+      // The sweep the active run is a value of, and every sweep (the newest few until something is
+      // typed).
+      const sweeps = sweepsOf(st.runs);
+      const active = st.activeRunId ? sweepsOfRun(sweeps, st.activeRunId) : [];
+      for (const { sweep } of active) {
+        const words = fieldWords(sweep.field);
+        cmds.push({
+          id: `this-sweep-${sweep.id}`,
+          label: active.length > 1 ? `Show this run's sweep over ${words.plural}` : "Show this run's sweep",
+          group: "Sweeps",
+          run: () => st.openSweep(sweep.id),
+        });
+      }
+      for (const sweep of query.trim() ? sweeps : sweeps.slice(0, 5)) {
+        const words = fieldWords(sweep.field);
+        cmds.push({
+          id: `sweep-${sweep.id}`,
+          label: `Open sweep: ${sweep.name} over ${sweep.values.length} ${words.plural}`,
+          group: "Sweeps",
+          keywords: `sweep ${sweep.id} ${sweep.field} ${words.plural}`,
+          run: () => st.openSweep(sweep.id),
+        });
+      }
       // With nothing typed, the starred runs and the newest others; once something is typed,
       // every run, archived ones too, found by title, name, id, method, model or dataset.
       for (const r of paletteRuns(st.runs, query)) {
@@ -106,7 +139,7 @@ function useCommands(query: string): Command[] {
           label: `Open ${r.status === "draft" ? "draft" : "run"}: ${runTitle(r)}${r.archived ? " (archived)" : ""}`,
           group: r.starred && !r.archived ? "Starred runs" : "Runs",
           keywords: searchText(r),
-          run: () => void (r.status === "draft" ? st.openDraft(r.id) : st.openRun(r.id, r.status === "finished" ? "results" : undefined)),
+          run: () => void (r.status === "draft" ? st.openDraft(r.id) : st.openRun(r.id, r.status === "finished" || r.partial ? "results" : undefined)),
         });
       }
     }
@@ -114,6 +147,8 @@ function useCommands(query: string): Command[] {
       { id: "projects", label: "All projects", group: "Project", run: () => st.goto("projects") },
       { id: "system", label: "System check", group: "Project", keywords: "gpu cuda doctor hardware", run: () => st.goto("system") },
       { id: "updates", label: "Check for updates", group: "Project", keywords: "version upgrade new release pypi", run: () => void st.checkUpdates() },
+      { id: "guide", label: "Open the guide", group: "Help", keywords: "help learn workspaces map logogram numbers intervals docs", run: () => openGuide() },
+      { id: "walkthrough", label: "Walk me through the example", group: "Help", keywords: "tour tutorial learn start ioi first run", run: () => void walkThroughExample() },
       { id: "shortcuts", label: "Show keyboard shortcuts", group: "Help", keywords: "keys hotkeys keyboard help", shortcut: key("?"), run: () => useStore.setState({ shortcutsOpen: true }) },
       { id: "report", label: "Report a problem…", group: "Help", keywords: "bug issue error support github", run: () => useStore.setState({ helpDialog: "report" }) },
       { id: "about", label: "About Logogram", group: "Help", keywords: "version license source", run: () => useStore.setState({ helpDialog: "about" }) },

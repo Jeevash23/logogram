@@ -34,7 +34,7 @@ from logogram.project import Project
 from logogram.runner import run_spec
 from logogram.server.app import create_app
 from logogram.server.security import SecurityConfig
-from logogram.spec import Spec
+from logogram.spec import SPEC_VERSION, Spec
 
 FIXTURE = Path(__file__).parent / "fixtures" / "old-runs"
 # The tiny test model the fixture's runs were made on, by the sum of its weights and of their
@@ -107,7 +107,7 @@ def test_old_runs_list_open_and_summarize_through_the_server(client, old):
         assert listing["elsewhere"] is False
 
         detail = client.get(f"/api/runs/{run_id}").json()
-        assert detail["spec"]["logogram_spec"] == 2  # read as a version 2 spec
+        assert detail["spec"]["logogram_spec"] == SPEC_VERSION  # read as this version's spec
         assert detail["summary"]["n_sites"] == N_SITES
         assert detail["manifest"]["status"] == "finished" and detail["traceback"] is None
         site = client.get(f"/api/runs/{run_id}/sites/0").json()
@@ -144,7 +144,7 @@ def test_old_runs_through_the_python_api(old):
     assert listed == {V1: "finished", V2: "finished", DRAFT: "draft"}
     runs = {run_id: lg.load_run(old, run_id) for run_id in (V1, V2)}
     for run in runs.values():
-        assert run.status == "finished" and run.spec.logogram_spec == 2
+        assert run.status == "finished" and run.spec.logogram_spec == SPEC_VERSION
         assert len(run.sites()) == N_SITES
         assert len(run.per_prompt()) == N_SITES * N_PROMPTS
         assert len(run.site(0)["prompts"]) == N_PROMPTS

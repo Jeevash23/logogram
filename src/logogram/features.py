@@ -37,7 +37,7 @@ from logogram.engine import (
     empty_values,
     make_scorer,
 )
-from logogram.prompts import PreparedPrompt, group_by_length, seeded_split
+from logogram.prompts import PreparedPrompt, first_real_token, group_by_length, seeded_split
 from logogram.sae import SAE, fit_on
 from logogram.sites import ResolvedSite, ScopeError, expand_scope, resolve_position, site_label
 from logogram.spec import (
@@ -268,6 +268,14 @@ def _fit(
     return fit_on(sae, stack(acts), stack(targets) if targets is not None else None)
 
 
+def _skip_first(spec: Spec, backend: ModelBackend, prompts: list[PreparedPrompt]) -> bool:
+    """Whether every prompt begins with the beginning-of-sequence token: prepended, or written by
+    the chat template that wraps it."""
+    t = spec.tokenization
+    ids = prompts[0].clean.ids if prompts else []
+    return first_real_token(backend, ids, t.prepend_bos, t.chat_template is not None) == 1
+
+
 def _write_direction(sae: SAE, feature: int, stats: Any, like: torch.Tensor) -> torch.Tensor:
     """What one unit of a feature adds to the activation it writes at one position, shaped like
     ``like`` (heads' outputs are written side by side, head after head). For an SAE that
@@ -406,7 +414,7 @@ def _patching(
         "fit": _fit(
             sae,
             receiver_acts,
-            spec.tokenization.prepend_bos,
+            _skip_first(spec, backend, prompts),
             receiver_outs if sae.transcoder else None,
         ),
     }
@@ -609,7 +617,7 @@ def _attribution(
                 "fit": _fit(
                     sae,
                     receiver_acts,
-                    spec.tokenization.prepend_bos,
+                    _skip_first(spec, backend, prompts),
                     receiver_outs if sae.transcoder else None,
                 ),
                 "site_estimate": float(site_total.mean()),

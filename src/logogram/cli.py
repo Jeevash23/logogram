@@ -1,7 +1,9 @@
 """Command line: ``logogram`` (start the app), ``open``, ``run``, ``doctor``, ``env``, ``serve``,
 commands that read and check runs without the app: ``list``, ``show``, ``compare``, ``diff``,
-``verify``, ``robustness``, ``export``, ``validate``, ``tasks`` and ``generate``, and commands
-that manage them: ``rename``, ``star``, ``archive`` and ``delete``."""
+``verify``, ``robustness``, ``sweep``, ``export``, ``validate``, ``tasks`` and ``generate``;
+commands that manage them: ``rename``, ``star``, ``archive`` and ``delete``; ``models add``,
+``models list`` and ``models remove`` for model folders on this machine; and the project's run
+queue: ``queue add``, ``queue list``, ``queue clear`` and ``queue run``."""
 
 from __future__ import annotations
 
@@ -273,7 +275,7 @@ def main_callback(
 def open_cmd(
     path: Annotated[Path, typer.Argument(help="A project folder.")],
     port: Annotated[int, PortOption] = 8765,
-    no_browser: Annotated[bool, typer.Option("--no-browser")] = False,
+    no_browser: Annotated[bool, typer.Option("--no-browser", help="Don't open a browser.")] = False,
     verbose: Annotated[bool, VerboseOption] = False,
     log_file: Annotated[Path | None, LogFileOption] = None,
     forwarded_port: Annotated[list[int] | None, ForwardedPortOption] = None,
@@ -302,7 +304,7 @@ def serve(
     dev: Annotated[
         bool, typer.Option("--dev", help="API only, for the Vite dev server in web/.")
     ] = False,
-    no_browser: Annotated[bool, typer.Option("--no-browser")] = False,
+    no_browser: Annotated[bool, typer.Option("--no-browser", help="Don't open a browser.")] = False,
     project: Annotated[Path | None, typer.Option(help="Open this project.")] = None,
     verbose: Annotated[bool, VerboseOption] = False,
     log_file: Annotated[Path | None, LogFileOption] = None,
@@ -390,7 +392,13 @@ def doctor(
     ]
     for gpu in report.gpus:
         free = f", {format_bytes(gpu.memory_free)} free" if gpu.memory_free is not None else ""
-        rows.append(("GPU", f"{gpu.name} · {format_bytes(gpu.memory_total)}{free}"))
+        # Several GPUs: each by the device a spec names it with, and which is the default.
+        which = (
+            f"cuda:{gpu.index}{' (default)' if gpu.index == report.default_gpu else ''} · "
+            if gpu.index is not None and len(report.gpus) > 1
+            else ""
+        )
+        rows.append(("GPU", f"{which}{gpu.name} · {format_bytes(gpu.memory_total)}{free}"))
     if not report.gpus:
         rows.append(("GPU", "none detected"))
     backend = {"cuda": "CUDA", "mps": "Apple Metal (MPS)", "cpu": "CPU"}[report.backend]
@@ -507,6 +515,7 @@ def run(
     typer.echo(f"  model {spec.model.id} · dataset {spec.dataset.path}")
     outcome = _run_spec(project, spec, verbose=verbose)
     _print_summary(outcome.summary or {}, top)
+    _print_continuations(project, outcome.run_id)
     rel = outcome.folder.relative_to(project.root)
     typer.echo(f"\nSaved to {rel} ({outcome.manifest.get('wall_time_s')} s)")
     if compare_to is not None:
@@ -514,39 +523,74 @@ def run(
 
 
 def _run_spec(
-    project: Any, spec: Any, *, verbose: bool = False, derived: dict[str, Any] | None = None
+    project: Any,
+    spec: Any,
+    *,
+    verbose: bool = False,
+    derived: dict[str, Any] | None = None,
+    run_id: str | None = None,
+    backend: Any = None,
+    exit_on_failure: bool = True,
 ) -> Any:
-    """Run ``spec``, showing its progress. A run that doesn't finish ends the command: it says
-    why, and where the traceback is (printing it with ``verbose``). Ctrl+C records the run as
-    cancelled first."""
+    """Run ``spec`` (in the folder ``run_id``, if given; with ``backend`` when it is the spec's
+    model), showing its progress. A run that doesn't finish ends the command (unless
+    ``exit_on_failure`` is false): it says why, what it kept of what finished, and where the
+    traceback is (printing it with ``verbose``). Ctrl+C records the run as cancelled first,
+    keeping what finished."""
     from logogram.runner import run_spec
 
     printer = _ProgressPrinter()
     try:
-        outcome = run_spec(spec, project, on_event=printer, derived_from=derived)
+        outcome = run_spec(
+            spec, project, run_id=run_id, backend=backend, on_event=printer, derived_from=derived
+        )
     except KeyboardInterrupt:
         printer.close()
-        typer.echo("\nInterrupted. The run is recorded as cancelled; its spec was kept.", err=True)
+        kept = _kept_text(printer.partial, printer.run_id)
+        typer.echo(
+            f"\nInterrupted. The run is recorded as cancelled{'.' if kept else '; its spec was kept.'}"
+            f"{f' {kept}' if kept else ''}",
+            err=True,
+        )
         raise typer.Exit(130) from None
     printer.close()
     if outcome.status != "finished":
         typer.echo(f"The run {outcome.status}: {outcome.manifest.get('error')}", err=True)
+        kept = _kept_text((outcome.summary or {}).get("partial"), outcome.run_id)
+        if kept:
+            typer.echo(kept, err=True)
         if outcome.traceback and verbose:
             typer.echo(f"\n{outcome.traceback.rstrip()}", err=True)
         elif outcome.traceback:
             rel = (outcome.folder / "traceback.txt").relative_to(project.root).as_posix()
             typer.echo(f"Its traceback is in {rel}; --verbose prints it.", err=True)
-        raise typer.Exit(1)
+        if exit_on_failure:
+            raise typer.Exit(1)
     return outcome
+
+
+def _kept_text(partial: dict[str, Any] | None, run_id: str | None) -> str:
+    """What a run that stopped early kept, and how to see it; "" when it kept nothing."""
+    if not partial:
+        return ""
+    show = f" `logogram show {run_id}` prints them." if run_id else ""
+    return f"{partial['note']}{show}"
 
 
 class _ProgressPrinter:
     def __init__(self) -> None:
         self.last = 0.0
         self.active = False
+        # The run in progress, and what it kept if it stopped early.
+        self.run_id: str | None = None
+        self.partial: dict[str, Any] | None = None
 
     def __call__(self, kind: str, data: dict) -> None:  # type: ignore[type-arg]
         now = time.monotonic()
+        if kind == "started":
+            self.run_id = data.get("run_id")
+        if kind in ("cancelled", "failed"):
+            self.partial = data.get("partial")
         if kind == "model":
             stage = data.get("stage")
             if stage == "downloading" and data.get("total"):
@@ -554,6 +598,11 @@ class _ProgressPrinter:
                     self.last = now
                     pct = 100 * data["done"] / data["total"]
                     self._line(f"  downloading {pct:5.1f}% of {data['total'] / 1e6:,.0f} MB")
+            elif stage in ("hashing", "checking") and data.get("total"):
+                if now - self.last > 0.25 or data.get("done") == data.get("total"):
+                    self.last = now
+                    pct = 100 * data["done"] / data["total"]
+                    self._line(f"  {stage} files {pct:5.1f}% of {data['total'] / 1e6:,.0f} MB")
             elif stage in ("resolving", "loading", "processing"):
                 self._line(f"  model: {stage}")
         elif kind == "progress":
@@ -598,10 +647,35 @@ def _interval(stat: dict[str, Any]) -> str:
     return f"{_fmt(stat['mean'])} [{_fmt(stat['lo'])}, {_fmt(stat['hi'])}]"
 
 
+def _print_continuations(project: Any, run_id: str) -> None:
+    """What a steering run's model said after its first continued prompt, at the first steered
+    site: without steering and at each strength."""
+    from logogram.runs import load_continuations
+
+    data = load_continuations(project, run_id)
+    if not data or not data["prompts"]:
+        return
+    first = data["prompts"][0]
+    typer.echo(
+        f"\nWhat the model says after prompt {first['index']} ({len(data['prompts'])} prompts in "
+        f"experiments/{run_id}/continuations.json):"
+    )
+    lines = [("without steering", first["unsteered"]["tokens"])]
+    lines += [(s["key"], s["tokens"]) for s in first["steered"] if s["row"] == 0]
+    for label, tokens in lines:
+        typer.echo(f"  {label:<18} {''.join(tokens)!r}")
+
+
 def _print_summary(summary: dict, top: int) -> None:  # type: ignore[type-arg]
     base = summary["baseline"]
     clean = base["clean"]["logit_diff"]["mean"]
     corrupt = base["corrupt"]["logit_diff"]["mean"]
+    partial = summary.get("partial")
+    if partial:
+        # A run that stopped early: what it kept, and what it doesn't.
+        typer.echo(f"\nPartial: {partial['note']}")
+        for item in partial.get("left_out") or []:
+            typer.echo(f"  {item}")
     typer.echo("")
     typer.echo(
         f"Baseline over {summary['n_prompts']} prompts: logit difference clean {_fmt(clean)}, "
@@ -650,10 +724,20 @@ def _print_summary(summary: dict, top: int) -> None:  # type: ignore[type-arg]
         )
     if summary.get("steering"):
         st = summary["steering"]
-        typer.echo(
-            f"\nDirections from {len(st['train'])} training pairs; measured on the "
-            f"{len(st['test'])} held-out pairs."
-        )
+        feature = st.get("feature")
+        if feature:
+            typical = ", ".join(f"{a:.4g}" for a in feature["activations"])
+            typer.echo(
+                f"\nStrength 1 is SAE feature {feature['feature']}'s typical activation, {typical}: "
+                "the mean of its positive activations at the steered token of the "
+                f"{len(st['train'])} training pairs; measured on the {len(st['test'])} held-out "
+                "pairs."
+            )
+        else:
+            typer.echo(
+                f"\nDirections from {len(st['train'])} training pairs; measured on the "
+                f"{len(st['test'])} held-out pairs."
+            )
     if summary.get("features"):
         f = summary["features"]
         fit = f.get("fit") or {}
@@ -779,12 +863,16 @@ def list_cmd(
     if not runs:
         typer.echo("No runs yet. Run a spec with `logogram run SPEC.json`.")
         return
+    from logogram.schema import stopped_text
+
     shown = runs if archived else [r for r in runs if not r.archived]
     width = max(len(r.id) for r in runs)
     for r in shown:
         name = f"{'★ ' if r.starred else ''}{r.title or r.name}"
         typer.echo(f"{r.id:<{width}}  {r.status:<9}  {name}{' (archived)' if r.archived else ''}")
         where = " · running in another process" if r.elsewhere else ""
+        if r.partial is not None:
+            where += f" · partial: {stopped_text(r.partial)}, kept what finished"
         typer.echo(f"{'':<{width}}  {'':<9}  {r.error if r.damaged else r.description}{where}")
         if r.annotations_error:
             typer.echo(f"{'':<{width}}  {'':<9}  Note: {r.annotations_error}")
@@ -915,12 +1003,12 @@ def show(
     top: Annotated[int, typer.Option(help="How many sites to list.")] = 10,
 ) -> None:
     """Print a finished run's method, baseline and strongest sites, or why a run failed, with
-    the traceback it kept."""
+    the traceback it kept. A run that stopped early also prints what it kept of what finished."""
     project = _open_project(project_dir, Path(run) if Path(run).exists() else None)
     run_id = _run_id(project, run)
     summary = project.read_json(project.run_dir(run_id) / "summary.json", optional=True)
+    listing = project.run_listing(run_id)
     if summary is None:
-        listing = project.run_listing(run_id)
         if listing is not None and listing.status in ("failed", "cancelled"):
             _print_failure(project, listing)
             raise typer.Exit(1)
@@ -929,6 +1017,14 @@ def show(
             status = "running in another process"
         raise _fail(f"{run_id} has no results ({status}).")
     typer.echo(f"{summary['name']}\n  {summary['description']}")
+    if listing is not None and listing.partial is not None:
+        # How it ended; the traceback stays in its file (`logogram show` of a run that kept
+        # nothing prints it).
+        failed = listing.status == "failed"
+        reason = listing.error or ("No reason was recorded." if failed else "")
+        typer.echo(f"\n{'Failed' if failed else 'Cancelled'}{f': {reason}' if reason else '.'}")
+        if (project.run_dir(run_id) / "traceback.txt").is_file():
+            typer.echo(f"Its traceback is in experiments/{run_id}/traceback.txt.")
     _print_summary(summary, top)
 
 
@@ -953,7 +1049,8 @@ def compare(
     project_dir: Annotated[Path | None, ProjectOption] = None,
 ) -> None:
     """Compare two finished runs: rank correlation, top sites, conclusions that changed, and
-    paired differences where they measured the same prompts."""
+    paired differences where they measured the same prompts. A run that stopped early is
+    compared on what it kept."""
     from logogram.compare import CompareError, compare_runs
 
     project = _open_project(project_dir, Path(run_a) if Path(run_a).exists() else None)
@@ -966,6 +1063,12 @@ def compare(
 
 
 def _print_comparison(result: dict[str, Any]) -> None:
+    from logogram.schema import stopped_text
+
+    for side, run in (("a", result["run_a"]), ("b", result["run_b"])):
+        partial = result.get(f"partial_{side}")
+        if partial:
+            typer.echo(f"{run} {stopped_text(partial)}: the comparison covers what both runs kept.")
     rho = result["spearman"]
     typer.echo(
         f"{result['n_common']} sites in common. Rank correlation of mean effects: "
@@ -1043,12 +1146,17 @@ def verify(
     """Patch, for real, the sites an attribution patching run estimated to matter most, and
     compare the measurement with the estimate."""
     from logogram.compare import compare_runs
+    from logogram.robustness import require_finished
     from logogram.spec import Spec
     from logogram.verify import verification_spec
 
     project = _open_project(project_dir, Path(run) if Path(run).exists() else None)
     run_id = _run_id(project, run)
     folder = project.run_dir(run_id)
+    try:
+        require_finished(project, run_id, "Verifying by patching")
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
     summary = project.read_json(folder / "summary.json", optional=True)
     if summary is None:
         raise _fail("only a finished run can be verified.")
@@ -1084,12 +1192,13 @@ def robustness(
     import json
 
     from logogram.compare import compare_runs
-    from logogram.robustness import robustness_spec
+    from logogram.robustness import require_finished, robustness_spec
     from logogram.spec import Spec
 
     project = _open_project(project_dir, Path(run) if Path(run).exists() else None)
     run_id = _run_id(project, run)
     try:
+        require_finished(project, run_id, "Checking robustness")
         change = json.loads(experiment) if experiment is not None else None
         spec, words = robustness_spec(
             Spec.from_path(project.run_dir(run_id) / "spec.json"), experiment=change, dtype=dtype
@@ -1104,23 +1213,248 @@ def robustness(
 
 
 @app.command()
+def sweep(
+    source: Annotated[
+        str,
+        typer.Argument(
+            metavar="SPEC_OR_RUN",
+            help="A spec file, or a run (its id or folder). A finished run stands in for its own "
+            "value, which isn't run again.",
+        ),
+    ],
+    field: Annotated[
+        str | None,
+        typer.Option(
+            help="The field to vary, dotted as in the spec: statistics.seed, "
+            "experiment.baseline.seed (resample ablation's donors), experiment.seed (steering's "
+            "split) or scope.seed (the features' split). Give its values with --values."
+        ),
+    ] = None,
+    values: Annotated[
+        str | None,
+        typer.Option(help="The field's values, in order, separated by commas, such as 0,1,2,3."),
+    ] = None,
+    datasets: Annotated[
+        str | None,
+        typer.Option(
+            help="Sweep the dataset instead: dataset files of the project, in order, separated by "
+            "commas (a bare name is looked for in datasets/)."
+        ),
+    ] = None,
+    revisions: Annotated[
+        str | None,
+        typer.Option(
+            help="Sweep the model's revision instead: commits, tags or branches of its Hugging "
+            "Face repository, in order, separated by commas, such as step1000,step2000."
+        ),
+    ] = None,
+    top: Annotated[
+        int, typer.Option(min=0, max=500, help="How many of the strongest sites to show (0: all).")
+    ] = 10,
+    choose: Annotated[
+        str,
+        typer.Option(help="Choose the strongest sites on the first value (first) or on all (all)."),
+    ] = "first",
+    csv_path: Annotated[
+        Path | None,
+        typer.Option("--csv", help="Also write the table, one row per site and value, as CSV."),
+    ] = None,
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+    verbose: Annotated[
+        bool, typer.Option("--verbose", "-v", help="If a run fails, print its traceback.")
+    ] = False,
+) -> None:
+    """Run one spec across several values of one choice (seeds, datasets or revisions), one run
+    after another, and show which of its strongest sites keep their sign and size across them."""
+    from logogram.spec import Spec
+    from logogram.sweeps import SweepError, plan_sweep, run_sweep, value_name
+
+    given = [x for x in (field is not None or values is not None, datasets, revisions) if x]
+    if len(given) != 1:
+        raise _fail(
+            "choose what to sweep: --field FIELD --values A,B,..., --datasets A,B,... or "
+            "--revisions A,B,..."
+        )
+    if choose not in ("first", "all"):
+        raise _fail("--choose is first (the sites strongest at the first value) or all.")
+    path = Path(source)
+    project = _open_project(project_dir, path if path.exists() else None)
+    original = None
+    try:
+        if path.is_file():
+            spec = Spec.from_path(project.readable(path.absolute()))
+            # A run's own spec.json is that run.
+            folder = path.resolve().parent
+            if folder.parent == project.experiments_dir.resolve():
+                original = project.run_listing(folder.name)
+        else:
+            run_id = _run_id(project, source)
+            spec = Spec.from_path(project.readable(project.run_dir(run_id) / "spec.json"))
+            original = project.run_listing(run_id)
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
+    if datasets is not None:
+        name, items = "dataset.path", [_project_path(project, d) for d in _listed(datasets)]
+    elif revisions is not None:
+        name, items = "model.revision", _listed(revisions)
+    else:
+        if field is None or values is None:
+            raise _fail("give the field with --field and its values with --values.")
+        name, items = field, _listed(values)
+        if field.endswith("seed"):
+            try:
+                items = [int(v) for v in items]
+            except ValueError:
+                raise _fail(
+                    "--values for a seed are whole numbers separated by commas, such as 0,1,2,3."
+                ) from None
+    try:
+        plan = plan_sweep(project, spec, name, items, original=original)
+    except SweepError as exc:
+        raise _fail(str(exc)) from exc
+
+    words = plan.field
+    shown = ", ".join(str(v) for v in plan.values)
+    typer.echo(f"Sweep {plan.id}: {spec.name}, over {words.plural} {shown}")
+    if plan.stands_in is not None and plan.original is not None:
+        stood = value_name(words, plan.values[plan.stands_in])
+        typer.echo(f"  {plan.original} stands in for {stood}: it isn't run again.")
+    total = sum(1 for r in plan.runs if r.spec is not None)
+    done = [0]
+    printer = _ProgressPrinter()
+
+    def starting(item: Any) -> None:
+        done[0] += 1
+        printer.close()
+        typer.echo(f"Running {value_name(words, item.value)} ({done[0]} of {total})", err=True)
+
+    try:
+        outcomes, _ = run_sweep(plan, project, on_event=printer, on_run=starting)
+    except KeyboardInterrupt:
+        printer.close()
+        typer.echo(
+            "\nInterrupted. The run is recorded as cancelled; the values after it didn't run.",
+            err=True,
+        )
+        raise typer.Exit(130) from None
+    printer.close()
+    failed = [o for o in outcomes if o is not None and o.status != "finished"]
+    for outcome in failed:
+        typer.echo(f"{outcome.run_id} {outcome.status}: {outcome.manifest.get('error')}", err=True)
+        if outcome.traceback and verbose:
+            typer.echo(f"\n{outcome.traceback.rstrip()}", err=True)
+    _show_sweep(project, plan.id, choose, top, csv_path)
+    if failed:
+        raise typer.Exit(1)
+
+
+def _listed(text: str) -> list[str]:
+    return [part.strip() for part in text.split(",") if part.strip()]
+
+
+def _project_path(project: Any, value: str) -> str:
+    """A dataset named on the command line, as specs name it: relative to the project. A path
+    from the current folder that leads into the project is taken from the project's root."""
+    path = Path(value)
+    candidate = path if path.is_absolute() else Path.cwd() / path
+    if not (project.root / value).exists() and candidate.exists():
+        try:
+            return candidate.resolve().relative_to(project.root.resolve()).as_posix()
+        except ValueError:
+            raise _fail(f"{value} isn't inside the project {project.meta.name}.") from None
+    return value
+
+
+def _show_sweep(project: Any, sweep_id: str, choose: str, top: int, csv_path: Path | None) -> None:
+    """Print a sweep's table: its strongest sites' means at each value, and whether they hold."""
+    from logogram.exports import sweep_csv
+    from logogram.sweeps import sweep_table, table_rows
+
+    table = sweep_table(project, sweep_id, choose=choose, top=top)  # type: ignore[arg-type]
+    typer.echo(f"\n{table['headline']}.")
+    if table["problem"]:
+        typer.echo(table["problem"])
+    else:
+        typer.echo(table["chosen"])
+    values = table["values"]
+    for value in values:
+        run = value["run"] or "no run"
+        stands = ", the run it was made from" if value["original"] else ""
+        typer.echo(f"  {table['label']} {value['label']}: {run}{stands} · {value['status']}")
+    shown = values[:8]
+    if table["sites"]:
+        width = max(12, *(len(s["label"]) for s in table["sites"])) + 2
+        cell = max(9, *(min(14, len(v["label"])) for v in shown)) + 1
+        head = "".join(f"{v['label'][: cell - 1]:>{cell}}" for v in shown)
+        typer.echo(f"\n{'site':<{width}}{head}  across values")
+        for site in table["sites"]:
+            means = "".join(
+                f"{_fmt((site['points'][v['index']] or {}).get('mean')):>{cell}}" for v in shown
+            )
+            typer.echo(f"{site['label']:<{width}}{means}  {_VERDICTS[site['verdict']]}")
+        if len(values) > len(shown):
+            typer.echo(f"… and {len(values) - len(shown)} more values: --csv writes them all.")
+        elif csv_path is None:
+            typer.echo("Each site's interval at every value: --csv FILE writes them.")
+        typer.echo("")
+        for site in table["sites"]:
+            if site["verdict"] != "holds":
+                typer.echo(f"{site['label']}: {site['text']}")
+        typer.echo(table["spread"])
+    for note in table["notes"]:
+        typer.echo(f"Note: {note}")
+    if csv_path is not None:
+        csv_path.write_text(sweep_csv(table_rows(table)), encoding="utf-8")
+        typer.echo(f"Wrote {csv_path}", err=True)
+
+
+_VERDICTS = {
+    "holds": "keeps sign and size",
+    "size": "changes size",
+    "sign": "flips sign",
+    "unknown": "too few values",
+}
+
+
+@app.command()
 def export(
     run: Annotated[str, typer.Argument(help="A finished run.")],
     output: Annotated[
         Path | None,
         typer.Option("--output", "-o", help="Where to write the CSV (default: stdout)."),
     ] = None,
+    sites: Annotated[
+        bool, typer.Option("--sites", help="One row per site instead of per site and prompt.")
+    ] = False,
+    prompt_text: Annotated[
+        bool, typer.Option("--prompt-text", help="Add each prompt's text to its rows.")
+    ] = False,
     project_dir: Annotated[Path | None, ProjectOption] = None,
 ) -> None:
-    """Write a finished run's per-prompt values as CSV: one row per site and prompt."""
-    from logogram.exports import results_csv
+    """Write a finished run's values as CSV: one row per site and prompt, or per site."""
+    from logogram.exports import results_csv, sites_csv
+    from logogram.report import sites_table
+    from logogram.runs import load_summary, run_records
+    from logogram.spec import Spec
 
     project = _open_project(project_dir, Path(run) if Path(run).exists() else None)
     run_id = _run_id(project, run)
-    path = project.run_dir(run_id) / "results.parquet"
+    folder = project.run_dir(run_id)
+    path = folder / "results.parquet"
     if not path.is_file():
         raise _fail(f"{run_id} has no results to export.")
-    chunks = results_csv(project.readable(path))
+    if sites:
+        chunks: Any = iter([sites_csv(sites_table(load_summary(project, run_id)))])
+    else:
+        records = None
+        if prompt_text:
+            records = run_records(project, Spec.from_path(project.readable(folder / "spec.json")))
+            if records is None:
+                raise _fail(
+                    f"{run_id}'s prompts are gone or have changed since it ran, so its rows can't "
+                    "carry their text. Export without --prompt-text."
+                )
+        chunks = results_csv(project.readable(path), records)
     if output is None:
         for chunk in chunks:
             sys.stdout.write(chunk)
@@ -1129,6 +1463,63 @@ def export(
         for chunk in chunks:
             fh.write(chunk)
     typer.echo(f"Wrote {output}", err=True)
+
+
+@app.command()
+def report(
+    run: Annotated[str, typer.Argument(help="A finished run.")],
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", "-o", help="Where to write the page (default: RUN.html here)."),
+    ] = None,
+    hardware: Annotated[
+        bool,
+        typer.Option("--hardware", help="Name the CPU or GPU it ran on (left out by default)."),
+    ] = False,
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Write a finished run as one HTML page anyone can open: its map, strongest sites, every
+    site's numbers, the methods and where it came from."""
+    from logogram.report import run_report
+    from logogram.runs import load_continuations, load_summary
+    from logogram.spec import Spec
+
+    project = _open_project(project_dir, Path(run) if Path(run).exists() else None)
+    run_id = _run_id(project, run)
+    folder = project.run_dir(run_id)
+    if not (folder / "summary.json").is_file():
+        raise _fail(f"{run_id} has no results to report.")
+    spec = Spec.from_path(project.readable(folder / "spec.json"))
+    manifest = project.read_json(folder / "manifest.json", optional=True) or {}
+    page = run_report(
+        spec,
+        load_summary(project, run_id),
+        manifest,
+        run_id,
+        hardware=hardware,
+        continuations=load_continuations(project, run_id),
+    )
+    target = output or Path(f"{run_id}.html")
+    target.write_text(page, encoding="utf-8")
+    typer.echo(f"Wrote {target}", err=True)
+
+
+@app.command()
+def methods(
+    run: Annotated[str, typer.Argument(help="A run.")],
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Print a run's methods paragraph: every choice that can change a number, in sentences."""
+    from logogram.report import methods_text
+    from logogram.spec import Spec
+
+    project = _open_project(project_dir, Path(run) if Path(run).exists() else None)
+    run_id = _run_id(project, run)
+    folder = project.run_dir(run_id)
+    spec = Spec.from_path(project.readable(folder / "spec.json"))
+    summary = project.read_json(folder / "summary.json", optional=True)
+    manifest = project.read_json(folder / "manifest.json", optional=True) or {}
+    typer.echo(methods_text(spec, summary, manifest, run_id))
 
 
 @app.command()
@@ -1274,6 +1665,328 @@ def _cached_tokenizer(model_id: str) -> tuple[Any, Any]:
         return list(tok(text, add_special_tokens=False)["input_ids"])
 
     return (lambda text: len(ids(text)) == 1), (lambda text: len(ids(text)))
+
+
+# -- local models ------------------------------------------------------------------------------
+
+models_app = typer.Typer(
+    add_completion=False,
+    no_args_is_help=True,
+    rich_markup_mode=None,
+    help="Model folders on this machine: add one under a name, list them, remove one. Specs name "
+    "a local model by its name and the hash of its files, never by its folder.",
+)
+app.add_typer(models_app, name="models")
+
+
+@models_app.command("add")
+def models_add(
+    path: Annotated[
+        Path,
+        typer.Argument(help="The model's folder: config.json, tokenizer files, safetensors."),
+    ],
+    name: Annotated[str, typer.Option("--name", help="What specs call it, such as my-fine-tune.")],
+) -> None:
+    """Hash a model folder's files and add it under NAME."""
+    from logogram.backends.base import BackendError
+    from logogram.local_models import add_model
+    from logogram.system import format_bytes
+
+    printer = _ProgressPrinter()
+
+    def progress(done: int, total: int, file: str) -> None:
+        printer("model", {"stage": "hashing", "done": done, "total": total, "file": file})
+
+    try:
+        model = add_model(path, name, progress)
+    except BackendError as exc:
+        printer.close()
+        raise _fail(str(exc)) from exc
+    except KeyboardInterrupt:
+        printer.close()
+        typer.echo("\nInterrupted. Nothing was added.", err=True)
+        raise typer.Exit(130) from None
+    printer.close()
+    typer.echo(f"Added {model.name}: {len(model.files)} files, {format_bytes(model.size)}.")
+    typer.echo(f"  SHA-256 of its files: {model.sha256}")
+    typer.echo(
+        f'  Specs name it "model": {{"id": "{model.name}", "source": "local", '
+        f'"sha256": "{model.sha256}", "revision": null, ...}}.'
+    )
+
+
+@models_app.command("list")
+def models_list() -> None:
+    """List the model folders added on this machine."""
+    from logogram.backends.base import BackendError
+    from logogram.local_models import list_models
+    from logogram.system import format_bytes
+
+    try:
+        models = list_models()
+    except BackendError as exc:
+        raise _fail(str(exc)) from exc
+    if not models:
+        typer.echo("No local models. Add a folder with: logogram models add PATH --name NAME")
+        return
+    for m in models:
+        typer.echo(f"{m.name}  {m.sha256[:12]}  {format_bytes(m.size)}  {m.folder}")
+
+
+@models_app.command("remove")
+def models_remove(
+    name: Annotated[str, typer.Argument(help="The name it was added under.")],
+) -> None:
+    """Forget a local model. Its folder and files are left as they are."""
+    from logogram.backends.base import BackendError
+    from logogram.local_models import remove_model
+
+    try:
+        model = remove_model(name)
+    except BackendError as exc:
+        raise _fail(str(exc)) from exc
+    typer.echo(f"Removed {model.name} from the local models. Its folder is untouched.")
+
+
+# -- the run queue -----------------------------------------------------------------------------
+
+queue_app = typer.Typer(
+    help="The project's run queue, kept in the project: add specs to it, list it, clear it, and "
+    "run it to the end without the app (overnight on a remote GPU, say). The app shows the same "
+    "queue.",
+    no_args_is_help=True,
+    rich_markup_mode=None,
+)
+app.add_typer(queue_app, name="queue")
+
+
+def _queue_standing(project: Any, n: int) -> str:
+    """How the queue stands, in a sentence: who runs it, or that it is paused."""
+    from logogram import runqueue
+
+    runner = runqueue.queue_runner(project)
+    if runner is not None:
+        return f"It is being run by {runqueue.runner_text(runner)}."
+    if n == 0:
+        return "Nothing waits in it."
+    return "It is paused: `logogram queue run` runs it to the end, or start it in the app."
+
+
+@queue_app.command("add")
+def queue_add(
+    spec_path: Annotated[Path, typer.Argument(metavar="SPEC.json", help="An experiment spec.")],
+    project_dir: Annotated[
+        Path | None,
+        typer.Option("--project", help="Project folder (default: the one containing the spec)."),
+    ] = None,
+) -> None:
+    """Add a spec to the end of the project's queue. Nothing runs yet: `logogram queue run` runs
+    the queue, or start it in the app."""
+    from logogram import runqueue
+    from logogram.project import Project, ProjectError
+    from logogram.spec import Spec
+
+    if not spec_path.exists():
+        raise _fail(f"{spec_path} doesn't exist.")
+    root = project_dir or Project.find_root(spec_path.parent)
+    if root is None:
+        raise _fail("no project.json found above the spec. Pass --project PATH.")
+    try:
+        project = Project.open(root)
+        spec = Spec.from_path(project.readable(spec_path.absolute()))
+        # What can be checked now is, as the app checks it: a run that can't start isn't queued.
+        project.resolve_dataset(spec.dataset.path)
+        runqueue.add_to_queue(project, spec)
+        n = len(runqueue.read_queue(project))
+    except (ProjectError, ValueError, OSError) as exc:
+        raise _fail(str(exc)) from exc
+    waiting = "1 run waits" if n == 1 else f"{n} runs wait"
+    typer.echo(f"Queued “{spec.name}”. {waiting} in the queue. {_queue_standing(project, n)}")
+
+
+@queue_app.command("list")
+def queue_list(project_dir: Annotated[Path | None, ProjectOption] = None) -> None:
+    """List the queued runs, first in line first, and say whether the queue is paused or who runs
+    it."""
+    from datetime import UTC, datetime
+
+    from logogram import runqueue
+    from logogram.spec import describe_experiment
+
+    project = _open_project(project_dir)
+    try:
+        queued = runqueue.read_queue(project)
+    except runqueue.QueueError as exc:
+        raise _fail(str(exc)) from exc
+    if not queued:
+        typer.echo(f"The queue is empty. {_queue_standing(project, 0)}".rstrip())
+        return
+    holds = "1 run" if len(queued) == 1 else f"{len(queued)} runs"
+    typer.echo(f"The queue holds {holds}. {_queue_standing(project, len(queued))}")
+    for i, item in enumerate(queued, 1):
+        when = datetime.fromtimestamp(item.queued_at, UTC).strftime("%Y-%m-%d %H:%M UTC")
+        draft = f" · in its draft {item.draft_id}" if item.draft_id else ""
+        typer.echo(f"{i:>3}. {item.title}")
+        typer.echo(
+            f"     {describe_experiment(item.spec)} · {item.spec.model.id} · queued {when}{draft}"
+        )
+
+
+@queue_app.command("clear")
+def queue_clear(
+    yes: Annotated[
+        bool, typer.Option("--yes", "-y", help="Clear it without asking first.")
+    ] = False,
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Take every run out of the queue. A run in progress goes on; nothing starts after it."""
+    from logogram import runqueue
+
+    project = _open_project(project_dir)
+    try:
+        n = len(runqueue.read_queue(project))
+        readable = True
+    except runqueue.QueueError:
+        n, readable = 0, False
+    if readable and n == 0:
+        typer.echo("The queue is already empty.")
+        return
+    if not yes:
+        what = f"the {n} runs waiting in the queue" if n != 1 else "the run waiting in the queue"
+        if not readable:
+            what = "the saved queue, which can't be read"
+        typer.echo(f"This takes out {what}. Their specs aren't kept anywhere else.")
+        if not typer.confirm("Clear the queue?", default=False):
+            typer.echo("The queue is as it was.")
+            raise typer.Exit(1)
+    try:
+        runqueue.clear_queue(project)
+    except (runqueue.QueueError, OSError) as exc:
+        raise _fail(str(exc)) from exc
+    typer.echo("Cleared the queue." if readable else "Cleared the saved queue.")
+
+
+def _queued_folder(project: Any, item: Any) -> str | None:
+    """The folder a queued run runs in: its draft's, or None for a new one, which the run makes
+    as it starts. What the app checks before a queued run starts is checked first, so a run that
+    can't start leaves no folder behind."""
+    project.resolve_dataset(item.spec.dataset.path)
+    if item.draft_id is None:
+        return None
+    folder = project.run_dir(item.draft_id)
+    project.readable(folder / "spec.json")
+    if (folder / "manifest.json").exists():
+        raise ValueError(f"{item.draft_id} has already run.")
+    project.prepare_run_dir(item.draft_id)
+    return item.draft_id
+
+
+@queue_app.command("run")
+def queue_run(
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+    verbose: Annotated[
+        bool, typer.Option("--verbose", "-v", help="If a run fails, print its traceback.")
+    ] = False,
+) -> None:
+    """Run the project's queue to the end, one run at a time, headless: overnight on a remote
+    GPU, say. Each run's progress is printed, and runs added meanwhile (here or in the app) run
+    too. A run that fails doesn't stop the queue. Ctrl+C stops the run in progress (it keeps
+    what finished) and leaves the rest queued. The app can't run the queue at the same time."""
+    from logogram import runqueue
+    from logogram.runner import model_matches
+    from logogram.spec import describe_experiment
+
+    project = _open_project(project_dir)
+    try:
+        hold = runqueue.take_queue(project, "cli")
+    except (runqueue.QueueError, ValueError, OSError) as exc:
+        raise _fail(str(exc)) from exc
+    ended: dict[str, int] = {}
+    backend = None
+    # A run taken out of the queue that hasn't started yet: Ctrl+C puts it back.
+    taken: runqueue.Queued | None = None
+
+    def left() -> str:
+        try:
+            n = len(runqueue.read_queue(project))
+        except (runqueue.QueueError, OSError):
+            return "The rest stay queued"
+        return "1 run is still queued" if n == 1 else f"{n} runs are still queued"
+
+    try:
+        while True:
+            try:
+                queued = runqueue.read_queue(project)
+            except runqueue.QueueError as exc:
+                raise _fail(str(exc)) from exc
+            if not queued:
+                break
+            item = queued[0]
+            # It starts: out of the queue first, so a run taken out meanwhile (in the app, say)
+            # never starts.
+            if runqueue.remove_from_queue(project, item.id) is None:
+                continue
+            taken = item
+            done = sum(ended.values())
+            typer.echo(f"\n[{done + 1} of {done + len(queued)}] {item.title}")
+            typer.echo(f"  {describe_experiment(item.spec)} · {item.spec.model.id}")
+            try:
+                run_id = _queued_folder(project, item)
+            except (ValueError, OSError) as exc:
+                taken = None
+                ended["skipped"] = ended.get("skipped", 0) + 1
+                why = exc.strerror if isinstance(exc, OSError) and exc.strerror else str(exc)
+                typer.echo(f"  It couldn't start and left the queue: {why}", err=True)
+                continue
+            if backend is not None and not model_matches(backend, item.spec.model):
+                backend.close()  # another model: make room for it
+                backend = None
+            # From here Ctrl+C is the run's: it is recorded as cancelled, in its folder.
+            taken = None
+            outcome = _run_spec(
+                project,
+                item.spec,
+                verbose=verbose,
+                derived=item.derived_from,
+                run_id=run_id,
+                backend=backend,
+                exit_on_failure=False,
+            )
+            backend = outcome.backend or backend
+            ended[outcome.status] = ended.get(outcome.status, 0) + 1
+            if outcome.status == "finished":
+                seconds = outcome.manifest.get("wall_time_s")
+                typer.echo(f"  Finished in {seconds} s: experiments/{outcome.run_id}")
+    except KeyboardInterrupt:  # between two runs
+        if taken is not None:  # it hadn't started: back to the front of the queue
+            with contextlib.suppress(runqueue.QueueError, OSError):
+                runqueue.put_back(project, taken)
+        typer.echo(f"\nStopped. {left()}: `logogram queue run` runs them.", err=True)
+        raise typer.Exit(130) from None
+    except typer.Exit as exc:
+        if exc.exit_code == 130:  # Ctrl+C during a run, which is recorded as cancelled
+            typer.echo(f"Stopped. {left()}: `logogram queue run` runs them.", err=True)
+        raise
+    finally:
+        with contextlib.suppress(runqueue.QueueError, ValueError, OSError):
+            runqueue.release_queue(project, hold)
+    if not ended:
+        typer.echo("The queue is empty: there was nothing to run.")
+        return
+    ran = sum(ended.values())
+    counts = ", ".join(
+        f"{n} {word}"
+        for word, n in (
+            ("finished", ended.get("finished", 0)),
+            ("failed", ended.get("failed", 0)),
+            ("cancelled", ended.get("cancelled", 0)),
+            ("couldn't start", ended.get("skipped", 0)),
+        )
+        if n
+    )
+    typer.echo(f"\nThe queue is empty. Of its {ran} run{'s' if ran != 1 else ''}: {counts}.")
+    if ended.get("failed") or ended.get("skipped"):
+        raise typer.Exit(1)
 
 
 def main() -> None:

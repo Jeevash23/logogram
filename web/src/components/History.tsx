@@ -1,8 +1,8 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 
-import type { RunListing } from "../api/types";
-import { ago, pct, plural } from "../lib/format";
+import type { Job, QueueState, RunListing } from "../api/types";
+import { ago, count, pct, plural } from "../lib/format";
 import { experimentShort, scopeShort } from "../lib/spec";
 import { layerProfile } from "../lib/logogram";
 import {
@@ -15,7 +15,8 @@ import {
   runTitle,
   type HistoryFilter,
 } from "../lib/runs";
-import { useStore } from "../store/app";
+import { fieldWords, sweepsOf, sweepsOfRun, type SweepGroup } from "../lib/sweeps";
+import { runnerName, useStore } from "../store/app";
 import { Logogram } from "./Logogram";
 import { Button, ConfirmDialog, Icon, Input, menuClasses, Segmented, Spinner } from "./ui";
 import s from "./History.module.css";
@@ -54,6 +55,7 @@ export function History({ onOpen }: { onOpen?: () => void } = {}) {
   }, [runs]);
 
   const rows = useMemo(() => historyRows(runs, filter, query), [runs, filter, query]);
+  const sweeps = useMemo(() => sweepsOf(runs), [runs]);
   const counts = useMemo(() => filterCounts(runs), [runs]);
   const searching = query.trim() !== "";
   // Archived runs a search finds while they are hidden: say so, rather than finding nothing.
@@ -234,6 +236,11 @@ export function History({ onOpen }: { onOpen?: () => void } = {}) {
                     deletingAt.current = { id: run.id, index };
                     setDeleting(run);
                   }}
+                  sweeps={sweepsOfRun(sweeps, run.id).map((m) => m.sweep)}
+                  onShowSweep={(id) => {
+                    useStore.getState().openSweep(id);
+                    onOpen?.();
+                  }}
                 />
               ))}
             </ul>
@@ -278,6 +285,8 @@ function RunRow({
   onStar,
   onArchive,
   onDelete,
+  sweeps,
+  onShowSweep,
 }: {
   run: RunListing;
   depth: number;
@@ -291,6 +300,9 @@ function RunRow({
   onStar: () => void;
   onArchive: () => void;
   onDelete: () => void;
+  /** The sweeps the run is a value of. */
+  sweeps: SweepGroup[];
+  onShowSweep: (id: string) => void;
 }) {
   const live = useStore((st) => st.live[run.id]);
   const active = useStore((st) => st.activeRunId === run.id);
@@ -305,7 +317,8 @@ function RunRow({
         className={s.check}
         checked={checked}
         onChange={onCheck}
-        disabled={run.status !== "finished"}
+        // A run that stopped early compares on what it kept.
+        disabled={run.status !== "finished" && !run.partial}
         aria-label={`Select ${label} to compare`}
       />
       {renaming ? (
@@ -345,6 +358,8 @@ function RunRow({
               "not run"
             ) : status === "finished" ? (
               ago(run.finished ?? run.created)
+            ) : run.partial ? (
+              "partial"
             ) : (
               status
             )}
@@ -353,7 +368,9 @@ function RunRow({
             {orphan ? "From a deleted run · " : ""}
             {methodText(run)}
             {run.n_prompts ? ` · ${plural(run.n_prompts, "prompt")}` : ""}
+            {sweeps.map((x) => ` · in a sweep over ${plural(x.values.length, fieldWords(x.field).label, fieldWords(x.field).plural)}`).join("")}
             {status === "running" && run.elsewhere ? " · running in another process" : ""}
+            {run.partial ? ` · ${stoppedText(run)}` : ""}
           </span>
           {run.annotations_error && <span className={s.problem}>{run.annotations_error}</span>}
         </button>
@@ -369,7 +386,7 @@ function RunRow({
           >
             <Icon name="star" size={15} fill={run.starred ? "currentColor" : "none"} />
           </button>
-          <RunMenu run={run} label={label} onRename={onRename} onStar={onStar} onArchive={onArchive} onDelete={onDelete} />
+          <RunMenu run={run} label={label} onRename={onRename} onStar={onStar} onArchive={onArchive} onDelete={onDelete} sweeps={sweeps} onShowSweep={onShowSweep} />
         </>
       )}
     </li>
@@ -385,6 +402,8 @@ function RunMenu({
   onStar,
   onArchive,
   onDelete,
+  sweeps,
+  onShowSweep,
 }: {
   run: RunListing;
   label: string;
@@ -392,6 +411,8 @@ function RunMenu({
   onStar: () => void;
   onArchive: () => void;
   onDelete: () => void;
+  sweeps: SweepGroup[];
+  onShowSweep: (id: string) => void;
 }) {
   const pending = useRef<(() => void) | null>(null);
   const running = useStore((st) => st.live[run.id]?.status === "running" || (st.job?.status === "running" && st.job.run_id === run.id));
@@ -428,6 +449,11 @@ function RunMenu({
           <DropdownMenu.Item className={menuClasses.item} onSelect={onArchive}>
             {run.archived ? "Move out of the archive" : "Archive"}
           </DropdownMenu.Item>
+          {sweeps.map((x) => (
+            <DropdownMenu.Item key={x.id} className={menuClasses.item} onSelect={afterClosing(() => onShowSweep(x.id))}>
+              {sweeps.length > 1 ? `Show the sweep over ${fieldWords(x.field).plural}` : "Show the sweep"}
+            </DropdownMenu.Item>
+          ))}
           <DropdownMenu.Separator className={menuClasses.separator} />
           <DropdownMenu.Item className={menuClasses.item} disabled={busy !== null} onSelect={afterClosing(onDelete)}>
             Delete…
@@ -495,14 +521,37 @@ function RenameField({ run, label, onDone }: { run: RunListing; label: string; o
   );
 }
 
-/** The runs waiting for the job in progress to end, first in line first. Each can be taken out
- * of the queue until it starts. */
+/** How a run that stopped early ended, and how far it got: "cancelled after 7 of 12 layers". */
+function stoppedText(run: RunListing): string {
+  const partial = run.partial;
+  if (!partial) return "";
+  return `${run.status === "failed" ? "failed" : "cancelled"} after ${count(partial.done)} of ${count(partial.total)} ${partial.unit}, kept what finished`;
+}
+
+/** How the queue stands, in words. */
+function queueStanding(state: QueueState, runner: string | null, job: Job | null): string {
+  if (runner) return `Being run by ${runnerName(runner)}`;
+  if (state === "paused") return "Paused: nothing starts until you start it";
+  if (state === "waiting") return job?.status === "running" ? `Waiting for “${job.title}” to end` : "Starting the next run";
+  if (state === "running") return "Running, one run at a time";
+  return "";
+}
+
+/** The queue: the runs waiting their turn, first in line first, and how it stands. It is kept in
+ * the project, so a restart of the server or closing the project keeps it; it comes back paused,
+ * to start or clear. Each run can be taken out of it until it starts. */
 function QueuedRuns() {
   const queue = useStore((st) => st.queue);
+  const state = useStore((st) => st.queueState);
+  const runner = useStore((st) => st.queueRunner);
+  const error = useStore((st) => st.queueError);
+  const job = useStore((st) => st.job);
   const remove = useStore((st) => st.removeQueuedRun);
+  const [clearing, setClearing] = useState(false);
   const list = useRef<HTMLOListElement>(null);
+  const clearButton = useRef<HTMLButtonElement>(null);
   const label = useId();
-  if (queue.length === 0) return null;
+  if (queue.length === 0 && !error) return null;
 
   const removeAt = async (index: number, id: string) => {
     const focused = list.current?.contains(document.activeElement) ?? false;
@@ -515,6 +564,9 @@ function QueuedRuns() {
       });
     }
   };
+  const store = useStore.getState();
+  const here = !runner;
+  const standing = queueStanding(state, runner, job);
 
   return (
     <div className={s.queued}>
@@ -522,28 +574,64 @@ function QueuedRuns() {
         <span className={s.groupTitle} id={label}>
           Queued
         </span>
-        <span className={s.count}>{queue.length}</span>
+        <span className={s.count}>{queue.length || ""}</span>
+        {standing && <span className={s.queueState}>{standing}</span>}
+        <span className={s.spacer} />
+        {here && state === "paused" && queue.length > 0 && (
+          <Button size="small" variant="primary" onClick={() => void store.startQueue()}>
+            Start the queue
+          </Button>
+        )}
+        {here && (state === "waiting" || state === "running") && (
+          <Button size="small" onClick={() => void store.pauseQueue()} tip="The run in progress goes on; nothing starts after it until you start the queue">
+            Pause the queue
+          </Button>
+        )}
+        <Button ref={clearButton} size="small" variant="ghost" onClick={() => setClearing(true)}>
+          Clear the queue
+        </Button>
       </div>
-      <ol className={s.queuedList} aria-labelledby={label} ref={list}>
-        {queue.map((q, i) => (
-          <li key={q.id} className={s.queuedRow}>
-            <span className={s.name}>{q.title}</span>
-            <span className={s.state}>{i === 0 ? "next" : ""}</span>
-            <span className={s.meta}>
-              {experimentShort(q.spec.experiment)} · {scopeShort(q.spec.scope)}
-            </span>
-            <Button
-              size="small"
-              variant="ghost"
-              icon="close"
-              className={s.remove}
-              aria-label={`Remove “${q.title}” from the queue`}
-              title="Remove from the queue"
-              onClick={() => void removeAt(i, q.id)}
-            />
-          </li>
-        ))}
-      </ol>
+      {error && <p className={s.queueProblem}>{error}</p>}
+      {queue.length > 0 && (
+        <ol className={s.queuedList} aria-labelledby={label} ref={list}>
+          {queue.map((q, i) => (
+            <li key={q.id} className={s.queuedRow}>
+              <span className={s.name}>{q.title}</span>
+              <span className={s.state}>{i === 0 && state !== "paused" ? "next" : ""}</span>
+              <span className={s.meta}>
+                {experimentShort(q.spec.experiment)} · {scopeShort(q.spec.scope)}
+              </span>
+              <Button
+                size="small"
+                variant="ghost"
+                icon="close"
+                className={s.remove}
+                aria-label={`Remove “${q.title}” from the queue`}
+                title="Remove from the queue"
+                onClick={() => void removeAt(i, q.id)}
+              />
+            </li>
+          ))}
+        </ol>
+      )}
+      <ConfirmDialog
+        open={clearing}
+        onOpenChange={(value) => {
+          if (!value) setClearing(false);
+        }}
+        title="Clear the queue?"
+        keepLabel="Keep it"
+        confirmLabel="Clear the queue"
+        onConfirm={() => {
+          setClearing(false);
+          void store.clearQueue();
+        }}
+        returnFocus={() => clearButton.current?.focus()}
+      >
+        {error
+          ? "The project's saved queue can't be read, so what it holds can't be shown. Clearing it starts a new, empty queue."
+          : `${queue.length === 1 ? "The run waiting in the queue won't run." : `The ${count(queue.length)} runs waiting in the queue won't run.`} Their specs aren't kept anywhere else, unless they are saved drafts. A run in progress goes on.`}
+      </ConfirmDialog>
     </div>
   );
 }

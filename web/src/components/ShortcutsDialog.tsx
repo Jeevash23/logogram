@@ -47,7 +47,7 @@ const SECTIONS: { title: string; rows: [ReactNode, string][] }[] = [
         <span className={s.keys}>
           <Kbd>1</Kbd>
           <span className={s.or}>to</span>
-          <Kbd>5</Kbd>
+          <Kbd>6</Kbd>
         </span>,
         "Go to a tab of the open workspace, counting from the left.",
       ],
@@ -74,6 +74,14 @@ const SECTIONS: { title: string; rows: [ReactNode, string][] }[] = [
     rows: [
       [<Keys keys={["←", "→", "↑", "↓"]} />, "Move between cells, skipping empty ones."],
       [<Either>{[<Keys key="a" keys={["Home"]} />, <Keys key="b" keys={["End"]} />]}</Either>, "Go to the first or last cell of the row."],
+    ],
+  },
+  {
+    title: "A sweep's chart",
+    rows: [
+      [<Keys keys={["↑", "↓"]} />, "Move between sites."],
+      [<Keys keys={["←", "→"]} />, "Move between values. Home and End go to the first and last value."],
+      [<Keys keys={["Enter"]} />, "Open that value's run at the site."],
     ],
   },
   {

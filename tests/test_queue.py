@@ -101,17 +101,30 @@ def _titles(queue: list[dict[str, Any]]) -> list[str]:
 
 def _settled(client, timeout: float = 120) -> dict[str, dict[str, Any]]:
     """The runs, by name, once nothing is running or waiting: the queue is empty and the last job
-    has let go of the server (a run is listed as ended a moment before that)."""
+    has let go of the server and of the queue (a run is listed as ended a moment before that)."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         state = client.get("/api/state", headers=HEADERS).json()
         job = state["job"]
-        if not state["queue"] and (job is None or job["status"] != "running"):
+        idle = state["queue_status"]["state"] in ("idle", "paused")
+        if not state["queue"] and idle and (job is None or job["status"] != "running"):
             runs = client.get("/api/runs", headers=HEADERS).json()
             if all(r["status"] != "running" for r in runs):
                 return {r["name"]: r for r in runs}
         time.sleep(0.05)
     raise AssertionError("the queue did not settle")
+
+
+def _told(events: list[tuple[str, dict[str, Any]]], timeout: float = 30) -> list[dict[str, Any]]:
+    """The queue's events, once the last of them says it is idle: the tabs hear it a moment after
+    the server lets go of the queue."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        told = [data for kind, data in events if kind == "queue"]
+        if told and told[-1]["state"] == "idle":
+            return told
+        time.sleep(0.02)
+    raise AssertionError("the tabs were never told the queue is idle")
 
 
 def test_queueing_with_nothing_running_starts_the_run(client, ready, events, spec_factory):
@@ -143,11 +156,19 @@ def test_runs_queued_while_one_runs_start_in_order(client, ready, held, events, 
     assert held.started == ["First", "Second", "Third"]
     assert runs["First"]["id"] == first and "Not now" not in runs
     assert [runs[name]["status"] for name in ("First", "Second", "Third")] == ["finished"] * 3
-    # Each change was told with the whole queue, for this project's tabs.
-    told = [data for kind, data in events if kind == "queue"]
-    expected = [["Second"], ["Second", "Third"], ["Third"], []]
-    assert [_titles(data["runs"]) for data in told] == expected
+    # Each change was told with the whole queue and how it stood, for this project's tabs: its
+    # runs waited for the first one, ran one at a time, and the queue went idle once empty.
+    told = _told(events)
+    expected = [
+        (["Second"], "waiting"),
+        (["Second", "Third"], "waiting"),
+        (["Third"], "running"),
+        ([], "running"),
+        ([], "idle"),
+    ]
+    assert [(_titles(data["runs"]), data["state"]) for data in told] == expected
     assert {data["project_session"] for data in told} == {ready.project.session_id}
+    assert all(data["runner"] is None and data["error"] is None for data in told)
 
 
 def test_a_queued_run_starts_after_the_run_before_it_fails(
@@ -210,8 +231,8 @@ def test_a_queued_run_that_cant_start_is_skipped_with_the_reason(
             "error": "gone.jsonl isn't a regular file inside the project.",
         }
     ]
-    told = [_titles(data["runs"]) for kind, data in events if kind == "queue"]
-    assert told[-2:] == [["Next"], []]
+    told = [_titles(data["runs"]) for data in _told(events)]
+    assert told[-3:] == [["Next"], [], []]  # Next leaves the queue as it starts, then it idles
 
 
 def test_what_cant_start_isnt_queued(client, ready, project, held, spec_factory):
@@ -261,6 +282,8 @@ def test_a_queued_run_keeps_where_it_came_from(client, ready, held, spec_factory
 
 
 def test_the_queue_belongs_to_its_project(client, ready, project, events, spec_factory, tmp_path):
+    from logogram import runqueue
+
     # A job still running: runs queue behind it, and the project can't change.
     ready.job = Job(id="busy", kind="run", title="Another run")
     _queue(client, _spec(spec_factory, "Left behind"))
@@ -270,18 +293,19 @@ def test_the_queue_belongs_to_its_project(client, ready, project, events, spec_f
     assert _titles(client.get("/api/queue", headers=HEADERS).json()) == ["Left behind"]
 
     # The moment after the job ends, before its thread starts the next run: a switch can win
-    # that race, and takes the queue with the project it belonged to.
-    first_session = ready.project.session_id
+    # that race. The queue stays with the project it belongs to, which this server lets go of.
     ready.job.update(status="finished")
     opened = client.post("/api/projects/open", json={"path": str(other.root)}, headers=HEADERS)
     assert opened.status_code == 200, opened.text
     assert client.get("/api/queue", headers=HEADERS).json() == []
-    assert client.get("/api/state", headers=HEADERS).json()["queue"] == []
-    assert ("queue", {"project_session": first_session, "runs": []}) in events
+    state = client.get("/api/state", headers=HEADERS).json()
+    assert state["queue"] == [] and state["queue_status"]["state"] == "idle"
+    assert [q.title for q in runqueue.read_queue(project)] == ["Left behind"]
+    assert runqueue.queue_runner(project) is None
     ready._start_next()  # the job's thread, late: nothing is left to start
     assert ready.job.id == "busy" and project.list_runs() == [] and other.list_runs() == []
 
-    # Closing the project empties its queue too.
+    # Closing a project keeps its queue too.
     ready.job = Job(id="busy again", kind="run", title="Another run")
     prompts = (project.datasets_dir / "ioi.jsonl").read_bytes()
     (other.datasets_dir / "ioi.jsonl").write_bytes(prompts)
@@ -290,9 +314,17 @@ def test_the_queue_belongs_to_its_project(client, ready, project, events, spec_f
     ready.job.update(status="cancelled")
     assert client.post("/api/projects/close", headers=HEADERS).status_code == 200
     assert client.get("/api/state", headers=HEADERS).json()["queue"] == []
-    assert ("queue", {"project_session": opened.json()["session_id"], "runs": []}) in events
     ready._start_next()
     assert other.list_runs() == []
+    assert [q.title for q in runqueue.read_queue(other)] == ["Closed with it"]
+
+    # Opened again, its queue is back, paused: nothing starts on its own.
+    reopened = client.post("/api/projects/open", json={"path": str(project.root)}, headers=HEADERS)
+    assert reopened.status_code == 200, reopened.text
+    status = client.get("/api/queue/state", headers=HEADERS).json()
+    assert status["state"] == "paused" and _titles(status["runs"]) == ["Left behind"]
+    assert status["project_session"] == reopened.json()["session_id"]
+    assert ready.job.id == "busy again" and project.list_runs() == []
 
 
 def test_the_queue_needs_the_token_the_origin_and_the_project(app, client, ready, spec_factory):
@@ -302,6 +334,10 @@ def test_the_queue_needs_the_token_the_origin_and_the_project(app, client, ready
         ("GET", "/api/queue", None),
         ("POST", "/api/queue", {"spec": spec}),
         ("DELETE", "/api/queue/abc123", None),
+        ("GET", "/api/queue/state", None),
+        ("POST", "/api/queue/start", None),
+        ("POST", "/api/queue/pause", None),
+        ("DELETE", "/api/queue", None),
     ]
     for method, path, body in routes:
         for headers, status in (

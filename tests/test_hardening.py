@@ -389,7 +389,13 @@ def test_cancelling_a_model_load_leaves_no_model(app, monkeypatch):
     monkeypatch.setattr("logogram.backends.transformer_lens.load_model", slow_load)
     job = state.load_model_job(
         ModelRef(
-            id="some/model", revision=None, dtype="float32", device="auto", process_weights=True
+            id="some/model",
+            source="hub",
+            revision=None,
+            sha256=None,
+            dtype="float32",
+            device="auto",
+            process_weights=True,
         )
     )
     assert started.wait(5)

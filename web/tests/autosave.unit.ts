@@ -33,8 +33,9 @@ const DETAILED: FormState = {
   saeRef: { repo: "owner/sae", path: "layer_9", revision: null },
   limit: 12,
   prependBos: false,
+  chatTemplate: { kind: "assistant_prefix", system: "Answer in one word.", user: "Finish the sentence." },
   notes: "Expect the name movers to carry most of it.",
-  modelRef: { id: "gpt2", revision: "abc", dtype: "float32", device: "auto", process_weights: true },
+  modelRef: { id: "gpt2", source: "hub", revision: "abc", sha256: null, dtype: "float32", device: "auto", process_weights: true },
   savedDataset: { path: "datasets/ioi.jsonl", sha256: null },
   draftId: "2026-10-10-draft",
 };
@@ -93,6 +94,8 @@ test("anything that isn't exactly a form is ignored", () => {
     variant((d) => { d.form.baseline = { kind: "resample", pool: "corrupt" }; }),
     variant((d) => { d.form.pathReceivers = [{ kind: "head", layer: 1, head: 2, input: "z" }]; }),
     variant((d) => { d.form.modelRef = { id: 7 }; }),
+    variant((d) => { d.form.chatTemplate = { kind: "assistant_prefix", system: null }; }),
+    variant((d) => { d.form.chatTemplate = { kind: "system_turn", system: null }; }),
     variant((d) => { d.form = "a form"; }),
   ]) {
     expect(parseStoredForm(text), String(text).slice(0, 80)).toBeNull();
@@ -104,13 +107,15 @@ test("anything that isn't exactly a form is ignored", () => {
  * feature choice existed. */
 function olderForm(): Record<string, unknown> {
   const data = JSON.parse(serializeForm(DETAILED, 7));
-  for (const key of ["metric", "klTarget", "cluster", "atpMethod", "atpSteps"]) delete data.form[key];
+  for (const key of ["metric", "klTarget", "cluster", "atpMethod", "atpSteps", "chatTemplate"]) delete data.form[key];
+  delete data.form.modelRef.source;
+  delete data.form.modelRef.sha256;
   data.form.kind = "attribution_patching";
   data.form.scope = { kind: "features", position: { kind: "last" }, top: 50 };
   return data;
 }
 
-test("a form stored before the metric, clusters and integrated gradients existed takes the form's starting values for them", () => {
+test("a form stored before the metric, clusters, integrated gradients, local models and chat templates existed takes the form's starting values for them", () => {
   const stored = parseStoredForm(JSON.stringify(olderForm()));
   expect(stored?.form).toEqual({
     ...DETAILED,
@@ -121,6 +126,7 @@ test("a form stored before the metric, clusters and integrated gradients existed
     cluster: null,
     atpMethod: "gradient",
     atpSteps: DEFAULT_FORM.atpSteps,
+    chatTemplate: null,
   });
   // Fields that existed then must still be there and well formed.
   const broken = olderForm();
@@ -129,6 +135,25 @@ test("a form stored before the metric, clusters and integrated gradients existed
   const half = olderForm();
   (half.form as Record<string, unknown>).scope = { kind: "features", position: { kind: "last" }, top: 50, seed: 3 };
   expect(parseStoredForm(JSON.stringify(half))).toBeNull();
+});
+
+test("a form stored before steering had a direction steers along the mean difference, without continuations", () => {
+  const steering: FormState = { ...DETAILED, kind: "steering", steerApplyTo: "clean", scope: { kind: "layer_components", components: ["resid_pre"], position: { kind: "last" } } };
+  const data = JSON.parse(serializeForm(steering, 7));
+  for (const key of ["steerDirection", "steerFeature", "steerContinue", "steerContinuePrompts", "steerContinueTokens"]) delete data.form[key];
+  expect(parseStoredForm(JSON.stringify(data))?.form).toEqual({
+    ...steering,
+    steerDirection: "mean_difference",
+    steerFeature: null,
+    steerContinue: false,
+    steerContinuePrompts: DEFAULT_FORM.steerContinuePrompts,
+    steerContinueTokens: DEFAULT_FORM.steerContinueTokens,
+  });
+  // A feature to steer along, and what the steered model says, read back exactly.
+  const feature: FormState = { ...steering, steerDirection: "sae_feature", steerFeature: 12, steerContinue: true, steerContinuePrompts: 2, steerContinueTokens: 30 };
+  expect(parseStoredForm(serializeForm(feature, 1))?.form).toEqual(feature);
+  expect(parseStoredForm(serializeForm({ ...feature, steerDirection: "telepathy" } as unknown as FormState, 1))).toBeNull();
+  expect(parseStoredForm(serializeForm({ ...feature, steerFeature: "12" } as unknown as FormState, 1))).toBeNull();
 });
 
 test("an older stored form comes back when its project opens", withStorage(async (storage) => {

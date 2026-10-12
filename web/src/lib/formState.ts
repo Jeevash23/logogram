@@ -4,6 +4,7 @@
 import type {
   AttributionMethod,
   BaselineSpec,
+  ChatTemplateSpec,
   ExperimentKind,
   MetricKind,
   Normalization,
@@ -13,6 +14,7 @@ import type {
   ScopeSpec,
   Side,
   Spec,
+  SteeringDirection,
 } from "../api/types";
 
 /** Steps of integrated gradients the form offers until changed; the spec allows 2 to 64. */
@@ -36,6 +38,15 @@ export interface FormState {
   steerTrain: number;
   steerSeed: number;
   steerControl: boolean;
+  /** What steering adds: the mean difference of the pairs, or a feature of the SAE (`saeRef`, or
+   * the loaded one) where the SAE writes, `steerFeature` being its number. */
+  steerDirection: SteeringDirection["kind"];
+  steerFeature: number | null;
+  /** Whether the run records what the steered model says: greedy continuations of the first
+   * `steerContinuePrompts` held-out prompts, `steerContinueTokens` new tokens each. */
+  steerContinue: boolean;
+  steerContinuePrompts: number;
+  steerContinueTokens: number;
   /** Path patching: where the paths end (at least one), and whether MLPs are held too. */
   pathReceivers: PathReceiverSpec[];
   pathFreezeMlps: boolean;
@@ -57,7 +68,12 @@ export interface FormState {
   cluster: string | null;
   batchSize: number;
   limit: number | null;
+  /** Whether prompts begin with the beginning-of-sequence token. A chat template writes the
+   * beginning itself, so with one the spec says false; this keeps the choice for without. */
   prependBos: boolean;
+  /** The model's own chat template prompts are wrapped in (the person's message, or the start of
+   * the model's reply), or null for plain text. */
+  chatTemplate: ChatTemplateSpec | null;
   notes: string;
   /** The model a saved spec asks for; used when no model is loaded. */
   modelRef: Spec["model"] | null;
@@ -80,6 +96,11 @@ export const DEFAULT_FORM: FormState = {
   steerTrain: 0.5,
   steerSeed: 0,
   steerControl: true,
+  steerDirection: "mean_difference",
+  steerFeature: null,
+  steerContinue: false,
+  steerContinuePrompts: 3,
+  steerContinueTokens: 20,
   pathReceivers: [],
   pathFreezeMlps: false,
   atpMethod: "gradient",
@@ -96,6 +117,7 @@ export const DEFAULT_FORM: FormState = {
   batchSize: 64,
   limit: null,
   prependBos: true,
+  chatTemplate: null,
   notes: "",
   modelRef: null,
   savedDataset: null,
@@ -120,6 +142,12 @@ export function formFromSpec(spec: Spec): FormState {
     steerTrain: e.kind === "steering" ? e.train_fraction : DEFAULT_FORM.steerTrain,
     steerSeed: e.kind === "steering" ? e.seed : DEFAULT_FORM.steerSeed,
     steerControl: e.kind === "steering" ? e.control : DEFAULT_FORM.steerControl,
+    // Specs from before steering had a direction steered along the mean difference.
+    steerDirection: e.kind === "steering" ? (e.direction?.kind ?? "mean_difference") : DEFAULT_FORM.steerDirection,
+    steerFeature: e.kind === "steering" && e.direction?.kind === "sae_feature" ? e.direction.feature : null,
+    steerContinue: e.kind === "steering" && !!e.continuations,
+    steerContinuePrompts: e.kind === "steering" && e.continuations ? e.continuations.prompts : DEFAULT_FORM.steerContinuePrompts,
+    steerContinueTokens: e.kind === "steering" && e.continuations ? e.continuations.tokens : DEFAULT_FORM.steerContinueTokens,
     pathReceivers: e.kind === "path_patching" ? e.receivers : [],
     pathFreezeMlps: e.kind === "path_patching" ? e.freeze_mlps : false,
     atpMethod: e.kind === "attribution_patching" ? (e.method ?? "gradient") : DEFAULT_FORM.atpMethod,
@@ -137,10 +165,18 @@ export function formFromSpec(spec: Spec): FormState {
     cluster: spec.statistics.cluster ?? null,
     batchSize: spec.execution.batch_size,
     limit: spec.dataset.limit,
-    prependBos: spec.tokenization.prepend_bos,
+    // A spec with a chat template says false; without one again, prompts begin with BOS.
+    prependBos: spec.tokenization.chat_template ? true : spec.tokenization.prepend_bos,
+    chatTemplate: spec.tokenization.chat_template ?? null,
     notes: spec.notes,
     modelRef: spec.model,
     savedDataset: { path: spec.dataset.path, sha256: spec.dataset.sha256 },
     draftId: null,
   };
+}
+
+/** How the form's prompts are tokenized, as a spec writes it: a chat template writes the
+ * beginning of the text, so with one there is no beginning-of-sequence token to prepend. */
+export function formTokenization(form: Pick<FormState, "prependBos" | "chatTemplate">): Spec["tokenization"] {
+  return { prepend_bos: form.chatTemplate ? false : form.prependBos, chat_template: form.chatTemplate };
 }

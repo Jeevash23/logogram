@@ -65,6 +65,44 @@ def test_clustered_intervals_are_wider_when_clusters_differ():
     assert width(clustered) > 2 * width(single)
 
 
+@pytest.mark.parametrize("normalization", ["dataset_gap", "prompt_gap"])
+def test_a_sites_numbers_dont_change_with_the_sites_after_it(normalization):
+    """A site's interval is the same whether the run measured the sites after it or not, so a run
+    that stopped early keeps exactly what the whole run gives each site it kept. One matrix
+    product over every site rounds a row differently as the number of rows changes (one row
+    alone goes through another BLAS routine on common machines), which this catches."""
+    rng = np.random.default_rng(3)
+    n = 5
+    patched = rng.normal(0.4, 1.0, (17, n))
+    receiver, reference = rng.normal(0.0, 0.1, n), rng.normal(1.0, 0.1, n)
+    counts = resample_counts(n, 200, seed=4)
+
+    def stats(rows):
+        return compute_site_stats(
+            patched=patched[rows],
+            patched_prob=patched[rows] * 0,
+            patched_pref=patched[rows],
+            receiver=receiver,
+            reference=reference,
+            receiver_prob=np.zeros(n),
+            receiver_pref=receiver,
+            normalization=normalization,
+            counts=counts,
+            ci=0.95,
+        )
+
+    every = stats(slice(None))
+    for rows in ([0], [0, 1], list(range(3)), list(range(16))):
+        some = stats(rows)
+        for name in ("effect_boot", "delta_boot", "effect_lo", "effect_hi", "delta_lo", "delta_hi"):
+            np.testing.assert_array_equal(getattr(some, name), getattr(every, name)[rows])
+    a, b = rng.normal(0, 1, (9, n)), rng.normal(0, 1, (9, n))
+    whole = paired_difference(a, b, counts, 0.95)
+    alone = paired_difference(a[:1], b[:1], counts, 0.95)
+    for x, y in zip(alone, whole, strict=True):
+        np.testing.assert_array_equal(x, y[:1])
+
+
 def test_simultaneous_bands_contain_each_interval_and_hold_together():
     rng = np.random.default_rng(1)
     S, n = 40, 25

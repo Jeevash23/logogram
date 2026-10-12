@@ -28,11 +28,13 @@ import numpy as np
 import torch
 
 from logogram import __version__
-from logogram.backends.base import ModelBackend
+from logogram.backends.base import ModelBackend, device_type
+from logogram.chat import chat_wrapper
 from logogram.datasets import decode_dataset, parse_jsonl, read_dataset_bytes
 from logogram.engine import Cancelled, run_experiment
 from logogram.fileio import atomic_output, write_text_atomic
 from logogram.owner import claim_run, release_run
+from logogram.partial import Progress, keep_finished
 from logogram.project import TRACEBACK_FILE, Project, now_iso
 from logogram.prompts import prepare_prompts
 from logogram.results import (
@@ -43,7 +45,7 @@ from logogram.results import (
     site_payload,
     write_results,
 )
-from logogram.schema import Manifest
+from logogram.schema import CONTINUATIONS_FILE, ContinuationsFile, Manifest
 from logogram.spec import SINGLE_POSITION_METRICS, ModelRef, SAERef, Spec
 
 EventFn = Callable[[str, dict[str, Any]], None]
@@ -150,19 +152,26 @@ def _identity_names() -> list[tuple[re.Pattern[str], str]]:
     return out
 
 
-def scrub_paths(message: str, *roots: Path | str | None) -> str:
+def scrub_paths(
+    message: str, *roots: Path | str | None, places: tuple[tuple[str, str], ...] = ()
+) -> str:
     """``message`` (an error, or a whole traceback) without what identifies this machine or its
     user. Run files are shared, and an error from a library often names a file by its full path,
     which includes the user's name.
 
     Known folders become placeholders, longest first, so a project inside the home folder reads
-    as <project>, not ~/...: the project (``roots``), the Hugging Face cache, <site-packages>,
-    <python> (the standard library), <logogram>, <temp> and the home folder (~). Anyone else's
-    home folder becomes ~ too. Any other absolute path keeps only its file name, after <path>.
-    Last, the account's and the machine's names become <user> and <host> wherever they appear.
+    as <project>, not ~/...: the project (``roots``), other folders given as (path, placeholder)
+    in ``places`` (a local model's), the Hugging Face cache, <site-packages>, <python> (the
+    standard library), <logogram>, <temp> and the home folder (~). Anyone else's home folder
+    becomes ~ too. Any other absolute path keeps only its file name, after <path>. Last, the
+    account's and the machine's names become <user> and <host> wherever they appear.
     """
-    places = sorted(set(_known_places(roots)), key=lambda p: -len(p[0]))
+    known = _known_places(roots)
     for path, label in places:
+        known.append((path, label))
+        with contextlib.suppress(OSError, RuntimeError):
+            known.append((str(Path(path).resolve()), label))
+    for path, label in sorted(set(known), key=lambda p: -len(p[0])):
         pattern = _place_pattern(path)
         if pattern is not None:
             message = pattern.sub(lambda _, label=label: label, message)
@@ -174,9 +183,11 @@ def scrub_paths(message: str, *roots: Path | str | None) -> str:
     return message
 
 
-def failure_detail(exc: BaseException, project_root: Path) -> str:
+def failure_detail(
+    exc: BaseException, project_root: Path, places: tuple[tuple[str, str], ...] = ()
+) -> str:
     """The traceback of ``exc``, scrubbed for sharing, its end kept when it is very long."""
-    text = scrub_paths("".join(traceback.format_exception(exc)), project_root)
+    text = scrub_paths("".join(traceback.format_exception(exc)), project_root, places=places)
     if len(text) > TRACEBACK_CHARS:
         left_out = len(text) - TRACEBACK_CHARS
         text = f"[The first {left_out:,} characters are left out.]\n" + text[-TRACEBACK_CHARS:]
@@ -216,6 +227,10 @@ def environment_versions() -> dict[str, Any]:
 
 
 def model_matches(backend: ModelBackend | None, ref: ModelRef) -> bool:
+    """Whether the loaded model is the one ``ref`` asks for: the same files (a Hugging Face model
+    by id and revision, a local model by the hash of its files, whatever name it was added
+    under), dtype, weight processing and device, the device as it resolves here ("cuda" is the
+    default GPU, so it matches a model on that GPU however it was asked for)."""
     if backend is None:
         return False
     from logogram.backends.transformer_lens import resolve_device
@@ -225,13 +240,42 @@ def model_matches(backend: ModelBackend | None, ref: ModelRef) -> bool:
         device = resolve_device(ref.device)
     except Exception:  # noqa: BLE001
         return False
+    if info.source != ref.source:
+        return False
+    if ref.source == "local":
+        same_files = ref.sha256 is not None and info.sha256 == ref.sha256
+    else:
+        same_files = info.id == ref.id and (ref.revision is None or ref.revision == info.revision)
     return (
-        info.id == ref.id
-        and (ref.revision is None or ref.revision == info.revision)
+        same_files
         and info.dtype == ref.dtype
         and info.device == device
         and info.process_weights == ref.process_weights
     )
+
+
+def device_provenance(info: Any) -> dict[str, Any]:
+    """Where a run ran, as its manifest records it: the device's type (cuda, cpu or mps), which
+    of the machine's GPUs (its index, for cuda:N) and its name, and what makes it deterministic."""
+    on_gpu = device_type(info.device) == "cuda"
+    return {
+        "type": device_type(info.device),
+        **({"index": int(info.device.split(":", 1)[1])} if ":" in info.device else {}),
+        "name": info.device_name,
+        "cuda": torch.version.cuda if on_gpu else None,
+        "threads": torch.get_num_threads(),
+        "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
+    }
+
+
+def _model_places(spec: Spec) -> tuple[tuple[str, str], ...]:
+    """The folder of the spec's local model, for scrubbing it from errors."""
+    if spec.model.source != "local":
+        return ()
+    from logogram.local_models import folder_of
+
+    folder = folder_of(spec.model.sha256)
+    return ((folder, "<model folder>"),) if folder else ()
 
 
 def default_provider(on_event: EventFn | None = None) -> ModelProvider:
@@ -249,6 +293,8 @@ def default_provider(on_event: EventFn | None = None) -> ModelProvider:
             device=ref.device,
             process_weights=ref.process_weights,
             on_progress=progress,
+            source=ref.source,
+            sha256=ref.sha256,
         )
 
     return provide
@@ -312,8 +358,22 @@ def run_spec(
     write_json(folder / "spec.json", spec.model_dump(mode="json"))
     with contextlib.suppress(OSError):  # an earlier attempt's, in a reused folder
         (folder / TRACEBACK_FILE).unlink(missing_ok=True)
+    # What the sweep finishes, so a run that stops early keeps it (see logogram.partial).
+    progress = Progress()
 
-    def fail(status: str, message: str | None, detail: str | None = None) -> RunOutcome:
+    def keep(status: str, again: list[BaseException]) -> dict[str, Any] | None:
+        """Keep what finished; None when nothing did, or it can't be kept."""
+        try:
+            return keep_finished(progress, folder, run_id, status)
+        except Exception:  # the run's own error is what it reports
+            log.info("The run %s couldn't keep what finished.", run_id, exc_info=True)
+        except BaseException as exc:  # noqa: BLE001 - Ctrl+C again: stop once the run is recorded
+            again.append(exc)
+        return None
+
+    def fail(
+        status: str, message: str | None, detail: str | None = None, *, reraise: bool = True
+    ) -> RunOutcome:
         manifest.update(
             {
                 "status": status,
@@ -322,14 +382,26 @@ def run_spec(
                 "wall_time_s": round(time.perf_counter() - t0, 3),
             }
         )
-        for name in ("results.parquet", "summary.json", "predictions.json"):
+        again: list[BaseException] = []
+        kept = keep(status, again)
+        # A run that kept what finished keeps the predictions it measured before the sweep too.
+        # Continuations come after the sweep, so a run that stopped never has them.
+        names = ("results.parquet", "summary.json", "predictions.json") if kept is None else ()
+        for name in (*names, CONTINUATIONS_FILE):
             (folder / name).unlink(missing_ok=True)
         if detail is not None:
             # Before the manifest says the run failed, so whoever reads that finds why.
             with contextlib.suppress(OSError):
                 write_text_atomic(project.writable(folder / TRACEBACK_FILE), detail)
         write_manifest(folder / "manifest.json", manifest)
-        return RunOutcome(run_id, folder, status, None, manifest, backend, detail)
+        if again and reraise:
+            raise again[0]
+        return RunOutcome(run_id, folder, status, kept, manifest, backend, detail)
+
+    def ended(outcome: RunOutcome) -> dict[str, Any]:
+        """What the cancelled or failed event says: the run, and what it kept, if anything."""
+        partial = (outcome.summary or {}).get("partial")
+        return {"run_id": run_id, **({"partial": partial} if partial else {})}
 
     # Recorded before the manifest says "running", and removed once it says how the run ended:
     # whoever reads a running manifest can tell whether this process is still going.
@@ -393,19 +465,17 @@ def run_spec(
                 "model": {
                     "id": info.id,
                     "revision": info.revision,
+                    # A local model: by the hash of its files, never by its folder.
+                    **(
+                        {"source": "local", "sha256": info.sha256} if info.source == "local" else {}
+                    ),
                     "architecture": info.architecture,
                     "process_weights": info.process_weights,
                     "backend": info.backend,
                     "backend_version": info.backend_version,
                     "chat": info.extra.get("chat"),
                 },
-                "device": {
-                    "type": info.device,
-                    "name": info.device_name,
-                    "cuda": torch.version.cuda if info.device == "cuda" else None,
-                    "threads": torch.get_num_threads(),
-                    "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
-                },
+                "device": device_provenance(info),
                 "dtype": info.dtype,
                 "dataset": {
                     "path": spec.dataset.path,
@@ -442,11 +512,18 @@ def run_spec(
             }
             write_manifest(folder / "manifest.json", manifest)
 
+        # The model's own chat template, when the spec wraps prompts in it: the same text around
+        # every prompt, recorded so the methods can say what the model read.
+        chat = chat_wrapper(backend, spec.tokenization.chat_template)
+        if chat is not None:
+            manifest["chat_template"] = {"kind": chat.kind, "sha256": chat.sha256}
+            write_manifest(folder / "manifest.json", manifest)
         prompts = prepare_prompts(
             backend,
             records,
             spec.tokenization.prepend_bos,
             continuations=spec.metric.kind not in SINGLE_POSITION_METRICS,
+            chat=chat,
         )
         # Bootstrap resamples over the prompts a method measures (steering measures held-out
         # prompts only), drawn once per run so every site shares them.
@@ -483,12 +560,31 @@ def run_spec(
                     settings=spec.predictions,
                     prepend_bos=spec.tokenization.prepend_bos,
                     batch_size=spec.execution.batch_size,
+                    chat_template=spec.tokenization.chat_template,
                 )
             if cancel is not None and cancel.is_set():
                 raise Cancelled()
             write_json(folder / "predictions.json", predictions)
 
+        notes = (
+            [
+                "This spec is version 1, which left some choices out; they took version 1's "
+                f"values: {'; '.join(upgraded)}. The saved spec states every value."
+            ]
+            if upgraded
+            else []
+        )
+        progress.prepare(
+            spec,
+            model_shape,
+            counts_for,
+            notes,
+            len(prompts),
+            chat_template=chat.to_dict() if chat is not None else None,
+        )
+
         def on_start(sites: list[Any], layout: dict[str, Any]) -> None:
+            progress.started(sites, layout)
             emit(
                 "started",
                 {
@@ -501,6 +597,7 @@ def run_spec(
             )
 
         def on_layer(layer: int, indices: list[int], partial: Any) -> None:
+            progress.finished_sites(indices, partial)
             # A finished site's statistics depend only on its own rows, so they are final.
             stats = compute_stats(spec, partial, counts_for(partial), indices)
             emit(
@@ -528,18 +625,27 @@ def run_spec(
             on_progress=on_progress,
             on_layer=on_layer,
             on_start=on_start,
+            on_prompts=progress.finished_prompts,
             cancel=cancel,
             sae=sae,
         )
-        if upgraded:
-            result.warnings.insert(
-                0,
-                "This spec is version 1, which left some choices out; they took version 1's "
-                f"values: {'; '.join(upgraded)}. The saved spec states every value.",
-            )
+        progress.complete = True
+        result.warnings[:0] = notes
+        # What a steered model went on to say: kept beside the results, not in the summary.
+        continuations = result.extra.pop("continuations", None)
         stats = compute_stats(spec, result, counts_for(result))
-        summary = build_summary(spec, result, stats, run_id, model_shape)
+        summary = build_summary(
+            spec,
+            result,
+            stats,
+            run_id,
+            model_shape,
+            chat_template=chat.to_dict() if chat is not None else None,
+        )
         write_results(folder / "results.parquet", results_table(result, stats))
+        if continuations is not None:
+            record = ContinuationsFile.model_validate({"run_id": run_id, **continuations})
+            write_json(folder / CONTINUATIONS_FILE, record.model_dump(mode="json"))
         write_json(folder / "summary.json", summary)
         manifest.update(
             {
@@ -553,16 +659,18 @@ def run_spec(
         return RunOutcome(run_id, folder, "finished", summary, manifest, backend)
     except Cancelled:
         outcome = fail("cancelled", None)
-        emit("cancelled", {"run_id": run_id})
+        emit("cancelled", ended(outcome))
         return outcome
     except Exception as exc:  # recorded in the manifest and reported
         from logogram.backends.transformer_lens import is_out_of_memory, release_memory
 
         # Shown with --verbose (the server's log); the run's folder keeps a scrubbed copy.
         log.info("The run %s failed.", run_id, exc_info=exc)
-        detail = failure_detail(exc, project.root)
+        # A local model's folder is this machine's business: never in what the run writes.
+        places = _model_places(spec)
+        detail = failure_detail(exc, project.root, places)
         if is_out_of_memory(exc):
-            device = backend.info.device if backend is not None else "the device"
+            device = device_type(backend.info.device) if backend is not None else "the device"
             where = {"cuda": "GPU memory", "mps": "unified memory"}.get(device, "memory")
             message = (
                 f"The run ran out of {where} at a batch of {spec.execution.batch_size} rows. Lower "
@@ -573,15 +681,16 @@ def run_spec(
             release_memory()
         else:
             message = str(exc) or type(exc).__name__
-        message = scrub_paths(message, project.root)
+        message = scrub_paths(message, project.root, places=places)
         outcome = fail("failed", message, detail)
-        emit("failed", {"run_id": run_id, "error": message})
+        emit("failed", {**ended(outcome), "error": message})
         return outcome
     except BaseException:
-        # Ctrl+C, a notebook's interrupt, or the process exiting: say so, then let it stop.
-        fail("cancelled", INTERRUPTED)
+        # Ctrl+C, a notebook's interrupt, or the process exiting: say so, keeping what finished,
+        # then let it stop.
+        outcome = fail("cancelled", INTERRUPTED, reraise=False)
         with contextlib.suppress(Exception):
-            emit("cancelled", {"run_id": run_id, "error": INTERRUPTED})
+            emit("cancelled", {**ended(outcome), "error": INTERRUPTED})
         raise
     finally:
         release_run(project, folder, owner)

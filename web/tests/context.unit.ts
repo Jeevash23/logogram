@@ -1,26 +1,47 @@
 import { test, expect } from "@playwright/test";
-import { analysisContext } from "../src/lib/analysis";
+import { analysisContext, tokensKey } from "../src/lib/analysis";
 import { moveCell } from "../src/lib/heatmapNavigation";
 import { DEFAULT_FORM, useStore } from "../src/store/app";
-import type { ProjectInfo, Spec } from "../src/api/types";
+import type { MetricSpec, ModelInfo, ProjectInfo, PromptRecord, Spec } from "../src/api/types";
 
 const project = (id: string): ProjectInfo => ({ session_id: id, name: id, path: id, datasets: [], description: "" });
 const spec: Spec = {
-  logogram_spec: 2, name: "Recorded run", notes: "", model: { id: "tiny", revision: "fixed", device: "cpu", dtype: "float32", process_weights: false },
-  dataset: { path: "datasets/snapshots/fixed.jsonl", sha256: "fixed", limit: 3 }, tokenization: { prepend_bos: false },
+  logogram_spec: 3, name: "Recorded run", notes: "", model: { id: "tiny", source: "hub", revision: "fixed", sha256: null, device: "cpu", dtype: "float32", process_weights: false },
+  dataset: { path: "datasets/snapshots/fixed.jsonl", sha256: "fixed", limit: 3 }, tokenization: { prepend_bos: false, chat_template: null },
   experiment: { kind: "activation_patching", direction: "clean_to_corrupt" }, scope: { kind: "heads", position: { kind: "all" } },
   metric: { kind: "logit_diff", normalization: "dataset_gap" }, statistics: { bootstrap: 200, seed: 7, ci: 0.95, cluster: null }, execution: { batch_size: 2 },
 };
 
-test("saved analyses retain BOS, prompt limit, batch and pinned model settings", () => {
+test("saved analyses retain BOS, the chat template, prompt limit, batch and pinned model settings", () => {
   const state = { ...useStore.getInitialState(), project: project("one"), activeRunId: "run", analysisSource: "run" as const,
     runDetails: { run: { spec } }, datasetPath: spec.dataset.path };
   const context = analysisContext(state);
-  expect(context.options).toEqual({ model: spec.model, dataset_sha256: "fixed", prepend_bos: false, limit: 3, batch_size: 2 });
+  expect(context.options).toEqual({ model: spec.model, dataset_sha256: "fixed", prepend_bos: false, chat_template: null, limit: 3, batch_size: 2 });
   const edited = analysisContext({ ...state, analysisSource: "form", form: { ...DEFAULT_FORM, prependBos: true, limit: 7, batchSize: 8 } });
   expect(edited.key).not.toBe(context.key);
   expect(edited.options.prepend_bos).toBe(true);
   expect(analysisContext({ ...state, project: project("two") }).key).not.toBe(context.key);
+});
+
+test("a prompt pair is tokenized again only when what its tokens depend on changes", () => {
+  const info = { id: "tiny", source: "hub", revision: "fixed", sha256: null, dtype: "float32", device: "cpu", process_weights: false } as ModelInfo;
+  const record: PromptRecord = { clean: "When Mary and John went", corrupt: "When Mary and Anna went", answer: " John", distractor: " Mary" };
+  const options = { model: spec.model, dataset_sha256: "fixed", prepend_bos: true, chat_template: null, limit: null, batch_size: 8 };
+  const metric = spec.metric;
+  const key = tokensKey("datasets/a.jsonl", 0, record, info, options, metric);
+  // The batch size, the prompt limit and a reloaded copy of the same pair change nothing.
+  expect(tokensKey("datasets/a.jsonl", 0, { ...record }, { ...info }, { ...options, batch_size: 2, limit: 5 }, { ...metric })).toBe(key);
+  const changed: string[] = [
+    tokensKey("datasets/b.jsonl", 0, record, info, options, metric),
+    tokensKey("datasets/a.jsonl", 1, record, info, options, metric),
+    tokensKey("datasets/a.jsonl", 0, { ...record, clean: "When Anna and John went" }, info, options, metric),
+    tokensKey("datasets/a.jsonl", 0, record, { ...info, revision: "other" }, options, metric),
+    tokensKey("datasets/a.jsonl", 0, record, info, { ...options, dataset_sha256: "other" }, metric),
+    tokensKey("datasets/a.jsonl", 0, record, info, { ...options, prepend_bos: false }, metric),
+    tokensKey("datasets/a.jsonl", 0, record, info, { ...options, prepend_bos: false, chat_template: { kind: "user_turn", system: null } }, metric),
+    tokensKey("datasets/a.jsonl", 0, record, info, options, { kind: "kl", target: "clean", normalization: "dataset_gap" } as MetricSpec),
+  ];
+  for (const other of changed) expect(other).not.toBe(key);
 });
 
 test("a view that shows a run reads prompts as that run did, after the form was configured", async () => {

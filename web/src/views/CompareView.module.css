@@ -144,3 +144,29 @@
   text-align: left;
   cursor: pointer;
 }
+
+/* The sweeps the compared runs are values of. */
+.sweeps {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: -8px;
+}
+
+.sweepLine {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+}
+
+.sweepLink {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: var(--text-sm);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}

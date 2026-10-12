@@ -36,6 +36,9 @@ interface Props {
   showValues?: boolean;
   format?: (v: number) => string;
   fade?: boolean;
+  /** What the accessible table says for a cell without a site: masked, unless given (a run that
+   * stopped early says its missing sites weren't measured). */
+  missing?: string;
   ariaLabel: string;
   aspect?: number; // cell height / width
 }
@@ -62,6 +65,7 @@ export const Heatmap = memo(function Heatmap({
   showValues = false,
   format = twoDecimals,
   fade = false,
+  missing = "Masked",
   ariaLabel,
   aspect = 1,
 }: Props) {
@@ -327,7 +331,7 @@ export const Heatmap = memo(function Heatmap({
           <thead><tr><th scope="col">{rowTitle ?? "Row"} / {colTitle ?? "Column"}</th>{cols.map((c, i) => <th scope="col" key={c.key}>{i}: {c.label}</th>)}</tr></thead>
           <tbody>{rows.map((row, r) => <tr key={row.key}><th scope="row">{r}: {row.label}</th>{cols.map((col, c) => {
             const v = value(r, c);
-            return <td key={col.key}>{v === undefined ? "Masked" : v === null ? "Pending" : v.toPrecision(6)}</td>;
+            return <td key={col.key}>{v === undefined ? missing : v === null ? "Pending" : v.toPrecision(6)}</td>;
           })}</tr>)}</tbody>
         </table></div>}
       </details>

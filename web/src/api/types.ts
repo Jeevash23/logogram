@@ -15,9 +15,12 @@ export interface ModelInfo {
   n_ctx: number;
   n_params: number | null;
   dtype: Dtype;
-  device: "cpu" | "cuda" | "mps";
+  device: "cpu" | "cuda" | "mps" | `cuda:${number}`;
   device_name: string;
   process_weights: boolean;
+  /** Where the weights came from (Hugging Face when absent), and a local model's files' hash. */
+  source?: "hub" | "local";
+  sha256?: string | null;
   site_kinds: string[];
   backend: string;
   backend_version: string;
@@ -34,6 +37,9 @@ export interface ModelInfo {
     checks?: ModelChecks;
     /** Whether it is made for chat (prompts run as plain text, without its chat template). */
     chat?: ChatFormat;
+    /** The SHA-256 of the chat template its tokenizer uses by default: prompts can be wrapped in
+     * it (a spec's tokenization.chat_template). Null when it has none. */
+    chat_template_sha256?: string | null;
     /** A soft cap on its logits, or null. */
     logit_soft_cap?: number | null;
   };
@@ -59,7 +65,8 @@ export interface ModelPreset {
 export interface ModelStatus {
   state: "none" | "loading" | "ready" | "error";
   id?: string;
-  stage?: "resolving" | "downloading" | "loading" | "processing" | "ready";
+  /** checking: a local model's files are checked against their hash before it loads. */
+  stage?: "resolving" | "downloading" | "checking" | "loading" | "processing" | "ready";
   done?: number;
   total?: number;
   file?: string;
@@ -67,13 +74,13 @@ export interface ModelStatus {
   revision?: string;
   info?: ModelInfo;
   memory?: number | null;
-  ref?: { id: string; revision: string | null; dtype: Dtype; device: Device; process_weights: boolean };
+  ref?: ModelRef;
 }
 
 export interface Job {
   project_session?: string | null;
   id: string;
-  kind: "load_model" | "load_sae" | "run";
+  kind: "load_model" | "load_sae" | "run" | "add_model";
   title: string;
   status: "running" | "finished" | "failed" | "cancelled";
   run_id: string | null;
@@ -96,6 +103,24 @@ export interface QueuedRun {
   project_session: string;
   /** Seconds since the epoch, like a job's start. */
   queued_at: number;
+}
+
+/** How the open project's queue stands: "waiting" (its next run starts when the job in progress
+ * ends), "running" (one of its runs is in progress, here or in another process, and the next
+ * follows), "paused" (nothing starts until it is started: a queue that comes back with its project
+ * is paused) or "idle" (empty). */
+export type QueueState = "idle" | "waiting" | "running" | "paused";
+
+/** The open project's queue, kept in the project, and how it stands (GET /api/queue/state and
+ * the "queue" event). */
+export interface QueueStatus {
+  project_session: string | null;
+  runs: QueuedRun[];
+  state: QueueState;
+  /** Who runs it, when another process does: "`logogram queue run` (process 1234)". */
+  runner?: string | null;
+  /** Why the project's saved queue can't be read, and how to fix it. */
+  error?: string | null;
 }
 
 /** A run sent to the queue: started at once when nothing was running (run_id and job), or
@@ -150,11 +175,15 @@ export interface ServerState {
   theme: ThemeSetting;
   /** Whether single keys act as shortcuts (on until turned off). */
   single_key_shortcuts?: boolean;
+  /** How the walkthrough of the example ended, or null while it never has. */
+  walkthrough?: "finished" | "skipped" | null;
   projects_parent: string;
   update: UpdateStatus;
   sae?: SAEStatus;
   /** The runs waiting for the job in progress, first in line first. */
   queue?: QueuedRun[];
+  /** The same runs, how the queue stands, and who runs it. */
+  queue_status?: QueueStatus | null;
 }
 
 export interface RecentProject {
@@ -213,7 +242,11 @@ export interface SystemReport {
   cpu_threads: number | null;
   memory_total: number;
   memory_available: number;
-  gpus: { name: string; memory_total: number; memory_free: number | null; bf16: boolean }[];
+  /** Each GPU, by its index among those PyTorch sees (a spec names one as cuda:N); Apple's has no
+   * index. */
+  gpus: { name: string; memory_total: number; memory_free: number | null; bf16: boolean; index?: number | null }[];
+  /** The GPU "cuda" (and "auto") runs on. */
+  default_gpu?: number | null;
   backend: "cuda" | "mps" | "cpu";
   torch: string;
   torch_cuda: string | null;
@@ -232,7 +265,8 @@ export interface SystemReport {
 export type Dtype = "float32" | "float16" | "bfloat16";
 /** A robustness check reruns a sweep with one choice changed: the experiment, or the precision. */
 export type RobustnessChange = { experiment: ExperimentSpec } | { dtype: Dtype };
-export type Device = "auto" | "cpu" | "cuda" | "mps";
+/** Where the model runs: `cuda:N` is one GPU of several. */
+export type Device = "auto" | "cpu" | "cuda" | "mps" | `cuda:${number}`;
 export type StreamKind = "resid_pre" | "resid_mid" | "resid_post" | "attn_out" | "mlp_out";
 export type SiteKind = StreamKind | "head" | "sae_feature";
 
@@ -391,6 +425,16 @@ export type PathReceiverSpec = { kind: "head"; layer: number; head: number; inpu
  * averaged over `steps` runs between the two prompts (2 to 64; null for one gradient). */
 export type AttributionMethod = "gradient" | "integrated_gradients";
 
+/** What steering adds: the mean difference of the training pairs, or one SAE feature's decoder
+ * direction where the SAE reads. */
+export type SteeringDirection = { kind: "mean_difference" } | { kind: "sae_feature"; feature: number };
+
+/** Greedy continuations of the first held-out prompts, unsteered and at each strength. */
+export interface Continuations {
+  prompts: number;
+  tokens: number;
+}
+
 export type ExperimentSpec =
   | { kind: "activation_patching"; direction: Direction }
   | { kind: "ablation"; baseline: BaselineSpec }
@@ -400,10 +444,12 @@ export type ExperimentSpec =
   | {
       kind: "steering";
       apply_to: "clean" | "corrupt";
+      direction: SteeringDirection;
       coefficients: number[];
       train_fraction: number;
       seed: number;
       control: boolean;
+      continuations: Continuations | null;
     };
 
 export type ExperimentKind = ExperimentSpec["kind"];
@@ -422,20 +468,32 @@ export type MetricSpec =
   | { kind: Exclude<MetricKind, "kl">; normalization: Normalization }
   | { kind: "kl"; target: Side; normalization: Normalization };
 
-/** A version 2 spec: every choice that can change a number is stated. */
+/** The model of a spec: from Hugging Face, pinned by its revision, or a local folder found by the
+ * hash of its files (`sha256`). */
+export interface ModelRef {
+  id: string;
+  source: "hub" | "local";
+  revision: string | null;
+  sha256: string | null;
+  dtype: Dtype;
+  device: Device;
+  process_weights: boolean;
+}
+
+/** How prompts are wrapped in the model's own chat template: as the person's message, or as the
+ * start of the model's reply to a fixed message. */
+export type ChatTemplateSpec =
+  | { kind: "user_turn"; system: string | null }
+  | { kind: "assistant_prefix"; system: string | null; user: string };
+
+/** A version 3 spec: every choice that can change a number is stated. */
 export interface Spec {
-  logogram_spec: 2;
+  logogram_spec: 3;
   name: string;
   notes: string;
-  model: {
-    id: string;
-    revision: string | null;
-    dtype: Dtype;
-    device: Device;
-    process_weights: boolean;
-  };
+  model: ModelRef;
   dataset: { path: string; sha256: string | null; limit: number | null };
-  tokenization: { prepend_bos: boolean };
+  tokenization: { prepend_bos: boolean; chat_template: ChatTemplateSpec | null };
   experiment: ExperimentSpec;
   scope: ScopeSpec;
   metric: MetricSpec;
@@ -604,8 +662,15 @@ export interface Summary {
   /** Direct logit attribution: the mean logit difference and what it splits into. */
   direct?: DirectSplit | null;
   /** Steering: the prompts that trained the directions, the held-out ones measured, the length of
-   * each row's direction, and each steered site and strength against its random control. */
-  steering?: { train: number[]; test: number[]; norms: number[]; control?: ControlComparison[] | null } | null;
+   * each row's vector at strength 1, each steered site and strength against its random control,
+   * and for an SAE feature what strength 1 is. */
+  steering?: {
+    train: number[];
+    test: number[];
+    norms: number[];
+    control?: ControlComparison[] | null;
+    feature?: SteeringFeature | null;
+  } | null;
   /** Runs on SAE features: the SAE, its fit on these prompts, and (attribution patching) how much
    * of the site's estimated effect its features account for. */
   features?: {
@@ -624,6 +689,18 @@ export interface Summary {
   circuit?: CircuitInfo | null;
   /** Attribution patching: one gradient, or integrated gradients over steps. */
   attribution?: { method: AttributionMethod; steps?: number | null } | null;
+  /** How the prompts were wrapped in the model's own chat template: the template's SHA-256, and
+   * its text before and after each prompt. */
+  chat_template?: {
+    kind: ChatTemplateSpec["kind"];
+    system: string | null;
+    user: string | null;
+    sha256: string;
+    before: string;
+    after: string;
+  } | null;
+  /** A run that stopped before the end: what it kept. Absent or null for a finished run. */
+  partial?: PartialRun | null;
 }
 
 export interface SummaryMetric {
@@ -661,6 +738,49 @@ export interface PromptSetStats {
 
 /** A steered site and strength against its random control, from the same resamples: the
  * difference of their effects' magnitudes, |direction| − |control|. */
+/** Steering along an SAE feature: the feature and its SAE, where the SAE writes (the site its
+ * decoder direction is added to; "head" is every head's output z), and for each row of the
+ * layout what strength 1 is: the feature's typical activation, the mean of its positive
+ * activations at the row's token of the training pairs' clean and corrupt prompts (`fired` of
+ * the `measured` activations were positive). */
+export interface SteeringFeature {
+  feature: number;
+  sae: SAERef & { revision: string };
+  site: StreamKind | "head";
+  layer: number;
+  transcoder: boolean;
+  /** The SAE standardizes its inputs: each prompt's vector is also scaled by its input's spread. */
+  standardized: boolean;
+  activations: number[];
+  fired: number[];
+  measured: number[];
+}
+
+/** Tokens a model generated, and each as its tokenizer writes it. */
+export interface GeneratedTokens {
+  ids: number[];
+  tokens: string[];
+}
+
+/** A steering run's continuations.json: greedy continuations of the first held-out prompts,
+ * without steering and with each row's vector at each strength (and its random control). */
+export interface ContinuationsFile {
+  logogram_continuations: 1;
+  run_id: string;
+  receiver: Side;
+  tokens: number;
+  decoding: "greedy";
+  rows: { row: number; label: string }[];
+  prompts: {
+    index: number;
+    /** The steered prompt as written, and as the model read it. */
+    text: string;
+    prompt: string[];
+    unsteered: GeneratedTokens;
+    steered: (GeneratedTokens & { row: number; coefficient: number; control: boolean; key: string })[];
+  }[];
+}
+
 export interface ControlComparison {
   row: number;
   coefficient: number;
@@ -714,6 +834,9 @@ export interface Manifest {
   model?: {
     id: string;
     revision: string;
+    /** A local model, by the hash of its files. */
+    source?: "hub" | "local" | null;
+    sha256?: string | null;
     architecture: string;
     process_weights: boolean;
     backend: string;
@@ -723,6 +846,8 @@ export interface Manifest {
   };
   device?: {
     type: string;
+    /** Which of the machine's GPUs (cuda:N). */
+    index?: number | null;
     name: string;
     cuda: string | null;
     threads: number;
@@ -732,12 +857,173 @@ export interface Manifest {
   /** The prompts the run read: its saved copy, and the dataset it was copied from. */
   dataset?: { path: string; sha256: string; n: number; source_path?: string | null };
   derived_from?: DerivedFrom | null;
+  /** The chat template the prompts were wrapped in. */
+  chat_template?: { kind: ChatTemplateSpec["kind"]; sha256: string } | null;
 }
 
-export interface DerivedFrom {
-  run: string;
-  kind: "robustness" | "rerun" | "verification";
-  change?: string;
+/** Where a run came from: another run (a robustness check, a rerun, a verification), or a sweep. */
+export type DerivedFrom =
+  | { run: string; kind: "robustness" | "rerun" | "verification"; change?: string | null }
+  | SweepMember;
+
+/** A value a sweep runs: a seed, or a dataset's path or a revision as given. */
+export type SweepValue = number | string;
+
+/** A run of a sweep (src/logogram/schema.py SweepMember): every run of it records the sweep. */
+export interface SweepMember {
+  kind: "sweep";
+  sweep: string;
+  /** The field it varies, dotted as in the spec, and this run's value and place among the values. */
+  field: string;
+  value: SweepValue;
+  index: number;
+  of: number;
+  values: SweepValue[];
+  /** The run the sweep was made from, and the value it stands in for (not run again). */
+  run: string | null;
+  original: number | null;
+  /** This run's value in words, such as "bootstrap seed 2". */
+  change: string | null;
+}
+
+export type SweepKind = "seed" | "dataset" | "revision";
+
+/** A field a run's spec can be swept over (GET /api/runs/{id}/sweep-fields). */
+export interface SweepField {
+  field: string;
+  kind: SweepKind;
+  label: string;
+  plural: string;
+  description: string;
+  current: SweepValue | null;
+  current_label: string | null;
+  /** What the app offers at first: the spec's own value first, so its run stands in for it. */
+  suggested: SweepValue[];
+}
+
+/** What a sweep is asked for: a run (or a spec) and the values of one of its fields, in order. */
+export interface SweepRequest {
+  run?: string;
+  spec?: Spec;
+  field: string;
+  values: SweepValue[];
+}
+
+/** The runs a sweep makes, one per value (POST /api/sweeps/plan). */
+export interface SweepPlan {
+  sweep: string;
+  field: string;
+  kind: SweepKind;
+  label: string;
+  plural: string;
+  values: SweepValue[];
+  labels: string[];
+  original: string | null;
+  stands_in: number | null;
+  runs: { index: number; value: SweepValue; label: string; name: string | null; original: boolean }[];
+}
+
+export interface SweepStarted {
+  sweep: string;
+  plan: SweepPlan;
+  run_id: string | null;
+  job: Job | null;
+  queue: QueuedRun[];
+}
+
+export type SweepStatus = "finished" | "failed" | "cancelled" | "running" | "draft" | "missing" | "deleted";
+
+export interface SweepValueRow {
+  index: number;
+  value: SweepValue;
+  label: string;
+  run: string | null;
+  status: SweepStatus;
+  /** The run the sweep was made from, standing in for this value. */
+  original: boolean;
+  title: string | null;
+  error: string | null;
+  n_prompts: number | null;
+  /** The commit a revision resolved to, and the prompts a dataset held, as the run pinned them. */
+  revision: string | null;
+  dataset_sha256: string | null;
+}
+
+/** One site at one value: the run's mean effect, its interval and SD over prompts, and n. */
+export interface SweepPoint {
+  mean: number | null;
+  lo: number | null;
+  hi: number | null;
+  sd: number | null;
+  n: number | null;
+}
+
+export type SweepVerdict = "holds" | "size" | "sign" | "unknown";
+
+export interface SweepSite {
+  key: string;
+  rank: number;
+  label: string;
+  kind: ResultKind;
+  layer: number;
+  head: number | null;
+  feature: number | null;
+  position: PositionSpec | null;
+  position_key: string;
+  variant: SiteBase["variant"];
+  variant_key: string | null;
+  /** One per value; null where the value has no results for this site (never zero). */
+  points: (SweepPoint | null)[];
+  measured: number;
+  /** The spread of its means across the values that measured it. */
+  spread: { mean: number; sd: number | null; min: number; max: number } | null;
+  /** The median half-width of the runs' own intervals. */
+  half_width: number | null;
+  above: number[];
+  below: number[];
+  /** Two values whose intervals exclude zero on opposite sides; two whose intervals exclude each other. */
+  sign: number[] | null;
+  apart: number[] | null;
+  missing: number[];
+  excludes_zero: "every" | "some" | "none";
+  verdict: SweepVerdict;
+  text: string;
+}
+
+/** A sweep read back (GET /api/sweeps/{id}). */
+export interface SweepTable {
+  sweep: string;
+  field: string;
+  kind: SweepKind;
+  label: string;
+  plural: string;
+  description: string;
+  name: string;
+  created: string | null;
+  original: string | null;
+  stands_in: number | null;
+  values: SweepValueRow[];
+  finished: number;
+  choose: "first" | "all";
+  top: number;
+  chosen: string;
+  problem: string | null;
+  n_sites: number;
+  sites: SweepSite[];
+  counts: Record<SweepVerdict, number>;
+  headline: string;
+  spread: string;
+  notes: string[];
+  ci: number | null;
+  measure: Measure | null;
+  metric: SummaryMetric | null;
+  experiment: ExperimentSpec | null;
+}
+
+/** A model's branches and tags on Hugging Face, each with its commit (GET /api/models/revisions). */
+export interface Revisions {
+  id: string;
+  revisions: { name: string; commit: string; kind: "branch" | "tag" }[];
 }
 
 export interface RunListing {
@@ -773,6 +1059,27 @@ export interface RunListing {
   /** The run's spec can't be read: `error` says what is wrong and how to fix it. Its folder can
    * be deleted; it can't be opened. */
   damaged?: boolean;
+  /** A cancelled or failed run that kept what finished. */
+  partial?: PartialRun | null;
+}
+
+/** What a run that stopped before the end (cancelled, or failed mid-sweep) kept. A sweep that goes
+ * layer by layer (site by site, set by set) keeps the sites every prompt ran at; a method that
+ * measures every site at once keeps every site over the prompts that finished. Statistics come
+ * from the kept rows as for a finished run. */
+export interface PartialRun {
+  status: "cancelled" | "failed";
+  unit: "layers" | "sites" | "sets" | "prompts";
+  done: number;
+  total: number;
+  sites: number;
+  sites_total: number;
+  prompts: number;
+  prompts_total: number;
+  /** "Stopped after 7 of 12 layers: these are the layers that finished." */
+  note: string;
+  /** What the run doesn't keep, or keeps over the finished part only. */
+  left_out: string[];
 }
 
 /** A change to what is said about a run. What is left out stays; a title of "" or null (or the
@@ -789,6 +1096,8 @@ export interface RunDetail {
   summary: Summary | null;
   manifest: Manifest | null;
   predictions?: PredictionReport | null;
+  /** What a steering run's model went on to say, when the run recorded it. */
+  continuations?: ContinuationsFile | null;
   listing: RunListing | null;
   folder: string;
   /** A failed run's traceback, without the paths and names of the machine it ran on. */
@@ -877,6 +1186,9 @@ export interface AnswerTokens {
 export interface TokenStripData {
   clean: { tokens: string[]; ids: number[] };
   corrupt: { tokens: string[]; ids: number[] };
+  /** With a chat template: the clean tokens that hold the prompt (first, one past the last); the
+   * others are the template's. */
+  prompt?: [number, number] | null;
   aligned: boolean;
   differs: number[];
   labels: Record<string, number>;
@@ -936,6 +1248,103 @@ export interface BaselineReport {
     corrupt_answer_prob: number | null;
     metric?: BaselineMetric | null;
   } | null;
+}
+
+export interface LookToken {
+  id: number;
+  token: string;
+  prob: number;
+}
+
+/** Any text read without a dataset (POST /api/look). */
+export interface LookReport {
+  tokens: string[];
+  ids: number[];
+  prepend_bos: boolean;
+  /** The chat template the text was wrapped in, and the tokens that hold the text itself. */
+  chat_template?: ChatTemplateSpec | null;
+  text_tokens?: [number, number] | null;
+  top_k: number;
+  position: number;
+  /** After each token: the model's most likely next tokens. */
+  predictions: LookToken[][];
+  /** At `position`: what each layer would predict, when the logit lens holds for this model. */
+  lens: { layer: number; top: LookToken[] }[] | null;
+  lens_note: string | null;
+}
+
+export interface LookAttention {
+  tokens: string[];
+  layer: number;
+  head: number;
+  pattern: number[][];
+}
+
+export interface LookFeatures {
+  tokens: string[];
+  features: { feature: number; activation: number }[][];
+  active: number[];
+  first_real_token: number;
+}
+
+/** One SAE feature along any text: its activation at each token, and its largest from the first
+ * real token on (POST /api/look/feature). */
+export interface LookFeatureAlong {
+  tokens: string[];
+  feature: number;
+  activations: number[];
+  largest: number;
+  position: number;
+  first_real_token: number;
+}
+
+/** What to add while a text continues: `activation` units of a feature of the loaded SAE, at
+ * every position from token `start` on. */
+export interface LookSteer {
+  feature: number;
+  activation: number;
+  start: number;
+}
+
+/** What the model writes after a text, greedily, and with a feature added if asked
+ * (POST /api/look/continue). */
+export interface LookContinuation {
+  tokens: string[];
+  ids: number[];
+  prepend_bos: boolean;
+  new: number;
+  plain: GeneratedTokens;
+  steer: (LookSteer & { site: string; layer: number; where: string; largest: number; largest_at: number }) | null;
+  steered: GeneratedTokens | null;
+}
+
+export type HeadKindName = "previous_token" | "duplicate_token" | "induction";
+
+export interface HeadKindScores {
+  description: string;
+  /** [layer][head]: the mean over sequences and its bootstrap interval. */
+  mean: number[][];
+  lo: number[][];
+  hi: number[][];
+  /** [sequence][layer][head]: the values the statistics come from. */
+  per_sequence: number[][][];
+}
+
+export interface TopHead {
+  layer: number;
+  head: number;
+  mean: number;
+  lo: number;
+  hi: number;
+}
+
+/** Every head scored by what it attends to on random tokens repeated twice (POST /api/heads/kinds). */
+export interface HeadKindsReport {
+  settings: { seed: number; sequences: number; length: number; prepend_bos: boolean; batch_size: number; bootstrap: number; ci: number; chat_template?: ChatTemplateSpec | null };
+  n_layers: number;
+  n_heads: number;
+  kinds: Record<HeadKindName, HeadKindScores>;
+  top: Record<HeadKindName, TopHead[]>;
 }
 
 export interface AttentionData {
@@ -1001,6 +1410,9 @@ export interface Comparison {
   n_differs?: number;
   /** Versions or devices the two manifests differ in: these alone can change the last digits. */
   environment_differences?: EnvironmentDifference[];
+  /** A run that stopped early: what it kept (only the sites both runs have are compared). */
+  partial_a?: PartialRun | null;
+  partial_b?: PartialRun | null;
 }
 
 export interface EnvironmentDifference {
@@ -1057,7 +1469,8 @@ export interface MemoryEstimate {
 
 export interface EstimateResponse {
   id: string;
-  revision: string;
+  /** Null for a local model, which has no revisions. */
+  revision: string | null;
   architecture: {
     n_layers: number;
     n_heads: number;
@@ -1124,4 +1537,28 @@ export interface DeriveRequest {
 export interface TaskDatasetCreated extends DatasetCreated {
   /** The metric that reads the new dataset's answers. */
   metric: MetricKind;
+}
+
+/** A prompt in the loaded model's own chat template: the whole text, where the prompt is in it
+ * (null when the template changes the prompt, as `problem` says), the template's text before and
+ * after a prompt, and its SHA-256. */
+export interface ChatWrapped {
+  text: string;
+  start: number | null;
+  end: number | null;
+  before: string;
+  after: string;
+  sha256: string;
+  problem: string | null;
+}
+
+/** A model added from a folder on this machine. Specs name it by its name and the hash of its
+ * files; the folder is shown on this machine only. */
+export interface LocalModel {
+  name: string;
+  folder: string;
+  sha256: string;
+  added: string;
+  size: number;
+  files: number;
 }

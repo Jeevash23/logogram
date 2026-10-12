@@ -18,10 +18,12 @@ import numpy as np
 
 from logogram.backends.base import Cancelled, ModelBackend, ModelInfo
 from logogram.engine import (
+    Baselines,
     EngineError,
     EngineResult,
     LayerFn,
     ProgressFn,
+    PromptsFn,
     _chunks,
     answer_tensors,
     behavior_warnings,
@@ -103,7 +105,11 @@ def run_direct_effects(
     on_layer: LayerFn | None = None,
     cancel: threading.Event | None = None,
     on_start: Callable[[list[ResolvedSite], dict[str, Any]], None] | None = None,
+    on_prompts: PromptsFn | None = None,
 ) -> EngineResult:
+    """Split every prompt's logit difference, batch by batch of prompts. Each finished batch is
+    reported through ``on_prompts``, so a run that stops early keeps every site's term over the
+    prompts that finished."""
     exp = spec.experiment
     assert isinstance(exp, DirectLogitAttribution)
     if spec.metric.kind != "logit_diff":
@@ -137,6 +143,16 @@ def run_direct_effects(
     if heads:
         terms["head"] = np.zeros((n, n_layers, info.n_heads))
     done = 0
+    finished: list[int] = []
+
+    def over(at: list[int]) -> EngineResult:
+        """Every site's term over the prompts at positions ``at``, as a run of only those prompts
+        gives it."""
+        chosen = {key: values[at] for key, values in terms.items()}
+        return _direct_result(
+            spec, info, sites, layout, [prompts[i] for i in at], baselines.subset(at), chosen
+        )
+
     for group in groups:
         tokens = group.clean if which == "clean" else group.corrupt
         for sl in _chunks(len(group.members), batch_size):
@@ -147,9 +163,34 @@ def run_direct_effects(
             for key, values in out.items():
                 terms[key][idx] = values.numpy()
             done += len(idx)
+            finished.extend(idx)
             if on_progress is not None:
                 on_progress(done, n, n_layers - 1)
+            if on_prompts is not None:
+                at = sorted(finished)
+                on_prompts(at, lambda at=at: over(at))
 
+    result = _direct_result(spec, info, sites, layout, prompts, baselines, terms)
+    if on_layer is not None:
+        for layer in sorted({rs.layer for rs in sites}):
+            on_layer(layer, [rs.index for rs in sites if rs.layer == layer], result)
+    return result
+
+
+def _direct_result(
+    spec: Spec,
+    info: ModelInfo,
+    sites: list[ResolvedSite],
+    layout: dict[str, Any],
+    prompts: list[PreparedPrompt],
+    baselines: Baselines,
+    terms: dict[str, np.ndarray],
+) -> EngineResult:
+    """The result of splitting ``prompts``' logit differences into ``terms`` (per prompt)."""
+    exp = spec.experiment
+    assert isinstance(exp, DirectLogitAttribution)
+    which = exp.prompts
+    n = len(prompts)
     gap = baselines.metric(which)
     warnings: list[str] = behavior_warnings(baselines)
     mean_gap = float(gap.mean())
@@ -191,7 +232,7 @@ def run_direct_effects(
         else:
             delta[rs.index] = terms[rs.kind][:, rs.layer]
     nan = np.full((len(sites), n), np.nan)
-    result = EngineResult(
+    return EngineResult(
         sites=sites,
         layout=layout,
         prompts=prompts,
@@ -216,7 +257,3 @@ def run_direct_effects(
             }
         },
     )
-    if on_layer is not None:
-        for layer in sorted({rs.layer for rs in sites}):
-            on_layer(layer, [rs.index for rs in sites if rs.layer == layer], result)
-    return result

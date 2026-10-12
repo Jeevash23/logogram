@@ -1,20 +1,23 @@
-// Where the workbench is, kept in the URL's fragment: the view, and the run it shows or the two
-// runs it compares. Back and Forward move between views, a reload comes back to the same place,
-// and the link can be kept while the server runs. The fragment never carries the session token.
+// Where the workbench is, kept in the URL's fragment: the view, and the run it shows, the two
+// runs it compares or the sweep it shows. Back and Forward move between views, a reload comes back
+// to the same place, and the link can be kept while the server runs. The fragment never carries
+// the session token.
 
 import { useStore, VIEWS, type View } from "../store/app";
 
 export type Route =
   | { screen: "projects" }
-  | { screen: "workbench"; view: View; run?: string; compare?: [string, string] };
+  | { screen: "workbench"; view: View; run?: string; compare?: [string, string]; sweep?: string };
 
 const VIEW_IDS = new Set<string>(VIEWS.map((v) => v.id));
 
-/** The fragment for a route: #/projects, #/<view>, #/<view>/<run> or #/compare/<run>/<run>. */
+/** The fragment for a route: #/projects, #/<view>, #/<view>/<run>, #/compare/<run>/<run> or
+ * #/sweep/<sweep>. */
 export function formatRoute(route: Route): string {
   if (route.screen === "projects") return "#/projects";
   const parts: string[] = [route.view];
   if (route.compare) parts.push(...route.compare);
+  else if (route.sweep) parts.push(route.sweep);
   else if (route.run) parts.push(route.run);
   return `#/${parts.map(encodeURIComponent).join("/")}`;
 }
@@ -33,6 +36,7 @@ export function parseRoute(hash: string): Route | null {
   if (!first || !VIEW_IDS.has(first)) return null;
   const view = first as View;
   if (view === "compare" && rest.length === 2) return { screen: "workbench", view, compare: [rest[0], rest[1]] };
+  if (view === "sweep" && rest.length === 1) return { screen: "workbench", view, sweep: rest[0] };
   if (rest.length === 1) return { screen: "workbench", view, run: rest[0] };
   return rest.length === 0 ? { screen: "workbench", view } : null;
 }
@@ -44,6 +48,7 @@ export function currentRoute(): Route | null {
   if (st.screen !== "workbench" || !st.project) return null;
   const [a, b] = st.compareIds;
   if (st.view === "compare" && a && b) return { screen: "workbench", view: "compare", compare: [a, b] };
+  if (st.view === "sweep") return { screen: "workbench", view: "sweep", sweep: st.sweepId ?? undefined };
   return { screen: "workbench", view: st.view, run: st.activeRunId ?? undefined };
 }
 
@@ -67,6 +72,8 @@ export async function followRoute(route: Route | null): Promise<void> {
       const [a, b] = route.compare;
       if (known.has(a) && known.has(b)) st.setCompare(a, b);
       st.setView("compare");
+    } else if (route.view === "sweep") {
+      st.openSweep(route.sweep ?? null);
     } else if (route.run && route.run !== st.activeRunId && known.has(route.run)) {
       await st.openRun(route.run, route.view);
     } else if (route.view !== useStore.getState().view) {
@@ -98,7 +105,7 @@ function write(mode: "push" | "replace"): void {
 export function startRoutes(): () => void {
   const unsubscribe = useStore.subscribe((st, prev) => {
     const placeChanged = st.screen !== prev.screen || st.view !== prev.view;
-    const runChanged = st.activeRunId !== prev.activeRunId || st.compareIds !== prev.compareIds;
+    const runChanged = st.activeRunId !== prev.activeRunId || st.compareIds !== prev.compareIds || st.sweepId !== prev.sweepId;
     if (!placeChanged && !runChanged) return;
     const mode = placeChanged && !following && !st.entering ? "push" : "replace";
     // One action changes several fields (a view, then its run): one entry for all of them, written

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { api } from "../api/client";
 import type { FolderListing } from "../api/types";
@@ -27,13 +27,22 @@ export function FolderPicker({
   const [error, setError] = useState<string | null>(null);
   const [typed, setTyped] = useState("");
 
+  // Only the folder asked for last is shown: the first listing, arriving after a typed path was
+  // listed, doesn't take its place. Nor does a listing replace a path typed since it was asked
+  // for: Go would then list the folder the picker opened in.
+  const latest = useRef(0);
+  const edited = useRef(false);
   const go = async (path?: string) => {
+    const request = ++latest.current;
+    edited.current = false;
     try {
       const next = await api.folders(path);
+      if (request !== latest.current) return;
       setListing(next);
-      setTyped(next.path);
+      if (!edited.current) setTyped(next.path);
       setError(null);
     } catch (e) {
+      if (request !== latest.current) return;
       setError(e instanceof Error ? e.message : String(e));
     }
   };
@@ -84,7 +93,15 @@ export function FolderPicker({
           disabled={!listing?.parent}
           onClick={() => listing?.parent && void go(listing.parent)}
         />
-        <Input value={typed} onChange={(e) => setTyped(e.target.value)} spellCheck={false} aria-label="Folder path" />
+        <Input
+          value={typed}
+          onChange={(e) => {
+            edited.current = true;
+            setTyped(e.target.value);
+          }}
+          spellCheck={false}
+          aria-label="Folder path"
+        />
         <Button size="small" type="submit">
           Go
         </Button>

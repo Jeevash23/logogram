@@ -12,6 +12,7 @@ import { pickerGroups, runTitle } from "../lib/runs";
 import { siteValue } from "../lib/hooks";
 import { findSite, gridKey, isResidKind, partOfKind, selectionOfSite, siteGrid, siteKey, type Selection } from "../lib/sites";
 import { siteText } from "../lib/spec";
+import { fieldWords, membershipText, sweepsOf, sweepsOfRun, valueName } from "../lib/sweeps";
 import { HOLDS_RHO } from "../lib/thresholds";
 import { FlagMark } from "./Forest";
 import { runView, useStore } from "../store/app";
@@ -69,7 +70,8 @@ export function CompareView() {
     };
   }, [aId, bId, bothFinished]);
 
-  const finished = runs.filter((r) => r.status === "finished" || r.id === aId || r.id === bId);
+  // Runs with results: finished, or stopped early with what finished kept.
+  const finished = runs.filter((r) => r.status === "finished" || r.partial || r.id === aId || r.id === bId);
   // What each run is called: the title given to it, or its spec's name.
   const titleOf = (id: string | null, detail: RunDetail | undefined) => {
     const listed = id ? runs.find((r) => r.id === id) : undefined;
@@ -177,6 +179,8 @@ export function CompareView() {
         </Field>
       </div>
 
+      {(aId || bId) && <SweepLinks aId={aId} bId={bId} />}
+
       {(!aId || !bId) && (
         <Empty title="Choose two runs">
           Tick two finished runs in the history, or pick them here. A robustness check from the results view opens
@@ -224,6 +228,17 @@ export function CompareView() {
         </section>
       )}
       {error && <Callout tone="error">{error}</Callout>}
+      {comparison && (comparison.partial_a || comparison.partial_b) && (
+        <Callout title="A run here stopped before it finished">
+          {[
+            comparison.partial_a ? `Run A: ${comparison.partial_a.note}` : null,
+            comparison.partial_b ? `Run B: ${comparison.partial_b.note}` : null,
+          ]
+            .filter(Boolean)
+            .join(" ")}{" "}
+          Only what both runs kept is compared.
+        </Callout>
+      )}
 
       {comparison && <Verdict comparison={comparison} robust={robust} verification={verification} />}
 
@@ -296,12 +311,54 @@ export function CompareView() {
   );
 }
 
+/** Where a compared run is a value of a sweep: which value, and a way to the sweep. Two values of
+ * one sweep are said together. */
+function SweepLinks({ aId, bId }: { aId: string | null; bId: string | null }) {
+  const runs = useStore((st) => st.runs);
+  const openSweep = useStore((st) => st.openSweep);
+  const sweeps = useMemo(() => sweepsOf(runs), [runs]);
+  const inA = aId ? sweepsOfRun(sweeps, aId) : [];
+  const inB = bId ? sweepsOfRun(sweeps, bId) : [];
+  const shared = inA.find((a) => inB.some((b) => b.sweep.id === a.sweep.id));
+  const lines: { key: string; text: string; sweep: string }[] = [];
+  if (shared) {
+    const b = inB.find((x) => x.sweep.id === shared.sweep.id);
+    const { sweep } = shared;
+    const words = fieldWords(sweep.field);
+    lines.push({
+      key: sweep.id,
+      sweep: sweep.id,
+      text: `A and B are ${valueName(sweep.field, sweep.values[shared.index])} and ${valueName(sweep.field, sweep.values[b?.index ?? 0])} of one sweep over ${sweep.values.length} ${words.plural}.`,
+    });
+  }
+  for (const [label, memberships] of [["A", inA], ["B", inB]] as const) {
+    for (const { sweep, index } of memberships) {
+      if (shared && sweep.id === shared.sweep.id) continue;
+      lines.push({ key: `${label}:${sweep.id}`, sweep: sweep.id, text: membershipText(sweep, index, label) });
+    }
+  }
+  if (lines.length === 0) return null;
+  return (
+    <div className={c.sweeps}>
+      {lines.map((line) => (
+        <p key={line.key} className={c.sweepLine}>
+          {line.text}{" "}
+          <button type="button" className={c.sweepLink} onClick={() => openSweep(line.sweep)}>
+            Show the sweep
+          </button>
+        </p>
+      ))}
+    </div>
+  );
+}
+
 /** The runs to choose from, by title (and id, which tells reruns apart): starred first, then the
  * rest, then archived ones. */
 function RunOptions({ runs }: { runs: RunListing[] }) {
   const option = (r: RunListing) => (
     <option key={r.id} value={r.id}>
       {runTitle(r)} · {r.id}
+      {r.partial ? " · partial" : ""}
     </option>
   );
   return (

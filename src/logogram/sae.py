@@ -168,6 +168,38 @@ class SAE:
         _, std = stats
         return row * std
 
+    @property
+    def standardizes(self) -> bool:
+        """Whether it standardizes each input, so that a unit of a feature writes its decoder row
+        times that input's standard deviation."""
+        return self.params.normalize == "layer_norm"
+
+    def spread(self, x: torch.Tensor) -> torch.Tensor | None:
+        """The standard deviation of each input ``x`` (as read, ``[..., d_in]``) as ``[..., 1]``:
+        an SAE that standardizes its inputs scales everything it writes by it, as decoding
+        restores each input's spread. None for an SAE that doesn't standardize."""
+        if not self.standardizes:
+            return None
+        _, stats = self._standardize(x.float())
+        assert stats is not None
+        return stats[1]
+
+    def unit(self, feature: int, x: torch.Tensor | None = None) -> torch.Tensor:
+        """What one unit of ``feature`` adds where the SAE writes: its decoder row ``[d_out]``.
+        For an SAE that standardizes its inputs, the row times the standard deviation of each
+        input ``x`` (as read, ``[..., d_in]``): ``[..., d_out]``."""
+        row = self.params.W_dec[feature]
+        if not self.standardizes:
+            return row
+        if x is None:
+            raise ValueError(
+                "This SAE standardizes its inputs, so a unit of a feature depends on each input's "
+                "spread: give the inputs."
+            )
+        spread = self.spread(x)
+        assert spread is not None
+        return row * spread
+
     # -- fit ------------------------------------------------------------------------------------
 
 

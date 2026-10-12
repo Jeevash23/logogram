@@ -35,7 +35,7 @@ export function isResidKind(kind: ResultKind): kind is ResidKind {
   return kind === "resid_pre" || kind === "resid_mid" || kind === "resid_post";
 }
 
-export function selectionOfSite(site: SiteBase): Selection {
+export function selectionOfSite(site: Pick<SiteBase, "layer" | "kind" | "head" | "position_key" | "variant_key" | "feature">): Selection {
   return {
     layer: site.layer,
     part: partOfKind(site.kind),

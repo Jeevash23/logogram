@@ -2,8 +2,10 @@
 // filter shows, and the order and nesting of the history's rows.
 
 import type { DerivedFrom, RunListing } from "../api/types";
+import { usesFeatures } from "./buildSpec";
 import { modelName } from "./hooks";
 import { experimentShort, scopeShort } from "./spec";
+import { fieldWords, membershipText, sweepsOf, sweepsOfRun, valueName } from "./sweeps";
 
 /** What a run is called: the title someone gave it, or its spec's name. */
 export function runTitle(run: Pick<RunListing, "name" | "title"> | null | undefined, fallback = "Run"): string {
@@ -11,10 +13,12 @@ export function runTitle(run: Pick<RunListing, "name" | "title"> | null | undefi
 }
 
 /** What the history calls a run: its title, or for a robustness check without one, the choice
- * it changed. */
+ * it changed, and for a run of a sweep nested under the run it was made from, its value. */
 export function historyLabel(run: RunListing): string {
   if (run.title) return run.title;
-  if (run.derived_from?.kind === "robustness") return `Robustness · ${run.derived_from.change ?? run.name}`;
+  const from = run.derived_from;
+  if (from?.kind === "robustness") return `Robustness · ${from.change ?? run.name}`;
+  if (from?.kind === "sweep" && from.run) return `Sweep · ${valueName(from.field, from.value)}`;
   return run.name;
 }
 
@@ -97,7 +101,8 @@ export function historyRows(runs: RunListing[], filter: HistoryFilter, query: st
   const walk = (r: RunListing, depth: number) => {
     if (visited.has(r.id)) return;
     visited.add(r.id);
-    out.push({ run: r, depth: Math.min(depth, 6), orphan: !!r.derived_from && !known.has(r.derived_from.run) });
+    const parent = r.derived_from?.run;
+    out.push({ run: r, depth: Math.min(depth, 6), orphan: !!parent && !known.has(parent) });
     for (const c of children.get(r.id) ?? []) walk(c, depth + 1);
   };
   roots.forEach((r) => walk(r, 0));
@@ -136,7 +141,26 @@ const DERIVED_WORDS: Record<DerivedFrom["kind"], [string, string]> = {
   robustness: ["robustness check", "robustness checks"],
   rerun: ["rerun", "reruns"],
   verification: ["verification by patching", "verifications by patching"],
+  sweep: ["run of a sweep", "runs of a sweep"],
 };
+
+/** What a run keeps when it is cancelled, by how it measures (src/logogram/partial.py). SAE
+ * features, every one or chosen ones, are reported only when the run ends. */
+export function keptText(run: RunListing | undefined): string {
+  const kept = "What it has finished is kept and marked as partial";
+  if (!run) return `${kept}. What is in progress isn't kept.`;
+  if (usesFeatures(run.scope)) return "A run of SAE features reports nothing before it ends, so it keeps no results.";
+  if (run.experiment.kind === "attribution_patching" || run.experiment.kind === "direct_logit_attribution") {
+    return `${kept}: every site, over the prompts that finished. The prompts in progress aren't kept.`;
+  }
+  if (run.scope.kind === "site_sets") return `${kept}: the sets that finished. The set in progress isn't kept.`;
+  if (run.experiment.kind === "steering") {
+    const control = run.experiment.control ? ", each with its random control" : "";
+    return `${kept}: the sites that finished${control}. The site in progress isn't kept.`;
+  }
+  if (run.scope.kind === "sites") return `${kept}: the sites that finished. The site in progress isn't kept.`;
+  return `${kept}: the layers that finished. The layer in progress isn't kept.`;
+}
 
 /** What deleting a run takes with it, and what stays: said before it is deleted. */
 export function deleteWarning(run: RunListing, runs: RunListing[]): string {
@@ -146,7 +170,9 @@ export function deleteWarning(run: RunListing, runs: RunListing[]): string {
       ? "its saved spec"
       : run.status === "finished"
         ? "the spec it ran, its per-prompt results, its summary and its manifest"
-        : "the spec it ran and its manifest";
+        : run.partial
+          ? "the spec it ran, what it kept of what finished (per-prompt results and a summary) and its manifest"
+          : "the spec it ran and its manifest";
   const parts = [`This deletes its folder, experiments/${run.id}, with ${what}. It can't be undone.`];
   const derived = runs.filter((r) => r.derived_from?.run === run.id);
   if (derived.length > 0) {
@@ -161,6 +187,10 @@ export function deleteWarning(run: RunListing, runs: RunListing[]): string {
     parts.push(
       `${one ? "The run" : `The ${derived.length} runs`} derived from it (${kinds}) ${one ? "stays" : "stay"}, but no longer ${one ? "links" : "link"} back to it.`,
     );
+  }
+  // A sweep then has no results at this run's value.
+  for (const { sweep, index } of sweepsOfRun(sweepsOf(runs), run.id)) {
+    parts.push(`${membershipText(sweep, index, "It")} The sweep will have no results for that ${fieldWords(sweep.field).label}.`);
   }
   if (run.status === "finished" && !run.archived) parts.push("To keep it out of the way instead, archive it.");
   return parts.join(" ");

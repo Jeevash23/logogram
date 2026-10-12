@@ -1,14 +1,15 @@
 import { useEffect } from "react";
 
 import type { Spec } from "../api/types";
-import { useStore } from "../store/app";
+import { runWouldQueue, useStore } from "../store/app";
 import { MOD } from "./Header";
 import { Button } from "./ui";
 
 /**
- * Runs the experiment. While a job runs, or runs wait their turn, it reads Queue instead and adds
- * the experiment to the queue, to start when the ones ahead of it end. Ctrl/⌘ Enter presses it
- * from anywhere it is shown.
+ * Runs the experiment. While a job runs, or runs wait their turn (or another process runs the
+ * queue), it reads Queue instead and adds the experiment to the queue, to start when the ones
+ * ahead of it end. A paused queue doesn't hold it back. Ctrl/⌘ Enter presses it from anywhere it
+ * is shown.
  */
 export function RunButton({
   spec,
@@ -25,7 +26,7 @@ export function RunButton({
   /** Add it to the queue. */
   onQueue: (spec: Spec) => void;
 }) {
-  const queue = useStore((st) => st.job?.status === "running" || st.queue.length > 0);
+  const queue = useStore(runWouldQueue);
 
   const press = () => {
     if (!spec) return;
@@ -56,6 +57,7 @@ export function RunButton({
       disabled={!spec}
       tip={!spec ? (reason ?? undefined) : queue ? `Add to the queue: it starts when the jobs ahead of it end (${MOD}+Enter)` : `Run (${MOD}+Enter)`}
       aria-keyshortcuts="Control+Enter Meta+Enter"
+      data-tour="run"
     >
       {queue ? "Queue" : "Run"}
     </Button>

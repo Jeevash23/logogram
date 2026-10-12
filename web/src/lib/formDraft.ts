@@ -61,11 +61,33 @@ export function parseForm(value: unknown): FormState | null {
     form[key] = value[key];
   }
   form.scope = upgradeScope(form.scope as Record<string, unknown>);
+  form.modelRef = upgradeModelRef(form.modelRef as Record<string, unknown> | null);
   return form as unknown as FormState;
 }
 
-/** Fields of the form that a form stored by an earlier version doesn't have. */
-const ADDED = new Set<keyof FormState>(["atpMethod", "atpSteps", "metric", "klTarget", "cluster"]);
+/** A model stored before models had a source came from Hugging Face. */
+function upgradeModelRef(ref: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!ref || "source" in ref) return ref;
+  const { id, revision, ...rest } = ref;
+  return { id, source: "hub", revision, sha256: null, ...rest };
+}
+
+/** Fields of the form that a form stored by an earlier version doesn't have. A form stored before
+ * steering had a direction steered along the mean difference, without continuations, and one
+ * stored before chat templates read prompts as plain text. */
+const ADDED = new Set<keyof FormState>([
+  "atpMethod",
+  "atpSteps",
+  "metric",
+  "klTarget",
+  "cluster",
+  "chatTemplate",
+  "steerDirection",
+  "steerFeature",
+  "steerContinue",
+  "steerContinuePrompts",
+  "steerContinueTokens",
+]);
 
 /** A sweep stored before it had every field: an every-feature sweep chose and reported its
  * features on every prompt. */
@@ -186,6 +208,11 @@ const isModelRef: Check = (v) =>
 
 const isSavedDataset: Check = (v) => isObject(v) && isString(v.path) && orNull(isString)(v.sha256);
 
+const isChatTemplate: Check = (v) =>
+  isObject(v) &&
+  orNull(isString)(v.system) &&
+  (v.kind === "user_turn" || (v.kind === "assistant_prefix" && isString(v.user)));
+
 /** Every field of the form and what it may hold. Adding a field to FormState without adding it
  * here is a type error, so a stored form always has every field. */
 const FIELDS: { [K in keyof FormState]-?: Check } = {
@@ -201,6 +228,11 @@ const FIELDS: { [K in keyof FormState]-?: Check } = {
   steerTrain: isNumber,
   steerSeed: isNumber,
   steerControl: isBoolean,
+  steerDirection: oneOf("mean_difference", "sae_feature"),
+  steerFeature: orNull(isNumber),
+  steerContinue: isBoolean,
+  steerContinuePrompts: isNumber,
+  steerContinueTokens: isNumber,
   pathReceivers: listOf(isReceiver),
   pathFreezeMlps: isBoolean,
   atpMethod: oneOf("gradient", "integrated_gradients"),
@@ -217,6 +249,7 @@ const FIELDS: { [K in keyof FormState]-?: Check } = {
   batchSize: isNumber,
   limit: orNull(isNumber),
   prependBos: isBoolean,
+  chatTemplate: orNull(isChatTemplate),
   notes: isString,
   modelRef: orNull(isModelRef),
   savedDataset: orNull(isSavedDataset),

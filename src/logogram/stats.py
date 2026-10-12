@@ -2,7 +2,8 @@
 
 Everything is vectorized over sites. Bootstrap resamples are drawn once per run from the raw
 PCG64 bit stream (stable across NumPy versions) and shared by every site, so differences between
-sites are not blurred by different resamples.
+sites are not blurred by different resamples. A site's resampled means don't depend on how many
+sites come after it (see resample_means).
 
 Resamples are drawn over prompts, or over clusters of prompts (all prompts from one template,
 say), since prompts that share a template aren't independent. A run with many sites also gets
@@ -62,6 +63,29 @@ def _weights(counts: np.ndarray) -> np.ndarray:
     if np.all(totals == n):
         return counts.T / n  # every resample has n prompts (Logogram 0.1's arithmetic)
     return counts.T / totals[None, :]
+
+
+# Rows per matrix product in resample_means: every product has this shape.
+_ROWS = 256
+
+
+def resample_means(values: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    """[S, B]: each row of ``values`` [S, n] averaged in each resample, by ``weights`` [n, B].
+
+    BLAS libraries choose how to compute a matrix product by its shape, so one product over every
+    row rounds a row differently, in its last digits, as the number of rows changes. The rows go
+    through products of one shape instead (the last block padded with zeros), so a site's
+    resampled means don't depend on how many sites come after it: a run that stopped early keeps
+    exactly what the whole run gives each site it kept."""
+    values = np.asarray(values, dtype=np.float64)
+    weights = np.ascontiguousarray(weights, dtype=np.float64)
+    out = np.empty((values.shape[0], weights.shape[1]))
+    for start in range(0, values.shape[0], _ROWS):
+        part = values[start : start + _ROWS]
+        block = np.zeros((_ROWS, values.shape[1]))
+        block[: len(part)] = part
+        out[start : start + len(part)] = (block @ weights)[: len(part)]
+    return out
 
 
 @dataclass
@@ -142,12 +166,12 @@ def compute_site_stats(
 
     weights = _weights(counts)  # [n, B]
     with np.errstate(invalid="ignore", divide="ignore"):
-        delta_boot = delta @ weights  # [S, B]
+        delta_boot = resample_means(delta, weights)  # [S, B]
         if normalization == "dataset_gap":
             gap_boot = gap @ weights  # [B]
             effect_boot = delta_boot / gap_boot[None, :]
         else:
-            effect_boot = effect @ weights
+            effect_boot = resample_means(effect, weights)
     effect_lo, effect_hi = _quantiles(effect_boot, ci)
     delta_lo, delta_hi = _quantiles(delta_boot, ci)
     if n < 2:
@@ -276,7 +300,7 @@ def paired_difference(
     """Mean of b - a per row, with a percentile interval from the same resamples: a and b are
     [S, n] per-prompt values measured on the same prompts."""
     diff = np.asarray(b, dtype=np.float64) - np.asarray(a, dtype=np.float64)
-    boot = diff @ _weights(counts)
+    boot = resample_means(diff, _weights(counts))
     lo, hi = _quantiles(boot, ci)
     return diff.mean(axis=1), lo, hi
 

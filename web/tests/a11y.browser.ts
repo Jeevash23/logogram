@@ -15,6 +15,12 @@ import { fakeRuns, otherVersions, TRACEBACK } from "./fakeRuns";
 
 test.use({ bypassCSP: true, reducedMotion: "reduce" });
 
+// The fake runs' handlers fetch the server's own answers: one still waiting as the page closes
+// would fail the test after it passed.
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+});
+
 const AXE = readFileSync(fileURLToPath(new URL("../node_modules/axe-core/axe.min.js", import.meta.url)), "utf8");
 
 interface Violation {
@@ -60,6 +66,9 @@ async function open(page: Page, name: string) {
 }
 
 test("every view has no accessibility violations", async ({ page }) => {
+  // Every view in turn, each scanned: about 25 seconds on a busy machine, more than the default
+  // 30 leaves room for.
+  test.setTimeout(90_000);
   await page.goto("/?token=browser-test-token");
   await expect(page.getByRole("main").getByRole("heading", { name: "tiny-gpt2", exact: true })).toBeVisible();
   await expectAccessible(page, "Explore, model");
@@ -70,15 +79,48 @@ test("every view has no accessibility violations", async ({ page }) => {
   for (const view of ["Attention", "Head comparison", "Layer predictions", "Features"]) {
     await open(page, view);
     await expectAccessible(page, `Explore, ${view}`);
+    if (view === "Attention") {
+      const finder = page.getByRole("region", { name: "Find heads by what they attend to" });
+      await finder.getByLabel("Tokens in each copy").fill("8");
+      await finder.getByLabel("Sequences").fill("4");
+      await finder.getByRole("button", { name: "Find heads", exact: true }).click();
+      await expect(finder.getByRole("group", { name: "Induction scores of every head" })).toBeVisible();
+      await expectAccessible(page, "Explore, heads found by what they attend to");
+    }
   }
   await page.getByLabel("Features on each token").locator("button[aria-pressed]").first().click();
   await expect(page.getByText("Where it fires most")).toBeVisible();
   await expectAccessible(page, "Explore, a feature");
+  await open(page, "Your text");
+  await page.getByRole("button", { name: "Read", exact: true }).click();
+  await expect(page.getByRole("group", { name: /^Tokens of the text/ })).toBeVisible();
+  await expect(page.getByRole("group", { name: /^Attention of L0 H0 in your text/ })).toBeVisible();
+  await expectAccessible(page, "Explore, your text");
   await page.getByRole("button", { name: "Experiment", exact: true }).click();
   for (const view of ["Prompts", "Baseline", "Configure", "Spec"]) {
     await open(page, view);
     await expectAccessible(page, `Experiment, ${view}`);
   }
+  // The prompts wrapped in the model's chat template, the first shown as the model reads it.
+  await open(page, "Configure");
+  const template = page.getByRole("radiogroup", { name: "Chat template" });
+  await template.getByRole("radio", { name: "The start of the reply" }).click();
+  await page.getByRole("textbox", { name: "The person's message the reply answers" }).fill("Hello");
+  await expect(page.getByRole("figure", { name: /reads for the first prompt/ }).locator("mark")).toBeVisible();
+  await expectAccessible(page, "Experiment, Configure, prompts in the chat template");
+  await template.getByRole("radio", { name: "None" }).click();
+  // The model dialog, with a model folder about to be added.
+  await page.getByRole("button", { name: /^tiny-gpt2 · / }).click();
+  const models = page.getByRole("dialog", { name: "Load a model" });
+  await expect(models.getByRole("radiogroup", { name: "Model" })).toBeVisible();
+  await expectAccessible(page, "The model dialog");
+  await models.getByRole("button", { name: "Add a model folder" }).click();
+  await page.getByRole("dialog", { name: "Choose a model folder" }).getByRole("button", { name: "Choose this folder" }).click();
+  await expect(models.getByRole("region", { name: "Add a model folder" })).toBeVisible();
+  await expectAccessible(page, "The model dialog, adding a model folder");
+  await models.getByRole("region", { name: "Add a model folder" }).getByRole("button", { name: "Cancel" }).click();
+  await page.keyboard.press("Escape");
+  await expect(models).toBeHidden();
   // A prompt pair being edited, and edits waiting to be saved as a new dataset.
   await open(page, "Prompts");
   await page.getByRole("button", { name: "Edit prompt 0", exact: true }).click();
@@ -100,7 +142,7 @@ test("every view has no accessibility violations", async ({ page }) => {
   await question.getByRole("button", { name: "Discard edits", exact: true }).click();
   await expect(page.getByRole("region", { name: "Unsaved edits" })).toHaveCount(0);
   await page.getByRole("button", { name: "Evidence", exact: true }).click();
-  for (const view of ["Results", "Compare runs", "Research notes"]) {
+  for (const view of ["Results", "Compare runs", "Sweeps", "Research notes"]) {
     await open(page, view);
     await expectAccessible(page, `Evidence, ${view}`);
   }
@@ -171,6 +213,8 @@ test("the history's states have no accessibility violations", async ({ page }) =
   writeFileSync(join(broken, "spec.json"), "{");
   try {
     await page.reload();
+    // Opening the project settles on a view, which closes any drawer: open the history after it.
+    await expect(page.getByRole("main").getByRole("heading", { name: "tiny-gpt2", exact: true })).toBeVisible();
     await page.getByRole("button", { name: /^History/ }).click();
     const history = page.getByRole("dialog", { name: "Experiment history" });
     await expect(history.getByText("unreadable", { exact: true })).toBeVisible();

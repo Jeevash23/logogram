@@ -7,9 +7,9 @@ the web app always have these shapes.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class _Model(BaseModel):
@@ -177,14 +177,42 @@ class ControlComparison(_Model):
     beats_control: bool
 
 
+class SAESource(_Model):
+    repo: str
+    path: str
+    revision: str
+
+
+class SteeringFeature(_Model):
+    """Steering along an SAE feature: the feature, its SAE, where the SAE writes (the site its
+    decoder direction is added to: ``site`` of ``layer``, the heads' outputs z for "head"), and
+    what strength 1 is at each row of the layout: the feature's typical activation, the mean of
+    its positive activations at the row's token of the training pairs' prompts, clean and
+    corrupt (``fired`` of the ``measured`` activations were positive)."""
+
+    feature: int
+    sae: SAESource
+    site: str
+    layer: int
+    transcoder: bool
+    # Whether the SAE standardizes its inputs, so each prompt's vector is also scaled by the
+    # standard deviation of its own input at the token.
+    standardized: bool
+    activations: list[float]
+    fired: list[int]
+    measured: list[int]
+
+
 class SteeringInfo(_Model):
     """Which prompts trained the steering directions and which measured them, and how long each
-    site's direction is (one per row of the layout)."""
+    site's vector is at strength 1 (one per row of the layout)."""
 
     train: list[int]
     test: list[int]
     norms: list[float]
     control: list[ControlComparison] | None = None
+    # Along an SAE feature; None for the mean difference.
+    feature: SteeringFeature | None = None
 
 
 class FeatureRun(_Model):
@@ -249,6 +277,50 @@ class AttributionInfo(_Model):
     steps: int | None = None
 
 
+class ChatTemplateInfo(_Model):
+    """How the prompts were wrapped in the model's own chat template (logogram.chat): as the
+    person's message, or as the start of the model's reply to a fixed message; the template's
+    SHA-256, and its text before and after each prompt."""
+
+    kind: Literal["user_turn", "assistant_prefix"]
+    system: str | None
+    user: str | None
+    sha256: str
+    before: str
+    after: str
+
+
+class PartialRun(_Model):
+    """What a run that stopped before the end (cancelled, or failed mid-sweep) kept.
+
+    A sweep that goes layer by layer (or site by site, or set by set) keeps the sites at which
+    every prompt ran: ``unit`` is layers, sites or sets. A method that measures every site in one
+    pass per batch of prompts keeps every site, over the prompts that finished: ``unit`` is
+    prompts. Statistics come from the kept rows exactly as for a finished run (see
+    logogram.partial)."""
+
+    status: Literal["cancelled", "failed"]
+    unit: Literal["layers", "sites", "sets", "prompts"]
+    done: int = Field(ge=1)
+    total: int = Field(ge=1)
+    # The sites the summary reports and the sites the sweep has; the prompts measured at each.
+    sites: int = Field(ge=1)
+    sites_total: int = Field(ge=1)
+    prompts: int = Field(ge=1)
+    prompts_total: int = Field(ge=1)
+    # "Stopped after 7 of 12 layers: these are the layers that finished."
+    note: str
+    # What the run doesn't keep, or keeps over the finished part only, in sentences.
+    left_out: list[str] = []
+
+
+def stopped_text(partial: PartialRun | dict[str, Any]) -> str:
+    """How far a run that stopped early got, in words: "stopped after 7 of 12 layers"."""
+    data = partial.model_dump() if isinstance(partial, PartialRun) else partial
+    total, unit = int(data["total"]), str(data["unit"])
+    return f"stopped after {int(data['done']):,} of {total:,} {unit if total != 1 else unit[:-1]}"
+
+
 class Summary(_Model):
     logogram_summary: Literal[1] = 1
     run_id: str
@@ -274,6 +346,9 @@ class Summary(_Model):
     features: FeatureRun | None = None
     circuit: CircuitInfo | None = None
     attribution: AttributionInfo | None = None
+    chat_template: ChatTemplateInfo | None = None
+    # A run that stopped before the end: what it kept. None for a finished run.
+    partial: PartialRun | None = None
 
 
 # -- manifest.json -----------------------------------------------------------------------------
@@ -282,6 +357,9 @@ class Summary(_Model):
 class ModelProvenance(_Model):
     id: str
     revision: str | None
+    # A local model (logogram.local_models), by the hash of its files; never its folder.
+    source: Literal["hub", "local"] | None = None
+    sha256: str | None = None
     architecture: str
     process_weights: bool
     backend: str
@@ -293,6 +371,8 @@ class ModelProvenance(_Model):
 
 class DeviceInfo(_Model):
     type: str
+    # Which of the machine's GPUs, for a model on a GPU (as cuda:N names it).
+    index: int | None = None
     name: str
     cuda: str | None
     threads: int
@@ -306,12 +386,61 @@ class DatasetProvenance(_Model):
     source_path: str | None = None
 
 
+class ChatTemplateProvenance(_Model):
+    kind: Literal["user_turn", "assistant_prefix"]
+    sha256: str
+
+
 class DerivedFrom(_Model):
     run: str
     # robustness: one methodological choice changed; rerun: the same spec again; verification:
     # the strongest estimated sites of an attribution patching run, patched for real.
     kind: Literal["robustness", "rerun", "verification"]
     change: str | None = None
+
+
+SweepValue = Annotated[int, Field(strict=True)] | Annotated[str, Field(min_length=1)]
+
+
+class SweepMember(_Model):
+    """A run of a sweep: the same spec run once for each of several values of one field (see
+    logogram.sweeps). Every run of the sweep records it whole, so any of them tells the rest."""
+
+    kind: Literal["sweep"]
+    # The sweep's id, which every run of it shares.
+    sweep: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+    # The field the sweep varies, dotted as in the spec ("statistics.seed"), and this run's value.
+    field: str = Field(min_length=1, max_length=64)
+    value: SweepValue
+    # This run's place among the sweep's values, and every value in the order given.
+    index: int = Field(ge=0)
+    of: int = Field(ge=2)
+    values: list[SweepValue]
+    # The run the sweep was made from (None for a sweep of a spec), and the value it stands in
+    # for, when that value is one of the sweep's: it isn't run again.
+    run: str | None = None
+    original: int | None = Field(default=None, ge=0)
+    # This run's value in words, such as "bootstrap seed 2".
+    change: str | None = None
+
+    @model_validator(mode="after")
+    def _consistent(self) -> SweepMember:
+        if len(self.values) != self.of or self.index >= self.of:
+            raise ValueError("a sweep's values must number `of`, and its index be one of them")
+        if self.values[self.index] != self.value:
+            raise ValueError("a sweep run's value must be its sweep's value at its index")
+        if self.original is not None and (
+            self.run is None or self.original >= self.of or self.original == self.index
+        ):
+            raise ValueError(
+                "the value a sweep's original run stands in for is another value of the sweep, "
+                "and needs that run"
+            )
+        return self
+
+
+# Where a run came from: another run, or a sweep (told apart by ``kind``).
+Derivation = Annotated[DerivedFrom | SweepMember, Field(discriminator="kind")]
 
 
 class Manifest(_Model):
@@ -323,12 +452,68 @@ class Manifest(_Model):
     wall_time_s: float | None = None
     error: str | None = None
     versions: dict[str, str | None]
-    derived_from: DerivedFrom | None = None
+    derived_from: Derivation | None = None
     model: ModelProvenance | None = None
     device: DeviceInfo | None = None
     dtype: str | None = None
     dataset: DatasetProvenance | None = None
     sae: dict[str, Any] | None = None
+    # The chat template the prompts were wrapped in: how, and its SHA-256.
+    chat_template: ChatTemplateProvenance | None = None
+
+
+# -- continuations.json ------------------------------------------------------------------------
+
+CONTINUATIONS_FILE = "continuations.json"
+
+
+class GeneratedTokens(_Model):
+    """Tokens a model generated: their ids, and each as its tokenizer writes it."""
+
+    ids: list[int]
+    tokens: list[str]
+
+
+class SteeredContinuation(GeneratedTokens):
+    """A continuation with one row's vector (a steered site of the layout) at one strength, or
+    along its random control. ``key`` names the variant as the results do, such as "×2"."""
+
+    row: int
+    coefficient: float
+    control: bool
+    key: str
+
+
+class PromptContinuations(_Model):
+    """One held-out prompt continued: the prompt steered (the receiver) as written and as the
+    model read it, its continuation without steering, and one per row and variant."""
+
+    index: int  # the prompt's index in the dataset
+    text: str
+    prompt: list[str]
+    unsteered: GeneratedTokens
+    steered: list[SteeredContinuation]
+
+
+class ContinuationRow(_Model):
+    row: int
+    label: str
+
+
+class ContinuationsFile(_Model):
+    """continuations.json: what a steered model goes on to say. Greedy decoding (the most likely
+    token each time, ties to the lowest token id) of ``tokens`` new tokens after the first
+    held-out prompts, in split order: without steering, and with each row's vector at each
+    strength (and its random control). Each forward pass adds the vector at the steered site and
+    token of the prompt, as when it was measured; the generated tokens aren't steered."""
+
+    logogram_continuations: Literal[1] = 1
+    run_id: str
+    receiver: Literal["clean", "corrupt"]
+    tokens: int = Field(ge=1)
+    decoding: Literal["greedy"]
+    rows: list[ContinuationRow]
+    prompts: list[PromptContinuations]
 
 
 # -- owner.json --------------------------------------------------------------------------------
@@ -344,6 +529,42 @@ class RunOwner(_Model):
     # it tells the process apart from a later one that reuses the pid.
     started: float = Field(gt=0, allow_inf_nan=False)
     # Random, so the run removes only its own record.
+    token: str = Field(pattern=r"^[0-9a-f]{32}$")
+
+
+# -- .logogram/queue.json and queue-runner.json ------------------------------------------------
+
+
+class QueueEntry(_Model):
+    """A run waiting in a project's queue (see logogram.runqueue)."""
+
+    id: str = Field(pattern=r"^[0-9a-f]{12}$")
+    # When it was added, in UTC (ISO 8601).
+    queued_at: str = Field(pattern=r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+    # The spec as it was queued; checked again when its turn comes.
+    spec: dict[str, Any]
+    # A saved draft it runs in (its folder), and where it comes from (a rerun, a check, a sweep).
+    draft_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+    derived_from: Derivation | None = None
+    # What a version 1 spec left out, filled in with version 1's values: its run says so.
+    upgraded: list[str] = Field(default_factory=list, max_length=100)
+
+
+class QueueFile(_Model):
+    """A project's run queue, first in line first."""
+
+    logogram_queue: Literal[1] = 1
+    runs: list[QueueEntry] = Field(default_factory=list, max_length=10_000)
+
+
+class QueueRunner(_Model):
+    """The process running a project's queue: the app, or ``logogram queue run``. Like a run's
+    owner record (RunOwner): a record whose process has ended holds nothing."""
+
+    logogram_queue_runner: Literal[1] = 1
+    program: Literal["app", "cli"]
+    pid: int = Field(ge=1, lt=2**32, strict=True)
+    started: float = Field(gt=0, allow_inf_nan=False)
     token: str = Field(pattern=r"^[0-9a-f]{32}$")
 
 
@@ -401,6 +622,8 @@ class RunProgress(_Model):
 class RunEnded(_Model):
     run_id: str
     error: str | None = None
+    # A cancelled or failed run that kept what finished.
+    partial: PartialRun | None = None
 
 
 class QueuedRunInfo(_Model):
@@ -411,17 +634,28 @@ class QueuedRunInfo(_Model):
     title: str
     spec: dict[str, Any]
     draft_id: str | None
-    derived_from: DerivedFrom | None
+    derived_from: Derivation | None
     project_session: str
     # Seconds since the epoch, like a job's start.
     queued_at: float
 
 
+QueueState = Literal["idle", "waiting", "running", "paused"]
+
+
 class QueueChanged(_Model):
-    """The whole queue, first in line first, after any change."""
+    """The whole queue, first in line first, after any change, and how it stands: ``waiting``
+    (its next run starts when the job in progress ends), ``running`` (one of its runs is in
+    progress, here or in another process, and the next follows), ``paused`` (nothing starts until
+    it is started: a queue that comes back with its project is paused) or ``idle`` (empty)."""
 
     project_session: str | None
     runs: list[QueuedRunInfo]
+    state: QueueState = "idle"
+    # Who runs it, when another process does: "`logogram queue run` (process 1234)".
+    runner: str | None = None
+    # Why the project's saved queue can't be read, and how to fix it.
+    error: str | None = None
 
 
 class QueueSkipped(_Model):
@@ -480,7 +714,7 @@ class RunListing(_Model):
     dataset: str
     experiment: dict[str, Any]
     scope: dict[str, Any]
-    derived_from: DerivedFrom | None
+    derived_from: Derivation | None
     error: str | None
     # Per layer, the largest normalized effect (signed): what writes the run's logogram in the app.
     profile: list[float] | None = None
@@ -497,6 +731,8 @@ class RunListing(_Model):
     annotations_error: str | None = None
     # The run's spec can't be read: error says what is wrong and how to fix it. It can be deleted.
     damaged: bool = False
+    # A cancelled or failed run that kept what finished (its summary's partial).
+    partial: PartialRun | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json")

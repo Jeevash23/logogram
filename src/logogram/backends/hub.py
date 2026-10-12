@@ -1,7 +1,7 @@
 """Hugging Face Hub access: resolve an exact revision, download with progress, read metadata.
 
 This is the only module that talks to the network, and only when the user starts it (loading a
-model or asking for a memory estimate). Weights are loaded only from safetensors files, which
+model, asking for a memory estimate, or listing a model's revisions to sweep over). Weights are loaded only from safetensors files, which
 cannot execute code; pickle-based ``.bin`` checkpoints are refused.
 """
 
@@ -11,6 +11,7 @@ import fnmatch
 import json
 import logging
 import math
+import re
 import sys
 import threading
 from collections.abc import Callable
@@ -139,6 +140,46 @@ def resolve(model_id: str, revision: str | None) -> RepoFiles:
         n_params=n_params,
         gated=bool(info.gated),
     )
+
+
+@dataclass(frozen=True)
+class Revision:
+    """A branch or tag of a repository, and the commit it points to now."""
+
+    name: str
+    commit: str
+    kind: str  # "branch" or "tag"
+
+
+def _natural(name: str) -> tuple[tuple[int, int, str], ...]:
+    """Sorts names with numbers by their numbers: step2 before step10."""
+    return tuple(
+        (0, int(part), "") if part.isdigit() else (1, 0, part)
+        for part in re.split(r"(\d+)", name)
+        if part
+    )
+
+
+def list_revisions(model_id: str) -> list[Revision]:
+    """A model repository's branches and tags, each with its commit: the revisions it can run at
+    (Pythia's training checkpoints are branches such as step1000). Branches first, main first and
+    the rest in natural order (step2 before step10), then tags. One request, when asked for."""
+    from huggingface_hub import HfApi
+
+    try:
+        refs = HfApi().list_repo_refs(model_id)
+    except Exception as exc:
+        if _is_offline_error(exc):
+            raise BackendError(
+                f"Couldn't reach Hugging Face to list the revisions of {model_id}. Type the "
+                "revisions instead: commits, tags or branches."
+            ) from exc
+        raise _friendly_hub_error(model_id, exc) from exc
+    branches = sorted(refs.branches, key=lambda b: (b.name != "main", _natural(b.name)))
+    tags = sorted(refs.tags, key=lambda t: _natural(t.name))
+    return [Revision(b.name, b.target_commit, "branch") for b in branches] + [
+        Revision(t.name, t.target_commit, "tag") for t in tags
+    ]
 
 
 def count_stored_values(folder: Path, names: list[str]) -> int | None:

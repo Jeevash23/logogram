@@ -1,26 +1,29 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 
-import type { ExperimentSpec, Layout, Side, SiteBase, SiteResult, Spec, Summary } from "../api/types";
+import type { ExperimentSpec, Layout, Side, SiteBase, SiteResult, Spec, SteeringFeature, Summary } from "../api/types";
 import { Heatmap, type Axis } from "../components/Heatmap/Heatmap";
 import { ScaleBar } from "../components/Heatmap/ScaleBar";
 import { Logogram } from "../components/Logogram";
 import { Button, Callout, Checkbox, Empty, Icon, menuClasses, Progress, Segmented } from "../components/ui";
 import { divergingScale, niceBound, SCALE_FLOOR, type ColorScale, type ResolvedTheme } from "../lib/color";
-import { ago, capitalize, ci, count, duration, num, pct, qText, shortRevision, signed } from "../lib/format";
+import { ago, capitalize, ci, count, duration, num, pct, plural, qText, shortRevision, signed } from "../lib/format";
 import { modelName, siteValue, useActiveRun, useRunProfile } from "../lib/hooks";
 import { findSite, gridKey, layoutTitle, selectionOfSite, siteGrid, type Selection } from "../lib/sites";
 import { metricWords } from "../lib/metrics";
-import { baselineText, experimentText, measureOf, measureWords, positionText } from "../lib/spec";
+import { baselineText, chatTemplateText, experimentText, measureOf, measureWords, positionText, saeWritesText } from "../lib/spec";
 import { useStore } from "../store/app";
 import { Distribution } from "../components/Distribution";
 import { api } from "../api/client";
 import { copyText } from "../components/CopyCommand";
-import { downloadBlob, exportFigure, methodsText } from "../lib/export";
+import { usesFeatures } from "../lib/buildSpec";
+import { downloadBlob, exportFigure } from "../lib/export";
 import { environmentChanges, environmentNote } from "../lib/environment";
 import { CircuitDialog } from "../components/CircuitDialog";
 import { rankedSites, universeText } from "../lib/circuits";
+import { membershipText, sweepsOf, sweepsOfRun } from "../lib/sweeps";
 import { CircuitResults } from "./CircuitResults";
+import { Continuations } from "./Continuations";
 import { FlagMark, Forest } from "./Forest";
 import s from "./views.module.css";
 import r from "./ResultsView.module.css";
@@ -86,6 +89,9 @@ export function ResultsView() {
   const elsewhere = status === "running" && run.live?.status !== "running" && !!listing?.elsewhere;
   const summary = run.detail?.summary;
   const manifest = run.detail?.manifest;
+  // A cancelled or failed run that kept what finished: its results are shown like a finished
+  // run's, with a note saying how far it got.
+  const partial = status === "cancelled" || status === "failed" ? summary?.partial ?? listing?.partial ?? null : null;
   const layout = run.layout;
   const selectedSite = findSite(run.sites, selection);
 
@@ -118,6 +124,7 @@ export function ResultsView() {
           {title && spec && title !== spec.name && <p className={r.specName}>Spec name: {spec.name}</p>}
           {spec && <MethodsLine spec={spec} n={summary?.n_prompts ?? run.live?.nPrompts} clusters={summary?.statistics.clusters} />}
           {spec?.notes?.trim() && <RunNotes text={spec.notes.trim()} />}
+          <SweepNote runId={run.id} />
           {environmentText && (
             <p className={r.environment} role="note">
               <Icon name="info" size={14} />
@@ -143,8 +150,14 @@ export function ResultsView() {
                   Test the top sites as a circuit
                 </Button>
               )}
-              <Button onClick={() => useStore.setState({ robustnessDialogOpen: true })} icon="refresh">
+              <Button onClick={() => useStore.setState({ robustnessDialogOpen: true })} icon="refresh" data-tour="robustness">
                 Check robustness
+              </Button>
+              <Button
+                onClick={() => useStore.setState({ sweepDialogRun: run.id })}
+                tip="Run this spec once for each of several seeds, datasets or revisions, and see which sites hold"
+              >
+                Sweep…
               </Button>
               {run.detail && <ExportMenu runId={run.id} detail={run.detail} />}
               <Button variant="ghost" onClick={() => { useStore.setState({ specSource: "run" }); useStore.getState().setView("spec"); }}>
@@ -152,6 +165,7 @@ export function ResultsView() {
               </Button>
             </>
           )}
+          {partial && run.detail && <ExportMenu runId={run.id} detail={run.detail} />}
           {spec && (status === "failed" || status === "cancelled" || status === "draft") && (
             <Button
               variant={status === "draft" ? "primary" : "secondary"}
@@ -174,15 +188,35 @@ export function ResultsView() {
           Its results appear here when it finishes.
         </Callout>
       )}
-      {status === "failed" && (
+      {partial && (
+        <Callout
+          tone={status === "failed" ? "error" : undefined}
+          title={status === "failed" ? "This run failed before it finished" : "This run was cancelled before it finished"}
+        >
+          <strong>{partial.note}</strong> Nothing is drawn for the rest. Their statistics are computed as for a finished run.
+          {(manifest?.error ?? listing?.error) && <> {manifest?.error ?? listing?.error}</>}
+          {partial.left_out.length > 0 && (
+            <ul className={r.leftOut} aria-label="What this run doesn't keep">
+              {partial.left_out.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          )}
+          {status === "failed" && run.detail?.traceback && <FailureDetails key={run.id} traceback={run.detail.traceback} />}
+        </Callout>
+      )}
+      {status === "failed" && !partial && (
         <Callout tone="error" title="This run failed">
           {manifest?.error ?? listing?.error ?? "No error message was recorded."}
           {run.detail?.traceback && <FailureDetails key={run.id} traceback={run.detail.traceback} />}
         </Callout>
       )}
-      {status === "cancelled" && (
+      {status === "cancelled" && !partial && (
         <Callout title="This run was cancelled">
-          {manifest?.error ? `${manifest.error} ` : ""}Its spec and any dataset snapshot were kept. Partial results were discarded.
+          {manifest?.error ? `${manifest.error} ` : ""}Its spec and any dataset snapshot were kept.{" "}
+          {spec && usesFeatures(spec.scope)
+            ? "It has no results: a run of SAE features reports nothing before it ends, so it keeps none."
+            : "It has no results: either nothing had finished when it stopped, or it ran on a version of Logogram before 0.5, which didn't keep what finished."}
         </Callout>
       )}
       {status === "draft" && !run.live && (
@@ -240,7 +274,7 @@ export function ResultsView() {
                 <dd className="figure">{count(summary.steering.test.length)}</dd>
               </div>
               <div>
-                <dt>Pairs that computed it</dt>
+                <dt>{summary.steering.feature ? "Pairs that measured strength 1" : "Pairs that computed it"}</dt>
                 <dd className="figure">{count(summary.steering.train.length)}</dd>
               </div>
               {(() => {
@@ -261,6 +295,12 @@ export function ResultsView() {
                     {count(summary.steering.control.filter((c) => c.beats_control).length)}
                     <span className={r.figureOf}> of {count(summary.steering.control.length)}</span>
                   </dd>
+                </div>
+              )}
+              {summary.steering.feature && summary.steering.feature.activations.length > 0 && (
+                <div>
+                  <dt>Strength 1: F{summary.steering.feature.feature}'s typical activation</dt>
+                  <dd className="figure">{summary.steering.feature.activations.map((a) => num(a, 2)).join(", ")}</dd>
                 </div>
               )}
             </>
@@ -335,7 +375,7 @@ export function ResultsView() {
       )}
       {layout && layout.kind !== "sites" && layout.kind !== "site_sets" && (
         <div className={r.grid}>
-          <div className={r.heat}>
+          <div className={r.heat} data-tour="map">
             <div className={r.heatHead}>
               <span className={s.panelTitle}>{layoutTitle(layout)}</span>
               {flagged.size > 0 && (
@@ -358,6 +398,7 @@ export function ResultsView() {
               selection={selection}
               showValues={cellValues}
               running={status === "running"}
+              partial={!!partial}
             />
           </div>
           <div className={r.side}>
@@ -369,6 +410,8 @@ export function ResultsView() {
       {layout?.kind === "sites" && (
         <Forest ciLevel={run.ciLevel} results={resultList} selectedIndex={selectedSite?.index ?? null} onSelect={(site) => select(selectionOfSite(site))} flagged={flagged} limit={50} />
       )}
+      {summary?.steering?.feature && <SteeredFeature feature={summary.steering.feature} trained={summary.steering.train.length} />}
+      {run.detail?.continuations && <Continuations data={run.detail.continuations} selectedRow={selectedSite?.row ?? null} />}
       {summary && <Corrections summary={summary} />}
 
       {summary?.warnings.map((w) => (
@@ -382,6 +425,24 @@ export function ResultsView() {
 }
 
 const formatCell = (v: number) => num(v, Math.abs(v) >= 10 ? 0 : 2);
+
+/** What steering along an SAE feature added: its decoder direction where the SAE writes, with
+ * strength 1 at its typical activation. */
+function SteeredFeature({ feature, trained }: { feature: SteeringFeature; trained: number }) {
+  const typical = feature.activations.map((a) => num(a, 3)).join(", ");
+  const fired = feature.fired.reduce((a, b) => a + b, 0);
+  const measured = feature.measured.reduce((a, b) => a + b, 0);
+  return (
+    <p className={s.small}>
+      Steered along feature {feature.feature} of {feature.sae.repo}
+      {feature.sae.path ? `/${feature.sae.path}` : ""}: its decoder direction, added where the SAE writes,{" "}
+      {saeWritesText(feature)}. Strength 1 adds what the feature writes at its typical activation, {typical}: the mean of its
+      positive activations at the steered token of the clean and corrupt prompts of the {plural(trained, "training pair")}{" "}
+      (positive in {count(fired)} of {count(measured)}).
+      {feature.standardized ? " The SAE standardizes its inputs, so each prompt's vector is also scaled by the spread of its own activation there." : ""}
+    </p>
+  );
+}
 
 /**
  * Corrections for testing many sites at once: how many sites exclude zero with a band that holds
@@ -435,6 +496,7 @@ function ResultsHeatmap({
   selection,
   showValues,
   running,
+  partial,
 }: {
   layout: Layout;
   sites: SiteBase[];
@@ -449,6 +511,8 @@ function ResultsHeatmap({
   selection: Selection | null;
   showValues: boolean;
   running: boolean;
+  /** A run that stopped early: its missing sites weren't measured. */
+  partial: boolean;
 }) {
   const select = useStore((st) => st.select);
   const grid = useMemo(() => siteGrid(sites), [sites]);
@@ -512,6 +576,7 @@ function ResultsHeatmap({
       showValues={showValues}
       format={formatCell}
       fade={running}
+      missing={partial ? "Not measured" : undefined}
       selected={selected}
       flagged={isFlagged}
       onSelect={onSelect}
@@ -559,7 +624,7 @@ function MethodsLine({ spec, n, clusters }: { spec: Spec; n: number | undefined;
               : e.kind === "path_patching"
                 ? `Path patching ${e.direction === "clean_to_corrupt" ? "clean → corrupt" : "corrupt → clean"} into ${e.receivers.map((x) => (x.kind === "logits" ? "logits" : `L${x.layer} H${x.head} ${x.input}`)).join(", ")}${e.freeze_mlps ? ", MLPs held" : ""}`
                 : e.kind === "steering"
-                ? `Steer ${e.apply_to} → ${e.apply_to === "clean" ? "corrupt" : "clean"} (${e.coefficients.map((c) => `×${c}`.replace("-", "−")).join(", ")}${e.control ? ", random control" : ""})`
+                ? `Steer ${e.apply_to} ${e.direction?.kind === "sae_feature" ? `along SAE feature ${e.direction.feature}` : `→ ${e.apply_to === "clean" ? "corrupt" : "clean"}`} (${e.coefficients.map((c) => `×${c}`.replace("-", "−")).join(", ")}${e.control ? ", random control" : ""})`
                 : `Ablate (${baselineText(e.baseline)})`}
       </strong>
       {" "}{site}{scope.kind === "site_sets" ? ", each intervened on at once" : ` at ${position}`}
@@ -568,9 +633,30 @@ function MethodsLine({ spec, n, clusters }: { spec: Spec; n: number | undefined;
         ? `logit difference, as a share of ${spec.metric.normalization === "dataset_gap" ? "the mean" : "each prompt's"}`
         : `${metricWords(spec.metric).label}, normalized by ${spec.metric.normalization === "dataset_gap" ? "the dataset gap" : "each prompt's gap"}`}
       {n !== undefined && <><span className={r.sep}>·</span>n = {count(n)}</>}
+      {spec.tokenization.chat_template && <><span className={r.sep}>·</span>prompts {chatTemplateText(spec.tokenization.chat_template)}</>}
       <span className={r.sep}>·</span>{Math.round(spec.statistics.ci * 100)}% CI{spec.statistics.cluster ? `, resampling ${clusters ? `${count(clusters)} clusters` : "clusters"} of prompts with the same ${spec.statistics.cluster}` : ""}, {count(spec.statistics.bootstrap)} resamples, seed {spec.statistics.seed}
-      <span className={r.sep}>·</span>{modelName(spec.model.id)}{spec.model.revision ? ` @ ${shortRevision(spec.model.revision)}` : ""}, {spec.model.dtype}
+      <span className={r.sep}>·</span>{modelName(spec.model.id)}{spec.model.source === "local" ? `, local files ${(spec.model.sha256 ?? "").slice(0, 12)}` : spec.model.revision ? ` @ ${shortRevision(spec.model.revision)}` : ""}, {spec.model.dtype}
     </p>
+  );
+}
+
+/** The sweeps this run is a value of, each with a way to it. */
+function SweepNote({ runId }: { runId: string }) {
+  const runs = useStore((st) => st.runs);
+  const openSweep = useStore((st) => st.openSweep);
+  const memberships = useMemo(() => sweepsOfRun(sweepsOf(runs), runId), [runs, runId]);
+  if (memberships.length === 0) return null;
+  return (
+    <div className={r.sweeps}>
+      {memberships.map(({ sweep, index }) => (
+        <p key={sweep.id} className={r.sweepLine}>
+          {membershipText(sweep, index)}{" "}
+          <button type="button" className={r.sweepLink} onClick={() => openSweep(sweep.id)}>
+            Show the sweep
+          </button>
+        </p>
+      ))}
+    </div>
   );
 }
 
@@ -608,6 +694,8 @@ function RunNotes({ text }: { text: string }) {
 
 /** Exports in one place: the per-prompt table, the figure, and the methods text. */
 function ExportMenu({ runId, detail }: { runId: string; detail: NonNullable<ReturnType<typeof useActiveRun>["detail"]> }) {
+  const kind = detail.summary?.layout.kind;
+  const hasMap = !!kind && kind !== "sites" && kind !== "site_sets";
   const metric = useStore((st) => st.mapMetric);
   const scaleMode = useStore((st) => st.scaleMode);
   const guard = useStore((st) => st.guard);
@@ -618,18 +706,39 @@ function ExportMenu({ runId, detail }: { runId: string; detail: NonNullable<Retu
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
         <DropdownMenu.Content className={menuClasses.menu} sideOffset={6} align="end">
+          <DropdownMenu.Item className={menuClasses.item} onSelect={() => void guard(async () => downloadBlob(await api.runReport(runId), `${runId}.html`))}>
+            <Icon name="download" size={14} /> Download the report (HTML)
+          </DropdownMenu.Item>
+          <DropdownMenu.Separator className={menuClasses.separator} />
+          <DropdownMenu.Item className={menuClasses.item} onSelect={() => void guard(async () => downloadBlob(await api.exportSites(runId), `${runId}-sites.csv`))}>
+            <Icon name="download" size={14} /> Export per-site CSV
+          </DropdownMenu.Item>
           <DropdownMenu.Item className={menuClasses.item} onSelect={() => void guard(async () => downloadBlob(await api.exportRun(runId), `${runId}.csv`))}>
             <Icon name="download" size={14} /> Export per-prompt CSV
           </DropdownMenu.Item>
-          <DropdownMenu.Item className={menuClasses.item} onSelect={() => void guard(() => exportFigure(detail, metric, scaleMode === "unit"))}>
-            <Icon name="download" size={14} /> Export figure PNG
+          <DropdownMenu.Item className={menuClasses.item} onSelect={() => void guard(async () => downloadBlob(await api.exportRun(runId, true), `${runId}-with-prompts.csv`))}>
+            <Icon name="download" size={14} /> Export per-prompt CSV with prompt text
           </DropdownMenu.Item>
+          {hasMap && (
+            <>
+              <DropdownMenu.Item className={menuClasses.item} onSelect={() => void guard(() => exportFigure(detail, metric, scaleMode === "unit"))}>
+                <Icon name="download" size={14} /> Export figure PNG
+              </DropdownMenu.Item>
+              <DropdownMenu.Item
+                className={menuClasses.item}
+                onSelect={() => void guard(async () => downloadBlob(await api.runFigure(runId, metric, scaleMode === "unit"), `${runId}.svg`))}
+              >
+                <Icon name="download" size={14} /> Export figure SVG
+              </DropdownMenu.Item>
+            </>
+          )}
           <DropdownMenu.Separator className={menuClasses.separator} />
           <DropdownMenu.Item
             className={menuClasses.item}
             onSelect={() =>
               void guard(async () => {
-                if (!(await copyText(methodsText(detail)))) throw new Error("Couldn't access the clipboard. Use Download methods instead.");
+                const { text } = await api.methods(runId);
+                if (!(await copyText(text))) throw new Error("Couldn't access the clipboard. Use Download methods instead.");
                 useStore.getState().notify("Methods copied.");
               })
             }
@@ -638,7 +747,12 @@ function ExportMenu({ runId, detail }: { runId: string; detail: NonNullable<Retu
           </DropdownMenu.Item>
           <DropdownMenu.Item
             className={menuClasses.item}
-            onSelect={() => downloadBlob(new Blob([methodsText(detail)], { type: "text/plain;charset=utf-8" }), `${runId}-methods.txt`)}
+            onSelect={() =>
+              void guard(async () => {
+                const { text } = await api.methods(runId);
+                downloadBlob(new Blob([text], { type: "text/plain;charset=utf-8" }), `${runId}-methods.txt`);
+              })
+            }
           >
             <Icon name="download" size={14} /> Download methods
           </DropdownMenu.Item>

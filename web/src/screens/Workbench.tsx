@@ -9,6 +9,7 @@ import { ModelDialog } from "../components/ModelDialog";
 import { RobustnessDialog } from "../components/RobustnessDialog";
 import { Splitter } from "../components/Splitter";
 import { StatusLine } from "../components/StatusLine";
+import { SweepDialog } from "../components/SweepDialog";
 import { TokenStrip } from "../components/TokenStrip";
 import { TopBar } from "../components/TopBar";
 import { Button, Dialog, escapeStaysInFields, Icon, Tip } from "../components/ui";
@@ -26,6 +27,8 @@ import { PromptsView } from "../views/PromptsView";
 import { ResearchView, NoteEditorDialog } from "../views/ResearchView";
 import { ResultsView } from "../views/ResultsView";
 import { SpecView } from "../views/SpecView";
+import { SweepView } from "../views/SweepView";
+import { TextView } from "../views/TextView";
 import s from "./Workbench.module.css";
 
 export function Workbench() {
@@ -54,7 +57,15 @@ export function Workbench() {
   const supportsInspector = ["explore", "attention", "results"].includes(view);
   const showInspector = !narrow && inspector && supportsInspector;
   useEffect(() => { const resize = () => setWidth(window.innerWidth); window.addEventListener("resize", resize); return () => window.removeEventListener("resize", resize); }, []);
-  useEffect(() => { lastView.current[workspace] = view; setDrawer(null); }, [workspace, view, project]);
+  // Another project or view closes the drawer; the place restored as a project opens doesn't close
+  // one opened meanwhile (a place chosen then wins over the restored one, too).
+  const drawerProject = useRef(project);
+  useEffect(() => {
+    lastView.current[workspace] = view;
+    const switched = drawerProject.current !== project;
+    drawerProject.current = project;
+    if (switched || !useStore.getState().entering) setDrawer(null);
+  }, [workspace, view, project]);
   useEffect(() => { viewPane.current?.scrollTo({ top: 0, left: 0 }); }, [view, exploreMode, activeRunId]);
   useEffect(() => {
     if (!inspectorFocus) return;
@@ -71,20 +82,20 @@ export function Workbench() {
     <a href="#main" className={s.skip} onClick={(e) => { e.preventDefault(); document.getElementById("main")?.focus(); }}>Skip to the view</a>
     <TopBar workspace={workspace} onWorkspace={goWorkspace} onHistory={() => setDrawer("history")} runs={runs} staged={staged} />
     <div className={s.subbar}>
-      <nav className={s.tabs} aria-label={`${workspace} views`}>{WORKSPACE_VIEWS.find(w => w.id === workspace)?.views.map((v, i) => <button key={v.id} type="button" className={s.tab} aria-current={view === v.id ? "page" : undefined} aria-keyshortcuts={singleKeys ? String(i + 1) : undefined} onClick={() => setView(v.id)}>{v.label}{v.id === "heads" && pins > 0 && <span className={s.count}>{pins}/2</span>}</button>)}</nav>
+      <nav className={s.tabs} aria-label={`${workspace} views`}>{WORKSPACE_VIEWS.find(w => w.id === workspace)?.views.map((v, i) => <button key={v.id} type="button" className={s.tab} data-tour={`tab-${v.id}`} aria-current={view === v.id ? "page" : undefined} aria-keyshortcuts={singleKeys ? String(i + 1) : undefined} onClick={() => setView(v.id)}>{v.label}{v.id === "heads" && pins > 0 && <span className={s.count}>{pins}/2</span>}</button>)}</nav>
       <div className={s.context}>
         <NextStep />
         <ModelChip />
         <DatasetChip />
-        <Button size="small" variant="ghost" aria-expanded={showInspector || drawer === "inspector"} onClick={() => narrow || !supportsInspector ? setDrawer("inspector") : setInspector(!inspector)}>{showInspector ? "Hide inspector" : "Inspector"}</Button>
+        <Button size="small" variant="ghost" data-tour="inspector-button" aria-expanded={showInspector || drawer === "inspector"} onClick={() => narrow || !supportsInspector ? setDrawer("inspector") : setInspector(!inspector)}>{showInspector ? "Hide inspector" : "Inspector"}</Button>
       </div>
     </div>
     <div className={s.body}>
       <main className={s.center} id="main" tabIndex={-1}>
         <div className={s.view} ref={viewPane}><ErrorBoundary key={view} name="This view"><ActiveView view={view} /></ErrorBoundary></div>
-        {!["notes", "compare", "spec", "features"].includes(view) && <ErrorBoundary name="The token strip" resetKey={view}><TokenStrip /></ErrorBoundary>}
+        {!["notes", "compare", "sweep", "spec", "features", "text"].includes(view) && <ErrorBoundary name="The token strip" resetKey={view}><TokenStrip /></ErrorBoundary>}
       </main>
-      {showInspector && <aside className={s.inspectorPane} aria-label="Inspector"><Splitter orientation="vertical" label="Resize the inspector" value={inspectorWidth} min={280} max={480} onReset={() => setInspectorWidth(320)} onResize={(delta, phase) => {
+      {showInspector && <aside className={s.inspectorPane} aria-label="Inspector" data-tour="inspector"><Splitter orientation="vertical" label="Resize the inspector" value={inspectorWidth} min={280} max={480} onReset={() => setInspectorWidth(320)} onResize={(delta, phase) => {
         if (phase === "start") { startWidth.current = inspectorWidth; return; }
         const next = Math.max(280, Math.min(480, startWidth.current - delta)); setInspectorWidth(next);
         if (phase === "end") { try { localStorage.setItem("logogram.inspectorWidth", String(next)); } catch { /* use session size */ } }
@@ -94,6 +105,7 @@ export function Workbench() {
     <CancelRunDialog />
     <ModelDialog />
     <RobustnessDialog />
+    <SweepDialog />
     <NoteEditorDialog />
     <Dialog open={drawer !== null} onOpenChange={open => { if (!open) setDrawer(null); }} title={drawer === "history" ? "Experiment history" : "Inspector"} wide onEscapeKeyDown={escapeStaysInFields}><div className={s.drawer}>{drawer === "history" ? <ErrorBoundary name="The history"><History onOpen={() => setDrawer(null)} /></ErrorBoundary> : <SafeInspector />}</div></Dialog>
   </div>;
@@ -145,6 +157,8 @@ function ActiveView({ view }: { view: View }) {
     case "results": return <ResultsView />;
     case "attention": return <AttentionView />;
     case "compare": return <CompareView />;
+    case "sweep": return <SweepView />;
     case "spec": return <SpecView />;
+    case "text": return <TextView />;
   }
 }
