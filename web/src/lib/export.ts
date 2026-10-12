@@ -1,6 +1,6 @@
 import type { RunDetail } from "../api/types";
 import { divergingScale, niceBound, SCALE_FLOOR, textOn } from "./color";
-import { experimentText, measureWords, scopeText } from "./spec";
+import { chatTemplateText, experimentText, measureWords, scopeText } from "./spec";
 
 export function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
@@ -17,11 +17,15 @@ export async function exportFigure(run: RunDetail, metric: "effect" | "delta", u
   if (!summary) throw new Error("Select a finished run to export a figure.");
   await document.fonts.ready;
   const { layout, sites } = summary;
+  const { model, tokenization } = run.spec;
+  // A run that stopped early says how far it got, on a line of its own below the rest.
+  const partial = summary.partial ?? null;
   const cell = 44;
   const left = 210;
   const top = 190;
   const width = Math.max(960, left + layout.cols.length * cell + 32);
-  const height = top + layout.rows.length * cell + 170;
+  const bottom = top + layout.rows.length * cell + 170;
+  const height = bottom + (partial ? 25 : 0);
   // Browser canvas limits vary. Keep a large sweep readable in the CSV without silently
   // clipping a figure or exhausting memory while allocating its backing store.
   if (width * height > 16_000_000 || width > 12000 || height > 12000) throw new Error("This sweep is too large for one figure. Export its per-prompt CSV or run a smaller scope.");
@@ -40,7 +44,9 @@ export async function exportFigure(run: RunDetail, metric: "effect" | "delta", u
   ctx.fillText(run.listing?.title || run.spec.name, 28, 38, width - 56); // a title given to the run, or its spec's name
   ctx.font = `14px ${font}`;
   ctx.fillText(`${experimentText(run.spec.experiment)} · ${scopeText(run.spec.scope)}`, 28, 66, width - 56);
-  ctx.fillText(`${run.spec.model.id} @ ${run.spec.model.revision ?? "unpinned"} · ${run.spec.model.dtype} · n = ${summary.n_prompts}`, 28, 88, width - 56);
+  // A local model has no revision: the hash of the files it loads pins it.
+  const files = model.source === "local" ? `, local files ${(model.sha256 ?? "").slice(0, 12)}` : ` @ ${model.revision ?? "unpinned"}`;
+  ctx.fillText(`${model.id}${files} · ${model.dtype} · n = ${summary.n_prompts}`, 28, 88, width - 56);
   const words = measureWords(run.spec.experiment, summary.metric);
   ctx.fillText(`${layout.row_title} × ${layout.col_title} · ${metric === "effect" ? words.effect : words.delta} · mean over prompts`, 28, 110, width - 56);
   const bound = unit && metric === "effect" ? 1 : niceBound(sites.map((s) => s[metric].mean), SCALE_FLOOR[metric]);
@@ -62,13 +68,25 @@ export async function exportFigure(run: RunDetail, metric: "effect" | "delta", u
     ctx.font = `12px ${font}`;
     ctx.fillText(value === null ? "∅" : value.toFixed(2), x + (cell - 2) / 2, y + 26, cell - 6);
   }
-  const legendY = height - 122;
+  const legendY = bottom - 122;
   for (let x = 0; x < 300; x++) { ctx.fillStyle = color(bound * (2 * x / 299 - 1)); ctx.fillRect(28 + x, legendY, 1, 14); }
   ctx.fillStyle = "#1c2226"; ctx.font = `13px ${font}`; ctx.textAlign = "left";
   ctx.fillText(String(-bound), 28, legendY + 34); ctx.fillText("0", 174, legendY + 34);
   ctx.textAlign = "right"; ctx.fillText(String(bound), 328, legendY + 34); ctx.textAlign = "left";
-  ctx.fillText(`BOS ${run.spec.tokenization.prepend_bos ? "on" : "off"} · batch ${run.spec.execution.batch_size} · ${summary.statistics.ci * 100}% CI, ${summary.statistics.bootstrap} resamples, seed ${summary.statistics.seed}`, 28, height - 55, width - 56);
-  ctx.fillText(`Run ${run.id} · ∅ undefined · colors clipped at ±${bound}; full values and intervals in the saved results`, 28, height - 30, width - 56);
+  // In a chat template, the template writes the beginning of each prompt: whether BOS is added
+  // doesn't apply.
+  const template = tokenization.chat_template;
+  const templateSha = summary.chat_template?.sha256 ?? run.manifest?.chat_template?.sha256;
+  const reading = template
+    ? `Prompts ${chatTemplateText(template)}${templateSha ? ` (template SHA-256 ${templateSha.slice(0, 12)})` : ""}`
+    : `BOS ${tokenization.prepend_bos ? "on" : "off"}`;
+  ctx.fillText(`${reading} · batch ${run.spec.execution.batch_size} · ${summary.statistics.ci * 100}% CI, ${summary.statistics.bootstrap} resamples, seed ${summary.statistics.seed}`, 28, bottom - 55, width - 56);
+  ctx.fillText(`Run ${run.id} · ∅ undefined · colors clipped at ±${bound}; full values and intervals in the saved results`, 28, bottom - 30, width - 56);
+  if (partial) {
+    const ended = partial.status === "failed" ? "failed" : "was cancelled";
+    const rest = partial.unit === "prompts" ? "" : "; nothing is drawn for the rest";
+    ctx.fillText(`${partial.note} The run ${ended} before the end${rest}.`, 28, bottom - 5, width - 56);
+  }
   const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob((result) => result ? resolve(result) : reject(new Error("The figure could not be encoded.")), "image/png"));
   downloadBlob(blob, `${run.id}-${metric}.png`);
 }

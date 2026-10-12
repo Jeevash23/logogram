@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { isProjectScoped, PROJECT_SCOPED } from "../src/api/client";
-import type { DatasetDetail, ModelStatus, PromptRecord, Spec } from "../src/api/types";
+import type { DatasetDetail, ModelStatus, PromptRecord, SAEInfo, SAEStatus, Spec } from "../src/api/types";
 import { analysisContext, sameModel, tokenizationKey } from "../src/lib/analysis";
 import { buildSpec, datasetFacts, metricOf, savedDifferences } from "../src/lib/buildSpec";
 import { DEFAULT_FORM, formFromSpec, type FormState } from "../src/lib/formState";
@@ -209,6 +209,42 @@ test("steering along an SAE feature is written where the SAE writes, with contin
   });
   // Back to the mean difference: the residual stream again.
   expect(scopeFor("steering", at("attn_out", 1))).toEqual(every);
+});
+
+test("features belong to the SAE they were written for: another SAE loaded is said before the run", () => {
+  const sae = (patch: Partial<SAEInfo> = {}): SAEStatus => ({
+    state: "ready",
+    info: { repo: "owner/sae", path: "layer_1", revision: "a".repeat(40), site: "resid_pre", layer: 1, d_in: 32, d_sae: 64, activation: "relu", k: null, normalize: "none", format: "test", note: "", fit: null, ...patch },
+  });
+  const steer = form({
+    kind: "steering", steerApplyTo: "corrupt", steerDirection: "sae_feature", steerFeature: 3,
+    scope: { kind: "sites", sites: [{ kind: "resid_pre", layer: 1, head: null, position: { kind: "last" } }] },
+  });
+  // A saved spec that steers along feature 3 of owner/sae, opened again.
+  const saved = formFromSpec(built(steer, { sae: sae() }));
+  const differences = (f: FormState, loaded: SAEStatus) => savedDifferences(f, model, "datasets/ioi.jsonl", "abc", (id) => id, loaded);
+  expect(differences(saved, sae())).toEqual([]);
+  // Another SAE where the same one writes: it runs with that SAE's feature 3, which is another feature.
+  const other = sae({ repo: "other/sae-32k", path: "l1", revision: "c".repeat(40), d_sae: 128 });
+  expect(built(saved, { sae: other }).sae).toEqual({ repo: "other/sae-32k", path: "l1", revision: "c".repeat(40) });
+  expect(differences(saved, other)).toEqual([
+    "It was written for the SAE owner/sae/layer_1; the loaded SAE is other/sae-32k/l1, where the same feature numbers are other features.",
+  ]);
+  expect(differences(saved, sae({ revision: "b".repeat(40) }))).toEqual([
+    "It was written for revision aaaaaaa of the SAE owner/sae/layer_1; the loaded one is revision bbbbbbb.",
+  ]);
+  // A folder is the same with or without slashes around it; an unpinned SAE is any revision of it.
+  expect(differences(saved, sae({ path: "/layer_1/" }))).toEqual([]);
+  expect(differences({ ...saved, saeRef: { ...saved.saeRef!, revision: null } }, sae({ revision: "b".repeat(40) }))).toEqual([]);
+  // With none loaded, it runs with its own SAE.
+  expect(differences(saved, { state: "none" })).toEqual([]);
+  // Chosen features to patch, and every feature, belong to an SAE the same way.
+  const patched = formFromSpec(built(form({ scope: { kind: "sites", sites: [{ kind: "sae_feature", layer: 1, feature: 3, position: { kind: "last" } }] } }), { sae: sae() }));
+  expect(differences(patched, other)).toHaveLength(1);
+  const every = formFromSpec(built(form({ kind: "attribution_patching", scope: { kind: "features", position: { kind: "last" }, top: 20, choose_on: null, seed: null } }), { sae: sae() }));
+  expect(differences(every, other)).toHaveLength(1);
+  // Steering along the mean difference uses no SAE.
+  expect(differences({ ...saved, steerDirection: "mean_difference" }, other)).toEqual([]);
 });
 
 test("the metric's own words name a run's values; direct attribution stays with the logit difference", () => {

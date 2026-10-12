@@ -4,6 +4,7 @@ import { create } from "zustand";
 
 import { api, ApiError, setProjectSession } from "../api/client";
 import { analysisContext, analysisSourceFor, tokenizationKey } from "../lib/analysis";
+import { usesFeatures } from "../lib/buildSpec";
 import type {
   BaselineReport,
   DatasetDetail,
@@ -1262,8 +1263,14 @@ export const useStore = create<Store>((set, get) => ({
         });
         if (status === "cancelled" && !data.replay) {
           const partial = data.partial as PartialRun | null | undefined;
+          // SAE features are reported only when the run ends: what finished before isn't kept.
+          const scope = get().runs.find((r) => r.id === runId)?.scope ?? get().runDetails[runId]?.spec.scope;
           get().notify(
-            partial ? `Run cancelled. ${partial.note} Its spec and any dataset snapshot remain.` : "Run cancelled before anything finished. Its spec and any dataset snapshot remain.",
+            partial
+              ? `Run cancelled. ${partial.note} Its spec and any dataset snapshot remain.`
+              : scope && usesFeatures(scope)
+                ? "Run cancelled. A run of SAE features reports nothing before it ends, so it kept no results. Its spec and any dataset snapshot remain."
+                : "Run cancelled before anything finished. Its spec and any dataset snapshot remain.",
             "info",
             { persist: true },
           );

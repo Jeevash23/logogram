@@ -102,3 +102,49 @@ test("results say when a run ran with other versions, and Compare says which", a
   await expect(where).toContainText("They ran with other versions or on other devices, which alone can change results in the last digits");
   for (const text of ["PyTorch", "2.5.1", "2.6.0", "Device", "CPU", "CUDA"]) await expect(where).toContainText(text);
 });
+
+test("a run's methods line names the chat template its prompts were read in and its local model's files", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await fakeRuns(page, () => [
+    {
+      id: "fake-chat",
+      name: "Heads in a chat",
+      status: "finished",
+      spec: {
+        model: { id: "tiny-gpt2", source: "local", revision: null, sha256: "a".repeat(64), device: "cpu", dtype: "float32", process_weights: true },
+        tokenization: { prepend_bos: false, chat_template: { kind: "user_turn", system: null } },
+      },
+    },
+  ]);
+  await open(page);
+  await page.getByRole("button", { name: /^History/ }).click();
+  await history(page).getByRole("button", { name: /^Heads in a chat/ }).click();
+  const main = page.getByRole("main");
+  await expect(main.getByRole("heading", { level: 1, name: "Heads in a chat" })).toBeVisible();
+  const methods = main.locator("p").filter({ hasText: "resamples, seed" }).first();
+  await expect(methods).toContainText("prompts in the chat template, as the person's message");
+  await expect(methods).toContainText("tiny-gpt2, local files aaaaaaaaaaaa, float32");
+  expect(errors).toEqual([]);
+});
+
+test("a cancelled run of SAE features says why it kept nothing", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await fakeRuns(page, () => [
+    {
+      id: "fake-features",
+      name: "Chosen features",
+      status: "cancelled",
+      spec: { scope: { kind: "sites", sites: [{ kind: "sae_feature", layer: 1, head: null, feature: 3, position: { kind: "last" } }] } },
+    },
+  ]);
+  await open(page);
+  await page.getByRole("button", { name: /^History/ }).click();
+  await history(page).getByRole("button", { name: /^Chosen features/ }).click();
+  const main = page.getByRole("main");
+  await expect(main.getByRole("heading", { level: 1, name: "Chosen features" })).toBeVisible();
+  const callout = main.getByRole("note").filter({ hasText: "This run was cancelled" });
+  await expect(callout).toContainText("It has no results: a run of SAE features reports nothing before it ends, so it keeps none.");
+  expect(errors).toEqual([]);
+});

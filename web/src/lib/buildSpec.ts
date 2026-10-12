@@ -10,6 +10,7 @@ import type {
   MetricSpec,
   ModelStatus,
   PositionSpec,
+  SAERef,
   SAEStatus,
   ScopeSpec,
   SiteKind,
@@ -379,13 +380,15 @@ export function buildSpec(
   return { spec };
 }
 
-/** How what will run differs from the saved spec the form was opened from. */
+/** How what will run differs from the saved spec the form was opened from. A loaded SAE takes the
+ * place of the one the form's features belong to (see buildSpec), so another one is said too. */
 export function savedDifferences(
   form: FormState,
   model: ModelStatus,
   datasetPath: string | null,
   datasetSha: string | null,
   name: (id: string) => string = (id) => id,
+  sae?: SAEStatus,
 ): string[] {
   const out: string[] = [];
   const ref = form.modelRef;
@@ -410,5 +413,21 @@ export function savedDifferences(
     if (saved.path !== datasetPath) out.push(`It used ${saved.path}; the prompts chosen now are ${datasetPath}.`);
     else if (saved.sha256 && datasetSha && saved.sha256 !== datasetSha) out.push(`${saved.path} has changed since it was saved.`);
   }
+  // Its features are numbered in its own SAE: in another, the same number is another feature.
+  const written = form.saeRef;
+  const loaded = sae?.state === "ready" ? sae.info : undefined;
+  const steersFeature = form.kind === "steering" && form.steerDirection === "sae_feature";
+  if (written && loaded && (usesFeatures(form.scope) || steersFeature)) {
+    const folder = (ref: SAERef) => `${ref.repo}${trimPath(ref.path) ? `/${trimPath(ref.path)}` : ""}`;
+    if (written.repo !== loaded.repo || trimPath(written.path) !== trimPath(loaded.path)) {
+      out.push(`It was written for the SAE ${folder(written)}; the loaded SAE is ${folder(loaded)}, where the same feature numbers are other features.`);
+    } else if (written.revision && written.revision !== loaded.revision) {
+      const now = loaded.revision ? `revision ${shortRevision(loaded.revision)}` : "unpinned";
+      out.push(`It was written for revision ${shortRevision(written.revision)} of the SAE ${folder(written)}; the loaded one is ${now}.`);
+    }
+  }
   return out;
 }
+
+/** An SAE's folder in its repository, without the slashes around it. */
+const trimPath = (path: string) => path.replace(/^\/+|\/+$/g, "");

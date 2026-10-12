@@ -1,28 +1,11 @@
 import { useEffect } from "react";
 
-import type { RunListing } from "../api/types";
 import { pct } from "../lib/format";
+import { keptText } from "../lib/runs";
 import { useStore } from "../store/app";
 import { ConfirmDialog } from "./ui";
 
 const close = () => useStore.setState({ cancelConfirmOpen: false });
-
-/** What a run keeps when it is cancelled, by how it measures (src/logogram/partial.py). */
-function keptText(run: RunListing | undefined): string {
-  const kept = "What it has finished is kept and marked as partial";
-  if (!run) return `${kept}. What is in progress isn't kept.`;
-  if (run.scope.kind === "features") return "A run of SAE features reports nothing before it ends, so it keeps no results.";
-  if (run.experiment.kind === "attribution_patching" || run.experiment.kind === "direct_logit_attribution") {
-    return `${kept}: every site, over the prompts that finished. The prompts in progress aren't kept.`;
-  }
-  if (run.scope.kind === "site_sets") return `${kept}: the sets that finished. The set in progress isn't kept.`;
-  if (run.experiment.kind === "steering") {
-    const control = run.experiment.control ? ", each with its random control" : "";
-    return `${kept}: the sites that finished${control}. The site in progress isn't kept.`;
-  }
-  if (run.scope.kind === "sites") return `${kept}: the sites that finished. The site in progress isn't kept.`;
-  return `${kept}: the layers that finished. The layer in progress isn't kept.`;
-}
 
 /** Cancelling stops a run before the end (it keeps what finished), so the status line and the
  * palette ask first. */

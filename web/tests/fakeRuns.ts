@@ -4,15 +4,19 @@
 
 import type { Page, Route } from "@playwright/test";
 
-import type { Comparison, Environment, RunDetail, RunListing } from "../src/api/types";
+import type { Comparison, ContinuationsFile, Environment, RunDetail, RunListing, Spec } from "../src/api/types";
 
 export interface FakeRun {
   id: `fake-${string}`;
   name: string;
-  status: "running" | "failed" | "finished";
+  status: "running" | "failed" | "finished" | "cancelled";
   elsewhere?: boolean;
   error?: string;
   traceback?: string;
+  /** What its spec says other than the fixture run's. */
+  spec?: Partial<Spec>;
+  /** What the steered model said, as a steering run records it. */
+  continuations?: ContinuationsFile;
 }
 
 /** A traceback as a failed run keeps it: this machine's folders are already placeholders. */
@@ -47,6 +51,9 @@ function listingOf(fake: FakeRun, base: RunListing): RunListing {
     wall_time_s: finished ? base.wall_time_s : null,
     profile: finished ? base.profile : null,
     derived_from: null,
+    experiment: fake.spec?.experiment ?? base.experiment,
+    scope: fake.spec?.scope ?? base.scope,
+    partial: null,
   };
 }
 
@@ -76,7 +83,7 @@ export async function fakeRuns(page: Page, fakes: () => FakeRun[]): Promise<void
       json: {
         ...detail,
         id,
-        spec: { ...detail.spec, name: fake.name },
+        spec: { ...detail.spec, ...fake.spec, name: fake.name },
         summary: ended && detail.summary ? { ...detail.summary, run_id: id, name: fake.name } : null,
         manifest: manifest && {
           ...manifest,
@@ -88,6 +95,7 @@ export async function fakeRuns(page: Page, fakes: () => FakeRun[]): Promise<void
         listing: listingOf(fake, base),
         traceback: fake.traceback ?? null,
         predictions: null,
+        continuations: fake.continuations ?? null,
       } satisfies RunDetail,
     });
   });
