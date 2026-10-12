@@ -32,6 +32,7 @@ from logogram.datasets import (
     read_dataset_bytes,
     write_dataset,
 )
+from logogram.gallery import DEFAULT_EXAMPLE, list_examples
 from logogram.project import (
     Project,
     ProjectError,
@@ -222,6 +223,11 @@ class CreateProject(BaseModel):
 
 class OpenProject(BaseModel):
     path: str
+
+
+class OpenExample(BaseModel):
+    # One of logogram.gallery.EXAMPLES; without it, the example there was before the gallery.
+    example: str = Field(default=DEFAULT_EXAMPLE, max_length=100)
 
 
 class IOIRequest(BaseModel):
@@ -554,9 +560,17 @@ def create_app(
     def open_project(body: OpenProject) -> dict[str, Any]:
         return _enter(Project.open(body.path))
 
+    @app.get("/api/examples", response_model=list[M.ExampleInfo])
+    def examples() -> list[dict[str, Any]]:
+        """The bundled examples, and whether each has been copied into the projects folder."""
+        return list_examples(default_projects_parent())
+
     @app.post("/api/projects/example", response_model=M.ProjectInfo)
-    def example() -> dict[str, Any]:
-        return _enter(open_example())
+    def example(body: OpenExample | None = None) -> dict[str, Any]:
+        """Copy an example into the projects folder (once) and open it; a copy is never
+        overwritten."""
+        chosen = (body or OpenExample()).example
+        return _enter(open_example(default_projects_parent(), example=chosen))
 
     @app.post("/api/projects/close", response_model=M.OkOut)
     def close_project() -> dict[str, Any]:
