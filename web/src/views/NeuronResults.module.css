@@ -1,0 +1,92 @@
+.layers {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  container-type: inline-size;
+}
+
+.layer {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  min-width: 0;
+}
+
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 14px;
+}
+
+.title {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: 650;
+  font-stretch: var(--display-stretch);
+}
+
+.counts {
+  font-size: var(--text-sm);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+
+@container (max-width: 760px) {
+  .body {
+    grid-template-columns: 1fr;
+  }
+}
+
+.distribution {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.caption {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.histogram {
+  width: 100%;
+  min-width: 0;
+}
+
+.histogram canvas {
+  display: block;
+}
+
+.note {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--faint);
+}
+
+.ranked {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.more {
+  align-self: flex-start;
+}
+
+.waiting {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--muted);
+}

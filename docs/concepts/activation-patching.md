@@ -66,23 +66,88 @@ A spec names **abstract sites**, the same for every architecture:
 | `attn_out` | A layer's attention output, the sum of its heads' writes |
 | `mlp_out` | A layer's MLP output |
 | `head` | One attention head's output `z`, before the output projection |
+| `q` | One head's query |
+| `k`, `v` | One key/value head's key or value |
+| `neuron` | One MLP neuron's activation after the nonlinearity (for a gated MLP, the gate's activation times the up projection): the input to the MLP's output projection |
 | `sae_feature` | One feature of an SAE (see [SAE features](sae-features.md)) |
+
+Queries, keys, values and neurons are finer sites, the parts that make up a layer's attention and
+MLP outputs: `{"kind": "q", "layer": 9, "head": 6, ...}` names one head's query, and
+`{"kind": "neuron", "layer": 3, "neuron": 1201, ...}` one neuron. With grouped-query attention
+(Llama 3, Qwen 2.5 and Gemma 2, among others), a model has fewer key and value heads than query
+heads: a `k` or `v` site names a key/value head, which every query head of its group reads, so
+patching it changes all of them. When a model loads, Logogram measures that these sites make up
+the attention and MLP outputs (every query, key and value of a layer together reproduce its
+attention output, one alone changes only the heads that read it, and every neuron together
+reproduces the MLP output) and offers only those that hold: OLMo 2, which normalizes every head's
+queries and keys together, offers values and neurons but not single queries or keys.
+
+Activation patching, ablation, attribution patching and [sets of sites](circuits.md) take them.
+[Direct logit attribution](direct-logit-attribution.md) splits off a neuron's term at the last
+token and a value's at any position, and refuses queries and keys, which act on the logits only
+through the attention's softmax. [Path patching](path-patching.md) and
+[steering](steering.md) refuse all four: a path starts at a component that writes into the
+residual stream, and steering adds to the residual stream itself. The model map has no cell for
+them: the results show a sweep of queries, keys or values as a layer × head grid (a column per
+key/value head for keys and values), and a sweep of neurons layer by layer, each layer's strongest
+neurons with their intervals beside the distribution of all of them.
 
 Each site has a **position**: `all` (every token at once), `last` (the token that predicts the
 answer), a token `index` (negative counts from the end), or a named `label` from the dataset,
 such as `S2` in IOI, which names a span of characters in the clean prompt and resolves to the last
-token that overlaps it. Labels let templates of different lengths line up. Both prompts of a
-pair must have the same number of tokens, so that a position means the same in both; the
-Prompts view says which pairs don't.
+token that overlaps it. Labels let templates of different lengths line up. Usually both prompts of
+a pair have the same number of tokens, so that a position means the same in both; pairs of
+different lengths are matched by their labels instead (below).
 
 A **scope** is the set of sites one run measures, each on its own:
 
 * `heads`: every head of every layer at one position, drawn as a layer × head grid;
+* `head_inputs`: every head's query, or every key/value head's key or value (`input`), at one
+  position, also a layer × head grid;
+* `neurons`: every neuron of the MLPs of the chosen `layers`, at one position;
 * `layer_position`: one stream site at every layer and every position (or every labelled
   position), a layer × position grid, as in causal tracing (Meng et al., 2022);
 * `layer_components`: attention and MLP outputs of every layer at one position;
 * `sites`: an explicit list, such as heads staged on the map;
 * `site_sets`: [sets of sites intervened on together](circuits.md).
+
+The `graph` and `edges` scopes hold connections between components rather than sites, for
+[edge attribution](edge-attribution.md).
+
+## Pairs of different lengths
+
+A pair whose prompts tokenize to different lengths, such as a name of one token against a name of
+three, can be used when the dataset labels its positions in both prompts: `positions` gives
+character spans in the clean prompt, and `corrupt_positions` the same labels in the corrupt one.
+A run then matches the two prompts label by label: patching at `S2` carries the activation at the
+source prompt's `S2` token into the receiver prompt's own `S2` token, and `last` matches the two
+prompts' last tokens. Without `corrupt_positions`, such a pair can't be used, and the Prompts
+view says why.
+
+Across different lengths, every position at once (`all`) and token indices have no meaning.
+Methods that carry a value from one prompt into the other (activation patching, attribution
+patching with one gradient, path patching, mean and resample ablation, and steering by the mean
+difference) refuse them on such pairs, naming the pairs, and take the last token and labels.
+Methods that read one prompt at a time take any position they otherwise take: zero ablation,
+direct logit attribution and steering along an SAE feature. A few need pairs of equal length
+altogether:
+
+* integrated gradients, which run on inputs between the two prompts' embeddings, position by
+  position;
+* sets that keep their sites and patch the rest of the model, and mean or resample ablation of
+  sets;
+* the layer × position sweep of every token index (`"positions": "each"`), whose labelled form
+  works;
+* [edge attribution](edge-attribution.md) and path patching of edges, which carry each sender's
+  output at every position.
+
+In the app, the token strip lines the two prompts up by their labels and last tokens, each with
+its own positions. With such pairs and a method that carries values between prompts, the
+experiment form offers only the last token and labels, and says why; choosing such a method
+replaces every position and token index with the last token (and the sweep of every token index
+with the labelled one). A run that uses them says how they were matched. **Generate a
+task** with **Full vocabulary** keeps the words the model splits into several tokens, and with
+them pairs of different lengths, labelled in both prompts.
 
 ## When to use it
 
@@ -104,8 +169,11 @@ baseline rather than with the other prompt's value.
 Tests run every time the code changes check identities that patching must satisfy: patching every
 clean activation of the residual stream at a layer gives an effect of exactly 1, patching corrupt
 activations into the corrupt prompt gives exactly 0, and the same spec twice gives bit-identical
-results. Library hook names never appear in a spec: the backend maps each abstract site to the
-model's own activation.
+results. Patching every query, key and value of a layer at once gives what patching its attention
+output gives, and every neuron of a layer what patching its MLP output gives. With pairs of
+different lengths, patching the residual stream after the last layer at the last token
+reproduces the source run exactly, however long each prompt is. Library hook names never appear
+in a spec: the backend maps each abstract site to the model's own activation.
 
 ## In a spec
 
@@ -114,7 +182,10 @@ model's own activation.
 "scope": {"kind": "heads", "position": {"kind": "all"}}
 ```
 
-See [the spec reference](../reference/spec.md#experiment-activation_patching) for every field.
+`{"kind": "head_inputs", "input": "q", "position": {"kind": "last"}}` sweeps every head's query
+instead, and `{"kind": "neurons", "layers": [9, 10, 11], "position": {"kind": "last"}}` every
+neuron of three layers. See
+[the spec reference](../reference/spec.md#experiment-activation_patching) for every field.
 
 ## References
 

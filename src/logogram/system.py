@@ -585,9 +585,103 @@ class RunMemory:
     available: int
     verdict: str  # fits | tight | wont_fit
     explanation: str
+    # What the run's sites add: their statistics, a layer of cached source activations, and the
+    # products attribution patching keeps for every neuron. Included in ``total``.
+    sites: int = 0
+    site_bytes: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass
+class ScopeFootprint:
+    """How much a scope's sites hold, for the memory estimate: how many sites it has, the width
+    of a layer's activations at one token for the kinds it caches, and how many layers of
+    neurons it has (attribution patching keeps a number per neuron, token and prompt for each)."""
+
+    sites: int
+    width: int
+    neuron_layers: int
+
+
+def scope_footprint(
+    scope: Any,
+    *,
+    n_layers: int,
+    n_heads: int,
+    n_kv_heads: int,
+    d_model: int,
+    d_head: int,
+    d_mlp: int,
+    seq_len: int,
+) -> ScopeFootprint:
+    """The footprint of a spec's scope on a model of this shape (``seq_len`` positions stand in
+    for a layer x position sweep's columns)."""
+    widths = {
+        "head": n_heads * d_head,
+        "q": n_heads * d_head,
+        "k": n_kv_heads * d_head,
+        "v": n_kv_heads * d_head,
+        "neuron": d_mlp,
+    }
+    kind = getattr(scope, "kind", None)
+    if kind == "neurons":
+        layers = len(scope.layers)
+        return ScopeFootprint(layers * d_mlp, d_mlp, layers)
+    if kind == "head_inputs":
+        units = n_heads if scope.input == "q" else n_kv_heads
+        return ScopeFootprint(n_layers * units, widths[scope.input], 0)
+    if kind == "heads":
+        return ScopeFootprint(n_layers * n_heads, widths["head"], 0)
+    if kind == "layer_position":
+        return ScopeFootprint(n_layers * seq_len, d_model, 0)
+    if kind == "layer_components":
+        return ScopeFootprint(n_layers * len(scope.components), d_model * len(scope.components), 0)
+    if kind == "sites":
+        by_layer: dict[int, set[str]] = {}
+        for site in scope.sites:
+            by_layer.setdefault(site.layer, set()).add(site.kind)
+        width = max(
+            (sum(widths.get(k, d_model) for k in kinds) for kinds in by_layer.values()), default=0
+        )
+        neurons = sum(1 for kinds in by_layer.values() if "neuron" in kinds)
+        return ScopeFootprint(len(scope.sites), width, neurons)
+    if kind == "site_sets":
+        return ScopeFootprint(len(scope.sets), 0, 0)
+    if kind == "features":
+        return ScopeFootprint(int(scope.top), 0, 0)
+    return ScopeFootprint(0, 0, 0)
+
+
+def site_bytes(
+    footprint: ScopeFootprint,
+    *,
+    method: str,
+    prompts: int,
+    bootstrap: int,
+    batch_size: int,
+    seq_len: int,
+    dtype: str,
+) -> int:
+    """What a run's sites hold beyond a batch's forward pass: each site's per-prompt values and
+    bootstrap resamples (with the ranks the simultaneous bands sort), the layer of source
+    activations patching and ablation cache for every prompt, and the per-neuron products
+    attribution patching keeps for each layer of neurons (in float64, beside the activations and
+    gradients it multiplies)."""
+    b = DTYPE_BYTES[dtype]
+    stats = 8 * footprint.sites * (5 * prompts + 6 * bootstrap)
+    cache = (
+        prompts * seq_len * footprint.width * b
+        if method in ("activation_patching", "ablation")
+        else 0
+    )
+    products = (
+        footprint.neuron_layers * batch_size * seq_len * footprint.width * (8 + 3 * b)
+        if method == "attribution_patching"
+        else 0
+    )
+    return stats + cache + products
 
 
 # Methods that hold every layer's activations at once: the gradient methods keep them for the
@@ -607,10 +701,16 @@ def estimate_run_memory(
     batch_size: int,
     seq_len: int,
     all_layers: bool,
+    footprint: ScopeFootprint | None = None,
+    method: str = "",
+    prompts: int = 0,
+    bootstrap: int = 0,
 ) -> RunMemory:
     """A batch's activations for a run on the loaded model (every layer's at once for the methods
     that hold them), plus the same margin as a model's estimate, against the memory free now
-    (the weights are already in it)."""
+    (the weights are already in it). With the scope's ``footprint``, the number of ``prompts``
+    and of ``bootstrap`` resamples, what its sites hold too (see :func:`site_bytes`): thousands
+    of neurons hold far more than a batch."""
     one, every = activation_bytes(
         n_layers=n_layers,
         n_heads=n_heads,
@@ -622,13 +722,44 @@ def estimate_run_memory(
         seq_len=seq_len,
     )
     activations = every if all_layers else one
-    total = activations + int(0.15 * activations) + _overhead(device)
-    available = available_memory(device)
-    held = ", every layer's at once," if all_layers else ""
-    explanation = (
-        f"Activations for a batch of {batch_size} prompts of up to {seq_len} tokens{held} plus a "
-        f"margin, against the {_where(device)} free with the model loaded."
+    sites = (
+        site_bytes(
+            footprint,
+            method=method,
+            prompts=prompts,
+            bootstrap=bootstrap,
+            batch_size=batch_size,
+            seq_len=seq_len,
+            dtype=dtype,
+        )
+        if footprint is not None
+        else 0
     )
+    held = activations + sites
+    total = held + int(0.15 * held) + _overhead(device)
+    available = available_memory(device)
+    every_layer = ", every layer's at once," if all_layers else ""
+    explanation = (
+        f"Activations for a batch of {batch_size} prompts of up to {seq_len} tokens{every_layer} "
+        "plus a margin, against the "
+        f"{_where(device)} free with the model loaded."
+    )
+    if footprint is not None and sites >= 64 * 1024**2:
+        explanation += (
+            f" The {footprint.sites:,} sites hold about {format_bytes(sites)} more: each one's "
+            f"values for {prompts:,} prompts and {bootstrap:,} bootstrap resamples"
+            + (
+                ", a layer of source activations for every prompt"
+                if method in ("activation_patching", "ablation")
+                else ""
+            )
+            + (
+                ", and attribution patching's products for every neuron"
+                if method == "attribution_patching" and footprint.neuron_layers
+                else ""
+            )
+            + "."
+        )
     return RunMemory(
         device=device,
         batch_size=batch_size,
@@ -639,6 +770,8 @@ def estimate_run_memory(
         available=available,
         verdict=_verdict(total, available),
         explanation=explanation,
+        sites=footprint.sites if footprint is not None else 0,
+        site_bytes=sites,
     )
 
 

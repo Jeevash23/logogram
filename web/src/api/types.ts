@@ -32,6 +32,8 @@ export interface ModelInfo {
     prediction_method?: string | null;
     model_type?: string;
     n_key_value_heads?: number;
+    /** Why a site the model doesn't offer is missing (q, k, v or neuron), as measured on loading. */
+    site_notes?: Partial<Record<HeadInputKind | "neuron", string>>;
     /** Whether the tokenizer has a beginning-of-sequence token to prepend. */
     bos?: boolean;
     checks?: ModelChecks;
@@ -52,6 +54,17 @@ export interface ModelChecks {
   structure: string;
   residual: number | null;
   lens: number | null;
+  heads?: number | null;
+  /** Every query, key and value together reproduce the attention output; each one alone changes
+   * only the heads that read it; heads' outputs are their patterns times their values. */
+  qkv?: number | null;
+  q_alone?: number | null;
+  k_alone?: number | null;
+  v_alone?: number | null;
+  values?: number | null;
+  /** Every neuron together reproduces the MLP output; the MLP output is what they write. */
+  neurons?: number | null;
+  neuron_writes?: number | null;
 }
 
 export interface ModelPreset {
@@ -268,7 +281,10 @@ export type RobustnessChange = { experiment: ExperimentSpec } | { dtype: Dtype }
 /** Where the model runs: `cuda:N` is one GPU of several. */
 export type Device = "auto" | "cpu" | "cuda" | "mps" | `cuda:${number}`;
 export type StreamKind = "resid_pre" | "resid_mid" | "resid_post" | "attn_out" | "mlp_out";
-export type SiteKind = StreamKind | "head" | "sae_feature";
+/** A head's query, key or value. With grouped-query attention a key or value belongs to a
+ * key/value head, which every query head of its group reads. */
+export type HeadInputKind = "q" | "k" | "v";
+export type SiteKind = StreamKind | "head" | "sae_feature" | HeadInputKind | "neuron";
 
 export type PositionSpec =
   | { kind: "all" }
@@ -279,9 +295,12 @@ export type PositionSpec =
 export interface SiteSpec {
   kind: SiteKind;
   layer: number;
+  /** A head's output (head), a query head (q), or a key/value head (k and v). */
   head?: number | null;
   /** A feature of the spec's SAE (kind sae_feature). */
   feature?: number | null;
+  /** An MLP neuron (kind neuron): its activation, the input to the MLP's output projection. */
+  neuron?: number | null;
   position: PositionSpec;
 }
 
@@ -319,6 +338,47 @@ export interface SAEInfo extends SAERef {
   transcoder?: boolean;
   /** A transcoder that also adds its input times a skip matrix to what it writes. */
   skip?: boolean;
+}
+
+/** One SAE of SAELens's registry, as the catalogue that ships with Logogram describes it: where
+ * it is published, what its configuration states, and whether Logogram reads it exactly. */
+export interface CatalogueSAE {
+  release: string;
+  id: string;
+  /** The model as SAELens names it, and its Hugging Face id. */
+  model: string;
+  hf_model: string;
+  repo: string;
+  folder: string;
+  /** The commit whose files the catalogue read; loading pins the repository's current one. */
+  revision: string | null;
+  licence: string | null;
+  gated: boolean;
+  hook: string | null;
+  /** The site it writes (a transcoder reads its MLP's input), and its layer. */
+  site: string | null;
+  layer: number | null;
+  width: number | null;
+  architecture: string | null;
+  kind: "sae" | "transcoder" | "skip_transcoder";
+  reads: "exact" | "refused" | "unknown";
+  reason: string | null;
+  l0: number | null;
+  verified: {
+    revision: string;
+    read: "header" | "weights";
+    fit: { model: string; process_weights: boolean; tokens: number; variance_explained: number; l0: number } | null;
+  } | null;
+}
+
+export interface SAECatalogue {
+  model: string;
+  source: string;
+  /** SAEs for the model, how many Logogram reads exactly, and how many match the search. */
+  total: number;
+  exact: number;
+  matches: number;
+  saes: CatalogueSAE[];
 }
 
 /** What one feature writes directly into the logits: one unit of its decoder direction, read
@@ -388,8 +448,9 @@ export interface FeatureReport {
   n: number;
 }
 
-/** What "the rest of the model" is made of, for a set that keeps its sites and replaces the rest. */
-export type UniverseKind = "head" | "attn_out" | "mlp_out";
+/** What "the rest of the model" is made of, for a set that keeps its sites and replaces the rest:
+ * components, or the queries, keys, values or neurons they are made of. */
+export type UniverseKind = "head" | "attn_out" | "mlp_out" | HeadInputKind | "neuron";
 
 /** Sites intervened on together, in one forward pass. With `complement`, the intervention covers
  * every component of the scope's universe except these sites ("keep the circuit, replace the
@@ -409,7 +470,16 @@ export type ScopeSpec =
    * seeded share of the prompts chooses them and the rest report them (both null: every prompt). */
   | { kind: "features"; position: PositionSpec; top: number; choose_on: number | null; seed: number | null }
   /** Sets of sites, each intervened on at once: one result per set (1 to 64 sets). */
-  | { kind: "site_sets"; universe: UniverseKind[] | null; sets: SiteSetSpec[] };
+  | { kind: "site_sets"; universe: UniverseKind[] | null; sets: SiteSetSpec[] }
+  /** Every head's query, or every key/value head's key or value, at one position. */
+  | { kind: "head_inputs"; input: HeadInputKind; position: PositionSpec }
+  /** Every neuron of the MLPs of the chosen layers, at one position. */
+  | { kind: "neurons"; layers: number[]; position: PositionSpec }
+  /** The edges of the model's graph, for edge attribution: into the heads and MLPs of `layers`
+   * (null: every layer) from every earlier node, and into the logits with `logits`. */
+  | { kind: "graph"; layers: number[] | null; logits: boolean }
+  /** Edges measured one at a time by path patching, everything else held (1 to 64). */
+  | { kind: "edges"; edges: EdgeSpec[] };
 
 export type BaselineSpec =
   | { kind: "zero" }
@@ -418,8 +488,33 @@ export type BaselineSpec =
 
 export type Direction = "clean_to_corrupt" | "corrupt_to_clean";
 
-/** Where a path ends: a later head's query, key or value, or the logits read directly. */
-export type PathReceiverSpec = { kind: "head"; layer: number; head: number; input: "q" | "k" | "v" } | { kind: "logits" };
+/** Where a path ends: a later head's query, key or value, a later MLP's input (before its
+ * normalization), or the logits read directly. */
+export type PathReceiverSpec =
+  | { kind: "head"; layer: number; head: number; input: "q" | "k" | "v" }
+  | { kind: "mlp"; layer: number }
+  | { kind: "logits" };
+
+/** The node an edge of the model's graph starts from: the embeddings, a head's output or an MLP's. */
+export type EdgeSenderSpec =
+  | { kind: "embed"; layer?: null; head?: null }
+  | { kind: "head"; layer: number; head: number }
+  | { kind: "mlp"; layer: number; head?: null };
+
+/** An edge: a sender's output read directly by one receiver's input, through the residual stream. */
+export interface EdgeSpec {
+  sender: EdgeSenderSpec;
+  receiver: PathReceiverSpec;
+}
+
+/** The faithfulness curve of an edge attribution run: the k strongest edges as a circuit, for each
+ * k of `counts`, patching the chosen edges (`chosen`) or every edge but them (`rest`), beside edges
+ * chosen at random (`draws` seeded shuffles). */
+export interface FaithfulnessCurveSpec {
+  counts: number[];
+  patch: "chosen" | "rest";
+  control: { seed: number; draws: number };
+}
 
 /** How attribution patching estimates: one gradient at the receiver run, or integrated gradients
  * averaged over `steps` runs between the two prompts (2 to 64; null for one gradient). */
@@ -441,6 +536,7 @@ export type ExperimentSpec =
   | { kind: "direct_logit_attribution"; prompts: "clean" | "corrupt" }
   | { kind: "attribution_patching"; direction: Direction; method: AttributionMethod; steps: number | null }
   | { kind: "path_patching"; direction: Direction; receivers: PathReceiverSpec[]; freeze_mlps: boolean }
+  | { kind: "edge_attribution"; direction: Direction; method: AttributionMethod; steps: number | null; curve: FaithfulnessCurveSpec | null }
   | {
       kind: "steering";
       apply_to: "clean" | "corrupt";
@@ -550,9 +646,10 @@ export interface Stat {
   hi: number | null;
 }
 
-/** A site of a run's results: a site of the model, or a set of sites (a row of a site_sets run,
- * whose layer is -1 and whose members are its sites). */
-export type ResultKind = SiteKind | "site_set";
+/** A site of a run's results: a site of the model, a set of sites (a row of a site_sets run,
+ * whose layer is -1 and whose members are its sites), or an edge of the model's graph (whose
+ * layer is its receiver's, the last for the logits). */
+export type ResultKind = SiteKind | "site_set" | "edge";
 
 export interface SiteBase {
   index: number;
@@ -560,6 +657,8 @@ export interface SiteBase {
   layer: number;
   head: number | null;
   feature?: number | null;
+  /** The MLP neuron of a neuron site. */
+  neuron?: number | null;
   position: PositionSpec;
   position_key: string;
   row: number;
@@ -571,6 +670,8 @@ export interface SiteBase {
   variant_key?: string | null;
   /** The sites of a set intervened on together (kind site_set). */
   members?: SiteSpec[] | null;
+  /** An edge's sender and receiver (kind edge). */
+  edge?: EdgeSpec;
 }
 
 export interface SiteResult extends SiteBase {
@@ -604,11 +705,22 @@ export interface LayoutAxis {
   /** Sets of sites: whether the row's set keeps its sites, and how many it holds. */
   complement?: boolean;
   size?: number;
+  /** A key/value head's column: the query heads that read it. */
+  query_heads?: number[];
+  /** A layer's row of a neurons run: how many neurons it has (its columns). */
+  neurons?: number;
+  /** Edges: the sender (a row) or receiver (a column) it is: its kind, layer and head. */
+  node?: "embed" | "head" | "mlp" | "q" | "k" | "v" | "logits";
+  layer?: number;
+  head?: number | null;
 }
 
 export interface Layout {
-  kind: "heads" | "layer_position" | "layer_components" | "sites" | "steering" | "site_sets";
-  site?: StreamKind;
+  /** head_inputs: every head's query or key/value head's key or value (`site`); neurons: every
+   * neuron of the chosen layers, a row per layer with no columns listed; edges: senders by
+   * receivers of an edge attribution run. */
+  kind: "heads" | "layer_position" | "layer_components" | "sites" | "steering" | "site_sets" | "head_inputs" | "neurons" | "edges";
+  site?: StreamKind | HeadInputKind | "neuron";
   row_title: string;
   col_title: string;
   rows: LayoutAxis[];
@@ -626,6 +738,8 @@ export interface ModelShape {
   id: string;
   n_layers: number;
   n_heads: number;
+  /** Fewer than n_heads with grouped-query attention. */
+  n_key_value_heads?: number | null;
   d_model?: number;
   d_head?: number;
   d_mlp?: number | null;
@@ -701,6 +815,99 @@ export interface Summary {
   } | null;
   /** A run that stopped before the end: what it kept. Absent or null for a finished run. */
   partial?: PartialRun | null;
+  /** Edge attribution: the graph, how the estimates were taken, what it cost, and the curve. */
+  edges?: EdgeRun | null;
+}
+
+/** One point of a faithfulness curve: k edges and how much of the behavior they carry. */
+export interface EdgeCurvePoint {
+  k: number;
+  faithfulness: Stat;
+  /** The mean metric of the patched runs. */
+  metric: number | null;
+  /** The random control: each draw's mean faithfulness. */
+  draws?: (number | null)[] | null;
+}
+
+/** The k strongest edges as a circuit for each k, beside edges chosen at random, and every edge
+ * of the scope patched (with the whole graph, the source run: `source_difference` is how far its
+ * metric is from the source prompt's, over prompts). */
+export interface EdgeCurve {
+  patch: "chosen" | "rest";
+  counts: number[];
+  dropped: number[];
+  seed: number;
+  draws: number;
+  strongest: EdgeCurvePoint[];
+  random: EdgeCurvePoint[];
+  every: EdgeCurvePoint;
+  source_difference?: number | null;
+  per_prompt: Record<string, (number | null)[][]>;
+}
+
+/** What a run would cost, or cost: per batch of prompts and for the whole run. */
+export interface EdgeCost {
+  edges: number;
+  batches: number;
+  forward_per_batch: number;
+  backward_per_batch: number;
+  patched_per_batch: number;
+  forward: number;
+  backward: number;
+  memory_per_batch: number;
+  values: number;
+  text?: string;
+}
+
+/** An edge attribution run: the graph, how its estimates were taken, the model's measured
+ * properties they rely on, what it cost, and its faithfulness curve. The summary lists the
+ * `reported` strongest edges; edges.parquet holds every edge. */
+export interface EdgeRun {
+  method: AttributionMethod;
+  steps?: number | null;
+  n_edges: number;
+  n_senders: number;
+  n_receivers: number;
+  reported: number;
+  structure: "sequential" | "parallel";
+  gradient: string;
+  checks: Record<string, number>;
+  cost: EdgeCost;
+  curve?: EdgeCurve | null;
+  /** Over every edge, not only those listed: intervals that exclude zero one edge at a time
+   * (single), simultaneous bands that do (banded), and q-values below 1 − the CI level. */
+  corrections?: { edges: number; single: number; banded: number; discoveries: number } | null;
+}
+
+/** An edge attribution spec on the loaded model, before it runs (POST /api/edges/plan). */
+export interface EdgePlan {
+  n_edges: number | null;
+  n_senders: number | null;
+  n_receivers: number | null;
+  structure?: "sequential" | "parallel" | null;
+  cost?: EdgeCost | null;
+  text?: string | null;
+  free?: number | null;
+  /** Why a run would be refused, and how to fix it; null when it would run. */
+  refusal: string | null;
+}
+
+/** An edge attribution run's estimates against its latest verification by path patching. */
+export interface EdgeVerification {
+  run: string;
+  n: number;
+  spearman: number | null;
+  same_sign: number;
+  rows: {
+    label: string;
+    edge: EdgeSpec;
+    estimate: Stat;
+    measured: Stat;
+    estimate_index: number;
+    measured_index: number;
+    estimate_rank?: number | null;
+    measured_rank?: number | null;
+  }[];
 }
 
 export interface SummaryMetric {
@@ -968,6 +1175,7 @@ export interface SweepSite {
   layer: number;
   head: number | null;
   feature: number | null;
+  neuron?: number | null;
   position: PositionSpec | null;
   position_key: string;
   variant: SiteBase["variant"];
@@ -1151,8 +1359,18 @@ export interface PromptRecord {
   answer: Answer;
   distractor: Answer;
   positions?: Record<string, [number, number]>;
+  /** The same labels as `positions`, as character spans in the corrupt prompt: with them the two
+   * prompts may have different token lengths, and are matched label by label. */
+  corrupt_positions?: Record<string, [number, number]>;
   id?: string;
   meta?: Record<string, unknown>;
+}
+
+/** A pair whose prompts have different token lengths for the loaded model, and those lengths. */
+export interface UnevenPair {
+  index: number;
+  clean: number;
+  corrupt: number;
 }
 
 export interface PromptIssue {
@@ -1172,6 +1390,9 @@ export interface DatasetDetail {
   /** With a model loaded: the prompts whose answer or distractor is a continuation of several of
    * its tokens, which only the metrics that read continuations can score. */
   continuations?: number[];
+  /** With a model loaded: the pairs whose prompts have different token lengths. They are matched
+   * label by label, so they can be patched at a label or the last token only. */
+  uneven?: UnevenPair[];
 }
 
 /** An answer or distractor as the loaded model reads it: its tokens, or the members of a set. */
@@ -1192,6 +1413,11 @@ export interface TokenStripData {
   aligned: boolean;
   differs: number[];
   labels: Record<string, number>;
+  /** The corrupt prompt's own labels, when the dataset gives them (corrupt_positions). */
+  corrupt_labels?: Record<string, number> | null;
+  /** Prompts of different lengths side by side: per column, a clean token's index and a corrupt
+   * token's (null where that prompt has none there). Labelled tokens share a column. */
+  columns?: [number | null, number | null][] | null;
   answer: AnswerTokens;
   distractor: AnswerTokens;
   issues: PromptIssue[];
@@ -1371,6 +1597,7 @@ export interface ComparisonChange {
   layer: number;
   head: number | null;
   feature?: number | null;
+  neuron?: number | null;
   position_key: string;
   variant_key?: string | null;
   index_a: number;
@@ -1450,6 +1677,9 @@ export interface RunMemory {
   available: number;
   verdict: "fits" | "tight" | "wont_fit";
   explanation: string;
+  /** The scope's sites, and what they hold (in total). */
+  sites?: number;
+  site_bytes?: number;
 }
 
 export interface MemoryEstimate {

@@ -10,6 +10,21 @@ Each line is one JSON object::
 ``positions`` is optional. It names character spans in the clean prompt; a label points to the
 last token that overlaps its span. ``id`` and ``meta`` are optional and carried through.
 
+The two prompts of a pair usually have the same number of tokens, so their positions line up. A
+pair whose prompts tokenize to different lengths (a name of one token against a name of three) is
+usable when ``corrupt_positions`` gives the same labels as ``positions``, as character spans in the
+corrupt prompt::
+
+    {"clean": "When Mary and John went to the store, John gave a drink to",
+     "corrupt": "When Mary and John went to the store, Bartholomew gave a drink to",
+     "answer": " Mary", "distractor": " John",
+     "positions": {"S2": [38, 42], "end": [56, 58]},
+     "corrupt_positions": {"S2": [38, 49], "end": [63, 65]}}
+
+Such a pair is patched label by label, and at the last token: the source prompt's token at a label
+goes into the receiver's token at the same label. Pairs of equal length may give
+``corrupt_positions`` too.
+
 ``answer`` and ``distractor`` are usually single tokens. Either can also be a continuation of
 several tokens (``" Buenos Aires"``), read by the log-probability metrics, or a list of single
 tokens that all count (``["33", "34", ...]``, as in the greater-than task), read through the sum of
@@ -50,6 +65,9 @@ class PromptRecord(BaseModel):
     answer: Answer
     distractor: Answer
     positions: dict[str, tuple[int, int]] | None = None
+    # The same labels as ``positions``, as character spans in the corrupt prompt: with them the
+    # prompts may tokenize to different lengths, and are matched label by label.
+    corrupt_positions: dict[str, tuple[int, int]] | None = None
     id: str | None = None
     meta: dict[str, Any] | None = None
 
@@ -60,7 +78,7 @@ class PromptRecord(BaseModel):
             raise ValueError("a set of answers must not repeat a token")
         return value
 
-    @field_validator("positions")
+    @field_validator("positions", "corrupt_positions")
     @classmethod
     def _spans_ordered(
         cls, value: dict[str, tuple[int, int]] | None
@@ -111,9 +129,10 @@ def parse_record(raw: Any, where: str) -> PromptRecord:
             f"{where}: missing {', '.join(repr(m) for m in missing)}. "
             "Each prompt needs clean, corrupt, answer and distractor."
         )
-    if isinstance(raw.get("positions"), dict):
-        spans = {k: tuple(v) if isinstance(v, list) else v for k, v in raw["positions"].items()}
-        raw = {**raw, "positions": spans}
+    for key in ("positions", "corrupt_positions"):
+        if isinstance(raw.get(key), dict):
+            spans = {k: tuple(v) if isinstance(v, list) else v for k, v in raw[key].items()}
+            raw = {**raw, key: spans}
     try:
         record = PromptRecord.model_validate(raw)
     except ValidationError as exc:
@@ -125,14 +144,37 @@ def parse_record(raw: Any, where: str) -> PromptRecord:
 
 
 def _check_spans(record: PromptRecord, where: str) -> None:
-    if not record.positions:
+    for side, spans, text in (
+        ("clean", record.positions, record.clean),
+        ("corrupt", record.corrupt_positions, record.corrupt),
+    ):
+        for label, (_start, end) in (spans or {}).items():
+            if end > len(text):
+                raise DatasetError(
+                    f"{where}: position {label!r} ends at character {end}, but "
+                    f"the {side} prompt has {len(text)} characters."
+                )
+    if record.corrupt_positions is None:
         return
-    for label, (_start, end) in record.positions.items():
-        if end > len(record.clean):
-            raise DatasetError(
-                f"{where}: position {label!r} ends at character {end}, but "
-                f"the clean prompt has {len(record.clean)} characters."
+    clean, corrupt = set(record.positions or {}), set(record.corrupt_positions)
+    if clean != corrupt:
+        missing = []
+        if clean - corrupt:
+            missing.append(
+                f"the corrupt prompt (corrupt_positions) has no {_names(clean - corrupt)}"
             )
+        if corrupt - clean:
+            missing.append(f"the clean prompt (positions) has no {_names(corrupt - clean)}")
+        raise DatasetError(
+            f"{where}: {' and '.join(missing)}. Label the same positions in both prompts, so "
+            "each label can be matched from one prompt to the other."
+        )
+
+
+def _names(labels: set[str]) -> str:
+    """Labels in a sentence: "'S2'", "'IO' or 'S2'"."""
+    shown = [repr(label) for label in sorted(labels)]
+    return shown[0] if len(shown) == 1 else f"{', '.join(shown[:-1])} or {shown[-1]}"
 
 
 def derive_records(
@@ -207,8 +249,9 @@ def to_jsonl(records: list[PromptRecord]) -> str:
     lines = []
     for record in records:
         data = record.model_dump(mode="json", exclude_none=True)
-        if "positions" in data:
-            data["positions"] = {k: list(v) for k, v in data["positions"].items()}
+        for key in ("positions", "corrupt_positions"):
+            if key in data:
+                data[key] = {k: list(v) for k, v in data[key].items()}
         lines.append(json.dumps(data, ensure_ascii=False))
     return "\n".join(lines) + "\n"
 

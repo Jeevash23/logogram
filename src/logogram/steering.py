@@ -20,6 +20,9 @@ The effect is normalized like patching, so 1 means the output moved as far as sw
 other prompt. A random direction of the same length as the steering vector at strength 1, at the
 same strengths, is the control: a direction that matters should beat it.
 
+Each prompt is read at its own token: between prompts of different lengths, the mean difference
+takes the other prompt's token at the same label (or the last token), never a token index.
+
 With continuations, the run also records what the model goes on to say: greedy continuations of
 the first held-out prompts (the most likely token each time, ties to the lowest token id),
 without steering, at each strength and with the control. Each forward pass adds the vector at the
@@ -58,6 +61,7 @@ from logogram.sites import (
     ResolvedSite,
     ScopeError,
     _check_site,
+    check_lined_up,
     resolve_position,
     site_label,
 )
@@ -164,9 +168,10 @@ def steered_sites(
         sites = list(scope.sites)
         if any(s.kind not in RESIDUAL for s in sites):
             raise ScopeError(
-                "Steering by the mean difference adds it to the residual stream; heads, attention "
-                "outputs and MLP outputs can't be steered by it. Choose residual sites, or steer "
-                "along an SAE feature where its SAE writes."
+                "Steering by the mean difference adds it to the residual stream; heads, their "
+                "queries, keys and values, attention outputs, MLP outputs and neurons can't be "
+                "steered by it. Choose residual sites, or steer along an SAE feature where its SAE "
+                "writes."
             )
     else:
         raise ScopeError(
@@ -181,7 +186,12 @@ def steered_sites(
             )
         _check_site(site, info)
         for prompt in prompts:
-            resolve_position(site.position, prompt)
+            for side in ("clean", "corrupt"):
+                resolve_position(site.position, prompt, side)
+    if not (isinstance(exp, Steering) and isinstance(exp.direction, FeatureDirection)):
+        # The mean difference compares each prompt's token with the other prompt's: between
+        # prompts of different lengths, at a label or the last token.
+        check_lined_up([site.position for site in sites], prompts, "steer")
     return sites
 
 
@@ -317,7 +327,7 @@ def run_steering(
     # The held-out prompts continued, in split order.
     shown = test[: exp.continuations.prompts] if exp.continuations is not None else []
     if exp.continuations is not None:
-        check_room(shown, exp.continuations.tokens, info.n_ctx)
+        check_room(shown, exp.continuations.tokens, info.n_ctx, receiver)
 
     # The variants of each site: every strength along the direction, then along the control.
     variants = [(c, False) for c in exp.coefficients]
@@ -358,8 +368,9 @@ def run_steering(
     if on_start is not None:
         on_start(sites, layout)
 
-    test_groups = group_by_length(test)
-    train_groups = group_by_length(train)
+    # The steered prompts run in batches of their own length.
+    test_groups = group_by_length(test, receiver)
+    train_groups = group_by_length(train, receiver)
     scorer = make_scorer(spec, test)
     baselines = compute_baselines(backend, test, test_groups, batch_size, cancel, scorer)
     check_finite(baselines, info.dtype)
@@ -423,7 +434,7 @@ def run_steering(
         steering["norms"].append(steered.norm)
         first = b * len(variants)
         for group in test_groups:
-            tokens = group.clean if receiver == "clean" else group.corrupt
+            tokens = group.tokens(receiver)
             rows = [(v, p) for v in range(len(variants)) for p in group.members]
             for sl in _chunks(len(rows), batch_size):
                 if cancel is not None and cancel.is_set():
@@ -531,7 +542,7 @@ def _mean_difference(
         kind=site.kind,
         layer=site.layer,
         own=own,
-        positions=[_position(site, p) for p in test],
+        positions=[_position(site, p, exp.apply_to) for p in test],
         along=direction.expand(n, *direction.shape),
         control=None if control is None else control.expand(n, *control.shape),
         norm=float(direction.norm()),
@@ -593,7 +604,7 @@ def _feature_direction(
             kind=kind,
             layer=sae.layer,
             own=own,
-            positions=[_position(site, p) for p in test],
+            positions=[_position(site, p, exp.apply_to) for p in test],
             along=along,
             control=control,
             norm=length if spread is None else length * float(scale.mean()),
@@ -602,8 +613,8 @@ def _feature_direction(
     )
 
 
-def _position(site: Site, prompt: PreparedPrompt) -> int:
-    at = resolve_position(site.position, prompt)
+def _position(site: Site, prompt: PreparedPrompt, side: str) -> int:
+    at = resolve_position(site.position, prompt, side)
     assert at is not None  # steering adds at one token, never at every position
     return at
 
@@ -611,11 +622,12 @@ def _position(site: Site, prompt: PreparedPrompt) -> int:
 # -- what the steered model says -----------------------------------------------------------------
 
 
-def check_room(prompts: list[PreparedPrompt], tokens: int, n_ctx: int) -> None:
-    """Refuse continuations that would run past the tokens the model reads at once."""
+def check_room(prompts: list[PreparedPrompt], tokens: int, n_ctx: int, side: str = "clean") -> None:
+    """Refuse continuations of ``side``'s prompts that would run past the tokens the model reads
+    at once."""
     if not prompts:
         return
-    longest = max(p.length for p in prompts)
+    longest = max(p.length_of(side) for p in prompts)
     if longest + tokens > n_ctx:
         room = n_ctx - longest
         fix = (
@@ -684,8 +696,8 @@ def _continue(
     forward pass adds the variant's vector at the steered token of the prompt, as when it was
     measured; the tokens generated aren't steered themselves."""
     out: dict[tuple[int, int], list[int]] = {}
-    for group in group_by_length(shown):
-        tokens = group.clean if receiver == "clean" else group.corrupt
+    for group in group_by_length(shown, receiver):
+        tokens = group.tokens(receiver)
         local_of = {p: li for li, p in enumerate(group.members)}
         rows = (
             [(0, p) for p in group.members]

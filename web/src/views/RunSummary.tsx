@@ -1,12 +1,13 @@
 import { useEffect, useId, useState } from "react";
 
 import { api } from "../api/client";
-import type { ExperimentKind, RunMemory, Spec } from "../api/types";
+import type { ExperimentKind, RunMemory, ScopeSpec, Spec } from "../api/types";
 import { MOD } from "../components/Header";
 import { RunButton } from "../components/RunButton";
 import { Button, Callout, Kbd } from "../components/ui";
 import { chatAdvice, chatReason } from "../lib/chat";
-import { bytes, plural } from "../lib/format";
+import { bytes, count, plural } from "../lib/format";
+import type { EdgePlanState } from "../lib/edgePlan";
 import { modelName, useAnalysisContext } from "../lib/hooks";
 import { metricWords } from "../lib/metrics";
 import { experimentText, scopeText, workloadText } from "../lib/spec";
@@ -23,17 +24,24 @@ export function RunSummary({
   spec,
   error,
   method,
+  scope,
+  bootstrap,
   batchSize,
   n,
   rows,
   differences,
   onRun,
   onQueue,
+  edgePlan = null,
 }: {
   spec: Spec | null;
   /** Why the form can't run yet. */
   error: string | null;
   method: ExperimentKind;
+  /** What the run sweeps, and its bootstrap resamples: thousands of neurons hold more than a
+   * batch, which the estimate counts. */
+  scope: ScopeSpec;
+  bootstrap: number;
   batchSize: number;
   /** Prompts the run uses. */
   n: number;
@@ -43,6 +51,8 @@ export function RunSummary({
   differences: string[];
   onRun: (spec: Spec) => void;
   onQueue: (spec: Spec) => void;
+  /** Edge attribution: the graph and what a run on the loaded model costs. */
+  edgePlan?: EdgePlanState | null;
 }) {
   const titleId = useId();
   const waiting = useStore(runWouldQueue);
@@ -66,10 +76,16 @@ export function RunSummary({
         <p className={e.missing}>{error}</p>
       )}
       <dl className={e.facts}>
-        <dt>Memory</dt>
-        <dd>
-          <MemoryFit method={method} batchSize={batchSize} />
-        </dd>
+        {method === "edge_attribution" ? (
+          <EdgeFacts plan={edgePlan} />
+        ) : (
+          <>
+            <dt>Memory</dt>
+            <dd>
+              <MemoryFit method={method} batchSize={batchSize} scope={scope} prompts={n} bootstrap={bootstrap} />
+            </dd>
+          </>
+        )}
         <dt>Baseline</dt>
         <dd>
           <BaselineState />
@@ -115,14 +131,31 @@ export function RunSummary({
 }
 
 /** Whether a batch of this size fits in the memory free with the loaded model, by the server's
- * estimate for the method (some hold every layer's activations at once). */
-function MemoryFit({ method, batchSize }: { method: ExperimentKind; batchSize: number }) {
+ * estimate for the method (some hold every layer's activations at once) and for what the scope's
+ * sites hold. */
+function MemoryFit({
+  method,
+  batchSize,
+  scope,
+  prompts,
+  bootstrap,
+}: {
+  method: ExperimentKind;
+  batchSize: number;
+  scope: ScopeSpec;
+  prompts: number;
+  bootstrap: number;
+}) {
   const ready = useStore((st) => st.model.state === "ready");
   const lengths = useStore((st) => st.dataset?.lengths);
   const seqLen = lengths && lengths.length > 0 ? Math.max(...lengths) : null;
   const usable = Number.isFinite(batchSize) && batchSize >= 1 && batchSize <= 4096;
   const [memory, setMemory] = useState<RunMemory | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The scope as the server reads it; a scope the form can't run yet (no layers chosen) is left out.
+  const scopeKey = JSON.stringify(scope);
+  const counted = scope.kind !== "neurons" || scope.layers.length > 0;
+  const resamples = Number.isInteger(bootstrap) && bootstrap >= 1 && bootstrap <= 100_000 ? bootstrap : null;
 
   useEffect(() => {
     setMemory(null);
@@ -131,7 +164,14 @@ function MemoryFit({ method, batchSize }: { method: ExperimentKind; batchSize: n
     let cancelled = false;
     // While a number is typed, ask once it settles.
     const timer = window.setTimeout(() => {
-      api.runMemory({ batch_size: Math.round(batchSize), seq_len: seqLen, method }).then(
+      api.runMemory({
+        batch_size: Math.round(batchSize),
+        seq_len: seqLen,
+        method,
+        ...(counted ? { scope: JSON.parse(scopeKey) as ScopeSpec } : {}),
+        ...(prompts > 0 ? { prompts } : {}),
+        ...(resamples ? { bootstrap: resamples } : {}),
+      }).then(
         (m) => !cancelled && setMemory(m),
         (err: Error) => !cancelled && setError(err.message),
       );
@@ -140,7 +180,7 @@ function MemoryFit({ method, batchSize }: { method: ExperimentKind; batchSize: n
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [ready, seqLen, batchSize, usable, method]);
+  }, [ready, seqLen, batchSize, usable, method, scopeKey, counted, prompts, resamples]);
 
   if (!ready) return <span className="faint">Known once a model is loaded.</span>;
   if (seqLen === null) return <span className="faint">Known once the prompts are read by the model.</span>;
@@ -159,6 +199,40 @@ function MemoryFit({ method, batchSize }: { method: ExperimentKind; batchSize: n
         About {bytes(memory.total)} of the {bytes(memory.available)} free: {verdict}
       </span>
       <span className={e.factNote}>{memory.explanation}</span>
+    </>
+  );
+}
+
+/** An edge attribution run on the loaded model: its graph's size, the passes it takes and the
+ * memory a batch needs against what is free, from the checks the run makes. */
+function EdgeFacts({ plan }: { plan: EdgePlanState | null }) {
+  const ready = useStore((st) => st.model.state === "ready");
+  const p = plan?.plan;
+  const pending = <span className="faint">{plan?.pending ? "Counting…" : !ready ? "Known once a model is loaded." : plan?.error ?? "Known once the experiment is ready."}</span>;
+  return (
+    <>
+      <dt>Graph</dt>
+      <dd>{p?.n_edges != null ? <span>{count(p.n_edges)} edges, from {count(p.n_senders)} senders into {count(p.n_receivers)} inputs</span> : pending}</dd>
+      <dt>Cost</dt>
+      <dd>
+        {p?.cost ? (
+          <>
+            <span className={p.refusal ? e.alert : undefined}>
+              {plural(p.cost.batches, "batch", "batches")} of {count(p.cost.forward_per_batch)} forward and{" "}
+              {plural(p.cost.backward_per_batch, "backward pass", "backward passes")} each
+              {p.cost.patched_per_batch ? `, then ${count(p.cost.patched_per_batch)} edge-patched forward passes each for the curve` : ""}.
+            </span>
+            <span className={e.factNote}>
+              About {bytes(p.cost.memory_per_batch)} a batch{p.free != null ? ` of the ${bytes(p.free)} free` : ""}, and{" "}
+              {count(p.cost.values)} per-prompt values kept.{p.refusal ? ` ${p.refusal}` : ""}
+            </span>
+          </>
+        ) : p?.refusal ? (
+          <span className={e.alert}>{p.refusal}</span>
+        ) : (
+          pending
+        )}
+      </dd>
     </>
   );
 }

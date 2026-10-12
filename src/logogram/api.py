@@ -17,6 +17,10 @@ the app would make, and it lands in the project like any other::
     lg.delete_run(project, old_run)    # its folder and everything in it, for good
     seeds = lg.sweep(run, field="statistics.seed", values=[0, 1, 2, 3])  # one run per value
     seeds.table()        # the strongest sites at every value: do they keep their sign and size?
+    lg.list_saes(model, "layer 8")    # published SAEs for the model, and what Logogram reads of them
+    sae = lg.load_sae(release="gpt2-small-res-jb", sae_id="blocks.8.hook_resid_pre", model=model)
+    toy = lg.toy_model("induction")   # a model whose circuit is known, with experiments to run
+    toy.run("which-heads").sites()    # the planted heads at 1, every other head at 0
 
 Tables come back as pandas DataFrames when pandas is installed, and as pyarrow Tables otherwise.
 """
@@ -43,11 +47,13 @@ __all__ = [
     "continue_text",
     "create_project",
     "delete_run",
+    "edge_verification",
     "feature_writes",
     "generate",
     "head_kinds",
     "list_local_models",
     "list_runs",
+    "list_saes",
     "load_model",
     "load_run",
     "load_sae",
@@ -59,6 +65,7 @@ __all__ = [
     "remove_local_model",
     "run",
     "sweep",
+    "toy_model",
     "verify_run",
     "write_dataset",
 ]
@@ -163,6 +170,69 @@ def remove_local_model(name: str) -> None:
     remove_model(name)
 
 
+def toy_model(
+    name: str,
+    folder: str | Path | None = None,
+    *,
+    device: str = "cpu",
+    dtype: str = "float32",
+) -> ToyModel:
+    """A model whose circuit is known, to learn the methods on and to check them against:
+    ``"induction"`` (a previous-token head and an induction head) or ``"ioi"`` (GPT-2 small's
+    indirect-object circuit, one head per step), with weights set by hand (see
+    :mod:`logogram.toys`). Writes its project into ``folder`` (by default ``toy-NAME`` in the
+    projects folder): the model's files in ``model/``, added to this machine's local models as
+    ``toy-NAME`` so specs name it by the hash of its files, its datasets, and experiments whose
+    notes say what each method should find. Then loads it, checked as any model is, and checks
+    that it does its task and that its planted heads attend where they were built to; a toy that
+    doesn't is refused. Run its experiments with ``toy.run("which-heads")``."""
+    from logogram.backends.base import BackendError
+    from logogram.toys import ToyError, load_toy, write_toy
+
+    try:
+        made = write_toy(name, folder)
+        model, check = load_toy(made.toy.name, made.local_name, device=device, dtype=dtype)
+    except (ToyError, BackendError) as exc:
+        raise LogogramError(str(exc)) from exc
+    specs = {
+        Path(path).parent.name: load_spec(made.project.root / path) for path in made.experiments
+    }
+    return ToyModel(
+        name=made.toy.name,
+        project=made.project,
+        model=model,
+        specs=specs,
+        heads=[h.to_dict() for h in made.toy.heads],
+        compositions=[c.to_dict() for c in made.toy.compositions],
+        check=check,
+    )
+
+
+@dataclass
+class ToyModel:
+    """A toy model, written and loaded by :func:`toy_model`: its project, the loaded model, its
+    experiments' specs (by their folder in experiments/, each saying in its notes what it should
+    find), the heads that were planted and the compositions between them (which head's output
+    reaches which input of which head), and what the check at load found."""
+
+    name: str
+    project: Project
+    model: Any = field(repr=False)
+    specs: dict[str, Spec] = field(repr=False)
+    heads: list[dict[str, Any]] = field(repr=False)
+    compositions: list[dict[str, Any]] = field(repr=False)
+    check: dict[str, Any] = field(repr=False)
+
+    def run(self, experiment: str) -> Run:
+        """Run one of the toy's experiments (``"which-heads"``, ...) on the loaded toy."""
+        if experiment not in self.specs:
+            raise LogogramError(
+                f"The {self.name} toy has no experiment {experiment!r}. Its experiments are "
+                f"{', '.join(self.specs)}."
+            )
+        return run(self.specs[experiment], self.project, model=self.model)
+
+
 def _chat_template(value: Any) -> Any:
     """A spec's tokenization.chat_template from a dict (as a spec writes it), or None."""
     if value is None or not isinstance(value, dict):
@@ -172,18 +242,66 @@ def _chat_template(value: Any) -> Any:
     return read_chat_template(value)
 
 
-def load_sae(repo: str, path: str = "", *, model: Any, revision: str | None = None) -> Any:
+def load_sae(
+    repo: str | None = None,
+    path: str = "",
+    *,
+    model: Any,
+    revision: str | None = None,
+    release: str | None = None,
+    sae_id: str | None = None,
+) -> Any:
     """Download (once) and read a published SAE or transcoder at an exact revision, onto
-    ``model``'s device. It is refused if it was made for another model's sizes or reads a site the
-    model doesn't have. Pass it to :func:`run` with a spec that names it, or explore its features
-    with :func:`feature_writes`."""
+    ``model``'s device: by its Hugging Face repository and folder, or by its SAELens release and
+    id (``release="gpt2-small-res-jb", sae_id="blocks.8.hook_resid_pre"``), found in the
+    catalogue of SAELens's registry that ships with Logogram (see :func:`list_saes`). Either way
+    the SAE is its repository, folder and revision, which is what a spec records; without a
+    revision, the repository's current commit is pinned. It is refused if Logogram can't read it
+    exactly, was made for another model's sizes or reads a site the model doesn't have. Pass it to
+    :func:`run` with a spec that names it, or explore its features with :func:`feature_writes`."""
     from logogram.features import check_sae_fits
     from logogram.sae import load_sae as load
     from logogram.spec import SAERef
 
+    if release is not None or sae_id is not None:
+        if repo is not None or path:
+            raise LogogramError(
+                "Name the SAE either by its repository and folder or by its release and id."
+            )
+        if release is None or sae_id is None:
+            raise LogogramError("Name an SAE by its release and its id: give both.")
+        from logogram.backends.catalogue import load_catalogue
+
+        entry = load_catalogue().find(release, sae_id)
+        if entry.reads == "refused":
+            raise LogogramError(f"Logogram can't read {release} {sae_id} exactly. {entry.reason}")
+        repo, path = entry.repo, entry.folder
+    elif repo is None:
+        raise LogogramError(
+            "Name the SAE: its Hugging Face repository (and folder), or release= and sae_id= as "
+            "SAELens names it."
+        )
     sae = load(SAERef(repo=repo, path=path, revision=revision), model.info.device)
     check_sae_fits(sae, model.info)
     return sae
+
+
+def list_saes(model: Any, search: str = "") -> Any:
+    """The published SAEs trained on a model (a loaded model, or its Hugging Face id), from the
+    catalogue of SAELens's registry that ships with Logogram (nothing is fetched): one row per SAE,
+    those Logogram reads exactly first, with its release and id, repository and folder, the hook
+    it reads, its site, layer and width, its architecture, whether Logogram reads it exactly
+    (``reads``: exact, refused or unknown) and if not why (``reason``), and how it was checked on
+    its files if it was (``verified``). ``search`` keeps the ones it matches, as the app's search
+    does: ``"layer 8"``, ``"16k"``, ``"resid_post"``, a release's name. Load one with
+    :func:`load_sae` (``release=``, ``sae_id=``)."""
+    from logogram.backends.catalogue import load_catalogue, order
+    from logogram.backends.catalogue import search as matching
+
+    model_id = model if isinstance(model, str) else model.info.id
+    entries = load_catalogue().for_model(model_id)
+    found = order(matching(entries, search) if search.strip() else entries)
+    return _table([e.to_dict() for e in found])
 
 
 def feature_writes(
@@ -429,10 +547,12 @@ def compare_runs(a: Run, b: Run) -> dict[str, Any]:
 
 
 def verify_run(estimated: Run, top: int = 10, *, model: Any = None) -> Run:
-    """Patch, for real, the ``top`` sites an attribution patching run estimated to matter most."""
+    """Patch, for real, the ``top`` sites an attribution patching run estimated to matter most;
+    for an edge attribution run, path patch its ``top`` strongest edges one at a time, at most 50
+    (compare the two with :func:`edge_verification`)."""
     from logogram.robustness import require_finished
     from logogram.runner import run_spec
-    from logogram.verify import verification_spec
+    from logogram.verify import verification_change, verification_spec
 
     try:
         require_finished(estimated.project, estimated.id, "Verifying by patching")
@@ -440,8 +560,10 @@ def verify_run(estimated: Run, top: int = 10, *, model: Any = None) -> Run:
         raise LogogramError(str(exc)) from exc
     if estimated.summary is None:
         raise LogogramError("Only a finished run can be verified.")
-    variant = verification_spec(estimated.spec, estimated.summary, top)
-    n = len(variant.scope.sites)  # type: ignore[union-attr]
+    try:
+        variant = verification_spec(estimated.spec, estimated.summary, top)
+    except ValueError as exc:
+        raise LogogramError(str(exc)) from exc
     outcome = run_spec(
         variant,
         estimated.project,
@@ -449,12 +571,25 @@ def verify_run(estimated: Run, top: int = 10, *, model: Any = None) -> Run:
         derived_from={
             "run": estimated.id,
             "kind": "verification",
-            "change": f"the {n} strongest estimated site{'s' if n != 1 else ''}, patched",
+            "change": verification_change(variant),
         },
     )
     if outcome.status != "finished":
         raise LogogramError(_ended(outcome, "The verification"))
     return load_run(estimated.project, outcome.run_id, model=outcome.backend)
+
+
+def edge_verification(estimated: Run, verified: Run) -> dict[str, Any]:
+    """An edge attribution run's estimates beside their measurements by path patching (the run
+    :func:`verify_run` made from it), edge by edge, ranked both ways, with Spearman's rank
+    correlation of the two and how many have the same sign."""
+    from logogram.edges import verification_table
+
+    if not (estimated.summary or {}).get("edges"):
+        raise LogogramError(f"{estimated.id} isn't an edge attribution run.")
+    if verified.summary is None:
+        raise LogogramError(f"{verified.id} has no results ({verified.status}).")
+    return verification_table(estimated.summary or {}, verified.summary)
 
 
 def check_robustness(
@@ -685,7 +820,8 @@ class Run:
 
     def sites(self) -> Any:
         """One row per site: what it is, its mean effect and interval, the simultaneous band and
-        q-value, sign flips and the metric patched."""
+        q-value, sign flips and the metric patched. An edge attribution run's summary lists its
+        strongest edges only: :meth:`edges` has every one."""
         from logogram.report import sites_table
 
         return _table(sites_table(self._summary()))
@@ -701,15 +837,18 @@ class Run:
         """The run as one self-contained HTML page anyone can open: its map, strongest sites,
         every site's numbers, the methods and where it came from. Written to ``path`` when given;
         hardware model names are left out unless ``hardware`` is true."""
+        from logogram.edges import latest_verification
         from logogram.report import run_report
 
+        summary = self._summary()
         page = run_report(
             self.spec,
-            self._summary(),
+            summary,
             self.manifest,
             self.id,
             hardware=hardware,
             continuations=self.continuations(),
+            verification=latest_verification(self.project, self.id, summary),
         )
         if path is not None:
             Path(path).expanduser().write_text(page, encoding="utf-8")
@@ -749,6 +888,29 @@ class Run:
         them: each site's label, effect with its interval, and the rest of its statistics."""
         sites = [s for s in self._summary()["sites"] if s["effect"]["mean"] is not None]
         return sorted(sites, key=lambda s: -abs(s["effect"]["mean"]))[:k]
+
+    def edges(self) -> Any:
+        """An edge attribution run's every edge, one row each (its edges.parquet): the sender and
+        receiver, the mean estimated effect and its interval, the simultaneous band and q-value.
+        The summary lists only the strongest."""
+        import pyarrow.parquet as pq
+
+        from logogram.schema import EDGES_FILE
+
+        self._summary()
+        path = self.folder / EDGES_FILE
+        if not path.is_file():
+            raise LogogramError(f"{self.id} isn't an edge attribution run: it has no edges.")
+        table = pq.read_table(self.project.readable(path))
+        try:
+            return table.to_pandas()
+        except ImportError:
+            return table
+
+    def curve(self) -> dict[str, Any] | None:
+        """An edge attribution run's faithfulness curve: for each k, the faithfulness of the k
+        strongest edges and of k edges chosen at random, with intervals; None without one."""
+        return (self._summary().get("edges") or {}).get("curve")
 
     def _repr_html_(self) -> str:
         if self.summary is None:

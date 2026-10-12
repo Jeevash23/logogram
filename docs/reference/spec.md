@@ -73,8 +73,8 @@ An experiment: what runs, on which model and prompts, and how its numbers are me
 | `model` | object | [Model](#model) | The model, exactly: its files, precision, device and weight processing. |
 | `dataset` | object | [Dataset](#dataset) | The prompt pairs. |
 | `tokenization` | object | [Tokenization](#tokenization) | How each prompt becomes tokens. |
-| `experiment` | object | one of [`activation_patching`](#experiment-activation_patching), [`ablation`](#experiment-ablation), [`direct_logit_attribution`](#experiment-direct_logit_attribution), [`attribution_patching`](#experiment-attribution_patching), [`steering`](#experiment-steering) or [`path_patching`](#experiment-path_patching) ([Experiment](#experiment)) | The method, with every choice that changes its numbers. |
-| `scope` | object | one of [`heads`](#scope-heads), [`layer_position`](#scope-layer_position), [`layer_components`](#scope-layer_components), [`sites`](#scope-sites), [`features`](#scope-features) or [`site_sets`](#scope-site_sets) ([Scope](#scope)) | The sites the method measures: one result per site. |
+| `experiment` | object | one of [`activation_patching`](#experiment-activation_patching), [`ablation`](#experiment-ablation), [`direct_logit_attribution`](#experiment-direct_logit_attribution), [`attribution_patching`](#experiment-attribution_patching), [`steering`](#experiment-steering), [`path_patching`](#experiment-path_patching) or [`edge_attribution`](#experiment-edge_attribution) ([Experiment](#experiment)) | The method, with every choice that changes its numbers. |
+| `scope` | object | one of [`heads`](#scope-heads), [`layer_position`](#scope-layer_position), [`layer_components`](#scope-layer_components), [`sites`](#scope-sites), [`features`](#scope-features), [`site_sets`](#scope-site_sets), [`head_inputs`](#scope-head_inputs), [`neurons`](#scope-neurons), [`graph`](#scope-graph) or [`edges`](#scope-edges) ([Scope](#scope)) | The sites the method measures: one result per site. |
 | `metric` | object | one of [`logit_diff`](#metric-logit_diff), [`logprob_diff`](#metric-logprob_diff), [`logprob`](#metric-logprob), [`prob`](#metric-prob), [`prob_diff`](#metric-prob_diff) or [`kl`](#metric-kl) ([Metric](#metric)) | What is read from the model's output, and how effects are normalized. |
 | `statistics` | object | [Statistics](#statistics) | The intervals' bootstrap, confidence level and seed. |
 | `execution` | object | [Execution](#execution) | How the work is batched. |
@@ -124,7 +124,7 @@ How each prompt becomes the tokens the model reads.
 
 In a spec at `experiment`.
 
-One of these, chosen by `kind`: [`activation_patching`](#experiment-activation_patching), [`ablation`](#experiment-ablation), [`direct_logit_attribution`](#experiment-direct_logit_attribution), [`attribution_patching`](#experiment-attribution_patching), [`steering`](#experiment-steering) or [`path_patching`](#experiment-path_patching).
+One of these, chosen by `kind`: [`activation_patching`](#experiment-activation_patching), [`ablation`](#experiment-ablation), [`direct_logit_attribution`](#experiment-direct_logit_attribution), [`attribution_patching`](#experiment-attribution_patching), [`steering`](#experiment-steering), [`path_patching`](#experiment-path_patching) or [`edge_attribution`](#experiment-edge_attribution).
 
 ### Experiment: activation_patching
 
@@ -218,18 +218,45 @@ receivers' inputs from that run are recorded, then patched into an otherwise unc
 receiver run, and the metric is read there. The result is the sender's effect through those
 receivers alone. Senders must come before at least one receiver.
 
+With an `edges` scope, each edge is its own result: its sender's effect through its own
+receiver alone, with every head and MLP held (`freeze_mlps`), so the change reaches the
+receiver only directly, as the edge carries it. `receivers` then lists each edge's receiver.
+
 | Field | Type | Allowed values | Description |
 |---|---|---|---|
 | `kind` | string | `"path_patching"` | Which experiment this is: always `path_patching` here. |
 | `direction` | string | `"clean_to_corrupt"` or `"corrupt_to_clean"` | `clean_to_corrupt` runs the corrupt prompt with clean activations (does this restore the behavior?); `corrupt_to_clean` runs the clean prompt with corrupt ones (does this break it?). |
-| `receivers` | list of objects | 1 to 64 items; each one of [`head`](#path-receiver-head) or [`logits`](#path-receiver-logits) ([Path receiver](#path-receiver)) | Where the paths end: later heads' queries, keys or values, or the logits. |
+| `receivers` | list of objects | 1 to 64 items; each one of [`head`](#path-receiver-head), [`logits`](#path-receiver-logits) or [`mlp`](#path-receiver-mlp) ([Path receiver](#path-receiver)) | Where the paths end: later heads' queries, keys or values, or the logits. |
 | `freeze_mlps` | boolean | `true` or `false` | Hold the MLPs at their own values too, so the change travels through the residual stream alone. |
+
+### Experiment: edge_attribution
+
+Estimate the effect of every edge of the model's graph from gradients (edge attribution
+patching, EAP, as in Syed et al. 2023; with integrated gradients, EAP-IG, as in Hanna et al.
+2024).
+
+The estimate for the edge from u to v is (u's output on the source prompt − on the receiver
+prompt) · the gradient of the metric with respect to v's own input, summed over positions.
+v's own input is the copy of the residual stream that only v reads, before v's normalization;
+the gradient goes through that normalization as the model computes it, its scale recomputed
+from the input (see logogram.edges). With `method="integrated_gradients"` the gradient is
+averaged over `steps` runs whose input embeddings lie evenly between the receiver's and the
+source's, as in attribution patching. With `curve`, the strongest edges are then patched
+together, edge by edge, for a faithfulness curve beside edges chosen at random.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `kind` | string | `"edge_attribution"` | Which experiment this is: always `edge_attribution` here. |
+| `direction` | string | `"clean_to_corrupt"` or `"corrupt_to_clean"` | `clean_to_corrupt` runs the corrupt prompt with clean activations (does this restore the behavior?); `corrupt_to_clean` runs the clean prompt with corrupt ones (does this break it?). |
+| `method` | string | `"gradient"` or `"integrated_gradients"` | One gradient at the receiver run, or gradients averaged along the way between the two prompts' input embeddings (integrated gradients). |
+| `steps` | integer or null | 2 to 64, or `null` | The points along the way, for integrated gradients; `null` for a single gradient. |
+| `curve` | object or null | [Faithfulness curve](#faithfulness-curve), or `null` | Patch the strongest edges together for a faithfulness curve; `null` to only estimate. |
 
 ## Scope
 
 In a spec at `scope`.
 
-One of these, chosen by `kind`: [`heads`](#scope-heads), [`layer_position`](#scope-layer_position), [`layer_components`](#scope-layer_components), [`sites`](#scope-sites), [`features`](#scope-features) or [`site_sets`](#scope-site_sets).
+One of these, chosen by `kind`: [`heads`](#scope-heads), [`layer_position`](#scope-layer_position), [`layer_components`](#scope-layer_components), [`sites`](#scope-sites), [`features`](#scope-features), [`site_sets`](#scope-site_sets), [`head_inputs`](#scope-head_inputs), [`neurons`](#scope-neurons), [`graph`](#scope-graph) or [`edges`](#scope-edges).
 
 ### Scope: heads
 
@@ -304,8 +331,60 @@ a share of the set that replaces the whole universe, when the scope has one.
 | Field | Type | Allowed values | Description |
 |---|---|---|---|
 | `kind` | string | `"site_sets"` | Which scope this is: always `site_sets` here. |
-| `universe` | list of strings or null | each `"head"`, `"attn_out"` or `"mlp_out"`, or `null` | The components, at every layer and position, that make up the rest of the model for complement sets; `null` when no set is one. |
+| `universe` | list of strings or null | each `"head"`, `"attn_out"`, `"mlp_out"`, `"q"`, `"k"`, `"v"` or `"neuron"`, or `null` | The components, at every layer and position, that make up the rest of the model for complement sets; `null` when no set is one. |
 | `sets` | list of objects | 1 to 64 items; each [Site set](#site-set) | The sets, each intervened on at once: one result per set. |
+
+### Scope: head_inputs
+
+Every head's query, key or value in every layer, at one position: a layer x head grid.
+
+Keys and values belong to key/value heads: with grouped-query attention a model has fewer of
+them than query heads, and each is read by every query head of its group, so the grid of
+`input="k"` or `"v"` has a column per key/value head.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `kind` | string | `"head_inputs"` | Which scope this is: always `head_inputs` here. |
+| `input` | string | `"q"`, `"k"` or `"v"` | The input intervened on: each query head's query (q), or each key/value head's key (k) or value (v). |
+| `position` | object | one of [`all`](#position-all), [`last`](#position-last), [`index`](#position-index) or [`label`](#position-label) ([Position](#position)) | The token or tokens of each prompt whose query, key or value is intervened on. |
+
+### Scope: neurons
+
+Every neuron of the MLPs of the chosen layers, at one position. A neuron's activation is
+the MLP's hidden activation after its nonlinearity (for a gated MLP, the gate's activation
+times the up projection): the input to the MLP's output projection.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `kind` | string | `"neurons"` | Which scope this is: always `neurons` here. |
+| `layers` | list of integers | 1 to 512 items; each 0 or more | The layers whose MLP neurons are measured, each listed once. |
+| `position` | object | one of [`all`](#position-all), [`last`](#position-last), [`index`](#position-index) or [`label`](#position-label) ([Position](#position)) | The token or tokens of each prompt where every neuron is intervened on. |
+
+### Scope: graph
+
+The edges of the model's graph, for edge attribution.
+
+The graph's nodes are the embeddings, every attention head (its output, z through its slice of
+the output projection), every MLP and the logits. An edge runs from a node's output to a later
+node's input: a head's query, key or value input (each its own edge), an MLP's input, or the
+logits. `layers` chooses the heads and MLPs whose inputs receive the edges (from every
+earlier node), `null` for every layer; `logits` adds the edges into the logits.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `kind` | string | `"graph"` | Which scope this is: always `graph` here. |
+| `layers` | list of integers or null | each 0 or more, or `null` | The layers whose heads and MLPs receive edges, in order; `null` for every layer. |
+| `logits` | boolean | `true` or `false` | Include the edges into the logits. |
+
+### Scope: edges
+
+Edges measured one at a time, each its own result: path patching from the edge's sender
+into its receiver alone, with every head and MLP held (see PathPatching).
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `kind` | string | `"edges"` | Which scope this is: always `edges` here. |
+| `edges` | list of objects | 1 to 64 items; each [Edge](#edge) | The edges, each measured on its own, none repeated. |
 
 ## Metric
 
@@ -534,9 +613,9 @@ Greedy continuations of the first held-out prompts, without steering and at each
 
 ## Path receiver
 
-In a spec at `experiment.receivers[]` (experiment `path_patching`).
+In a spec at `experiment.receivers[]` (experiment `path_patching`) and `scope.edges[].receiver` (scope `edges`).
 
-One of these, chosen by `kind`: [`head`](#path-receiver-head) or [`logits`](#path-receiver-logits).
+One of these, chosen by `kind`: [`head`](#path-receiver-head), [`logits`](#path-receiver-logits) or [`mlp`](#path-receiver-mlp).
 
 ### Path receiver: head
 
@@ -557,9 +636,36 @@ The residual stream at the end of the model, read directly by the unembedding.
 |---|---|---|---|
 | `kind` | string | `"logits"` | Which path receiver this is: always `logits` here. |
 
+### Path receiver: mlp
+
+A later MLP's input: the residual stream as that MLP reads it, before its normalization.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `kind` | string | `"mlp"` | Which path receiver this is: always `mlp` here. |
+| `layer` | integer | 0 or more | The receiving MLP's layer, from 0. |
+
+## Faithfulness curve
+
+In a spec at `experiment.curve` (experiment `edge_attribution`).
+
+The k strongest edges as a circuit, for each k of `counts`.
+
+`patch` says which edges carry the source prompt's values in the receiver run: with
+`"chosen"`, the chosen edges do and every other edge keeps the receiver's own; with
+`"rest"`, the chosen edges keep the receiver's and every other edge carries the source's.
+Faithfulness is the share of the gap between the run with no edge chosen and the run with
+every edge chosen that the chosen edges close: 0 with none, 1 with every edge of the graph.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `counts` | list of integers | 1 to 24 items; each 1 or more | The numbers of edges chosen, increasing: the curve's points. |
+| `patch` | string | `"chosen"` or `"rest"` | Which edges carry the source prompt's values: the chosen ones, or every other one. |
+| `control` | object | [Random edges](#random-edges) | The same counts of edges chosen at random, the curve to compare with. |
+
 ## Position
 
-In a spec at `scope.position` (scope `heads`, `layer_components` or `features`), `predictions.position`, `scope.sites[].position` (scope `sites`) and `scope.sets[].sites[].position` (scope `site_sets`).
+In a spec at `scope.position` (scope `heads`, `layer_components`, `features`, `head_inputs` or `neurons`), `predictions.position`, `scope.sites[].position` (scope `sites`) and `scope.sets[].sites[].position` (scope `site_sets`).
 
 One of these, chosen by `kind`: [`all`](#position-all), [`last`](#position-last), [`index`](#position-index) or [`label`](#position-label).
 
@@ -605,10 +711,11 @@ One place in the model, at a layer and a position of each prompt.
 
 | Field | Type | Allowed values | Description |
 |---|---|---|---|
-| `kind` | string | `"resid_pre"`, `"resid_mid"`, `"resid_post"`, `"attn_out"`, `"mlp_out"`, `"head"` or `"sae_feature"` | A residual stream state, an attention or MLP output, one head's output (z), or a feature of the spec's SAE. |
+| `kind` | string | `"resid_pre"`, `"resid_mid"`, `"resid_post"`, `"attn_out"`, `"mlp_out"`, `"head"`, `"sae_feature"`, `"q"`, `"k"`, `"v"` or `"neuron"` | A residual stream state, an attention or MLP output, one head's output (z), a head's query, key or value, one MLP neuron, or a feature of the spec's SAE. |
 | `layer` | integer | 0 or more | The layer, from 0. |
-| `head` (optional, default `null`) | integer or null | 0 or more, or `null` | The head's index in its layer, for a head site; `null` for any other site. |
+| `head` (optional, default `null`) | integer or null | 0 or more, or `null` | The head's index in its layer: the head of a head site (its output z), the query head of a q site, the key/value head of a k or v site; `null` for any other site. |
 | `feature` (optional, default `null`) | integer or null | 0 or more, or `null` | The feature's index in the spec's SAE, for an sae_feature site; `null` for any other. |
+| `neuron` (optional, default `null`) | integer or null | 0 or more, or `null` | The neuron's index among its layer's MLP neurons, for a neuron site: its activation after the nonlinearity (for a gated MLP, the gate's activation times the up projection), the input to the MLP's output projection. Null for any other site. |
 | `position` | object | one of [`all`](#position-all), [`last`](#position-last), [`index`](#position-index) or [`label`](#position-label) ([Position](#position)) | The token or tokens of each prompt intervened on. |
 
 ## Site set
@@ -627,3 +734,39 @@ replaced with the rest. A complement set with no sites replaces the whole univer
 | `label` | string | 1 to 80 characters | The set's name in the results. |
 | `sites` | list of objects | at most 4,096 items; each [Site](#site) | The sites intervened on together, or, with complement, the sites kept. |
 | `complement` | boolean | `true` or `false` | Intervene on every component of the scope's universe except these sites. |
+
+## Edge
+
+In a spec at `scope.edges[]` (scope `edges`).
+
+A sender's output read directly by one receiver's input, through the residual stream.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `sender` | object | [Edge sender](#edge-sender) | Where the edge starts. |
+| `receiver` | object | one of [`head`](#path-receiver-head), [`logits`](#path-receiver-logits) or [`mlp`](#path-receiver-mlp) ([Path receiver](#path-receiver)) | Where the edge ends: a later head's query, key or value, a later MLP's input, or the logits. |
+
+## Random edges
+
+In a spec at `experiment.curve.control` (experiment `edge_attribution`).
+
+The control: edges chosen at random, `draws` times. Each draw orders every edge of the
+graph by a seeded shuffle and takes the first k, as the strongest are taken from the
+estimates.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `seed` | integer | 0 to 4,294,967,295 | The seed of the shuffles. |
+| `draws` | integer | 1 to 16 | How many random orders are drawn: each point of the control averages them, prompt by prompt, and keeps each draw's own faithfulness. |
+
+## Edge sender
+
+In a spec at `scope.edges[].sender` (scope `edges`).
+
+The node an edge starts from: the embeddings, an attention head's output, or an MLP's.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `kind` | string | `"embed"`, `"head"` or `"mlp"` |  |
+| `layer` (optional, default `null`) | integer or null | 0 or more, or `null` | The head's or MLP's layer, from 0; `null` for the embeddings. |
+| `head` (optional, default `null`) | integer or null | 0 or more, or `null` | The head's index in its layer; `null` for the embeddings and for an MLP. |

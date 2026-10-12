@@ -10,6 +10,8 @@ import type {
   DatasetCreated,
   DatasetDetail,
   DeriveRequest,
+  EdgePlan,
+  EdgeVerification,
   Environment,
   EstimateResponse,
   ExampleInfo,
@@ -21,6 +23,7 @@ import type {
   TaskInfo,
   ModelPreset,
   ModelStatus,
+  SAECatalogue,
   SAEFit,
   SAEStatus,
   TokenFeatures,
@@ -58,6 +61,7 @@ import type {
   QueuedRun,
   QueueStatus,
   RunMemory,
+  ScopeSpec,
   ExperimentKind,
   Revisions,
   SweepField,
@@ -249,7 +253,8 @@ export const api = {
   /** A prompt as the loaded model reads it in its own chat template. */
   chatWrap: (body: { chat_template: ChatTemplateSpec; text: string; model?: ModelRef }) => post<ChatWrapped>("/api/chat/wrap", body),
   /** What a run of this batch size would need on the loaded model, against the memory free. */
-  runMemory: (body: { batch_size: number; seq_len: number; method: ExperimentKind }) => post<RunMemory>("/api/models/run-memory", body),
+  runMemory: (body: { batch_size: number; seq_len: number; method: ExperimentKind; scope?: ScopeSpec; prompts?: number; bootstrap?: number }) =>
+    post<RunMemory>("/api/models/run-memory", body),
   loadModel: (body: ModelRef) => post<Job>("/api/models/load", body),
   unloadModel: () => post<ModelStatus>("/api/models/unload"),
 
@@ -311,6 +316,12 @@ export const api = {
     post<{ run_id: string; job: Job }>(`/api/runs/${encodeURIComponent(id)}/robustness`, change),
   verify: (id: string, top: number) =>
     post<{ run_id: string; job: Job }>(`/api/runs/${encodeURIComponent(id)}/verify`, { top }),
+  /** An edge attribution spec on the loaded model, before it runs: the graph's size, what a run
+   * costs, and why it would be refused. */
+  edgePlan: (spec: Spec) => post<EdgePlan>("/api/edges/plan", { spec }),
+  /** An edge attribution run's estimates against its latest verification by path patching; null
+   * until one has finished. */
+  edgeVerification: (id: string) => get<EdgeVerification | null>(`/api/runs/${encodeURIComponent(id)}/edge-verification`),
   derived: (id: string) => get<RunListing[]>(`/api/runs/${encodeURIComponent(id)}/derived`),
   /** Rename, star or archive a run: its annotations.json, never its spec. */
   annotateRun: (id: string, change: RunAnnotationsChange) =>
@@ -319,6 +330,9 @@ export const api = {
   deleteRun: (id: string) => request<{ ok: boolean }>("DELETE", `/api/runs/${encodeURIComponent(id)}`),
 
   saeSuggestions: (model: string) => get<{ repo: string; detail: string }[]>(`/api/sae/suggestions?model=${encodeURIComponent(model)}`),
+  /** The published SAEs for a model from the catalogue that ships with Logogram: nothing is fetched. */
+  saeCatalogue: (model: string, query: string, limit = 100) =>
+    get<SAECatalogue>(`/api/sae/catalogue?model=${encodeURIComponent(model)}&q=${encodeURIComponent(query)}&limit=${limit}`),
   saeFolders: (repo: string) => get<{ repo: string; revision: string; folders: string[] }>(`/api/sae/folders?repo=${encodeURIComponent(repo)}`),
   loadSae: (ref: { repo: string; path: string; revision: string | null }) => post<Job>("/api/sae/load", ref),
   unloadSae: () => post<SAEStatus>("/api/sae/unload"),

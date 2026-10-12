@@ -57,6 +57,14 @@
   color: var(--muted);
 }
 
+.keep {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
 .progress {
   display: flex;
   flex-direction: column;

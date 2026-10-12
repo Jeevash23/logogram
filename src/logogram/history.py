@@ -18,7 +18,6 @@ Deleting a run removes its folder for good: see :func:`delete_run` for why there
 
 from __future__ import annotations
 
-import contextlib
 import os
 import shutil
 from pathlib import Path
@@ -26,7 +25,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from logogram.fileio import read_limited, write_text_atomic
+from logogram.fileio import read_limited, remove_file, write_text_atomic
 from logogram.project import Project, ProjectError, _mtime_iso
 from logogram.schema import Manifest, RunAnnotations, RunListing
 
@@ -110,8 +109,7 @@ def write_annotations(project: Project, folder: Path, annotations: RunAnnotation
     file), or remove it once nothing is said about the run."""
     path = project.writable(folder / ANNOTATIONS)
     if annotations == RunAnnotations():
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(path)  # a link is removed itself, never followed
+        remove_file(path)  # a link is removed itself, never followed
         return
     write_text_atomic(path, annotations.model_dump_json(indent=2) + "\n")
 

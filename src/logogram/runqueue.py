@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import ValidationError
 
-from logogram.fileio import read_limited, write_text_atomic
+from logogram.fileio import read_limited, remove_file, write_text_atomic
 from logogram.owner import owner_state, this_process
 from logogram.schema import QueueEntry, QueueFile, QueueRunner, RunOwner
 from logogram.spec import Spec
@@ -244,8 +244,7 @@ def _read(project: Project) -> list[Queued]:
 def _write(project: Project, folder: Path, runs: list[Queued]) -> None:
     path = project.writable(folder / QUEUE_FILE)
     if not runs:
-        with contextlib.suppress(FileNotFoundError):
-            path.unlink()  # a link is removed, never followed
+        remove_file(path)  # a link is removed, never followed
         return
     data = QueueFile(
         runs=[
@@ -382,8 +381,7 @@ def release_queue(project: Project, record: QueueRunner) -> None:
         current = _read_runner(project)
         if current is None or current.token != record.token:
             return
-        with contextlib.suppress(FileNotFoundError):
-            project.writable(folder / RUNNER_FILE).unlink()
+        remove_file(project.writable(folder / RUNNER_FILE))
 
 
 def holds_queue(project: Project, record: QueueRunner) -> bool:

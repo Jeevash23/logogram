@@ -14,18 +14,17 @@ as those versions did.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import json
 import os
 import secrets
-import sys
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import psutil
 
-from logogram.fileio import read_limited, write_text_atomic
+from logogram.fileio import read_limited, remove_file, write_text_atomic
 from logogram.schema import RunOwner
 
 if TYPE_CHECKING:
@@ -82,18 +81,10 @@ def remove_owner(project: Project, folder: Path) -> None:
     and only in a folder that really is part of the project).
 
     On Windows a file can't be removed while another process reads it (the app listing the
-    run), so try again briefly, as ``fileio.replace_file`` does."""
+    run), so ``remove_file`` tries again briefly."""
     path = project.writable(folder / OWNER_FILE)
-    for _ in range(50):
-        try:
-            path.unlink()
-            return
-        except PermissionError:
-            if sys.platform != "win32":
-                return  # a read-only project
-            time.sleep(0.02)
-        except OSError:  # gone already
-            return
+    with contextlib.suppress(OSError):  # a read-only project
+        remove_file(path)
 
 
 def read_owner(project: Project, folder: Path) -> RunOwner | None:

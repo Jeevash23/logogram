@@ -70,6 +70,7 @@ from logogram.spec import (
     ModelRef,
     Position,
     PredictionSettings,
+    Scope,
     Spec,
     read_chat_template,
 )
@@ -359,6 +360,11 @@ class RunMemoryRequest(BaseModel):
         "path_patching",
         "steering",
     ]
+    # The spec's scope, the prompts it runs and its bootstrap resamples: what its sites hold
+    # (thousands of neurons hold more than a batch). Left out, only a batch is counted.
+    scope: Scope | None = None
+    prompts: int | None = Field(default=None, ge=1, le=10_000_000)
+    bootstrap: int | None = Field(default=None, ge=1, le=100_000)
 
 
 class BaselineRequest(AnalysisRequest):
@@ -858,11 +864,20 @@ def create_app(
                 state.backend, records, prepend_bos, chat_template=template
             )
             out["issues"] = [i.to_dict() for i in issues]
-            out["lengths"] = sorted({p.length for p in prepared})
+            out["lengths"] = sorted(
+                {p.length_of(side) for p in prepared for side in ("clean", "corrupt")}
+            )
             # Answers this model reads as continuations of several tokens: only the metrics that
             # read continuations can score them, which the app says before a run is started.
             out["continuations"] = [
                 p.index for p in prepared if p.answer.positions > 1 or p.distractor.positions > 1
+            ]
+            # Pairs of different lengths, matched label by label: the form offers them only the
+            # positions that work.
+            out["uneven"] = [
+                {"index": p.index, "clean": len(p.clean.ids), "corrupt": len(p.corrupt.ids)}
+                for p in prepared
+                if not p.even
             ]
         return out
 
@@ -1099,12 +1114,26 @@ def create_app(
     @app.post("/api/models/run-memory", response_model=M.RunMemoryOut)
     def run_memory(body: RunMemoryRequest) -> dict[str, Any]:
         """What a run of this batch size needs on the loaded model, against the memory free."""
-        from logogram.system import ALL_LAYER_METHODS, estimate_run_memory
+        from logogram.system import ALL_LAYER_METHODS, estimate_run_memory, scope_footprint
 
         backend = state.backend
         if backend is None:
             raise Conflict("Load a model to estimate what a run on it needs.")
         info = backend.info
+        footprint = (
+            scope_footprint(
+                body.scope,
+                n_layers=info.n_layers,
+                n_heads=info.n_heads,
+                n_kv_heads=int(info.extra.get("n_key_value_heads") or info.n_heads),
+                d_model=info.d_model,
+                d_head=info.d_head,
+                d_mlp=info.d_mlp or 0,
+                seq_len=body.seq_len,
+            )
+            if body.scope is not None
+            else None
+        )
         return estimate_run_memory(
             n_layers=info.n_layers,
             n_heads=info.n_heads,
@@ -1116,7 +1145,48 @@ def create_app(
             batch_size=body.batch_size,
             seq_len=body.seq_len,
             all_layers=body.method in ALL_LAYER_METHODS,
+            footprint=footprint,
+            method=body.method,
+            prompts=body.prompts or 0,
+            bootstrap=body.bootstrap or 0,
         ).to_dict()
+
+    @app.post("/api/edges/plan", response_model=M.EdgePlan)
+    def plan_edges(body: RunRequest) -> dict[str, Any]:
+        """What an edge attribution spec would do on the loaded model and its prompts, before it
+        runs: the graph's size, the passes and memory a run takes, and why the run would be
+        refused, from the same checks the run makes."""
+        from logogram.backends.base import BackendError
+        from logogram.chat import chat_wrapper
+        from logogram.datasets import decode_dataset, parse_jsonl, read_dataset_bytes
+        from logogram.edges import edge_plan
+        from logogram.prompts import prepare_prompts
+        from logogram.spec import SINGLE_POSITION_METRICS, EdgeAttribution
+
+        spec = Spec.model_validate(body.spec)
+        if not isinstance(spec.experiment, EdgeAttribution):
+            raise ValueError("Only an edge attribution spec has a graph to plan.")
+        backend = state.backend
+        if backend is None:
+            raise Conflict("Load a model to see its graph and what a run on it costs.")
+        project = state.require_project()
+        path = spec.dataset.path
+        records = parse_jsonl(
+            decode_dataset(read_dataset_bytes(project.resolve_dataset(path)), path), source=path
+        )
+        if spec.dataset.limit is not None:
+            records = records[: spec.dataset.limit]
+        try:
+            prompts = prepare_prompts(
+                backend,
+                records,
+                spec.tokenization.prepend_bos,
+                continuations=spec.metric.kind not in SINGLE_POSITION_METRICS,
+                chat=chat_wrapper(backend, spec.tokenization.chat_template),
+            )
+        except (ValueError, BackendError) as exc:
+            return {"n_edges": None, "n_senders": None, "n_receivers": None, "refusal": str(exc)}
+        return edge_plan(spec, backend, prompts)
 
     @app.post("/api/models/load", response_model=M.JobInfo)
     def load(body: ModelRef) -> dict[str, Any]:
@@ -1327,6 +1397,25 @@ def create_app(
     def sae_suggestions(model: str) -> list[dict[str, str]]:
         return SAE_SUGGESTIONS.get(model, [])
 
+    @app.get("/api/sae/catalogue", response_model=M.CatalogueOut)
+    def sae_catalogue(model: str, q: str = "", limit: int = 100) -> dict[str, Any]:
+        """The published SAEs trained on a model, from the catalogue that ships with Logogram
+        (SAELens's registry; nothing is fetched): those matching ``q``, the ones Logogram reads
+        exactly first, at most ``limit`` of them."""
+        from logogram.backends.catalogue import load_catalogue, order, search
+
+        catalogue = load_catalogue()
+        entries = catalogue.for_model(model)
+        found = order(search(entries, q) if q.strip() else entries)
+        return {
+            "model": model,
+            "source": f"SAELens {catalogue.source.version}",
+            "total": len(entries),
+            "exact": sum(e.exact for e in entries),
+            "matches": len(found),
+            "saes": [e.to_dict() for e in found[: max(1, min(limit, 500))]],
+        }
+
     @app.get("/api/sae/folders")
     def sae_folders(repo: str, revision: str | None = None) -> dict[str, Any]:
         """The SAEs in a Hugging Face repository (one per folder), at its exact revision."""
@@ -1527,13 +1616,22 @@ def create_app(
 
     @app.get("/api/runs/{run_id}/sites.csv")
     def export_sites(run_id: str) -> Response:
-        """One row per site: its mean, intervals, q-value and counts."""
-        from logogram.exports import sites_csv
+        """One row per site: its mean, intervals, q-value and counts. For an edge attribution
+        run, one row per edge of the graph (its edges.parquet)."""
+        from logogram.exports import results_csv, sites_csv
         from logogram.report import sites_table
         from logogram.runs import load_summary
+        from logogram.schema import EDGES_FILE
 
         project = state.require_project()
         _finished(project, run_id)
+        edges = project.run_dir(run_id) / EDGES_FILE
+        if edges.is_file():
+            return StreamingResponse(
+                results_csv(project.readable(edges)),
+                media_type="text/csv",
+                headers={"content-disposition": f'attachment; filename="{run_id}-edges.csv"'},
+            )
         return Response(
             sites_csv(sites_table(load_summary(project, run_id))),
             media_type="text/csv",
@@ -1543,6 +1641,7 @@ def create_app(
     @app.get("/api/runs/{run_id}/report.html")
     def report_run(run_id: str, hardware: bool = False) -> Response:
         """The run as one self-contained HTML page, to download and pass on."""
+        from logogram.edges import latest_verification
         from logogram.report import run_report
         from logogram.runs import load_continuations, load_summary
 
@@ -1551,13 +1650,15 @@ def create_app(
         folder = project.run_dir(run_id)
         spec = Spec.from_path(project.readable(folder / "spec.json"))
         manifest = project.read_json(folder / "manifest.json", optional=True) or {}
+        summary = load_summary(project, run_id)
         page = run_report(
             spec,
-            load_summary(project, run_id),
+            summary,
             manifest,
             run_id,
             hardware=hardware,
             continuations=load_continuations(project, run_id),
+            verification=latest_verification(project, run_id, summary),
         )
         return Response(
             page,
@@ -1577,14 +1678,31 @@ def create_app(
         project = state.require_project()
         _finished(project, run_id)
         summary = load_summary(project, run_id)
-        if (summary.get("layout") or {}).get("kind") in ("sites", "site_sets"):
+        kind = (summary.get("layout") or {}).get("kind")
+        if kind in ("sites", "site_sets"):
             raise Conflict("This run has no map to draw: its results are a list. Export a CSV.")
+        if kind == "edges":
+            raise Conflict(
+                "This run's results are edges of the model's graph, which have no map. Download "
+                "the report for the graph and the faithfulness curve, or export a CSV."
+            )
         spec = Spec.from_path(project.readable(project.run_dir(run_id) / "spec.json"))
         return Response(
             figure_svg(spec, summary, value, unit),
             media_type="image/svg+xml",
             headers={"content-disposition": f'attachment; filename="{run_id}.svg"'},
         )
+
+    @app.get("/api/runs/{run_id}/edge-verification", response_model=M.EdgeVerification | None)
+    def edge_verification(run_id: str) -> dict[str, Any] | None:
+        """An edge attribution run's estimates against its latest finished verification by path
+        patching, edge by edge; null when no verification has finished."""
+        from logogram.edges import latest_verification
+        from logogram.runs import load_summary
+
+        project = state.require_project()
+        _finished(project, run_id)
+        return latest_verification(project, run_id, load_summary(project, run_id))
 
     @app.get("/api/runs/{run_id}/methods", response_model=M.MethodsText)
     def run_methods(run_id: str) -> dict[str, Any]:
@@ -1635,9 +1753,10 @@ def create_app(
 
     @app.post("/api/runs/{run_id}/verify", response_model=M.StartedRun)
     def verify(run_id: str, body: VerifyRequest) -> dict[str, Any]:
-        """Patch, for real, the sites an attribution patching run estimated to matter most."""
+        """Patch, for real, the sites an attribution patching run estimated to matter most (an
+        edge attribution run's edges, by path patching one at a time)."""
         from logogram.robustness import require_finished
-        from logogram.verify import verification_spec
+        from logogram.verify import verification_change, verification_spec
 
         project = state.require_project()
         run = _read_run(project, run_id)
@@ -1645,13 +1764,12 @@ def create_app(
         if not run["summary"]:
             raise ValueError("Only a finished run can be verified.")
         spec = verification_spec(Spec.model_validate(run["spec"]), run["summary"], body.top)
-        n = len(spec.scope.sites)  # type: ignore[union-attr]
         job = state.run_spec_job(
             spec,
             derived_from={
                 "run": run_id,
                 "kind": "verification",
-                "change": f"the {n} strongest estimated site{'s' if n != 1 else ''}, patched",
+                "change": verification_change(spec),
             },
         )
         return {"run_id": job.run_id, "job": job.to_dict()}

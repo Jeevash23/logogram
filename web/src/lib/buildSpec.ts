@@ -7,6 +7,7 @@ import type {
   Answer,
   Continuations,
   DatasetDetail,
+  FaithfulnessCurveSpec,
   MetricSpec,
   ModelStatus,
   PositionSpec,
@@ -64,6 +65,9 @@ export interface DatasetFacts {
   /** Fields of the meta every used prompt has (and that can name a cluster), with how many
    * different values each takes. */
   fields: { field: string; clusters: number }[];
+  /** Prompts whose clean and corrupt prompts have different token lengths for the loaded model,
+   * matched label by label; null when no model is loaded. */
+  uneven: number[] | null;
 }
 
 // statistics.cluster in spec.py: a field name, as a key of the prompts' meta.
@@ -89,7 +93,115 @@ export function datasetFacts(dataset: DatasetDetail | null | undefined, limit: n
       fields.push({ field: key, clusters: values.size });
     }
   }
-  return { n, sets, continuations: continued?.length ?? null, notSingle, example, fields };
+  const uneven = dataset.uneven ? dataset.uneven.map((u) => u.index).filter((i) => i < n) : null;
+  return { n, sets, continuations: continued?.length ?? null, notSingle, example, fields, uneven };
+}
+
+// -- pairs of different lengths ---------------------------------------------------------------
+
+/** What carries a value from one prompt into another at a position (src/logogram/sites.py), in a
+ * few words; null for a method that reads one prompt at a time. Between prompts of different
+ * lengths, such a position must be the last token or a label, which are matched from one prompt
+ * to the other. */
+export function carriedBy(form: Pick<FormState, "kind" | "baseline" | "steerDirection">): string | null {
+  switch (form.kind) {
+    case "activation_patching":
+      return "patching";
+    case "attribution_patching":
+      return "attribution patching";
+    case "path_patching":
+      return "path patching";
+    case "ablation":
+      return form.baseline?.kind === "mean" ? "mean ablation" : form.baseline?.kind === "resample" ? "resample ablation" : null;
+    case "steering":
+      return form.steerDirection === "sae_feature" ? null : "steering by the mean difference";
+    default:
+      return null;
+  }
+}
+
+/** Pairs of different lengths in words, to start a sentence: "Pair 3", "Pairs 1, 2, 4, 5, 7 and
+ * 3 more". */
+export function unevenPairsText(indices: readonly number[]): string {
+  if (indices.length === 1) return `Pair ${indices[0]}`;
+  const shown = indices.slice(0, 5).join(", ");
+  return indices.length > 5 ? `Pairs ${shown} and ${count(indices.length - 5)} more` : `Pairs ${shown.replace(/, (\d+)$/, " and $1")}`;
+}
+
+/** Why every position and token indices can't be chosen with this method and these prompts, as a
+ * sentence; null when they can. */
+export function unlinedReason(form: Pick<FormState, "kind" | "baseline" | "steerDirection">, facts: DatasetFacts | null | undefined): string | null {
+  const uneven = facts?.uneven;
+  const method = carriedBy(form);
+  if (!uneven?.length || !method) return null;
+  return `${unevenPairsText(uneven)} ${uneven.length === 1 ? "has" : "have"} prompts of different lengths: ${method} matches them at the last token or a labelled position, not at every position or a token index.`;
+}
+
+/** The scope with every position and token index replaced by the last token, for prompts of
+ * different lengths. */
+export function lastInstead(scope: ScopeSpec): ScopeSpec {
+  const fix = (p: PositionSpec): PositionSpec => (p.kind === "all" || p.kind === "index" ? { kind: "last" } : p);
+  switch (scope.kind) {
+    case "heads":
+    case "layer_components":
+    case "features":
+    case "head_inputs":
+    case "neurons":
+      return { ...scope, position: fix(scope.position) };
+    case "sites":
+      return { ...scope, sites: scope.sites.map((x) => ({ ...x, position: fix(x.position) })) };
+    case "layer_position":
+      return scope.positions === "each" ? { ...scope, positions: "labels" } : scope;
+    case "site_sets":
+      return { ...scope, sets: scope.sets.map((set) => ({ ...set, sites: set.sites.map((x) => ({ ...x, position: fix(x.position) })) })) };
+    case "graph":
+    case "edges":
+      return scope; // edges have no position to choose
+  }
+}
+
+/** The first position of a scope that doesn't line up between prompts of different lengths: every
+ * position, or a token index. */
+function unlinedPosition(scope: ScopeSpec): PositionSpec | null {
+  const bad = (p: PositionSpec) => p.kind === "all" || p.kind === "index";
+  const positions: PositionSpec[] =
+    scope.kind === "sites"
+      ? scope.sites.map((x) => x.position)
+      : scope.kind === "site_sets"
+        ? scope.sets.flatMap((set) => set.sites.map((x) => x.position))
+        : scope.kind === "layer_position"
+          ? scope.positions === "each" ? [{ kind: "all" }] : []
+          : scope.kind === "graph" || scope.kind === "edges"
+            ? [{ kind: "all" }] // an edge carries its sender's output at every position
+            : [scope.position];
+  return positions.find(bad) ?? null;
+}
+
+/** Why the form can't run on these prompts of different lengths, or null (sites.py, atp.py and
+ * circuits.py refuse the same). */
+function unevenError(form: FormState, experiment: Spec["experiment"], scope: ScopeSpec, uneven: readonly number[]): string | null {
+  const pairs = `${unevenPairsText(uneven)} ${uneven.length === 1 ? "has" : "have"} clean and corrupt prompts of different token lengths`;
+  const instead = "Choose the last token or a labelled position, which are matched from one prompt to the other, or use pairs of equal length.";
+  if (experiment.kind === "attribution_patching" && experiment.method === "integrated_gradients") {
+    return `${pairs}. Integrated gradients run on inputs between the two prompts' embeddings, position by position, which needs their positions to line up. Estimate with one gradient, or use pairs of equal length.`;
+  }
+  if (scope.kind === "site_sets" && experiment.kind === "ablation" && (experiment.baseline.kind === "mean" || experiment.baseline.kind === "resample")) {
+    return `${pairs}. ${experiment.baseline.kind === "mean" ? "Mean" : "Resample"} ablation of a set replaces whole activations position by position with other prompts', which needs the prompts to line up. Patch the sets at labels or the last token, zero-ablate them, or use pairs of equal length.`;
+  }
+  if (scope.kind === "graph" || scope.kind === "edges") {
+    const what = scope.kind === "graph" ? "Edge attribution" : "Path patching an edge";
+    return `${pairs}. ${what} carries each sender's output from one prompt to the other at every position, which needs their positions to line up. Use pairs of equal length.`;
+  }
+  const method = carriedBy(form);
+  if (!method) return null;
+  const kept = scope.kind === "site_sets" ? scope.sets.find((set) => set.complement) : undefined;
+  if (kept) {
+    return `${pairs}. The set “${kept.label}” keeps its sites and patches every other position of the model, which has no meaning across different lengths. Patch sets of sites at labels or the last token, or zero-ablate the rest of the model, or use pairs of equal length.`;
+  }
+  const bad = unlinedPosition(scope);
+  if (!bad) return null;
+  const where = bad.kind === "index" ? `token index ${bad.index}` : "every position";
+  return `${pairs}, so their positions don't line up by index: ${method} at ${where} has no meaning across different lengths. ${instead}`;
 }
 
 /** A prompt with an answer or distractor of several tokens, in words, after "such as". */
@@ -119,6 +231,19 @@ export function parseStrengths(text: string): { values: number[] } | { error: st
   return { values };
 }
 
+/** A faithfulness curve's numbers of edges as typed: whole numbers from 1, in increasing order,
+ * separated by commas or spaces. */
+export function parseCounts(text: string): { values: number[] } | { error: string } {
+  const parts = text.split(/[\s,;]+/).filter(Boolean);
+  if (parts.length === 0) return { error: "Give at least one number of edges for the curve, such as 10." };
+  const values = parts.map(Number);
+  const bad = parts.find((_, i) => !Number.isInteger(values[i]) || values[i] < 1);
+  if (bad !== undefined) return { error: `“${bad}” isn't a whole number from 1. Separate the numbers of edges with commas, like 10, 100, 1000.` };
+  if (values.length > 24) return { error: "Use at most 24 numbers of edges for the curve." };
+  if (values.some((v, i) => i > 0 && v <= values[i - 1])) return { error: "List the curve's numbers of edges in increasing order, each once." };
+  return { values };
+}
+
 /** The form's metric as a spec writes it, or null while the KL divergence has no target. */
 export function metricOf(form: Pick<FormState, "metric" | "klTarget" | "normalization">): MetricSpec | null {
   if (form.metric === "kl") return form.klTarget ? { kind: "kl", target: form.klTarget, normalization: form.normalization } : null;
@@ -135,7 +260,9 @@ export function usesFeatures(scope: ScopeSpec): boolean {
 
 /** Whether the scope intervenes on every position of a component somewhere. */
 function everyPosition(scope: ScopeSpec): boolean {
-  if (scope.kind === "heads" || scope.kind === "layer_components" || scope.kind === "features") return scope.position.kind === "all";
+  if (scope.kind === "heads" || scope.kind === "layer_components" || scope.kind === "features" || scope.kind === "head_inputs" || scope.kind === "neurons") {
+    return scope.position.kind === "all";
+  }
   if (scope.kind === "sites") return scope.sites.some((x) => x.position.kind === "all");
   if (scope.kind === "site_sets") return true;
   return false;
@@ -199,6 +326,26 @@ export function buildSpec(
       control: form.steerControl,
       continuations,
     };
+  } else if (form.kind === "edge_attribution") {
+    let steps: number | null = null;
+    if (form.atpMethod === "integrated_gradients") {
+      if (!Number.isInteger(form.atpSteps) || form.atpSteps < 2 || form.atpSteps > 64) {
+        return { error: "Integrated gradients take a whole number of steps from 2 to 64." };
+      }
+      steps = form.atpSteps;
+    }
+    let curve: FaithfulnessCurveSpec | null = null;
+    if (form.edgeCurve) {
+      if (!form.edgePatch) return { error: "Choose which edges the faithfulness curve patches." };
+      const counts = parseCounts(form.edgeCounts);
+      if ("error" in counts) return counts;
+      if (!isSeed(form.edgeSeed)) return { error: "The random control's seed is a whole number from 0." };
+      if (!Number.isInteger(form.edgeDraws) || form.edgeDraws < 1 || form.edgeDraws > 16) {
+        return { error: "Draw the random edges from 1 to 16 times." };
+      }
+      curve = { counts: counts.values, patch: form.edgePatch, control: { seed: form.edgeSeed, draws: form.edgeDraws } };
+    }
+    experiment = { kind: "edge_attribution", direction: form.direction, method: form.atpMethod, steps, curve };
   } else if (form.kind === "direct_logit_attribution") {
     if (!form.dlaPrompts) return { error: "Choose which prompts' logit difference to split." };
     experiment = { kind: "direct_logit_attribution", prompts: form.dlaPrompts };
@@ -207,11 +354,76 @@ export function buildSpec(
     experiment = { kind: "ablation", baseline: form.baseline };
   }
   const scope = form.scope;
+  // The edges of the model's graph are edge attribution's, and only it estimates them.
+  if ((experiment.kind === "edge_attribution") !== (scope.kind === "graph")) {
+    return {
+      error:
+        experiment.kind === "edge_attribution"
+          ? "Edge attribution estimates the edges of the model's graph. Choose the whole graph or some of its layers under What to sweep."
+          : "Only edge attribution estimates the edges of the model's graph. Choose it, or another sweep.",
+    };
+  }
+  if (scope.kind === "graph" && scope.layers !== null) {
+    if (scope.layers.length === 0) return { error: "Choose at least one layer whose heads and MLPs receive edges, or every layer." };
+    const layers = ctx.model.info?.n_layers;
+    if (layers !== undefined && scope.layers.some((l) => l >= layers)) {
+      return { error: `The loaded model has ${plural(layers, "layer")} (0 to ${layers - 1}). Choose layers it has.` };
+    }
+  }
+  // Edges one at a time (an edge attribution's verification): path patching, every head and MLP
+  // held, into the receivers the edges name.
+  if (scope.kind === "edges") {
+    if (experiment.kind !== "path_patching") return { error: "Edges are measured one at a time by path patching. Choose it, or another sweep." };
+    if (!experiment.freeze_mlps) {
+      return { error: "Edges are path-patched with every head and MLP held, so the change reaches each receiver directly. Hold the MLPs." };
+    }
+    const receivers = new Map(scope.edges.map((x) => [JSON.stringify(x.receiver), x.receiver]));
+    experiment = { ...experiment, receivers: [...receivers.values()] };
+  }
   const positionError = (p: PositionSpec) =>
     p.kind === "label" && !p.label ? "Choose which named position to use." : null;
-  if (scope.kind === "heads" || scope.kind === "layer_components" || scope.kind === "features") {
+  if (scope.kind === "heads" || scope.kind === "layer_components" || scope.kind === "features" || scope.kind === "head_inputs" || scope.kind === "neurons") {
     const err = positionError(scope.position);
     if (err) return { error: err };
+  }
+  // Queries, keys, values and neurons (src/logogram/sites.py, direct.py): the loaded model offers
+  // them where it measured, on loading, that they are what its attention and MLPs read.
+  const loadedModel = ctx.model.info;
+  const finer: SiteKind[] =
+    scope.kind === "head_inputs"
+      ? [scope.input]
+      : scope.kind === "neurons"
+        ? ["neuron"]
+        : scope.kind === "sites"
+          ? scope.sites.map((x) => x.kind).filter((k) => k === "q" || k === "k" || k === "v" || k === "neuron")
+          : [];
+  if (loadedModel) {
+    const missing = finer.find((k) => !loadedModel.site_kinds.includes(k));
+    if (missing) return { error: loadedModel.extra?.site_notes?.[missing as "q"] ?? `${loadedModel.id} has no ${missing} sites. Choose another sweep.` };
+  }
+  if (scope.kind === "neurons") {
+    if (scope.layers.length === 0) return { error: "Choose the layers whose neurons to sweep, such as 3, 4 (What to sweep → Layers)." };
+    if (new Set(scope.layers).size !== scope.layers.length) return { error: "List each layer once." };
+    if (loadedModel) {
+      const beyond = scope.layers.find((layer) => layer >= loadedModel.n_layers);
+      if (beyond !== undefined) return { error: `Layer ${beyond} doesn't exist; ${loadedModel.id} has layers 0 to ${loadedModel.n_layers - 1}.` };
+    }
+  }
+  if (experiment.kind === "direct_logit_attribution") {
+    const noEffect = scope.kind === "head_inputs" ? (scope.input === "v" ? null : scope.input) : null;
+    const listed = scope.kind === "sites" ? scope.sites.find((x) => x.kind === "q" || x.kind === "k") : undefined;
+    if (noEffect || listed) {
+      return { error: "Queries and keys have no direct effect: they act on the logits only through the softmax of their head's attention. Choose values, heads' outputs or neurons, or patch the queries and keys." };
+    }
+    if (scope.kind === "neurons" && scope.position.kind !== "last") return { error: "Direct effects of neurons are read at the last token. Set the position to the last token." };
+  }
+  if ((experiment.kind === "steering" || experiment.kind === "path_patching") && finer.length > 0) {
+    return {
+      error:
+        experiment.kind === "steering"
+          ? "Steering adds a direction to the residual stream, not to a head's query, key or value or a neuron. Choose residual sites."
+          : "Paths start at heads' outputs, attention outputs or MLP outputs, not at queries, keys, values or neurons. Choose those.",
+    };
   }
   if (scope.kind === "layer_components" && scope.components.length === 0) {
     return { error: "Choose at least one component." };
@@ -269,6 +481,9 @@ export function buildSpec(
         error: `${have(several)} an answer or distractor of several tokens${example}. The logit difference reads one token: choose the log-probability difference, or another metric that reads answers of several tokens.`,
       };
     }
+    if (several > 0 && experiment.kind === "edge_attribution") {
+      return { error: `Edge attribution reads the metric at the last prompt position, and ${have(several)} an answer or distractor of several tokens${example}. Use single-token answers or sets.` };
+    }
     if (several > 0 && experiment.kind === "path_patching") {
       return { error: `Path patching reads the metric at the last prompt position, and ${have(several)} an answer or distractor of several tokens${example}. Use single-token answers or sets, or activation patching.` };
     }
@@ -298,6 +513,9 @@ export function buildSpec(
     if (experiment.kind === "ablation" && experiment.baseline.kind === "resample" && facts.n > 0 && experiment.baseline.donors > facts.n - 1) {
       return { error: `Each prompt draws ${plural(experiment.baseline.donors, "donor")} from the other prompts, but there ${facts.n - 1 === 1 ? "is" : "are"} only ${facts.n - 1}. Lower the donor count, or use more prompts.` };
     }
+    // Pairs of different lengths are matched at the last token or a label only.
+    const uneven = facts.uneven?.length ? unevenError(form, experiment, scope, facts.uneven) : null;
+    if (uneven) return { error: uneven };
   }
 
   // Statistics.

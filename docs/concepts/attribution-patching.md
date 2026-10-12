@@ -20,6 +20,13 @@ takes seconds even on larger models (Nanda, 2023; Syed, Rager and Conmy, 2023). 
 normalized like patching, so 1 would mean the site alone restores the clean behavior. The
 results label every value as an estimate.
 
+It sweeps the sites [activation patching](activation-patching.md#sites-and-positions) does, sets
+of sites aside: residual stream states, attention and MLP outputs, heads' outputs, every head's
+query, key or value (a key/value head's, with grouped-query attention), every neuron of chosen
+layers, and SAE features. With
+[pairs of different lengths](activation-patching.md#pairs-of-different-lengths), one gradient
+compares each prompt's own activation at a label or the last token.
+
 A first-order estimate assumes the metric changes linearly between the two activations. It
 misses saturation, in attention patterns, normalization and the final softmax, and so can miss an
 effect or even give it the wrong sign (Kramár et al., 2024).
@@ -31,7 +38,8 @@ embeddings lie evenly between the receiver prompt's and the source prompt's (at 
 equal intervals), as in EAP-IG (Hanna, Pezzelle and Belinkov, 2024), after integrated gradients
 (Sundararajan, Taly and Yan, 2017). The estimate then follows the metric along the way from one
 prompt to the other instead of only at its start. It costs `steps` forward and backward passes
-instead of one; 8 to 16 steps are usual.
+instead of one; 8 to 16 steps are usual. Since it interpolates the two prompts position by
+position, it needs pairs of equal length.
 
 On the bundled IOI example with GPT-2 small, the difference shows in the residual stream.
 Patching the residual stream at the changed name (S2) entering layer 0 restores the whole answer
@@ -71,9 +79,12 @@ transcoder part of it flows through the skip connection. See [SAE features](sae-
 
 ## When to use it
 
-Use attribution patching to search: large sweeps, many positions, SAE features, larger models.
-Then verify what it finds by patching, and patch the whole sweep where it matters. Prefer
-integrated gradients for the residual stream and wherever one gradient and patching disagree.
+Use attribution patching to search: large sweeps, many positions, neurons, SAE features, larger
+models. Then verify what it finds by patching, and patch the whole sweep where it matters. Prefer
+integrated gradients for the residual stream and wherever one gradient and patching disagree. To
+estimate the connections between components rather than the components themselves, use
+[edge attribution](edge-attribution.md), which takes the same kind of gradient at each
+receiver's own input.
 
 ## In a spec
 

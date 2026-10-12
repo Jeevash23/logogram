@@ -5,14 +5,15 @@ Abstract sites map to TransformerLens hook points here and nowhere else.
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import logging
 import math
 import re
 import threading
 import warnings
-from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from collections.abc import Callable, Iterator, Sequence
+from dataclasses import asdict, dataclass, replace
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,8 @@ from logogram.backends.base import (
     ALL_KINDS,
     BackendError,
     Cancelled,
+    EdgePatcher,
+    InputGradients,
     ModelBackend,
     ModelInfo,
     Patch,
@@ -42,12 +45,37 @@ HOOKS: dict[str, str] = {
     "attn_out": "blocks.{layer}.hook_attn_out",
     "mlp_out": "blocks.{layer}.hook_mlp_out",
     "head": "blocks.{layer}.attn.hook_z",
+    # Each head's query, key and value as its projections compute them (before any rotary
+    # embedding): [B, pos, heads, d_head], with key/value heads for k and v.
+    "q": "blocks.{layer}.attn.hook_q",
+    "k": "blocks.{layer}.attn.hook_k",
+    "v": "blocks.{layer}.attn.hook_v",
+    # The MLP's hidden activation after its nonlinearity (for a gated MLP, the gate's activation
+    # times the up projection): the input to its output projection, [B, pos, d_mlp].
+    "neuron": "blocks.{layer}.mlp.hook_post",
     # The MLP's input, normalized as the MLP reads it: what transcoders read. Not a site to patch.
     "mlp_in": "blocks.{layer}.mlp.hook_in",
 }
 PATTERN_HOOK = "blocks.{layer}.attn.hook_pattern"
 # The final normalization's scale: held at its value in a run, it makes the normalization affine.
 FINAL_SCALE = "ln_final.hook_scale"
+# Each receiver's own input, for edges (logogram.edges): with the bridge's split inputs on, every
+# head gets its own copy of the residual stream for its query, key and value ([B, pos, H, d_model],
+# keys and values per key-value head), normalized by itself; the MLP's normalization and the final
+# normalization each read their own copy ([B, pos, d_model]). Changing a copy changes only what
+# its receiver reads: the residual stream itself runs on unchanged.
+EDGE_HOOKS: dict[str, str] = {
+    "q": "blocks.{layer}.hook_q_input",
+    "k": "blocks.{layer}.hook_k_input",
+    "v": "blocks.{layer}.hook_v_input",
+    "mlp": "blocks.{layer}.ln2.hook_in",
+    "logits": "ln_final.hook_in",
+}
+
+
+def edge_hook(receiver: str, layer: int) -> str:
+    return EDGE_HOOKS[receiver].format(layer=layer)
+
 
 DTYPES = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
 
@@ -98,17 +126,22 @@ def _patch_hook(patch: Patch) -> Callable[..., torch.Tensor]:
         act = act.clone()
         values = patch.values.to(dtype=act.dtype, device=act.device)
         rows = torch.arange(act.shape[0], device=act.device)
+        units = patch.units()
         if patch.mask is not None:
             n = values.shape[1]  # the prompt's positions; appended tokens are never patched
-            mask = patch.mask.to(act.device)[..., None]
+            mask = patch.mask.to(act.device)
+            if mask.dim() < act.dim():  # one choice per vector (a position, or a head's)
+                mask = mask[..., None]
             act[:, :n] = torch.where(mask, values, act[:, :n])
-        elif patch.kind == "head":
-            heads = patch.heads.to(act.device)  # type: ignore[union-attr]
+        elif units is not None:
+            # A head's output, query, key or value ([B, pos, d_head] or [B, d_head]), or a
+            # neuron's activation ([B, pos] or [B]).
+            units = units.to(act.device)
             if patch.positions is None:
                 n = values.shape[1]
-                act[rows, :n, heads] = values  # [B, pos, d_head]
+                act[rows, :n, units] = values
             else:
-                act[rows, patch.positions.to(act.device), heads] = values  # [B, d_head]
+                act[rows, patch.positions.to(act.device), units] = values
         elif patch.positions is None:
             n = values.shape[1]
             act[:, :n] = values  # [B, pos, d_model]
@@ -131,6 +164,9 @@ def _patch_hooks(patch: Patches) -> list[tuple[str, Callable[..., torch.Tensor]]
     return _combine(hooks)
 
 
+# Lengthening a copy read before its normalization changes the output by about ε / variance times
+# what turning it as far does. Real models' activations are far larger than their normalizations'
+# epsilon; this also allows the small ones of tiny test models.
 def _combine(
     hooks: list[tuple[str, Callable[..., torch.Tensor]]],
 ) -> list[tuple[str, Callable[..., torch.Tensor]]]:
@@ -171,6 +207,26 @@ class ModelChecks:
     # output: small when heads add up to what attention writes, large when the model normalizes
     # after combining them (Gemma 2, OLMo 2). None if it couldn't be measured.
     heads: float | None = None
+    # The heads' queries, keys and values (see check_units). Error of each layer's attention
+    # output with every query, key and value taken from another input, against that input's:
+    # small when they are all the attention reads.
+    qkv: float | None = None
+    # Largest change in the output z of a head that doesn't read a query (a key, a value) when
+    # only that one is replaced: zero when each head reads its own query and each key/value head
+    # is read by its group of query heads alone.
+    q_alone: float | None = None
+    k_alone: float | None = None
+    v_alone: float | None = None
+    # Error of each head's output recomputed as its attention pattern times the values it reads:
+    # small when the output is linear in the values, so a value has a direct effect.
+    values: float | None = None
+    # Error of each layer's MLP output with every neuron's activation taken from another input:
+    # small when the neurons are all the MLP's output projection reads.
+    neurons: float | None = None
+    # Error of each MLP output recomputed as every neuron's activation times its row of the output
+    # projection, plus its bias: small when the MLP output is the sum of what its neurons write,
+    # large when the model normalizes after the MLP (Gemma 2, OLMo 2).
+    neuron_writes: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         # JSON has no infinity: a comparison that failed on values that aren't finite numbers
@@ -309,6 +365,270 @@ def check_model(
     )
 
 
+def kv_group(n_heads: int, n_kv: int) -> int:
+    """How many query heads read each key/value head: 1 without grouped-query attention. Query
+    head h reads key/value head h // kv_group (the order Hugging Face's models repeat them in,
+    which check_units measures)."""
+    return n_heads // n_kv if n_kv > 0 and n_heads % n_kv == 0 else 0
+
+
+UNIT_CHECKS = ("qkv", "q_alone", "k_alone", "v_alone", "values", "neurons", "neuron_writes")
+
+
+def check_units(
+    bridge: Any, probe: torch.Tensor, n_layers: int, n_heads: int, n_kv: int, d_mlp: int | None
+) -> dict[str, float | None]:
+    """Measure, on a short input, what patching a single query, key, value or neuron assumes.
+
+    The probe's two rows are two different inputs. Each measurement is an error relative to the
+    largest value compared (see :class:`ModelChecks`), None where a hook or weight is missing or
+    an activation doesn't have the shape the model's configuration gives it:
+
+    * ``qkv`` and ``neurons``: with every query, key and value (every neuron's activation) of
+      every layer taken from the second row, the first row's attention (MLP) outputs must be the
+      second row's. Then they are all the attention (the MLP's output projection) reads, and the
+      hooks that hold them are live.
+    * ``q_alone``, ``k_alone`` and ``v_alone``: with the queries, keys and values of every layer
+      held at the first row's, replacing a single one may change the output z only of the heads
+      that read it: a query's own head, or the query heads of a key/value head's group. Holding
+      every layer's makes each layer's z depend on its own alone, so one pass measures them all.
+    * ``values``: each head's output z is its attention pattern times the values it reads.
+    * ``neuron_writes``: each MLP output is the neurons' activations times the rows of its output
+      projection, plus its bias.
+    """
+    out: dict[str, float | None] = dict.fromkeys(UNIT_CHECKS)
+    hooks = bridge.hook_dict
+    layers = range(n_layers)
+
+    def present(kind: str) -> bool:
+        return all(hook_name(kind, layer) in hooks for layer in layers)
+
+    group = kv_group(n_heads, n_kv)
+    has_qkv = group > 0 and all(present(k) for k in ("q", "k", "v", "head", "attn_out"))
+    has_neurons = d_mlp is not None and present("neuron") and present("mlp_out")
+    if not (has_qkv or has_neurons):
+        return out
+    kinds = (["q", "k", "v", "head", "attn_out"] if has_qkv else []) + (
+        ["neuron", "mlp_out"] if has_neurons else []
+    )
+    names = [hook_name(k, layer) for layer in layers for k in kinds]
+    if has_qkv:
+        names += [PATTERN_HOOK.format(layer=layer) for layer in layers]
+    with torch.no_grad():
+        _, cache = bridge.run_with_cache(probe, names_filter=names)
+
+    def act(kind: str, layer: int) -> torch.Tensor:
+        return cache[hook_name(kind, layer)]
+
+    def fired(kinds: list[str]) -> bool:  # a hook that exists but never runs holds nothing
+        return all(hook_name(k, layer) in cache for k in kinds for layer in layers)
+
+    has_qkv = has_qkv and fired(["q", "k", "v", "head", "attn_out"])
+    has_neurons = has_neurons and fired(["neuron", "mlp_out"])
+    B, P = probe.shape
+    d_head = int(act("head", 0).shape[-1]) if has_qkv else 0
+    expected = {"q": n_heads, "k": n_kv, "v": n_kv}
+    has_qkv = has_qkv and all(
+        tuple(act(k, layer).shape) == (B, P, expected[k], d_head)
+        for k in ("q", "k", "v")
+        for layer in layers
+    )
+    has_neurons = has_neurons and all(
+        tuple(act("neuron", layer).shape) == (B, P, d_mlp) for layer in layers
+    )
+    seen: dict[str, torch.Tensor] = {}
+
+    def keep(name: str) -> Callable[..., torch.Tensor]:
+        def fn(a: torch.Tensor, hook: Any = None) -> torch.Tensor:
+            seen[name] = a.detach()
+            return a
+
+        return fn
+
+    def from_second(kind: str, layer: int) -> Callable[..., torch.Tensor]:
+        own = act(kind, layer)
+
+        def fn(a: torch.Tensor, hook: Any = None) -> torch.Tensor:
+            a = a.clone()
+            a[0] = own[1].to(a.dtype)
+            return a
+
+        return fn
+
+    # Every query, key and value (every neuron) from the second row, in one pass.
+    swapped = (["q", "k", "v"] if has_qkv else []) + (["neuron"] if has_neurons else [])
+    outputs = (["attn_out"] if has_qkv else []) + (["mlp_out"] if has_neurons else [])
+    if swapped:
+        fwd = [(hook_name(k, layer), from_second(k, layer)) for layer in layers for k in swapped]
+        fwd += [
+            (hook_name(k, layer), keep(hook_name(k, layer))) for layer in layers for k in outputs
+        ]
+        with torch.no_grad():
+            bridge.run_with_hooks(probe, fwd_hooks=fwd, return_type=None)
+        for kind, name in (("attn_out", "qkv"), ("mlp_out", "neurons")):
+            if kind in outputs:
+                out[name] = max(
+                    _relative(seen[hook_name(kind, layer)][0], seen[hook_name(kind, layer)][1])
+                    for layer in layers
+                )
+
+    if has_qkv:
+        for part in ("q", "k", "v"):
+            out[f"{part}_alone"] = _check_alone(
+                bridge, probe, act, n_layers, part, expected[part], n_heads, group
+            )
+        patterns = [PATTERN_HOOK.format(layer=layer) for layer in layers]
+        if all(name in cache for name in patterns):
+            with torch.no_grad():
+                errors = []
+                for layer in layers:
+                    pattern = cache[patterns[layer]].float()  # [B, H, query, key]
+                    values = act("v", layer).float().repeat_interleave(group, dim=2)
+                    z = torch.einsum("bhqk,bkhd->bqhd", pattern, values)  # [B, query, H, d]
+                    errors.append(_relative(z, act("head", layer)))
+                out["values"] = max(errors)
+
+    if has_neurons:
+        try:
+            errors = []
+            with torch.no_grad():
+                for layer in layers:
+                    mlp = bridge.blocks[layer].mlp
+                    written = act("neuron", layer).float() @ mlp.W_out.float()
+                    bias = getattr(mlp, "b_out", None)
+                    if bias is not None:
+                        written = written + bias.float()
+                    errors.append(_relative(written, act("mlp_out", layer)))
+            out["neuron_writes"] = max(errors)
+        except Exception:  # noqa: BLE001 - no output projection to check with
+            out["neuron_writes"] = None
+    return out
+
+
+def _check_alone(
+    bridge: Any,
+    probe: torch.Tensor,
+    act: Callable[[str, int], torch.Tensor],
+    n_layers: int,
+    part: str,
+    count: int,
+    n_heads: int,
+    group: int,
+) -> float:
+    """The largest change, relative to the layer's largest output, in the output z of a head that
+    doesn't read the one query (key, value) replaced, over every one of them and every layer.
+
+    Row 0 of the batch is the probe's first row with every query, key and value held at its own;
+    row u + 1 also takes unit u of ``part`` from the probe's second row."""
+    rows = count + 1
+    tokens = probe[:1].expand(rows, -1)
+    units = torch.arange(count, device=probe.device)
+    seen: dict[int, torch.Tensor] = {}
+
+    def hold(kind: str, layer: int) -> Callable[..., torch.Tensor]:
+        own = act(kind, layer)
+
+        def fn(a: torch.Tensor, hook: Any = None) -> torch.Tensor:
+            held = own[0].to(device=a.device, dtype=a.dtype)
+            held = held.unsqueeze(0).repeat(rows, *([1] * held.dim()))
+            if kind == part:
+                other = own[1].to(device=a.device, dtype=a.dtype)  # [pos, units, d_head]
+                held[units + 1, :, units] = other[:, units].transpose(0, 1)
+            return held
+
+        return fn
+
+    def keep(layer: int) -> Callable[..., torch.Tensor]:
+        def fn(a: torch.Tensor, hook: Any = None) -> torch.Tensor:
+            seen[layer] = a.detach().float()
+            return a
+
+        return fn
+
+    fwd = [(hook_name(k, layer), hold(k, layer)) for layer in range(n_layers) for k in "qkv"]
+    fwd += [(hook_name("head", layer), keep(layer)) for layer in range(n_layers)]
+    with torch.no_grad():
+        bridge.run_with_hooks(tokens, fwd_hooks=fwd, return_type=None)
+    # Which heads read each unit: a query its own head; a key or value its group's query heads.
+    heads = torch.arange(n_heads, device=probe.device)
+    reads = (heads if part == "q" else heads // group)[None, :] == units[:, None]
+    worst = 0.0
+    for layer in range(n_layers):
+        z = seen[layer]  # [rows, pos, H, d_head]
+        scale = float(z[0].abs().max().clamp_min(1e-6))
+        change = (z[1:] - z[:1]).abs().amax(dim=(1, 3))  # [units, H]
+        error = float(change.masked_fill(reads.to(change.device), 0.0).max()) / scale
+        if not math.isfinite(error):
+            return math.inf
+        worst = max(worst, error)
+    return worst
+
+
+def _share(error: float | None) -> str:
+    return (
+        "values that aren't finite numbers"
+        if error is None or not math.isfinite(error)
+        else (f"{error:.1%} of its range")
+    )
+
+
+def unit_sites(checks: ModelChecks) -> tuple[tuple[str, ...], dict[str, str]]:
+    """Which of q, k, v and neuron are sites of this model, by what check_units measured, and why
+    each one that isn't is missing, in words."""
+    tolerance = checks.tolerance
+
+    def holds(error: float | None) -> bool:
+        return error is not None and error <= tolerance
+
+    kinds: list[str] = []
+    notes: dict[str, str] = {}
+    if checks.qkv is None:
+        text = (
+            "TransformerLens doesn't expose this model's queries, keys and values head by head, "
+            "so they can't be patched."
+        )
+        notes.update(dict.fromkeys(("q", "k", "v"), text))
+    elif not holds(checks.qkv):
+        text = (
+            "When this model loaded, taking every head's query, key and value from another input "
+            "didn't reproduce that input's attention output (it was off by up to "
+            f"{_share(checks.qkv)}): they aren't all its attention reads, so patching them would "
+            "miss the rest."
+        )
+        notes.update(dict.fromkeys(("q", "k", "v"), text))
+    else:
+        for part, error, what, these in (
+            ("q", checks.q_alone, "query", "queries"),
+            ("k", checks.k_alone, "key", "keys"),
+            ("v", checks.v_alone, "value", "values"),
+        ):
+            if holds(error):
+                kinds.append(part)
+                continue
+            reader = "its own head" if part == "q" else "the query heads of its group"
+            notes[part] = (
+                f"When this model loaded, replacing one head's {what} also changed the output of "
+                f"heads other than {reader} (by up to {_share(error)}): its {these} aren't "
+                f"separate per head (OLMo 2, for one, normalizes every head's {these} together), "
+                f"so a single head's {what} can't be patched alone."
+            )
+    if checks.neurons is None:
+        notes["neuron"] = (
+            "TransformerLens doesn't expose this model's MLP neurons (a mixture of experts, for "
+            "one, has no single set of them), so they can't be patched."
+        )
+    elif not holds(checks.neurons):
+        notes["neuron"] = (
+            "When this model loaded, taking every neuron's activation from another input didn't "
+            f"reproduce that input's MLP output (it was off by up to {_share(checks.neurons)}): "
+            "they aren't all its MLP's output projection reads, so patching them would miss the "
+            "rest."
+        )
+    else:
+        kinds.append("neuron")
+    return tuple(kinds), notes
+
+
 class TransformerLensBackend(ModelBackend):
     def __init__(self, bridge: Any, info: ModelInfo) -> None:
         super().__init__()
@@ -318,6 +638,8 @@ class TransformerLensBackend(ModelBackend):
         self.bos_token_id = own_bos_token_id(bridge)
         self._chat_template, self._chat_tokens = own_chat_template(bridge)
         self._logits_to_keep = self._supports_logits_to_keep()
+        # What edge attribution relies on, measured on first use: the errors, or why it can't.
+        self._edges: dict[str, float] | str | None = None
 
     # -- construction ------------------------------------------------------------------------
 
@@ -387,6 +709,14 @@ class TransformerLensBackend(ModelBackend):
             # resid_mid is patched as resid_pre + attn_out (see _resid_mid_hooks), which is only
             # the residual stream between attention and MLP when the layer adds them in turn.
             kinds = tuple(k for k in kinds if k != "resid_mid")
+        # Queries, keys, values and neurons are sites only where they were measured to be what
+        # the attention and the MLP read (see check_units); the notes say why one isn't.
+        n_kv = int(getattr(cfg, "n_key_value_heads", None) or cfg.n_heads)
+        d_mlp = int(cfg.d_mlp) if getattr(cfg, "d_mlp", None) else None
+        measured = check_units(bridge, probe, int(cfg.n_layers), int(cfg.n_heads), n_kv, d_mlp)
+        checks = replace(checks, **measured)
+        unit_kinds, site_notes = unit_sites(checks)
+        kinds = (*kinds, *unit_kinds)
         if n_params is None:
             try:
                 n_params = int(bridge.n_params_total)
@@ -432,7 +762,9 @@ class TransformerLensBackend(ModelBackend):
                 if checks.lens is not None and checks.lens <= checks.tolerance
                 else None,
                 "model_type": str(model_type or "unknown"),
-                "n_key_value_heads": int(getattr(cfg, "n_key_value_heads", None) or cfg.n_heads),
+                "n_key_value_heads": n_kv,
+                # Why a site this model doesn't offer is missing (q, k, v or neuron), in words.
+                "site_notes": site_notes,
                 "bos": own_bos_token_id(bridge) is not None,
                 # Whether it is made for chat: prompts run as plain text, without its template.
                 "chat": chat_format(model_id, template, ends),
@@ -521,7 +853,14 @@ class TransformerLensBackend(ModelBackend):
 
     def single_token_id(self, text: str) -> int | None:
         ids = self.tokenizer(text, add_special_tokens=False)["input_ids"]
-        return int(ids[0]) if len(ids) == 1 else None
+        if len(ids) != 1:
+            return None
+        # A word-level tokenizer reads every word it doesn't know as its unknown token, one token
+        # that stands for all of them: not a token of the word's own.
+        unknown = getattr(self.tokenizer, "unk_token_id", None)
+        if unknown is not None and int(ids[0]) == int(unknown) and text != self.tokenizer.unk_token:
+            return None
+        return int(ids[0])
 
     def token_str(self, token_id: int) -> str:
         return self.tokenizer.decode([int(token_id)], clean_up_tokenization_spaces=False)
@@ -668,12 +1007,18 @@ class TransformerLensBackend(ModelBackend):
             if not (sender.kind == "mlp_out" and sender.layer == layer):
                 first.append((hook_name("mlp_out", layer), hold(value)))
 
-        # What each receiver reads, recorded in the first pass and patched in the second.
+        # What each receiver reads, recorded in the first pass and patched in the second: a head's
+        # query, key or value (only that head's), or an MLP's own input before its normalization
+        # (all of it: only that MLP reads it).
         final = hook_name("resid_post", n - 1)
-        reads: dict[str, list[int]] = {}
+        reads: dict[str, list[int] | None] = {}
         for kind, layer, head, part in receivers:
-            if kind != "logits":
-                reads.setdefault(f"blocks.{layer}.attn.hook_{part}", []).append(head)
+            if kind == "head":
+                heads = reads.setdefault(f"blocks.{layer}.attn.hook_{part}", [])
+                assert heads is not None
+                heads.append(head)
+            elif kind == "mlp":
+                reads[edge_hook("mlp", layer)] = None
         logits_receiver = any(kind == "logits" for kind, *_ in receivers)
         recorded: dict[str, torch.Tensor] = {}
 
@@ -684,8 +1029,10 @@ class TransformerLensBackend(ModelBackend):
 
             return fn
 
-        def replay(name: str, heads: list[int]) -> Callable[..., torch.Tensor]:
+        def replay(name: str, heads: list[int] | None) -> Callable[..., torch.Tensor]:
             def fn(act: torch.Tensor, hook: Any = None) -> torch.Tensor:
+                if heads is None:
+                    return recorded[name].to(dtype=act.dtype)
                 act = act.clone()
                 act[:, :, heads] = recorded[name].to(dtype=act.dtype)[:, :, heads]
                 return act
@@ -707,7 +1054,7 @@ class TransformerLensBackend(ModelBackend):
 
         kwargs: dict[str, Any] = {"return_type": None}
         if not logits_receiver:
-            last = max(layer for kind, layer, *_ in receivers if kind == "head")
+            last = max(layer for kind, layer, *_ in receivers if kind in ("head", "mlp"))
             if last + 1 < n:
                 kwargs["stop_at_layer"] = last + 1
         recording = [(name, record(name)) for name in reads]
@@ -732,6 +1079,273 @@ class TransformerLensBackend(ModelBackend):
             if logits_receiver:
                 hooks.append((final, add_direct))
             logits = bridge.run_with_hooks(tokens, fwd_hooks=_combine(hooks), **second)
+            return logits[:, -1, :].float()
+
+    # -- edges (logogram.edges) -------------------------------------------------------------------
+
+    @contextlib.contextmanager
+    def _split_inputs(self) -> Iterator[Any]:
+        """The bridge with each head reading its own copies of the residual stream for its query,
+        key and value (TransformerLens's split inputs), as it was afterwards. Hold the lock."""
+        bridge = self._bridge()
+        before = bool(getattr(bridge.cfg, "use_split_qkv_input", False))
+        if not before:
+            bridge.set_use_split_qkv_input(True)
+        try:
+            yield bridge
+        finally:
+            if not before:
+                bridge.set_use_split_qkv_input(False)
+
+    def edge_checks(self) -> dict[str, float]:
+        with self.lock:
+            if self._edges is None:
+                try:
+                    self._edges = self._measure_edges()
+                except BackendError as exc:
+                    self._edges = str(exc)
+            if isinstance(self._edges, str):
+                raise BackendError(self._edges)
+            return dict(self._edges)
+
+    def _measure_edges(self) -> dict[str, float]:
+        """See :meth:`ModelBackend.edge_checks`. Every check runs on a short fixed input."""
+        info = self.info
+        checks = info.extra.get("checks") or {}
+        tolerance = float(checks.get("tolerance") or CHECK_TOLERANCE[info.dtype])
+        why = "so edges can't be measured exactly on it"
+        if str(info.extra.get("block_structure")) not in (
+            "sequential",
+            "sequential_pre_norm",
+            "parallel",
+        ):
+            raise BackendError(
+                f"When {info.id} loaded, Logogram couldn't verify how its layers add attention and "
+                f"MLP into the residual stream, {why}."
+            )
+        heads = checks.get("heads")
+        if heads is None or not heads <= tolerance:
+            raise BackendError(
+                f"{info.id}'s heads don't add up to what its attention writes (it normalizes after "
+                f"combining them, or this couldn't be measured when it loaded), {why}. Edge "
+                "attribution needs a model whose heads each write into the residual stream, such "
+                "as GPT-2 or Pythia."
+            )
+        kv = int(info.extra.get("n_key_value_heads") or info.n_heads)
+        if kv != info.n_heads:
+            raise BackendError(
+                f"{info.id} shares each key and value among {info.n_heads // kv} heads, so a single "
+                "head's key or value input doesn't exist on its own, and its graph would need edges "
+                "into shared inputs, which Logogram doesn't build yet. Use a model whose heads "
+                "each read their own keys and values, such as GPT-2 or Pythia."
+            )
+        bridge = self._bridge()
+        probe = _probe_tokens(info.d_vocab, str(bridge.cfg.device))
+        try:
+            with torch.no_grad():
+                plain = bridge(probe, return_type="logits").float()
+                with self._split_inputs():
+                    split = bridge(probe, return_type="logits").float()
+                    stream = self._copies_are_the_stream(bridge, probe)
+                    separate = self._separate_copies(bridge, probe)
+        except BackendError:
+            raise
+        except Exception as exc:  # attention TransformerLens can't split into copies
+            raise BackendError(
+                f"TransformerLens can't give {info.id}'s heads their own copies of their inputs "
+                f"({type(exc).__name__}: {exc}), {why}."
+            ) from exc
+        out = {"split": _relative(split, plain), "stream": stream, "separate": separate}
+        if not out["split"] <= tolerance:
+            raise BackendError(
+                f"With each head reading its own copy of its inputs, {info.id} predicts something "
+                f"else (log-probabilities differ by up to {out['split']:.1%} of their range), {why}."
+            )
+        if not out["stream"] <= tolerance:
+            raise BackendError(
+                f"{info.id}'s heads, MLPs or logits don't each read the residual stream itself and "
+                f"normalize their own copy, {why}."
+            )
+        if not out["separate"] <= tolerance:
+            raise BackendError(
+                f"Changing one head's input copy changes other heads of {info.id}, so its heads "
+                f"don't read their own copies, {why}."
+            )
+        return out
+
+    def _copies_are_the_stream(self, bridge: Any, probe: torch.Tensor) -> float:
+        """How far each receiver's own copy is from the residual stream it copies, relative to the
+        stream: 0 when every head's query, key and value, every MLP and the logits read the stream
+        itself and normalize their copy on their own, whatever their normalization's epsilon. A
+        copy taken after a normalization would differ."""
+        info = self.info
+        n = info.n_layers
+        parallel = str(info.extra.get("block_structure")) == "parallel"
+        mlp_reads = "resid_pre" if parallel else "resid_mid"
+        pairs = [
+            (edge_hook(part, layer), hook_name("resid_pre", layer))
+            for layer in range(n)
+            for part in ("q", "k", "v")
+        ]
+        pairs += [(edge_hook("mlp", layer), hook_name(mlp_reads, layer)) for layer in range(n)]
+        pairs.append((edge_hook("logits", n), hook_name("resid_post", n - 1)))
+        names = sorted({name for pair in pairs for name in pair})
+        _, cache = bridge.run_with_cache(probe, names_filter=names)
+        worst = 0.0
+        for copy_name, stream_name in pairs:
+            copy, stream = cache[copy_name], cache[stream_name]
+            if copy.dim() == stream.dim() + 1:  # one copy for each head: [batch, pos, head, d]
+                stream = stream.unsqueeze(2).expand_as(copy)
+            worst = max(worst, _relative(copy, stream))
+        return worst
+
+    def _separate_copies(self, bridge: Any, probe: torch.Tensor) -> float:
+        """Move one head's query, key or value copy in the last layer: that head's query, key or
+        value (its projection of the copy) must change, and no other head's. The largest change
+        of another head, relative to the moved head's, measured three times (q, k, v). The head
+        moved is the first whose projection responds: a head with no query weights (one that
+        attends evenly) reads its copy without changing."""
+        layer = self.info.n_layers - 1
+        heads = self.info.n_heads
+        generator = torch.Generator(device="cpu").manual_seed(0)
+        worst = 0.0
+        for part in ("q", "k", "v"):
+            name = HOOKS[part].format(layer=layer)  # [B, pos, H, d_head]
+            _, base = bridge.run_with_cache(probe, names_filter=[name])
+            before = base[name].float()
+            shape = (probe.shape[0], probe.shape[1], self.info.d_model)
+            delta = torch.randn(shape, generator=generator).to(probe.device)
+            for head in range(heads):
+                seen: dict[str, torch.Tensor] = {}
+
+                def keep(act: torch.Tensor, hook: Any = None, seen: Any = seen) -> torch.Tensor:
+                    seen["x"] = act.detach().float()
+                    return act
+
+                def move(
+                    act: torch.Tensor,
+                    hook: Any = None,
+                    delta: torch.Tensor = delta,
+                    head: int = head,
+                ) -> torch.Tensor:
+                    act = act.clone()
+                    copy = act[:, :, head]
+                    act[:, :, head] = copy + delta.to(act.dtype) * copy.std()
+                    return act
+
+                bridge.run_with_hooks(
+                    probe,
+                    fwd_hooks=[(edge_hook(part, layer), move), (name, keep)],
+                    return_type=None,
+                )
+                change = (seen["x"] - before).abs().movedim(2, 0)
+                moved = float(change[head].max())
+                if moved > 0:
+                    others = [h for h in range(heads) if h != head]
+                    if others:
+                        worst = max(worst, float(change[others].max()) / moved)
+                    break
+            else:
+                return math.inf  # no head read the copy that was moved
+        return worst
+
+    def head_output_weights(self, layer: int) -> torch.Tensor:
+        with self.lock, torch.no_grad():
+            return float64(self._bridge().blocks[layer].attn.W_O.detach())
+
+    def input_gradients(
+        self,
+        tokens: torch.Tensor,
+        score: ScoreFn,
+        layers: list[int],
+        logits: bool,
+        embeddings: torch.Tensor | None = None,
+    ) -> InputGradients:
+        n = self.info.n_layers
+        probes: dict[tuple[str, int], torch.Tensor] = {}
+
+        def probe(key: tuple[str, int]) -> Callable[..., torch.Tensor]:
+            # A zero added to the copy: the gradient with respect to it is the gradient with
+            # respect to the copy, through the receiver's normalization as the model computes it.
+            def fn(act: torch.Tensor, hook: Any = None) -> torch.Tensor:
+                zero = torch.zeros_like(act, requires_grad=True)
+                probes[key] = zero
+                return act + zero
+
+            return fn
+
+        hooks: list[tuple[str, Callable[..., torch.Tensor]]] = []
+        if embeddings is not None:
+
+            def interpolate(act: torch.Tensor, hook: Any = None) -> torch.Tensor:
+                act = act.clone()
+                act[:, : embeddings.shape[1]] = embeddings.to(dtype=act.dtype, device=act.device)
+                return act
+
+            hooks.append((hook_name("resid_pre", 0), interpolate))
+        for layer in layers:
+            for part in ("q", "k", "v", "mlp"):
+                hooks.append((edge_hook(part, layer), probe((part, layer))))
+        if logits:
+            hooks.append((edge_hook("logits", n), probe(("logits", n))))
+        kwargs: dict[str, Any] = {"return_type": "logits"}
+        if self._logits_to_keep:
+            kwargs["logits_to_keep"] = 1
+        with self.lock, torch.enable_grad(), self._split_inputs() as bridge:
+            out = bridge.run_with_hooks(tokens.to(self.device), fwd_hooks=_combine(hooks), **kwargs)
+            values = score(out[:, -1:, :])
+            order = list(probes)
+            grads = torch.autograd.grad(values.sum(), [probes[k] for k in order])
+        got = {key: g.detach() for key, g in zip(order, grads, strict=True)}
+
+        def per_layer(part: str) -> list[torch.Tensor | None]:
+            return [got.get((part, layer)) for layer in range(n)]
+
+        return InputGradients(
+            q=per_layer("q"),
+            k=per_layer("k"),
+            v=per_layer("v"),
+            mlp=per_layer("mlp"),
+            logits=got.get(("logits", n)),
+        )
+
+    def edge_patch(self, tokens: torch.Tensor, patcher: EdgePatcher) -> torch.Tensor:
+        n = self.info.n_layers
+
+        def sent(node: str, layer: int) -> Callable[..., torch.Tensor]:
+            def fn(act: torch.Tensor, hook: Any = None) -> torch.Tensor:
+                patcher.sent(node, layer, act.detach())
+                return act
+
+            return fn
+
+        def add(receiver: str, layer: int) -> Callable[..., torch.Tensor]:
+            def fn(act: torch.Tensor, hook: Any = None) -> torch.Tensor:
+                update = patcher.update(receiver, layer)
+                if update is None:
+                    return act
+                return act + update.to(dtype=act.dtype, device=act.device)
+
+            return fn
+
+        # In the order the pass reaches them: a layer's copies, its heads' outputs, its MLP's
+        # input and output; the final normalization's input last.
+        hooks: list[tuple[str, Callable[..., torch.Tensor]]] = [
+            (hook_name("resid_pre", 0), sent("embed", -1))
+        ]
+        for layer in range(n):
+            hooks += [(edge_hook(part, layer), add(part, layer)) for part in ("q", "k", "v")]
+            hooks.append((hook_name("head", layer), sent("head", layer)))
+            hooks.append((edge_hook("mlp", layer), add("mlp", layer)))
+            hooks.append((hook_name("mlp_out", layer), sent("mlp", layer)))
+        hooks.append((edge_hook("logits", n), add("logits", n)))
+        kwargs: dict[str, Any] = {"return_type": "logits"}
+        if self._logits_to_keep:
+            kwargs["logits_to_keep"] = 1
+        with self.lock, torch.no_grad(), self._split_inputs() as bridge:
+            logits = bridge.run_with_hooks(
+                tokens.to(self.device), fwd_hooks=_combine(hooks), **kwargs
+            )
             return logits[:, -1, :].float()
 
     def gradients(
@@ -802,13 +1416,24 @@ class TransformerLensBackend(ModelBackend):
         answers: torch.Tensor,
         distractors: torch.Tensor,
         heads: bool,
+        *,
+        neurons: Sequence[int] = (),
+        values: Sequence[int] = (),
     ) -> dict[str, torch.Tensor]:
         n = self.info.n_layers
         kept: dict[str, torch.Tensor] = {}
 
-        def keep(name: str) -> Callable[..., torch.Tensor]:
+        def keep(name: str, last: bool = True) -> Callable[..., torch.Tensor]:
             def fn(act: torch.Tensor, hook: Any = None) -> torch.Tensor:
-                kept[name] = act[:, -1].detach()  # only the last position is read out
+                # Only the last position is read out; a value is read at every position.
+                kept[name] = (act[:, -1] if last else act).detach()
+                return act
+
+            return fn
+
+        def keep_last_query(name: str) -> Callable[..., torch.Tensor]:
+            def fn(act: torch.Tensor, hook: Any = None) -> torch.Tensor:
+                kept[name] = act[:, :, -1].detach()  # [B, H, key]: the last token's attention
                 return act
 
             return fn
@@ -817,14 +1442,19 @@ class TransformerLensBackend(ModelBackend):
         names += [hook_name(k, layer) for layer in range(n) for k in ("attn_out", "mlp_out")]
         if heads:
             names += [hook_name("head", layer) for layer in range(n)]
+        names += [hook_name("neuron", layer) for layer in neurons]
+        fwd = [(name, keep(name)) for name in dict.fromkeys(names)]
+        fwd += [
+            (hook_name("v", layer), keep(hook_name("v", layer), last=False)) for layer in values
+        ]
+        fwd += [
+            (PATTERN_HOOK.format(layer=layer), keep_last_query(PATTERN_HOOK.format(layer=layer)))
+            for layer in values
+        ]
         with self.lock:
             bridge = self._bridge()
             with torch.no_grad():
-                bridge.run_with_hooks(
-                    tokens.to(self.device),
-                    fwd_hooks=[(name, keep(name)) for name in names],
-                    return_type=None,
-                )
+                bridge.run_with_hooks(tokens.to(self.device), fwd_hooks=fwd, return_type=None)
 
             # The direction in the residual stream that the logit difference reads, with the final
             # normalization's scale held at its value for each prompt: the logit difference is then
@@ -875,6 +1505,30 @@ class TransformerLensBackend(ModelBackend):
                     written = torch.einsum("bhd,hdm->bhm", z, w_o)
                     per_layer.append((written * g[:, None, :]).sum(-1))
                 out["head"] = torch.stack(per_layer, dim=1)
+            if neurons:
+                # A neuron writes its activation times its row of the output projection.
+                per_layer = []
+                for layer in neurons:
+                    post = float64(kept[hook_name("neuron", layer)])  # [B, d_mlp]
+                    w_out = float64(bridge.blocks[layer].mlp.W_out.detach())  # [d_mlp, d_model]
+                    per_layer.append(post * (g @ w_out.T))
+                out["neuron"] = torch.stack(per_layer, dim=1)
+            if values:
+                # A value at each position reaches the last token through every query head that
+                # reads it: that head's attention to the position, times the value through the
+                # head's share of the output projection (which g reads back as u).
+                group = kv_group(self.info.n_heads, int(self.info.extra["n_key_value_heads"]))
+                per_layer = []
+                for layer in values:
+                    value = float64(kept[hook_name("v", layer)])  # [B, pos, H_kv, d_head]
+                    pattern = float64(kept[PATTERN_HOOK.format(layer=layer)])  # [B, H, pos]
+                    w_o = float64(bridge.blocks[layer].attn.W_O.detach())  # [H, d_head, d_model]
+                    u = torch.einsum("hdm,bm->bhd", w_o, g)
+                    read = value.repeat_interleave(group, dim=2)  # [B, pos, H, d_head]
+                    each = pattern * torch.einsum("bphd,bhd->bhp", read, u)  # [B, H, pos]
+                    B, H, P = each.shape
+                    per_layer.append(each.reshape(B, H // group, group, P).sum(2))
+                out["value"] = torch.stack(per_layer, dim=1)
         total = out["embed"] + out["attn_out"].sum(1) + out["mlp_out"].sum(1)
         out["remainder"] = out["logit_diff"] - total
         return {k: v.cpu() for k, v in out.items()}
@@ -1122,6 +1776,16 @@ def load_model(
     if cancel is not None and cancel.is_set():
         backend.close()
         raise Cancelled()
+    if source == "local":
+        # A toy model (logogram.toys), known by the hash of its files, is checked as built: it
+        # solves its prompts and its planted heads attend where they should.
+        from logogram.toys import check_loaded_toy
+
+        try:
+            check_loaded_toy(backend)
+        except BackendError:
+            backend.close()
+            raise
     emit("ready")
     return backend
 

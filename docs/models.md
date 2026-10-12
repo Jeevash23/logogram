@@ -8,11 +8,14 @@ checked when it loads rather than trusted to be what its architecture's name say
 
 ## Which models have been checked
 
-GPT-2 small is the model the bundled examples were made for. Every method has been run end to end
-with real weights on GPT-2 small (with a SAELens and an OpenAI SAE), Pythia-70m (with an
-EleutherAI SAE) and Qwen 2.5 0.5B, and the test suite runs the sanity checks on tiny random models
-of the Llama, Pythia, Qwen 2, Gemma 2 and OLMo 2 families without downloading anything. On GPT-2
-small, patching the whole input gives an effect of exactly 1 under every metric, answers of several
+GPT-2 small is the model the bundled examples were made for. Every method but edge attribution
+has been run end to end with real weights on GPT-2 small (with a SAELens and an OpenAI SAE),
+Pythia-70m (with an EleutherAI SAE) and Qwen 2.5 0.5B, and the test suite runs the sanity checks on
+tiny random models of the Llama, Pythia, Qwen 2, Gemma 2 and OLMo 2 families without downloading
+anything. Edge attribution has been run on GPT-2 small; it refuses models whose heads share keys
+and values, as Qwen's and Llama's do, and models that normalize the attention output after
+combining the heads (see [its limits](concepts/edge-attribution.md#limits)). On GPT-2 small,
+patching the whole input gives an effect of exactly 1 under every metric, answers of several
 tokens included; the logit difference and the log-probability difference, equal in exact
 arithmetic for answers of one token, agree to 5 × 10⁻⁷; and reruns are bit-identical. Gemma Scope 2's files were checked on Gemma 3 270M with weight processing off.
 
@@ -33,7 +36,9 @@ copies, three to four times the float32 size of the weights; the estimate includ
 that fits only without processing (Qwen 2.5 0.5B on a 6 GB GPU) says so before it loads. The
 experiment form's summary says whether a batch of the size chosen fits. Attribution patching,
 direct logit attribution and path patching hold every layer's activations at once, so they need
-smaller batches than patching does.
+smaller batches than patching does. Edge attribution also holds the gradient at every receiver's
+input: the summary says how much memory a batch needs, and a batch that won't fit is refused with
+a batch size that will.
 
 ## Precision
 

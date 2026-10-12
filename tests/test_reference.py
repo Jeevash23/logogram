@@ -66,10 +66,11 @@ def test_every_spec_field_is_described(pages):
             assert f"| `{name}`" in page, f"{cls.__name__}.{name} is missing from the spec page"
             if name != "kind":
                 assert info.description, f"{cls.__name__}.{name} has no description"
-    # Each kind of experiment, scope, metric, position, ... has a section of its own.
+    # Each kind of experiment, scope, metric, position, ... has a section of its own. (A site's
+    # or an edge sender's kind is a choice among several, not the name of one model.)
     for cls in reachable:
         kind = cls.model_fields.get("kind")
-        if kind is not None and cls is not spec.Site:
+        if kind is not None and len(kind.annotation.__args__) == 1:
             (value,) = kind.annotation.__args__
             assert re.search(rf"^### .*: {value}$", page, re.M), f"no section for {value}"
 

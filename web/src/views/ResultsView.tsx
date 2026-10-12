@@ -8,10 +8,10 @@ import { Logogram } from "../components/Logogram";
 import { Button, Callout, Checkbox, Empty, Icon, menuClasses, Progress, Segmented } from "../components/ui";
 import { divergingScale, niceBound, SCALE_FLOOR, type ColorScale, type ResolvedTheme } from "../lib/color";
 import { ago, capitalize, ci, count, duration, num, pct, plural, qText, shortRevision, signed } from "../lib/format";
-import { modelName, siteValue, useActiveRun, useRunProfile } from "../lib/hooks";
-import { findSite, gridKey, layoutTitle, selectionOfSite, siteGrid, type Selection } from "../lib/sites";
+import { modelName, siteValue, useActiveRun, useArchitecture, useRunProfile } from "../lib/hooks";
+import { findSite, gridKey, layoutTitle, queryHeadsText, selectionOfSite, siteGrid, type Selection } from "../lib/sites";
 import { metricWords } from "../lib/metrics";
-import { baselineText, chatTemplateText, experimentText, measureOf, measureWords, positionText, saeWritesText } from "../lib/spec";
+import { baselineText, chatTemplateText, experimentText, graphText, layersText, measureOf, measureWords, positionText, receiverLabel, saeWritesText } from "../lib/spec";
 import { useStore } from "../store/app";
 import { Distribution } from "../components/Distribution";
 import { api } from "../api/client";
@@ -23,13 +23,17 @@ import { CircuitDialog } from "../components/CircuitDialog";
 import { rankedSites, universeText } from "../lib/circuits";
 import { membershipText, sweepsOf, sweepsOfRun } from "../lib/sweeps";
 import { CircuitResults } from "./CircuitResults";
+import { EdgeResults } from "./EdgeResults";
 import { Continuations } from "./Continuations";
 import { FlagMark, Forest } from "./Forest";
+import { NeuronResults } from "./NeuronResults";
 import s from "./views.module.css";
 import r from "./ResultsView.module.css";
 
 /** How many of an estimate's strongest sites "Verify by patching" patches for real. */
 const VERIFY_TOP = 10;
+/** How many of an edge attribution's strongest edges "Verify by path patching" measures. */
+const VERIFY_EDGES = 20;
 
 export function ResultsView() {
   const run = useActiveRun();
@@ -66,6 +70,7 @@ export function ResultsView() {
   // be tested as a circuit.
   const ranked = useMemo(() => rankedSites(run.detail?.summary?.sites ?? []), [run.detail?.summary]);
   const [circuitOpen, setCircuitOpen] = useState(false);
+  const arch = useArchitecture();
 
   if (!run.id) {
     return (
@@ -135,6 +140,20 @@ export function ResultsView() {
         <div className={r.heroActions}>
           {status === "finished" && (
             <>
+              {spec?.experiment.kind === "edge_attribution" && (
+                <Button
+                  variant="primary"
+                  disabled={job?.status === "running"}
+                  onClick={() => void useStore.getState().startVerification(run.id as string, VERIFY_EDGES)}
+                  tip={
+                    job?.status === "running"
+                      ? "A run is in progress. This can start when it finishes."
+                      : "Path-patch the edges with the largest estimated effects, one at a time, and compare"
+                  }
+                >
+                  Verify top {VERIFY_EDGES} by path patching
+                </Button>
+              )}
               {spec?.experiment.kind === "attribution_patching" && (
                 <Button
                   variant="primary"
@@ -353,12 +372,12 @@ export function ResultsView() {
         </dl>
       )}
       {run.id && ranked.length > 0 && <CircuitDialog open={circuitOpen} onOpenChange={setCircuitOpen} ranked={ranked} runId={run.id} />}
-      {layout && layout.kind !== "site_sets" && <div className={r.controls}>
+      {layout && layout.kind !== "site_sets" && layout.kind !== "edges" && <div className={r.controls}>
         <Segmented label="Result values" value={metric} onChange={mapMetric => useStore.setState({ mapMetric })} options={[{ value: "effect", label: words.effect }, { value: "delta", label: words.delta }]} />
         <Segmented label="Result scale" value={scaleMode} onChange={scaleMode => useStore.setState({ scaleMode })} options={[{ value: "auto", label: "Fit" }, { value: "unit", label: "±1", disabled: metric !== "effect" }]} />
-        <Checkbox checked={cellValues} onChange={(v) => useStore.setState({ cellValues: v })}>Show values</Checkbox>
+        {layout.kind !== "neurons" && <Checkbox checked={cellValues} onChange={(v) => useStore.setState({ cellValues: v })}>Show values</Checkbox>}
         <span className={r.controlsSpacer} />
-        <Button size="small" variant="ghost" icon="explore" onClick={() => { useStore.setState({ exploreMode: "atlas" }); useStore.getState().setView("explore"); }}>Show on the model map</Button>
+        {layout.kind !== "neurons" && layout.kind !== "head_inputs" && <Button size="small" variant="ghost" icon="explore" onClick={() => { useStore.setState({ exploreMode: "atlas" }); useStore.getState().setView("explore"); }}>Show on the model map</Button>}
         {run.detail?.predictions && <Button size="small" variant="ghost" onClick={() => useStore.getState().setView("predictions")}>Open saved predictions</Button>}
       </div>}
       {layout?.kind === "site_sets" && (
@@ -373,7 +392,52 @@ export function ResultsView() {
           onSelect={(site) => select(selectionOfSite(site))}
         />
       )}
-      {layout && layout.kind !== "sites" && layout.kind !== "site_sets" && (
+      {layout?.kind === "neurons" && (
+        <div className={r.heat}>
+          <div className={r.heatHead}>
+            <span className={s.panelTitle}>{layoutTitle(layout)}</span>
+            {flagged.size > 0 && (
+              <span className={r.flagNote}>
+                <FlagMark /> {flagged.size} conclusion{flagged.size === 1 ? "" : "s"} changed in the robustness check
+              </span>
+            )}
+            <ScaleBar bound={bound} theme={theme} label={metric === "effect" ? words.effect : words.delta} />
+          </div>
+          <NeuronResults
+            layout={layout}
+            sites={run.sites}
+            results={run.results}
+            metric={metric}
+            color={color}
+            bound={bound}
+            ciLevel={run.ciLevel}
+            selectedIndex={selectedSite?.index ?? null}
+            onSelect={(site) => select(selectionOfSite(site))}
+            flagged={flagged}
+            running={status === "running"}
+            partial={!!partial}
+          />
+        </div>
+      )}
+      {layout?.kind === "edges" && run.id && (
+        <EdgeResults
+          runId={run.id}
+          finished={status === "finished"}
+          edges={summary?.edges ?? null}
+          sites={run.sites}
+          results={run.results}
+          nLayers={summary?.model?.n_layers ?? arch?.nLayers ?? 1}
+          nHeads={summary?.model?.n_heads ?? arch?.nHeads ?? 1}
+          theme={theme}
+          effectLabel={words.effect}
+          ciLevel={run.ciLevel}
+          selectedIndex={selectedSite?.index ?? null}
+          onSelect={(site) => select(selectionOfSite(site))}
+          receiver={summary?.receiver ?? "receiver"}
+          source={summary?.reference ?? "source"}
+        />
+      )}
+      {layout && layout.kind !== "sites" && layout.kind !== "site_sets" && layout.kind !== "neurons" && layout.kind !== "edges" && (
         <div className={r.grid}>
           <div className={r.heat} data-tour="map">
             <div className={r.heatHead}>
@@ -402,7 +466,14 @@ export function ResultsView() {
             />
           </div>
           <div className={r.side}>
-            {layout.kind === "heads" && <SweepSummary results={resultList} total={run.sites.length} label={`${capitalize(words.mean)} of each head`} />}
+            {(layout.kind === "heads" || layout.kind === "head_inputs") && (
+              <SweepSummary
+                results={resultList}
+                total={run.sites.length}
+                unit={layout.kind === "heads" ? "heads" : layout.site === "q" ? "queries" : layout.site === "v" ? "values" : "keys"}
+                label={`${capitalize(words.mean)} of each ${layout.kind === "heads" ? "head" : layout.site === "q" ? "query" : layout.site === "v" ? "value" : "key"}`}
+              />
+            )}
             <Forest ciLevel={run.ciLevel} results={resultList} selectedIndex={selectedSite?.index ?? null} onSelect={(site) => select(selectionOfSite(site))} flagged={flagged} />
           </div>
         </div>
@@ -453,16 +524,19 @@ function Corrections({ summary }: { summary: Summary }) {
   if (st.band_level === null || st.band_level === undefined) return null;
   const alpha = Math.round((1 - st.ci) * 1000) / 1000;
   // The corrections cover every row the run reports, steering's random controls included, as the
-  // server computes them and the command line counts them.
+  // server computes them and the command line counts them. An edge attribution run lists only its
+  // strongest edges, so the server counts them over every edge.
   const sites = summary.sites;
-  const banded = sites.filter((x) => x.band && (x.band.lo > 0 || x.band.hi < 0)).length;
-  const discoveries = sites.filter((x) => x.q !== null && x.q !== undefined && x.q < alpha).length;
-  const single = sites.filter((x) => x.effect.lo !== null && x.effect.hi !== null && (x.effect.lo > 0 || x.effect.hi < 0)).length;
-  const unit = summary.layout.kind === "site_sets" ? "set" : "site";
+  const edges = summary.edges?.corrections;
+  const banded = edges ? edges.banded : sites.filter((x) => x.band && (x.band.lo > 0 || x.band.hi < 0)).length;
+  const discoveries = edges ? edges.discoveries : sites.filter((x) => x.q !== null && x.q !== undefined && x.q < alpha).length;
+  const single = edges ? edges.single : sites.filter((x) => x.effect.lo !== null && x.effect.hi !== null && (x.effect.lo > 0 || x.effect.hi < 0)).length;
+  const total = edges ? edges.edges : summary.sites.length;
+  const unit = summary.layout.kind === "site_sets" ? "set" : summary.layout.kind === "edges" ? "edge" : "site";
   return (
     <section className={r.corrections} aria-label={`Corrected for the number of ${unit}s`}>
       <p className={r.correctionsText}>
-        Corrected for {count(summary.sites.length)} {unit}s: <strong>{count(banded)}</strong> exclude zero with simultaneous
+        Corrected for {count(total)} {unit}s: <strong>{count(banded)}</strong> exclude zero with simultaneous
         bands and <strong>{count(discoveries)}</strong> have q below {alpha}, where {count(single)} intervals exclude zero one
         {" "}{unit} at a time.
       </p>
@@ -552,9 +626,16 @@ function ResultsHeatmap({
   );
   const tooltip = useCallback(
     (ri: number, ci_: number) => (
-      <CellTooltip site={grid.get(gridKey(ri, ci_)) ?? null} results={results} metric={metric} words={words} attribution={attribution} />
+      <CellTooltip
+        site={grid.get(gridKey(ri, ci_)) ?? null}
+        results={results}
+        metric={metric}
+        words={words}
+        attribution={attribution}
+        readers={layout.kind === "head_inputs" ? layout.cols[ci_]?.query_heads : undefined}
+      />
     ),
-    [grid, results, metric, words, attribution],
+    [grid, results, metric, words, attribution, layout],
   );
   const selectedSite = findSite(sites, selection);
   const selectedR = selectedSite?.row ?? null;
@@ -571,7 +652,7 @@ function ResultsHeatmap({
       rowTitle={layout.row_title}
       colTitle={layout.kind === "layer_position" ? (tokenAxis ? "Position (clean tokens of prompt 0)" : "Named position") : layout.col_title}
       tokens={tokenAxis}
-      cellMax={layout.kind === "layer_components" ? 60 : layout.kind === "heads" ? 44 : 34}
+      cellMax={layout.kind === "layer_components" ? 60 : layout.kind === "heads" || layout.kind === "head_inputs" ? 44 : 34}
       aspect={layout.kind === "layer_components" ? 0.45 : 1}
       showValues={showValues}
       format={formatCell}
@@ -601,9 +682,17 @@ function MethodsLine({ spec, n, clusters }: { spec: Spec; n: number | undefined;
             ? `every feature of the SAE (keeping the top ${scope.top}${scope.choose_on !== null ? `, chosen on ${Math.round(scope.choose_on * 100)}% of the prompts with seed ${scope.seed} and reported on the rest` : ""})`
             : scope.kind === "site_sets"
               ? `${scope.sets.length} set${scope.sets.length === 1 ? "" : "s"} of sites${scope.universe ? ` (the rest of the model: ${universeText(scope.universe)})` : ""}`
-              : `${scope.sites.length} chosen site${scope.sites.length === 1 ? "" : "s"}`;
+              : scope.kind === "head_inputs"
+                ? scope.input === "q" ? "each head's query" : `each key/value head's ${scope.input === "k" ? "key" : "value"}`
+                : scope.kind === "neurons"
+                  ? `every MLP neuron of ${layersText(scope.layers)}`
+                  : scope.kind === "graph"
+                    ? graphText(scope)
+                    : scope.kind === "edges"
+                      ? `${scope.edges.length} edge${scope.edges.length === 1 ? "" : "s"}, each alone`
+                      : `${scope.sites.length} chosen site${scope.sites.length === 1 ? "" : "s"}`;
   const position =
-    scope.kind === "heads" || scope.kind === "layer_components" || scope.kind === "features"
+    scope.kind === "heads" || scope.kind === "layer_components" || scope.kind === "features" || scope.kind === "head_inputs" || scope.kind === "neurons"
       ? positionText(scope.position)
       : scope.kind === "layer_position"
         ? scope.positions === "each"
@@ -611,7 +700,9 @@ function MethodsLine({ spec, n, clusters }: { spec: Spec; n: number | undefined;
           : "named positions"
         : scope.kind === "site_sets"
           ? "once per set"
-          : scope.sites.map((x) => positionText(x.position)).filter((v, i, a) => a.indexOf(v) === i).join(", ");
+          : scope.kind === "graph" || scope.kind === "edges"
+            ? "every position"
+            : scope.sites.map((x) => positionText(x.position)).filter((v, i, a) => a.indexOf(v) === i).join(", ");
   return (
     <p className={r.methods}>
       <strong>
@@ -622,12 +713,14 @@ function MethodsLine({ spec, n, clusters }: { spec: Spec; n: number | undefined;
             : e.kind === "attribution_patching"
               ? `${experimentText(e)} (attribution patching)`
               : e.kind === "path_patching"
-                ? `Path patching ${e.direction === "clean_to_corrupt" ? "clean → corrupt" : "corrupt → clean"} into ${e.receivers.map((x) => (x.kind === "logits" ? "logits" : `L${x.layer} H${x.head} ${x.input}`)).join(", ")}${e.freeze_mlps ? ", MLPs held" : ""}`
+                ? `Path patching ${e.direction === "clean_to_corrupt" ? "clean → corrupt" : "corrupt → clean"} into ${e.receivers.map(receiverLabel).join(", ")}${e.freeze_mlps ? ", MLPs held" : ""}`
                 : e.kind === "steering"
                 ? `Steer ${e.apply_to} ${e.direction?.kind === "sae_feature" ? `along SAE feature ${e.direction.feature}` : `→ ${e.apply_to === "clean" ? "corrupt" : "clean"}`} (${e.coefficients.map((c) => `×${c}`.replace("-", "−")).join(", ")}${e.control ? ", random control" : ""})`
-                : `Ablate (${baselineText(e.baseline)})`}
+                : e.kind === "edge_attribution"
+                  ? `${experimentText(e)} (edge attribution)`
+                  : `Ablate (${baselineText(e.baseline)})`}
       </strong>
-      {" "}{site}{scope.kind === "site_sets" ? ", each intervened on at once" : ` at ${position}`}
+      {" "}{site}{scope.kind === "site_sets" ? ", each intervened on at once" : scope.kind === "graph" ? ", summed over every position" : ` at ${position}`}
       <span className={r.sep}>·</span>
       {e.kind === "direct_logit_attribution"
         ? `logit difference, as a share of ${spec.metric.normalization === "dataset_gap" ? "the mean" : "each prompt's"}`
@@ -695,7 +788,8 @@ function RunNotes({ text }: { text: string }) {
 /** Exports in one place: the per-prompt table, the figure, and the methods text. */
 function ExportMenu({ runId, detail }: { runId: string; detail: NonNullable<ReturnType<typeof useActiveRun>["detail"]> }) {
   const kind = detail.summary?.layout.kind;
-  const hasMap = !!kind && kind !== "sites" && kind !== "site_sets";
+  const hasMap = !!kind && kind !== "sites" && kind !== "site_sets" && kind !== "edges";
+  const everyEdge = !!detail.summary?.edges;
   const metric = useStore((st) => st.mapMetric);
   const scaleMode = useStore((st) => st.scaleMode);
   const guard = useStore((st) => st.guard);
@@ -711,7 +805,7 @@ function ExportMenu({ runId, detail }: { runId: string; detail: NonNullable<Retu
           </DropdownMenu.Item>
           <DropdownMenu.Separator className={menuClasses.separator} />
           <DropdownMenu.Item className={menuClasses.item} onSelect={() => void guard(async () => downloadBlob(await api.exportSites(runId), `${runId}-sites.csv`))}>
-            <Icon name="download" size={14} /> Export per-site CSV
+            <Icon name="download" size={14} /> {everyEdge ? "Export every edge (CSV)" : "Export per-site CSV"}
           </DropdownMenu.Item>
           <DropdownMenu.Item className={menuClasses.item} onSelect={() => void guard(async () => downloadBlob(await api.exportRun(runId), `${runId}.csv`))}>
             <Icon name="download" size={14} /> Export per-prompt CSV
@@ -721,9 +815,11 @@ function ExportMenu({ runId, detail }: { runId: string; detail: NonNullable<Retu
           </DropdownMenu.Item>
           {hasMap && (
             <>
-              <DropdownMenu.Item className={menuClasses.item} onSelect={() => void guard(() => exportFigure(detail, metric, scaleMode === "unit"))}>
-                <Icon name="download" size={14} /> Export figure PNG
-              </DropdownMenu.Item>
+              {kind !== "neurons" && (
+                <DropdownMenu.Item className={menuClasses.item} onSelect={() => void guard(() => exportFigure(detail, metric, scaleMode === "unit"))}>
+                  <Icon name="download" size={14} /> Export figure PNG
+                </DropdownMenu.Item>
+              )}
               <DropdownMenu.Item
                 className={menuClasses.item}
                 onSelect={() => void guard(async () => downloadBlob(await api.runFigure(runId, metric, scaleMode === "unit"), `${runId}.svg`))}
@@ -766,10 +862,13 @@ function RunningBanner() {
   const run = useActiveRun();
   const p = run.live?.progress;
   const model = useStore((st) => st.model);
+  const edges = run.detail?.spec?.experiment.kind === "edge_attribution";
   return (
     <div className={r.running}>
       <div className={r.runningText}>
-        {p
+        {p && edges
+          ? `Estimating every edge, then the curve · ${count(p.done)} of ${count(p.total)} steps · ${pct(p.done / p.total)}`
+          : p
           ? `Layer ${p.layer} · ${count(p.done)} of ${count(p.total)} rows · ${pct(p.done / p.total)}`
           : model.state === "loading"
             ? `Loading ${modelName(model.id)}…`
@@ -810,18 +909,22 @@ function CellTooltip({
   metric,
   words,
   attribution,
+  readers,
 }: {
   site: { index: number; label: string } | null;
   results: Record<number, SiteResult>;
   metric: "effect" | "delta";
   words: ReturnType<typeof measureWords>;
   attribution: boolean;
+  /** A key/value head's column: the query heads that read it. */
+  readers?: number[];
 }) {
   if (!site) return null;
   const res = results[site.index];
   return (
     <>
       <div style={{ fontWeight: 650 }}>{site.label}</div>
+      {readers && readers.length > 1 && <div style={{ opacity: 0.72 }}>Read by {queryHeadsText(readers)}</div>}
       {res ? (
         <>
           <div>
@@ -841,7 +944,7 @@ function CellTooltip({
 }
 
 
-function SweepSummary({ results, total, label }: { results: SiteResult[]; total: number; label: string }) {
+function SweepSummary({ results, total, label, unit = "heads" }: { results: SiteResult[]; total: number; label: string; unit?: string }) {
   const select = useStore((st) => st.select);
   const done = useMemo(() => results.filter((x) => x.effect.mean !== null), [results]);
   const pos = done.filter((x) => (x.effect.lo ?? 0) > 0);
@@ -851,7 +954,7 @@ function SweepSummary({ results, total, label }: { results: SiteResult[]; total:
   const values = useMemo(() => done.map((x) => ({ index: x.index, value: x.effect.mean })), [done]);
   return (
     <div className={r.summary}>
-      <div className={r.summaryHead}>Across all {count(total)} heads</div>
+      <div className={r.summaryHead}>Across all {count(total)} {unit}</div>
       <dl className={r.summaryStats}>
         <dt>CI above zero</dt>
         <dd>{count(pos.length)}</dd>

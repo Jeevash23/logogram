@@ -3,6 +3,8 @@
 import type {
   BaselineSpec,
   ChatTemplateSpec,
+  EdgeSenderSpec,
+  EdgeSpec,
   ExperimentKind,
   PathReceiverSpec,
   ExperimentSpec,
@@ -45,9 +47,56 @@ export function baselineText(b: BaselineSpec): string {
   }
 }
 
-/** A path's receiver as the results write it, for example "L9 H9 q" or "logits". */
+/** A path's receiver as the results write it, for example "L9 H9 q", "L3 MLP" or "logits". */
 export function receiverLabel(r: PathReceiverSpec): string {
-  return r.kind === "logits" ? "logits" : `L${r.layer} H${r.head} ${r.input}`;
+  if (r.kind === "logits") return "logits";
+  if (r.kind === "mlp") return `L${r.layer} MLP`;
+  return `L${r.layer} H${r.head} ${r.input}`;
+}
+
+/** A path's receiver in words, for example "L9 H9 query" or "L3 MLP input". */
+export function receiverWords(r: PathReceiverSpec): string {
+  if (r.kind === "logits") return "Logits, read directly";
+  if (r.kind === "mlp") return `L${r.layer} MLP input`;
+  return `L${r.layer} H${r.head} ${{ q: "query", k: "key", v: "value" }[r.input]}`;
+}
+
+/** An edge's sender as the results write it, for example "L5 H5", "L0 MLP" or "embeddings". */
+export function senderLabel(s: EdgeSenderSpec): string {
+  if (s.kind === "embed") return "embeddings";
+  if (s.kind === "mlp") return `L${s.layer} MLP`;
+  return `L${s.layer} H${s.head}`;
+}
+
+/** What an edge's sender sends, in words, for example "L5 H5's output". */
+export function senderWords(s: EdgeSenderSpec): string {
+  return s.kind === "embed" ? "the embeddings" : `${senderLabel(s)}'s output`;
+}
+
+/** What an edge's receiver reads, in words, for example "L9 H6's query input". */
+export function receiverInputWords(r: PathReceiverSpec): string {
+  if (r.kind === "logits") return "the logits";
+  if (r.kind === "mlp") return `L${r.layer} MLP's input`;
+  return `L${r.layer} H${r.head}'s ${{ q: "query", k: "key", v: "value" }[r.input]} input`;
+}
+
+/** An edge as the results write it, for example "L5 H5 → L9 H6 q" (src/logogram/spec.py
+ * edge_text). */
+export function edgeLabel(e: EdgeSpec): string {
+  return `${senderLabel(e.sender)} → ${receiverLabel(e.receiver)}`;
+}
+
+/** The graph a graph scope covers, in words (as src/logogram/spec.py graph_text says it). */
+export function graphText(scope: { layers: number[] | null; logits: boolean }): string {
+  if (scope.layers === null) return scope.logits ? "every edge of the graph" : "every edge but those into the logits";
+  const runs: number[][] = [];
+  for (const layer of scope.layers) {
+    const last = runs[runs.length - 1];
+    if (last && layer === last[last.length - 1] + 1) last.push(layer);
+    else runs.push([layer]);
+  }
+  const text = runs.map((r) => (r.length === 1 ? `${r[0]}` : `${r[0]}–${r[r.length - 1]}`)).join(", ");
+  return `the edges into layer${scope.layers.length === 1 ? "" : "s"} ${text}${scope.logits ? " and the logits" : ""}`;
 }
 
 /** A steering strength as the results write it, for example ×2 or ×−0.5. */
@@ -104,6 +153,11 @@ export function experimentText(e: ExperimentSpec): string {
     const names = e.receivers.slice(0, 4).map(receiverLabel).join(", ") + (e.receivers.length > 4 ? ` and ${e.receivers.length - 4} more` : "");
     return `Path patching ${arrow} into ${names} (${e.freeze_mlps ? "heads and MLPs" : "other heads"} held)`;
   }
+  if (e.kind === "edge_attribution") {
+    const arrow = e.direction === "clean_to_corrupt" ? "clean → corrupt" : "corrupt → clean";
+    const how = e.method === "integrated_gradients" ? ` with integrated gradients (${e.steps} steps)` : "";
+    return `Estimate each edge ${arrow}${how}${e.curve ? ", then patch the strongest for a faithfulness curve" : ""}`;
+  }
   switch (e.baseline.kind) {
     case "zero":
       return "Zero-ablate";
@@ -128,13 +182,17 @@ export function experimentShort(e: ExperimentSpec): string {
     return `Steer ${e.apply_to}→${e.apply_to === "clean" ? "corrupt" : "clean"}`;
   }
   if (e.kind === "path_patching") return `Paths ${e.direction === "clean_to_corrupt" ? "clean→corrupt" : "corrupt→clean"}`;
+  if (e.kind === "edge_attribution") {
+    const arrow = e.direction === "clean_to_corrupt" ? "clean→corrupt" : "corrupt→clean";
+    return e.method === "integrated_gradients" ? `Edges ${arrow}, integrated gradients` : `Edges ${arrow}`;
+  }
   return { zero: "Zero ablation", mean: "Mean ablation", resample: "Resample ablation" }[e.baseline.kind];
 }
 
 /** What a method's per-prompt values are (see Summary.measure). */
 export function measureOf(e: ExperimentSpec | null | undefined): Measure {
   if (e?.kind === "direct_logit_attribution") return "attribution";
-  if (e?.kind === "attribution_patching") return "estimate";
+  if (e?.kind === "attribution_patching" || e?.kind === "edge_attribution") return "estimate";
   return "intervention";
 }
 
@@ -171,7 +229,18 @@ export function measureWords(e: ExperimentSpec | null | undefined, metric?: { ki
       deltaLegend: `Change in the ${m.label} (${m.formula}) when only the receivers' inputs are patched.`,
     };
   }
-  const restores = (e?.kind === "activation_patching" || e?.kind === "attribution_patching") && e.direction === "clean_to_corrupt";
+  const restores =
+    (e?.kind === "activation_patching" || e?.kind === "attribution_patching" || e?.kind === "edge_attribution") &&
+    e.direction === "clean_to_corrupt";
+  if (e?.kind === "edge_attribution") {
+    return {
+      effect: "Estimated effect",
+      delta: `Estimated Δ ${m.short}`,
+      mean: "mean estimated effect",
+      effectLegend: `Estimated normalized effect of patching the edge alone, to first order: 1 would mean the edge alone ${restores ? "restores the clean behavior" : "shifts the output as far as the corrupt prompt does"}. Verify the strongest by path patching.`,
+      deltaLegend: `First-order estimate of the change in the ${m.label} (${m.formula}) patching the edge alone would cause.`,
+    };
+  }
   if (measureOf(e) === "estimate") {
     return {
       effect: "Estimated effect",
@@ -206,7 +275,38 @@ export function scopeText(s: ScopeSpec): string {
       }`;
     case "site_sets":
       return `${s.sets.length} set${s.sets.length === 1 ? "" : "s"} of sites, each at once`;
+    case "head_inputs":
+      return `${s.input === "q" ? "every head's query" : s.input === "k" ? "every key" : "every value"}, ${positionText(s.position)}`;
+    case "neurons":
+      return `every MLP neuron of ${layersText(s.layers)}, ${positionText(s.position)}`;
+    case "graph":
+      return graphText(s);
+    case "edges":
+      return `${s.edges.length} edge${s.edges.length === 1 ? "" : "s"}, one at a time`;
   }
+}
+
+/** "layer 3", "layers 3, 4 and 9". */
+export function layersText(layers: number[]): string {
+  if (layers.length === 1) return `layer ${layers[0]}`;
+  return `layers ${layers.slice(0, -1).join(", ")} and ${layers[layers.length - 1]}`;
+}
+
+/** Layers typed as a list: "3, 4", "3 4", ranges like "0-5". Null when they can't be read. */
+export function parseLayers(text: string): number[] | null {
+  const parts = text.replace(/[–—]/g, "-").split(/[\s,;]+/).filter(Boolean);
+  if (parts.length === 0) return null;
+  const out: number[] = [];
+  for (const part of parts) {
+    const range = part.match(/^(\d+)-(\d+)$/);
+    if (range) {
+      const [a, b] = [Number(range[1]), Number(range[2])];
+      if (b < a || b - a > 1024) return null;
+      for (let layer = a; layer <= b; layer++) out.push(layer);
+    } else if (/^\d+$/.test(part)) out.push(Number(part));
+    else return null;
+  }
+  return out;
 }
 
 export function scopeShort(s: ScopeSpec): string {
@@ -224,12 +324,32 @@ export function scopeShort(s: ScopeSpec): string {
       return "SAE features";
     case "site_sets":
       return "Sets of sites";
+    case "head_inputs":
+      return s.input === "q" ? "Heads' queries" : s.input === "k" ? "Keys" : "Values";
+    case "neurons":
+      return s.layers.length === 1 ? `Neurons of layer ${s.layers[0]}` : "Neurons";
+    case "graph":
+      return s.layers === null ? "The whole graph" : "Edges into chosen layers";
+    case "edges":
+      return s.edges.length === 1 ? "One edge" : "Chosen edges";
   }
 }
 
 export function siteFromSelection(sel: Selection, residKind: SiteSpec["kind"] = sel.kind ?? "resid_pre"): SiteSpec {
   const kind: SiteSpec["kind"] =
-    sel.part === "head" ? "head" : sel.part === "attn" ? "attn_out" : sel.part === "mlp" ? "mlp_out" : sel.part === "feature" ? "sae_feature" : residKind;
+    sel.part === "head"
+      ? "head"
+      : sel.part === "attn"
+        ? "attn_out"
+        : sel.part === "mlp"
+          ? "mlp_out"
+          : sel.part === "feature"
+            ? "sae_feature"
+            : sel.part === "input"
+              ? (sel.kind === "k" || sel.kind === "v" ? sel.kind : "q")
+              : sel.part === "neuron"
+                ? "neuron"
+                : residKind;
   const position: PositionSpec =
     sel.positionKey === undefined
       ? { kind: "all" }
@@ -241,8 +361,9 @@ export function siteFromSelection(sel: Selection, residKind: SiteSpec["kind"] = 
   return {
     kind,
     layer: sel.layer,
-    head: sel.part === "head" ? sel.head : null,
+    head: sel.part === "head" || sel.part === "input" ? sel.head : null,
     ...(sel.part === "feature" ? { feature: sel.feature } : {}),
+    ...(sel.part === "neuron" ? { neuron: sel.neuron } : {}),
     position,
   };
 }
@@ -257,12 +378,27 @@ export function suggestName(spec: Pick<Spec, "experiment" | "scope">): string {
   return `${what} · ${where}`;
 }
 
+/** A site as the results write it (src/logogram/sites.py, site_label): a key or value names its
+ * key/value head ("L9 KV2 k"), a query its query head ("L9 H6 q"). */
 export function siteText(site: SiteSpec): string {
   const pos = site.position.kind === "all" ? "" : ` @ ${positionKey(site.position)}`;
-  if (site.kind === "head") return `L${site.layer} H${site.head}${pos}`;
-  if (site.kind === "sae_feature") return `L${site.layer} F${site.feature}${pos}`;
-  const name = { resid_pre: "resid pre", resid_mid: "resid mid", resid_post: "resid post", attn_out: "attn", mlp_out: "mlp" }[site.kind];
-  return `L${site.layer} ${name}${pos}`;
+  switch (site.kind) {
+    case "head":
+      return `L${site.layer} H${site.head}${pos}`;
+    case "sae_feature":
+      return `L${site.layer} F${site.feature}${pos}`;
+    case "q":
+      return `L${site.layer} H${site.head} q${pos}`;
+    case "k":
+    case "v":
+      return `L${site.layer} KV${site.head} ${site.kind}${pos}`;
+    case "neuron":
+      return `L${site.layer} N${site.neuron}${pos}`;
+    default: {
+      const name = { resid_pre: "resid pre", resid_mid: "resid mid", resid_post: "resid post", attn_out: "attn", mlp_out: "mlp" }[site.kind];
+      return `L${site.layer} ${name}${pos}`;
+    }
+  }
 }
 
 export function positionKey(p: PositionSpec): string {
@@ -288,13 +424,26 @@ export function splitCount(n: number, share: number): number {
 }
 
 /** Rows the sweep will run: sites × prompts × donors. A decomposition runs each prompt once, an
- * estimate once per prompt (once per step of integrated gradients). */
-export function workload(spec: Spec, n: number, nLayers: number, nHeads: number, nPositions: number | null, nLabels: number): number | null {
+ * estimate once per prompt (once per step of integrated gradients). Keys and values have
+ * `nKvHeads` heads a layer (fewer than `nHeads` with grouped-query attention), an MLP `dMlp`
+ * neurons. */
+export function workload(
+  spec: Spec,
+  n: number,
+  nLayers: number,
+  nHeads: number,
+  nPositions: number | null,
+  nLabels: number,
+  nKvHeads: number = nHeads,
+  dMlp: number = 0,
+): number | null {
   if (spec.experiment.kind === "direct_logit_attribution") return n;
-  if (spec.experiment.kind === "attribution_patching") {
+  if (spec.experiment.kind === "attribution_patching" || spec.experiment.kind === "edge_attribution") {
     return spec.experiment.method === "integrated_gradients" ? n * (spec.experiment.steps ?? 1) : n;
   }
   const s = spec.scope;
+  if (s.kind === "graph") return null; // only edge attribution estimates the graph
+  if (s.kind === "edges") return s.edges.length * n;
   if (spec.experiment.kind === "steering") {
     const e = spec.experiment;
     const sites = s.kind === "layer_components" ? nLayers : s.kind === "sites" ? s.sites.length : 0;
@@ -303,6 +452,8 @@ export function workload(spec: Spec, n: number, nLayers: number, nHeads: number,
   }
   let sites = 0;
   if (s.kind === "heads") sites = nLayers * nHeads;
+  else if (s.kind === "head_inputs") sites = nLayers * (s.input === "q" ? nHeads : nKvHeads);
+  else if (s.kind === "neurons") sites = s.layers.length * dMlp;
   else if (s.kind === "layer_components") sites = nLayers * s.components.length;
   else if (s.kind === "sites") sites = s.sites.length;
   else if (s.kind === "site_sets") sites = s.sets.length;
@@ -326,11 +477,24 @@ export function workloadText(spec: Spec, rows: number): string {
     }
     return `That is two forward passes and one backward pass for each of the ${count(rows)} prompts, for every site at once.`;
   }
+  if (e.kind === "edge_attribution") {
+    const steps = e.method === "integrated_gradients" ? e.steps ?? 1 : 1;
+    const n = Math.round(rows / steps);
+    const estimate =
+      steps > 1
+        ? `That is two forward passes, then ${count(steps)} forward and backward passes, for each of the ${count(n)} prompts, for every edge at once.`
+        : `That is three forward passes and one backward pass for each of the ${count(n)} prompts, for every edge at once.`;
+    if (!e.curve) return estimate;
+    return `${estimate} The faithfulness curve then patches the strongest edges for real, beside edges chosen at random.`;
+  }
   if (e.kind === "steering") {
     const steered = `That is ${count(rows)} steered forward passes on the held-out prompts.`;
     if (!e.continuations) return steered;
     const { prompts, tokens } = e.continuations;
     return `${steered} Continuing the first ${plural(prompts, "held-out prompt")} by ${plural(tokens, "token")}, without steering and at each strength, takes a forward pass per token.`;
+  }
+  if (e.kind === "path_patching" && spec.scope.kind === "edges") {
+    return `That is ${count(rows)} paths, each edge on each prompt alone, four forward passes each.`;
   }
   if (e.kind === "path_patching") return `That is ${count(rows)} paths, three forward passes each (fewer when senders come after the receivers).`;
   if (spec.scope.kind === "site_sets") return `That is ${count(rows)} patched forward passes, every site of a set at once.`;
@@ -369,8 +533,25 @@ export function saeWritesText(info: Pick<SAEInfo, "site" | "layer" | "transcoder
  * (`steerSite`, where its SAE writes) adds it at that one site. */
 export function scopeFor(kind: ExperimentKind, scope: ScopeSpec, steerSite: { kind: StreamKind; layer: number } | null = null): ScopeSpec {
   const last: PositionSpec = { kind: "last" };
+  // Edge attribution estimates the edges of the model's graph, and nothing else does.
+  if (kind === "edge_attribution") return scope.kind === "graph" ? scope : { kind: "graph", layers: null, logits: true };
+  if (scope.kind === "graph") return scopeFor(kind, { kind: "heads", position: { kind: "all" } }, steerSite);
+  // Edges one at a time are path patching's (a verification of edge attribution).
+  if (scope.kind === "edges" && kind !== "path_patching") return scopeFor(kind, { kind: "heads", position: { kind: "all" } }, steerSite);
   // Only attribution patching sweeps every SAE feature; other methods patch chosen ones.
   if (scope.kind === "features" && kind !== "attribution_patching") return { kind: "heads", position: { kind: "all" } };
+  // Queries, keys, values and neurons are patched, ablated or estimated one by one; steering adds
+  // to the residual stream and paths start at components, so those methods sweep heads instead.
+  // Direct effects: a neuron's at the last token, a value's at any position (through the heads
+  // that read it); queries and keys have none.
+  if (scope.kind === "head_inputs" || scope.kind === "neurons") {
+    if (kind === "steering" || kind === "path_patching") return scopeFor(kind, { kind: "heads", position: { kind: "all" } }, steerSite);
+    if (kind === "direct_logit_attribution") {
+      if (scope.kind === "neurons") return { ...scope, position: last };
+      return scope.input === "v" ? scope : { kind: "head_inputs", input: "v", position: scope.position };
+    }
+    return scope;
+  }
   // Sets are intervened on by patching or ablation; other methods measure their sites one by one.
   if (scope.kind === "site_sets" && kind !== "activation_patching" && kind !== "ablation") {
     const sites = setMembers(scope.sets);
@@ -421,15 +602,19 @@ export function scopeFor(kind: ExperimentKind, scope: ScopeSpec, steerSite: { ki
     case "layer_position":
       return { kind: "heads", position: last };
     case "sites": {
+      // Values keep their positions (any token's value reaches the last through the attention);
+      // queries and keys have no direct effect.
       const sites = scope.sites
-        .filter((x) => x.kind === "head" || x.kind === "attn_out" || x.kind === "mlp_out")
-        .map((x) => ({ ...x, position: last }));
+        .filter((x) => x.kind === "head" || x.kind === "attn_out" || x.kind === "mlp_out" || x.kind === "neuron" || x.kind === "v")
+        .map((x) => (x.kind === "v" ? x : { ...x, position: last }));
       return sites.length ? { kind: "sites", sites } : { kind: "heads", position: last };
     }
     case "features":
-      return { kind: "heads", position: last };
     case "site_sets":
+    case "edges":
       return { kind: "heads", position: last };
+    default:
+      return scope;
   }
 }
 

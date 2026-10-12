@@ -102,8 +102,8 @@ The [documentation](docs/README.md) teaches the app and the methods:
   for, and [Models](docs/models.md) which models load and how.
 * [Concepts](docs/README.md#concepts): what each method computes, exactly, and the papers it
   comes from: activation patching, ablation, metrics and normalization, statistics, attribution
-  patching, path patching, direct logit attribution, steering, SAE features, circuits, and the
-  logit lens with the checks each model passes when it loads.
+  patching, path patching, edge attribution, direct logit attribution, steering, SAE features,
+  circuits, and the logit lens with the checks each model passes when it loads.
 * [How-to guides](docs/README.md#how-to-guides): replicate IOI, find induction heads, work with
   an SAE, check a finding's robustness, compare runs, sweep seeds, datasets or checkpoints, queue
   runs and run them headless, run a chat model on its template, study your own fine-tune, share a
@@ -134,6 +134,48 @@ small (revision `607a30d`), and the results show them under the run's title.
 
 Once a week, the Golden workflow runs every example on GPT-2 small's real weights and checks these
 findings (see Development).
+
+## Toy models
+
+Two small models come with Logogram whose circuits are known, because their weights were set by
+hand: learn the methods on a model whose answer you know, or check that a method finds what is
+there. `logogram toy induction` (or `lg.toy_model("induction")`) writes a project, by default
+`Documents/Logogram/toy-induction`, holding the model's files (a GPT-2 checkpoint in safetensors,
+which loads through the same code as any model), its datasets, and experiments whose notes say
+what each should find. It adds the model to this machine's local models as `toy-induction`, so
+specs name it by the hash of its files, the same on every machine, then loads it and checks that
+it solves every prompt and that each planted head attends where it was built to.
+
+| Toy | What is planted | Task |
+|---|---|---|
+| `induction` | Two layers of four heads, attention only. L0 H2 is a previous-token head; L1 H1 an induction head, whose key reads L0 H2 | “… A B … F C … A” → “ B”; the corrupt prompt swaps A and F, → “ C” |
+| `ioi` | Four layers of four heads: GPT-2 small's circuit, one head per step. L0 H2 previous-token; L1 H1 induction (finds the repeated name, copies which slot it was in); L2 H3 S-inhibition (moves the slot to the last token through its value); L3 H0 name mover (its query turns away from that slot) | “Once Mary and John reached the store, John threw a drink to” → “ Mary”; the flipped prompt → “ John” |
+
+What each method finds, as normalized effects (every other head 0):
+
+| Method | Induction toy | IOI toy |
+|---|---|---|
+| Head finder | L0 H2 previous-token (1.0), L1 H1 induction (1.0); on sequences of 32 tokens no other head scores above 0.06 | the same heads |
+| Patching each head | L0 H2 and L1 H1, 1.0 each | L1 H1, L2 H3 and L3 H0, 1.0 each; L0 H2 0, since it writes the same in both prompts |
+| Patching queries, keys, values | L0 H2's value and L1 H1's key | L1 H1's query, L2 H3's value, L3 H0's query |
+| Path patching | L0 H2 → L1 H1's key 1.0 (its query and value 0) | L1 H1 → L2 H3's value, L2 H3 → L3 H0's query, 1.0 each |
+| Sets of sites | the planted heads alone: faithfulness 1.0; the other heads alone: 0 | the same |
+| Direct logit attribution | L1 H1 writes all of the logit difference | L3 H0 writes all of it |
+| Attribution patching | L1 H1 1.0, exact; L0 H2 0, though patching gives 1.0: it acts through saturated attention, whose gradient is about e⁻²⁰. Integrated gradients: 0.47 with 8 steps, 0.92 with 16, 0.999 with 32 | L3 H0 1.0; the upstream heads stay near 0, even with 64 steps of integrated gradients |
+| Steering | none: the difference is a token's identity, not a direction | on ABBA prompts, the mean difference after layer 2 at the last token flips the answer (1.0 at ×1, 2/3 at ×0.5) and beats a random direction; with ABBA and BABA mixed it cancels to 0 |
+| Edges, each path patched alone | 1.0 for each planted edge along which the prompts differ (the embeddings → L0 H2's value, L0 H2 → L1 H1's key, L1 H1 → the logits), 0 for the others | 1.0 for the embeddings → L1 H1's query, L1 H1 → L2 H3's value, L2 H3 → L3 H0's query and L3 H0 → the logits, 0 for the others |
+| Edge attribution | one gradient: L1 H1 → logits 1.0, exact; edges into queries and keys about 0. With 32 steps of integrated gradients, L0 H2 → L1 H1's key about 1.0 | one gradient: L3 H0 → logits 1.0, exact; edges into queries and keys about 0 |
+
+How the weights do it: every direction of the residual stream is one named feature (a token's
+identity, the previous token's, the token to predict, the position p/128 and its square, a few
+flags), and every attention score is a sum of a query feature times a key feature, set so that a
+planted head's target wins by 20 nats: it gets all but 10⁻⁸ of the attention. The layer norms'
+epsilon is 2²⁰, so they divide by a fixed 2¹⁰ to within a part in a million, and the circuit's
+arithmetic is exact: patching, path patching, sets and direct effects come out within 10⁻⁶ of the
+designed values. The other heads attend to the first token, to themselves or evenly, and write
+where nothing reads; the MLPs write nothing. `logogram.toys` holds each toy's planted heads and
+the compositions between them (which head writes what which input of which head reads), and makes
+prompts whose corruption reaches the induction head through its key, its value or its query.
 
 ## Explore, experiment, evidence
 
@@ -169,7 +211,8 @@ logogram delete RUN           delete a run's folder for good, after asking (--ye
 logogram show RUN             a finished run's method, baseline and strongest sites, or why it failed
 logogram compare RUN RUN      how two runs agree, with paired differences where they can be paired
 logogram diff A B             every choice that differs between two runs or spec files
-logogram verify RUN           patch the strongest sites of an attribution patching run, and compare
+logogram verify RUN           patch the strongest sites of an attribution patching run (path-patch
+                              an edge attribution run's strongest edges), and compare
 logogram robustness RUN       rerun with one choice changed (--experiment JSON, or --dtype)
 logogram sweep SPEC_OR_RUN    the same spec across seeds, datasets or revisions, one run each (--csv FILE)
 logogram export RUN           a run's per-prompt values as CSV (-o FILE; --sites, --prompt-text)
@@ -180,10 +223,12 @@ logogram queue list           the queued runs, and whether the queue is paused o
 logogram queue clear          take every run out of the queue, after asking (--yes doesn't ask)
 logogram queue run            run the queue to the end, one run at a time, without the app
 logogram tasks                the tasks Logogram writes prompts for, with their options
+logogram saes MODEL [WORDS]   the published SAEs for a model, and whether Logogram reads each exactly
 logogram generate TASK        a seeded dataset for a task (-n N --seed S, --option NAME=VALUE)
 logogram models add PATH --name NAME   add a model folder on this machine (its files are hashed)
 logogram models list          the model folders added here, with their hashes
 logogram models remove NAME   forget a model folder (its files stay)
+logogram toy [NAME [FOLDER]]  a model whose circuit is known, with experiments that say what each finds
 logogram doctor               environment and hardware report, with fixes (each GPU by its cuda:N)
 logogram env                  the versions and devices results depend on, as JSON (--requirements pins them)
 logogram doctor --report      a short report to paste into an issue (--hardware adds the hardware)
@@ -270,6 +315,13 @@ estimate = lg.run(lg.load_spec({**spec.model_dump(), "experiment": {
     "method": "integrated_gradients", "steps": 8}}), project, model=model)
 checked = lg.verify_run(estimate, top=10)     # patch the strongest estimates for real
 lg.compare_runs(estimate, checked)            # rank correlation, paired differences
+edges = lg.run(lg.load_spec({**spec.model_dump(), "scope": {"kind": "graph", "layers": None,
+    "logits": True}, "experiment": {"kind": "edge_attribution", "direction": "corrupt_to_clean",
+    "method": "gradient", "steps": None, "curve": {"counts": [10, 100, 1000], "patch": "rest",
+    "control": {"seed": 0, "draws": 1}}}}), project, model=model)
+edges.edges()        # every edge: its estimate, interval, simultaneous band and q-value
+edges.curve()        # the faithfulness of the k strongest edges, and of k chosen at random
+lg.edge_verification(edges, lg.verify_run(edges, top=20))   # each edge against path patching
 lg.check_robustness(run, experiment={"kind": "ablation", "baseline": {"kind": "zero"}})
 seeds = lg.sweep(run, field="statistics.seed", values=[0, 1, 2, 3])  # one run per value
 seeds.table()        # the strongest sites at every value, and whether they keep sign and size
@@ -278,11 +330,15 @@ records = lg.generate("greater_than", 200, seed=0, model=model)
 lg.write_dataset(project, "greater-than", records)
 
 sae = lg.load_sae("jbloom/GPT2-Small-SAEs-Reformatted", "blocks.8.hook_resid_pre", model=model)
+lg.list_saes(model, "layer 8")   # SAELens's registry for this model, and what Logogram reads of each
+sae = lg.load_sae(release="gpt2-small-res-jb", sae_id="blocks.8.hook_resid_pre", model=model)
 lg.feature_writes(model, sae, 1234, "When Mary and John went to the store, John gave a drink to",
                   prepend_bos=True)   # the tokens the feature promotes and suppresses directly
 
 lg.add_local_model("~/models/my-fine-tune", "my-fine-tune")   # hash a model folder, once
 tuned = lg.load_model("my-fine-tune", device="cuda:1")         # a local model, on the second GPU
+toy = lg.toy_model("ioi")        # a model whose circuit is known: project, datasets, experiments
+toy.run("which-heads").sites()   # L1 H1, L2 H3 and L3 H0 at 1.0, every other head at 0
 chat = lg.load_model("Qwen/Qwen2.5-0.5B-Instruct")
 lg.look(chat, "The capital of France is", prepend_bos=False,
         chat_template={"kind": "user_turn", "system": None})   # read in its own chat template
@@ -412,7 +468,8 @@ A dataset is a JSONL file in the project's `datasets/` folder, one prompt pair p
  "positions": {"IO": [5, 9], "S1": [14, 18], "S2": [38, 42], "end": [56, 58]}}
 ```
 
-* `clean` and `corrupt` must tokenize to the same length, so positions line up.
+* `clean` and `corrupt` usually tokenize to the same length, so positions line up. Prompts of
+  different lengths need `corrupt_positions` (below).
 * `answer` and `distractor` are usually single tokens (with a leading space). Either can also be a
   list of single tokens, read as one answer whose probability is their sum (in greater-than, every
   year after the start year), or text of several tokens, a continuation whose probability is the
@@ -421,11 +478,25 @@ A dataset is a JSONL file in the project's `datasets/` folder, one prompt pair p
 * `positions` is optional: named character spans in the clean prompt. A label refers to the last
   token that overlaps its span. Named positions let you patch at, say, `S2` across templates of
   different lengths.
+* `corrupt_positions` gives the same labels as character spans in the corrupt prompt, as in
+  `{"IO": [5, 9], "S1": [14, 18], "S2": [38, 49], "end": [63, 65]}` for a corrupt prompt that
+  names "Bartholomew" where the clean one names "John". With it, the two prompts may tokenize to different lengths: a run
+  matches them label by label, carrying the source prompt's token at a label (or its last token)
+  into the receiver's token there. Every position and token indices have no meaning across
+  different lengths, so a method that carries values between the prompts (patching, attribution
+  patching with one gradient, path patching, mean and resample ablation, steering by the mean
+  difference) refuses them on such pairs, naming the pairs; zero ablation, direct logit
+  attribution and steering along an SAE feature read one prompt at a time and take any position
+  they otherwise take. Integrated gradients, edge attribution and path patching of edges (an edge
+  carries its sender's output at every position), sets that keep their sites and patch the rest,
+  and mean or resample ablation of sets need pairs of equal length. Pairs of equal length may
+  give `corrupt_positions` too.
 * `meta` is optional: anything about the prompt, such as `{"template": "went"}`. The bootstrap can
   resample prompts by one of its fields (see Statistics).
 
 The app shows both prompts token by token, highlights where they differ, and refuses to run on
-prompts that can't be used, saying which and why.
+prompts that can't be used, saying which and why. Prompts of different lengths are lined up by
+their labels, each with its own positions, and the prompts table shows both prompts' labels.
 
 **Editing prompts.** The Prompts view searches a dataset's pairs (both prompts, the answers and
 `meta`), shows them a hundred at a time, and edits or removes pairs, including answer sets and
@@ -447,8 +518,12 @@ records each prompt's template in `meta`:
 | `factual_recall` | a country's capital | another country | logit difference (log-probability difference for capitals of several tokens) |
 
 With a model loaded, the app keeps only words that are single tokens for it. Each task says how
-many distinct prompts its templates allow; a request for more is refused. GPT-2 small does all of
-them but the docstring task, where it prefers the right argument in about half the prompts.
+many distinct prompts its templates allow; a request for more is refused. The `full_vocabulary`
+option keeps every word, also those the model splits, and the pairs whose prompts then differ in
+length, labelling both prompts' positions and recording `"vocabulary": "full"` in each prompt's
+`meta` (IOI's names of several tokens are then read with the log-probability difference). GPT-2
+small does all of them but the docstring task, where it prefers the right argument in about half
+the prompts.
 
 ## Experiments
 
@@ -517,6 +592,49 @@ only queries can be receivers. Tests check that from the last layer to the logit
 whole effect, exactly as patching measures it. **Check robustness** offers holding or releasing
 the MLPs, the opposite direction, and the senders' whole effect by patching.
 
+**Edge attribution** estimates which edges of the model's graph carry the behavior (EAP, Syed et
+al. 2023; with integrated gradients, EAP-IG, Hanna et al. 2024). The graph's nodes are the
+embeddings, every attention head's output, every MLP and the logits. An edge runs from a node's
+output to a later node's input through the residual stream: a head's query, key and value are an
+edge each, an MLP's input one and the logits one, so GPT-2 small has 32,491 edges. An edge's
+estimate is (the sender's output on the source prompt − on the receiver prompt) · the gradient of
+the metric with respect to the receiver's own copy of the residual stream, summed over positions.
+The gradient goes through the receiver's normalization with its scale recomputed from its input,
+as patching the edge would recompute it (holding the scale, as direct logit attribution does, would
+linearize another function). Tests check it against finite differences on tiny models, and that
+each estimate is the slope of patching its edge. Every edge keeps its per-prompt values and
+statistics: the summary lists the strongest 2,000, and edges.parquet in the run's folder holds
+them all (Export → every edge as CSV). Before a run, the form says the graph's size and what the
+run costs; a graph of more than 100,000 edges, more than 10 million per-prompt values or a batch
+that won't fit in memory is refused with what to change. **Verify top 20 by path patching**
+measures the strongest edges one at a time (each sender path-patched into its receiver alone,
+every other head and MLP held) and shows each edge's estimate beside its measurement, with their
+rank correlation. On the 32 IOI prompts with GPT-2 small, on two CPU threads, one gradient takes
+about a minute and 8 steps of integrated gradients three and a half; path patching the 50
+strongest edges takes four to six. Their rank correlation with the estimates is 0.89 (47 of 50
+with the same sign), and 0.93 with integrated gradients (49 of 50). One gradient misses the
+embeddings' edge into the first MLP (estimated −0.05, path patching 0.99), which integrated
+gradients find (0.67).
+
+The **faithfulness curve** keeps the k strongest edges as a circuit, for each k you choose: the
+receiver prompts run with only those edges carrying the source prompt's values (`"patch":
+"chosen"`), or every edge but them (`"rest"`), beside edges chosen at random (seeded draws).
+Faithfulness is the share of the gap from no edge chosen (0) to every edge chosen (1) that the
+chosen edges close. Edge patching is exact: each receiver reads its own input plus, for every
+patched edge into it, the sender's output on the source prompt minus its output in that run, so
+patching every edge reproduces the source run and patching none the receiver run (tests check
+both, and a run whose graph is the whole model says how far its every-edge pass is from the source
+run). Each k costs one patched
+forward pass per batch, and one more per random draw. In the IOI example, with every edge but the
+chosen carrying the corrupt prompts' values, the 1,000 strongest edges (3% of the graph) keep 0.80
+of the behavior [0.74, 0.86] and the 3,000 strongest 0.96, where as many edges chosen at random
+keep none of it.
+
+Edge attribution needs heads that each write into the residual stream and receivers that can each
+read their own copy of it. Logogram measures both when a run starts, and refuses models that
+normalize after combining heads (Gemma 2, OLMo 2) or whose heads share keys and values
+(grouped-query attention, as in Llama and Qwen), which it doesn't build edges for yet.
+
 **Steering** adds a direction to the residual stream and measures what it does. At each steered
 site (one residual stream state per layer, or chosen ones, at one token of each prompt) the
 direction is the mean difference between the two prompts of each pair, from the prompts you steer
@@ -571,8 +689,10 @@ muted), and included in the HTML report.
 
 **SAE features.** A sparse autoencoder (SAE) rewrites one of the model's activations as a few active
 features out of thousands, each a direction in the model, plus an error it misses. In
-**Explore → Features**, load a published SAE from Hugging Face (Logogram suggests ones made for the
-suggested models, or give any repository), then **Measure the fit** on your prompts: the fraction
+**Explore → Features**, load a published SAE: one of those SAELens's registry lists for the loaded
+model, found by release, hook, layer or width and marked with whether Logogram reads it exactly
+(see *Published SAEs by name* below), or any Hugging Face repository and folder. Then **Measure the
+fit** on your prompts: the fraction
 of the activations' variance the SAE explains, how many features fire per token, and the logit
 difference with the SAE's reconstruction spliced in. SAEs only fit activations like those they were
 trained on, so a poor fit (for example with TransformerLens's weight processing switched the other
@@ -616,8 +736,10 @@ reproduce exactly (such as sparsify's group-max activation, or settings from for
 feature's value comes from the MLP's input, and patching it changes the MLP's output along the
 feature's decoder direction. **Skip transcoders** also add their input times a matrix:
 EleutherAI's add `x @ W_skip.T`, as sparsify computes it, and Gemma Scope 2's affine ones add
-`x @ affine_skip_connection` (on Gemma 3 270M this explains 91% of an MLP output's variance, and
-the transpose 34%, so this is the way round the files mean). The input doesn't change when a
+`x @ affine_skip_connection`: their matrices are square, but on Gemma 3 270M the affine transcoders
+of layers 5, 12 and 15 explain 99%, 85% and 79% of their MLP outputs' variance read this way, and
+37%, 9% and less than nothing transposed, so this is the way round the files mean (SAELens 6.54.0
+adds the transpose). The input doesn't change when a
 feature is patched, so neither does the skip connection, and attribution patching reports the
 part of the site's estimate that flows through it beside the features' part. sparsify files
 written before February 2025 don't record whether they are transcoders, so Logogram reads it from
@@ -631,11 +753,53 @@ fit measured on your prompts remains the last check, since a file can be trained
 configuration doesn't record: EleutherAI's SmolLM2 skip transcoders were trained on normalized
 inputs and outputs, which only their model card says, and they fit poorly as published.
 
+**Published SAEs by name.** People find SAEs by their SAELens release and id
+(`gpt2-small-res-jb`, `blocks.8.hook_resid_pre`); Logogram ships a catalogue of the 13,857 SAEs in
+the 170 releases of SAELens 6.54.0's registry, with the model each was trained on, its repository
+and folder, the hook it reads, its width, the architecture its configuration states, and whether
+Logogram reads it exactly or why not. Logogram reads 9,035 of them exactly: GPT-2 small's SAELens
+SAEs (Joseph Bloom's, the feature-splitting ones and Apollo Research's), OpenAI's TopK SAEs on it
+but for those between attention and MLP, Pythia-70m's, Gemma 2B's, the matryoshka SAEs for Gemma
+2 and Gemma 3 1B, and all of Gemma Scope 2's SAEs and transcoders. Most of the others are the first
+Gemma Scope's NumPy archives, PyTorch pickles (which Logogram never opens), formats it doesn't read
+yet (Llama Scope's, circuit-tracer's transcoders) and cross-layer transcoders. The verdicts come
+from Logogram's own readers run on each SAE's configuration (and, for SAELens's format, its weights
+file's header), and they were checked on the real files, which the catalogue records: 424 SAEs
+across every release Logogram reads by their weights file's header, and 16 on GPT-2 small,
+Pythia-70m and Gemma 3 270M by their weights and their fit to the model. An SAE that SAELens's
+registry reads with settings its own configuration
+doesn't state (Mistral 7B's, which SAELens rescales) is refused before anything downloads, also
+when named by its folder. The catalogue is part of the package and is never fetched;
+`scripts/sae_catalogue.py` builds it from a sae-lens wheel, and SAELens's MIT notice travels with
+it. `logogram saes MODEL` lists a model's SAEs, and `lg.load_sae(release=..., sae_id=...)` loads
+one. However an SAE is chosen, specs record its repository, folder and revision, pinned when it
+loads.
+
 **Sites** are abstract: `resid_pre`, `resid_mid`, `resid_post`, `attn_out`, `mlp_out` and `head`
 (an attention head's output `z`), each at a layer, head and position. Positions are `all`,
 `last`, a token `index` or a named `label`. **Sweeps** cover every head at one position
 (layer × head), one stream site at every layer and position (layer × position), or attention
 and MLP outputs per layer.
+
+**Queries, keys, values and neurons** are finer sites: `q` (one head's query), `k` and `v` (one
+key/value head's key or value) and `neuron` (one MLP neuron's activation after its nonlinearity,
+for a gated MLP the gate's activation times the up projection: the input to the MLP's output
+projection), such as `{"kind": "q", "layer": 9, "head": 6, "position": …}` or
+`{"kind": "neuron", "layer": 3, "neuron": 1201, "position": …}`. With grouped-query attention
+(Llama 3, Qwen 2.5 and Gemma 2, among others) a model has fewer key and value heads than query
+heads: a key or value site names a key/value head, which every query head of its group reads, so
+patching it changes all of them. The scopes `head_inputs` and `neurons` sweep every head's query,
+key or value, and every neuron of chosen layers; the app shows the first as a layer × head map,
+and the second layer by layer, each layer's strongest neurons with their intervals beside the
+distribution of all of them. When a model loads, Logogram measures that these sites make up its
+attention and MLP outputs (all queries, keys and values together reproduce the attention output,
+one alone changes only the heads that read it, all neurons together reproduce the MLP output)
+and offers only those that hold: OLMo 2 normalizes every head's queries and keys together, so it
+offers values and neurons but not single queries or keys. Patching, ablation, attribution
+patching and sets of sites take them. Direct logit attribution reads a neuron at the last token
+and a value at any position (through the heads that read it, their attention patterns as in the
+run). It refuses queries and keys, which act only through the softmax, and neurons of models
+that normalize the MLP's output (Gemma 2, OLMo 2), where no neuron writes a term of its own.
 
 **Sets of sites** test a circuit. A `site_sets` scope lists sets of sites, each intervened on at
 once, in one forward pass: one result per set. A set marked `complement` intervenes on every
@@ -732,8 +896,8 @@ without continuations.
 | `tokenization.chat_template` | `null` feeds each prompt as raw text. `{"kind": "user_turn", "system": null}` makes each prompt the person's message in the model's own chat template, so the answer is the first token of the reply; `{"kind": "assistant_prefix", "system": null, "user": "…"}` makes it the start of the model's reply to a fixed message. `system` is an optional system message. The template is the one the tokenizer ships at the model's revision (see [Chat templates](#chat-templates)). With a template, `prepend_bos` is `false`: the template writes the beginning of the text. |
 | `model.process_weights` | Fold LayerNorm and center weights, as TransformerLens does by default. Logit differences don't change. Value biases are folded into the attention output's bias, so zero ablation of head outputs and heads' direct effects do change (by up to several logits in Qwen 2.5, whose value biases are large); a layer's attention output doesn't. |
 | `dataset.sha256` | If set, the run refuses a dataset file that has changed. |
-| `experiment` | `{"kind": "activation_patching", "direction": "clean_to_corrupt" \| "corrupt_to_clean"}`, `{"kind": "ablation", "baseline": …}` with `{"kind": "zero"}`, `{"kind": "mean", "reference": "clean" \| "corrupt"}` or `{"kind": "resample", "pool": "clean" \| "corrupt", "donors": 10, "seed": 0}`, `{"kind": "attribution_patching", "direction": …, "method": "gradient", "steps": null}` (same directions as patching; or `"method": "integrated_gradients", "steps": 8`), `{"kind": "direct_logit_attribution", "prompts": "clean" \| "corrupt"}`, `{"kind": "path_patching", "direction": …, "receivers": [{"kind": "head", "layer": 9, "head": 9, "input": "q" \| "k" \| "v"}, {"kind": "logits"}], "freeze_mlps": false}`, or `{"kind": "steering", "apply_to": "clean" \| "corrupt", "direction": {"kind": "mean_difference"}, "coefficients": [-1, 1, 2], "train_fraction": 0.5, "seed": 0, "control": true, "continuations": null}` with a scope of one residual component per layer (`layer_components`) or residual `sites`, at one token. The direction can instead be one SAE feature's decoder direction, `{"kind": "sae_feature", "feature": 1234}` (with the spec's `sae`, and `sites` naming where the SAE writes), and `continuations` can be `{"prompts": 3, "tokens": 20}` to record what the steered model goes on to say |
-| `scope` | `{"kind": "heads", "position": …}`, `{"kind": "layer_position", "site": "resid_pre", "positions": "each" \| "labels"}`, `{"kind": "layer_components", "components": ["attn_out", "mlp_out"], "position": …}` `{"kind": "sites", "sites": [{"kind": "head", "layer": 9, "head": 9, "position": {"kind": "label", "label": "end"}}]}` (feature sites are `{"kind": "sae_feature", "layer": 8, "feature": 1234, "position": …}`), for attribution patching, `{"kind": "features", "position": …, "top": 50, "choose_on": 0.5, "seed": 0}` (`choose_on` and `seed` both `null` to choose and report on every prompt), or `{"kind": "site_sets", "universe": ["head"], "sets": [{"label": "circuit", "sites": […], "complement": true}]}` |
+| `experiment` | `{"kind": "activation_patching", "direction": "clean_to_corrupt" \| "corrupt_to_clean"}`, `{"kind": "ablation", "baseline": …}` with `{"kind": "zero"}`, `{"kind": "mean", "reference": "clean" \| "corrupt"}` or `{"kind": "resample", "pool": "clean" \| "corrupt", "donors": 10, "seed": 0}`, `{"kind": "attribution_patching", "direction": …, "method": "gradient", "steps": null}` (same directions as patching; or `"method": "integrated_gradients", "steps": 8`), `{"kind": "direct_logit_attribution", "prompts": "clean" \| "corrupt"}`, `{"kind": "path_patching", "direction": …, "receivers": [{"kind": "head", "layer": 9, "head": 9, "input": "q" \| "k" \| "v"}, {"kind": "mlp", "layer": 3}, {"kind": "logits"}], "freeze_mlps": false}`, `{"kind": "edge_attribution", "direction": …, "method": "gradient", "steps": null, "curve": {"counts": [10, 100, 1000], "patch": "chosen" \| "rest", "control": {"seed": 0, "draws": 1}}}` (`curve` `null` for none) with a `graph` scope, or `{"kind": "steering", "apply_to": "clean" \| "corrupt", "direction": {"kind": "mean_difference"}, "coefficients": [-1, 1, 2], "train_fraction": 0.5, "seed": 0, "control": true, "continuations": null}` with a scope of one residual component per layer (`layer_components`) or residual `sites`, at one token. The direction can instead be one SAE feature's decoder direction, `{"kind": "sae_feature", "feature": 1234}` (with the spec's `sae`, and `sites` naming where the SAE writes), and `continuations` can be `{"prompts": 3, "tokens": 20}` to record what the steered model goes on to say |
+| `scope` | `{"kind": "heads", "position": …}`, `{"kind": "layer_position", "site": "resid_pre", "positions": "each" \| "labels"}`, `{"kind": "layer_components", "components": ["attn_out", "mlp_out"], "position": …}` `{"kind": "sites", "sites": [{"kind": "head", "layer": 9, "head": 9, "position": {"kind": "label", "label": "end"}}]}` (feature sites are `{"kind": "sae_feature", "layer": 8, "feature": 1234, "position": …}`), `{"kind": "head_inputs", "input": "q" \| "k" \| "v", "position": …}`, `{"kind": "neurons", "layers": [3, 4], "position": …}`, for attribution patching, `{"kind": "features", "position": …, "top": 50, "choose_on": 0.5, "seed": 0}` (`choose_on` and `seed` both `null` to choose and report on every prompt), `{"kind": "site_sets", "universe": ["head"], "sets": [{"label": "circuit", "sites": […], "complement": true}]}`, for edge attribution `{"kind": "graph", "layers": null, "logits": true}` (`layers` the heads and MLPs that receive edges, `null` for every layer), or, for path patching edges one at a time, `{"kind": "edges", "edges": [{"sender": {"kind": "head", "layer": 5, "head": 5}, "receiver": {"kind": "head", "layer": 9, "head": 6, "input": "v"}}]}` (senders `{"kind": "embed"}`, heads or `{"kind": "mlp", "layer": 0}`; `freeze_mlps` true, and the experiment's receivers those of the edges) |
 | `sae` | The SAE that feature sites belong to: `{"repo": "…", "path": "blocks.8.hook_resid_pre", "revision": "…"}`. The revision is pinned when a run starts. |
 | `metric` | `{"kind": "logit_diff" \| "logprob_diff" \| "logprob" \| "prob" \| "prob_diff", "normalization": …}` or `{"kind": "kl", "target": "clean" \| "corrupt", "normalization": …}` |
 | `metric.normalization` | `dataset_gap` or `prompt_gap` |
@@ -988,7 +1152,8 @@ pairs can't be used, and why:
   log-probability or probability metric, which read answers of several tokens. Prompts generated
   in the app with the model loaded use only words that are single tokens for it.
 * *clean has 15 tokens and corrupt has 16, so positions can't be aligned.* Change what differs
-  between the two prompts to words with the same number of tokens.
+  between the two prompts to words with the same number of tokens, or give the pair
+  `corrupt_positions`: its labels in the corrupt prompt, which lets it be patched label by label.
 * *position 'S2' (characters 38–42) doesn't cover any token.* The span's character offsets don't
   reach a token of the clean prompt: correct them.
 * *This model's tokenizer has no beginning-of-sequence token. Set tokenization.prepend_bos to
@@ -1102,6 +1267,12 @@ uv run python scripts/validate_real_weights.py --device mps --compare-device cpu
 
 Pythia and Qwen 2.5 have also been run end to end with their real weights; other families are
 checked when they load and in the tiny-model tests.
+
+The catalogue of published SAEs (`src/logogram/backends/sae_catalogue.json`) is rebuilt for a new
+sae-lens release with `scripts/sae_catalogue.py build --sae-lens WHEEL_OR_SITE_PACKAGES --cache
+DIR`, which reads each SAE's configuration from Hugging Face into `DIR`, and checked with
+`scripts/sae_catalogue.py verify --cache DIR --text FILE`, which reads a sample's weights files and
+runs the small models' SAEs on their models, recording each check in the catalogue.
 
 Model access goes through `logogram.backends.base.ModelBackend`. TransformerLens is the only
 backend today; remote execution and other libraries can be added behind the same interface.

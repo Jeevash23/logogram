@@ -1,14 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 
-import type { BaselineSpec, ExperimentKind, PathReceiverSpec, PositionSpec, SAEInfo, ScopeSpec, StreamKind } from "../api/types";
+import type { BaselineSpec, ExperimentKind, HeadInputKind, ModelInfo, PathReceiverSpec, PositionSpec, SAEInfo, ScopeSpec, StreamKind } from "../api/types";
 import { Button, Checkbox, Choices, Field, Input, Segmented, Select, TextArea } from "../components/ui";
 import { MOD } from "../components/Header";
-import { count, plural, shortRevision } from "../lib/format";
+import { capitalize, count, plural, shortRevision } from "../lib/format";
 import { modelName } from "../lib/hooks";
 import { EVERYTHING, SET_SITE_KINDS } from "../lib/circuits";
-import { KIND_SHORT, parseHeadQuery } from "../lib/sites";
-import { buildSpec, datasetFacts, parseStrengths, savedDifferences, usesFeatures } from "../lib/buildSpec";
-import { receiverLabel, saeWritesText, scopeFor, scopeShort, siteText, steerSiteOf, suggestName, workload } from "../lib/spec";
+import { KIND_SHORT, parseHeadQuery, queryHeadsOf, queryHeadsText } from "../lib/sites";
+import { buildSpec, carriedBy, datasetFacts, lastInstead, parseCounts, parseStrengths, savedDifferences, unlinedReason, unevenPairsText, usesFeatures } from "../lib/buildSpec";
+import { useEdgePlan, type EdgePlanState } from "../lib/edgePlan";
+import { edgeLabel, graphText, parseLayers, receiverLabel, receiverWords, saeWritesText, scopeFor, scopeShort, siteText, steerSiteOf, suggestName, workload } from "../lib/spec";
 import { useStore, type FormState } from "../store/app";
 import { ChatTemplateSettings } from "./ChatTemplateSettings";
 import { MetricSettings } from "./MetricSettings";
@@ -43,6 +44,11 @@ const METHODS: { value: ExperimentKind; title: string; detail: string }[] = [
     title: "Steering",
     detail: "Add the mean clean–corrupt difference or an SAE feature at several strengths, against a random control.",
   },
+  {
+    value: "edge_attribution",
+    title: "Edge attribution",
+    detail: "Estimate every edge between components from gradients, then patch the strongest as a circuit.",
+  },
 ];
 
 export function ExperimentView() {
@@ -68,9 +74,23 @@ export function ExperimentView() {
   // Steering along an SAE feature adds it where the SAE writes, at one site.
   const steersFeature = form.steerDirection === "sae_feature";
   const facts = useMemo(() => datasetFacts(dataset, form.limit), [dataset, form.limit]);
-  const built = buildSpec(form, { model, datasetPath, datasetSha: dataset?.sha256 ?? null, sae, facts });
+  // Pairs of different lengths: the positions a method that carries values between prompts can't use.
+  const unlined = unlinedReason(form, facts);
+  const uneven = facts?.uneven ?? [];
+  const buildContext = { model, datasetPath, datasetSha: dataset?.sha256 ?? null, sae, facts };
+  const built = buildSpec(form, buildContext);
   const differences = savedDifferences(form, model, datasetPath, dataset?.sha256 ?? null, modelName, sae);
   const spec = "spec" in built ? built.spec : null;
+  // Edge attribution: the graph's size and what a run costs on the loaded model, and why a run
+  // would be refused (too many edges, or too little memory), before it runs. Neither depends on
+  // which edges the curve patches, so they are known before that is chosen.
+  let planned = spec;
+  if (!planned && form.kind === "edge_attribution" && form.edgeCurve && !form.edgePatch) {
+    const unchosen = buildSpec({ ...form, edgePatch: "chosen" }, buildContext);
+    planned = "spec" in unchosen ? unchosen.spec : null;
+  }
+  const plan = useEdgePlan(form.kind === "edge_attribution" ? planned : null);
+  const refusal = form.kind === "edge_attribution" ? (plan.plan?.refusal ?? null) : null;
 
   const suggested = spec
     ? suggestName(spec)
@@ -91,7 +111,16 @@ export function ExperimentView() {
   const noBos = model.info?.extra?.bos === false;
   const rows =
     spec && arch
-      ? workload(spec, n, arch.n_layers, arch.n_heads, uniformLength && lengths ? lengths[0] : null, labels.length)
+      ? workload(
+          spec,
+          n,
+          arch.n_layers,
+          arch.n_heads,
+          uniformLength && lengths ? lengths[0] : null,
+          labels.length,
+          arch.extra?.n_key_value_heads ?? arch.n_heads,
+          arch.d_mlp ?? 0,
+        )
       : null;
 
   return (
@@ -157,7 +186,11 @@ export function ExperimentView() {
           <Choices
             label="Method"
             value={form.kind}
-            onChange={(kind) => setForm({ kind, scope: scopeFor(kind, form.scope, kind === "steering" && steersFeature && saeInfo ? steerSiteOf(saeInfo) : null) })}
+            onChange={(kind) => {
+              const scope = scopeFor(kind, form.scope, kind === "steering" && steersFeature && saeInfo ? steerSiteOf(saeInfo) : null);
+              // Pairs of different lengths are matched at the last token or a label only.
+              setForm({ kind, scope: uneven.length && carriedBy({ ...form, kind }) ? lastInstead(scope) : scope });
+            }}
             columns={2}
             options={METHODS}
           />
@@ -184,6 +217,8 @@ export function ExperimentView() {
             </div>
           ) : form.kind === "path_patching" ? (
             <PathSettings form={form} onChange={setForm} />
+          ) : form.kind === "edge_attribution" ? (
+            <EdgeSettings form={form} onChange={setForm} />
           ) : form.kind === "activation_patching" || form.kind === "attribution_patching" ? (
             <div className={e.stack}>
               <Choices
@@ -204,7 +239,7 @@ export function ExperimentView() {
                   },
                 ]}
               />
-              {form.kind === "attribution_patching" && <AttributionSettings form={form} onChange={setForm} features={usesFeatures(form.scope)} />}
+              {form.kind === "attribution_patching" && <AttributionSettings form={form} onChange={setForm} features={usesFeatures(form.scope)} uneven={uneven} />}
             </div>
           ) : (
             <BaselineChooser baseline={form.baseline} onChange={(baseline) => setForm({ baseline })} />
@@ -215,6 +250,7 @@ export function ExperimentView() {
           <h2 className={e.sectionTitle}>What to sweep</h2>
           <ScopeEditor
             method={form.kind}
+            model={arch}
             saeLoaded={saeInfo}
             steersFeature={form.kind === "steering" && steersFeature}
             scope={form.scope}
@@ -222,6 +258,9 @@ export function ExperimentView() {
             labels={labels}
             uniformLength={uniformLength}
             lengths={lengths}
+            unlined={unlined}
+            nLayers={arch?.n_layers ?? null}
+            plan={plan}
           />
         </section>
 
@@ -320,9 +359,12 @@ export function ExperimentView() {
 
       </div>
       <RunSummary
-        spec={spec}
-        error={"error" in built ? built.error : null}
+        spec={refusal ? null : spec}
+        error={refusal ?? ("error" in built ? built.error : null)}
+        edgePlan={form.kind === "edge_attribution" ? plan : null}
         method={form.kind}
+        scope={form.scope}
+        bootstrap={form.bootstrap}
         batchSize={form.batchSize}
         n={n}
         rows={rows}
@@ -368,8 +410,10 @@ const DIRECTIONS = [
 
 function PathSettings({ form, onChange }: { form: FormState; onChange: (patch: Partial<FormState>) => void }) {
   const [query, setQuery] = useState("");
-  const [part, setPart] = useState<"q" | "k" | "v">("q");
-  const head = parseHeadQuery(query);
+  const [part, setPart] = useState<"q" | "k" | "v" | "mlp">("q");
+  const head = part === "mlp" ? null : parseHeadQuery(query);
+  // An MLP is named by its layer: "L3" or "3".
+  const mlp = part === "mlp" ? /^\s*l?\s*(\d+)\s*$/i.exec(query) : null;
   const has = (r: PathReceiverSpec) => form.pathReceivers.some((x) => JSON.stringify(x) === JSON.stringify(r));
   const add = (r: PathReceiverSpec) => {
     if (!has(r)) onChange({ pathReceivers: [...form.pathReceivers, r] });
@@ -381,7 +425,7 @@ function PathSettings({ form, onChange }: { form: FormState; onChange: (patch: P
         <div className={e.receivers}>
           {form.pathReceivers.map((r) => (
             <span key={receiverLabel(r)} className={e.receiver}>
-              {r.kind === "logits" ? "Logits, read directly" : `L${r.layer} H${r.head} ${{ q: "query", k: "key", v: "value" }[r.input]}`}
+              {receiverWords(r)}
               <button type="button" aria-label={`Remove ${receiverLabel(r)}`} onClick={() => onChange({ pathReceivers: form.pathReceivers.filter((x) => x !== r) })}>
                 ×
               </button>
@@ -391,15 +435,29 @@ function PathSettings({ form, onChange }: { form: FormState; onChange: (patch: P
         </div>
       </Field>
       <div className={s.row}>
-        <Input value={query} onChange={(ev) => setQuery(ev.target.value)} placeholder="L9 H9" aria-label="Receiver head, like L9 H9" style={{ width: 110 }} spellCheck={false} />
-        <Select value={part} onChange={(ev) => setPart(ev.target.value as "q" | "k" | "v")} aria-label="Which input of the head">
-          <option value="q">Query</option>
-          <option value="k">Key</option>
-          <option value="v">Value</option>
+        <Input
+          value={query}
+          onChange={(ev) => setQuery(ev.target.value)}
+          placeholder={part === "mlp" ? "L3" : "L9 H9"}
+          aria-label={part === "mlp" ? "Receiver MLP's layer, like L3" : "Receiver head, like L9 H9"}
+          style={{ width: 110 }}
+          spellCheck={false}
+        />
+        <Select value={part} onChange={(ev) => setPart(ev.target.value as "q" | "k" | "v" | "mlp")} aria-label="Which input receives the path">
+          <option value="q">Head's query</option>
+          <option value="k">Head's key</option>
+          <option value="v">Head's value</option>
+          <option value="mlp">MLP's input</option>
         </Select>
-        <Button size="small" disabled={!head} onClick={() => head && (add({ kind: "head", layer: head.layer, head: head.head, input: part }), setQuery(""))}>
-          Add head
-        </Button>
+        {part === "mlp" ? (
+          <Button size="small" disabled={!mlp} onClick={() => mlp && (add({ kind: "mlp", layer: Number(mlp[1]) }), setQuery(""))}>
+            Add MLP
+          </Button>
+        ) : (
+          <Button size="small" disabled={!head} onClick={() => head && (add({ kind: "head", layer: head.layer, head: head.head, input: part }), setQuery(""))}>
+            Add head
+          </Button>
+        )}
         <Button size="small" disabled={has({ kind: "logits" })} onClick={() => add({ kind: "logits" })}>
           Add the logits
         </Button>
@@ -416,8 +474,10 @@ function PathSettings({ form, onChange }: { form: FormState; onChange: (patch: P
   );
 }
 
-/** How attribution patching estimates: one gradient, or integrated gradients over some steps. */
-function AttributionSettings({ form, onChange, features }: { form: FormState; onChange: (patch: Partial<FormState>) => void; features: boolean }) {
+/** How attribution patching estimates: one gradient, or integrated gradients over some steps.
+ * `uneven`: the pairs whose prompts have different lengths, which integrated gradients can't
+ * interpolate between. */
+function AttributionSettings({ form, onChange, features, uneven }: { form: FormState; onChange: (patch: Partial<FormState>) => void; features: boolean; uneven: number[] }) {
   const steps = form.atpSteps;
   const valid = Number.isInteger(steps) && steps >= 2 && steps <= 64;
   return (
@@ -438,13 +498,18 @@ function AttributionSettings({ form, onChange, features }: { form: FormState; on
             title: "Integrated gradients",
             detail: features
               ? "SAE features are estimated from one gradient only. Estimate the model's components to use integrated gradients."
-              : "The gradient averaged over runs between the two prompts, which corrects much of that saturation. Each step costs another forward and backward pass.",
-            disabled: features,
+              : uneven.length
+                ? `${unevenPairsText(uneven)} ${uneven.length === 1 ? "has" : "have"} prompts of different lengths, which can't be interpolated between position by position. Estimate with one gradient.`
+                : "The gradient averaged over runs between the two prompts, which corrects much of that saturation. Each step costs another forward and backward pass.",
+            disabled: features || uneven.length > 0,
           },
         ]}
       />
       {features && form.atpMethod === "integrated_gradients" && (
         <p className={e.required}>Required: SAE features are estimated from one gradient. Choose it above.</p>
+      )}
+      {!features && uneven.length > 0 && form.atpMethod === "integrated_gradients" && (
+        <p className={e.required}>Required: prompts of different lengths are estimated from one gradient. Choose it above.</p>
       )}
       {form.atpMethod === "integrated_gradients" && (
         <div className={s.grid3}>
@@ -464,6 +529,174 @@ function AttributionSettings({ form, onChange, features }: { form: FormState; on
         strongest sites by patching from the results.
       </p>
     </>
+  );
+}
+
+/** Edge attribution: the direction, how each edge is estimated, and the faithfulness curve. */
+function EdgeSettings({ form, onChange }: { form: FormState; onChange: (patch: Partial<FormState>) => void }) {
+  const steps = form.atpSteps;
+  const validSteps = Number.isInteger(steps) && steps >= 2 && steps <= 64;
+  const counts = parseCounts(form.edgeCounts);
+  const draws = form.edgeDraws;
+  const validDraws = Number.isInteger(draws) && draws >= 1 && draws <= 16;
+  const [receiver, source] = form.direction === "clean_to_corrupt" ? ["corrupt", "clean"] : ["clean", "corrupt"];
+  const restoring = form.direction === "clean_to_corrupt";
+  return (
+    <div className={e.stack}>
+      <Choices
+        label="Direction"
+        value={form.direction}
+        onChange={(direction) => onChange({ direction })}
+        columns={2}
+        options={[
+          {
+            value: "clean_to_corrupt",
+            title: "Clean → corrupt",
+            detail: "Run the corrupt prompts; each edge carries its sender's clean output. Which edges bring the behavior back?",
+          },
+          {
+            value: "corrupt_to_clean",
+            title: "Corrupt → clean",
+            detail: "Run the clean prompts; each edge carries its sender's corrupt output. Which edges does the behavior need?",
+          },
+        ]}
+      />
+      <Choices
+        label="Estimate with"
+        value={form.atpMethod}
+        onChange={(atpMethod) => onChange({ atpMethod })}
+        columns={2}
+        options={[
+          {
+            value: "gradient",
+            title: "One gradient (EAP)",
+            detail: "Each receiver's gradient at the receiver run: three forward passes and one backward pass per batch, for every edge at once.",
+          },
+          {
+            value: "integrated_gradients",
+            title: "Integrated gradients (EAP-IG)",
+            detail: "Each receiver's gradient averaged over runs between the two prompts, which corrects much of the saturation one gradient misses. Each step costs another forward and backward pass.",
+          },
+        ]}
+      />
+      {form.atpMethod === "integrated_gradients" && (
+        <div className={s.grid3}>
+          <Field label="Steps" help={validSteps ? `${steps} forward and backward passes per batch.` : "A whole number from 2 to 64."}>
+            <Input type="number" min={2} max={64} step={1} value={steps} onChange={(ev) => onChange({ atpSteps: Number(ev.target.value) })} aria-invalid={!validSteps} />
+          </Field>
+        </div>
+      )}
+      <p className={s.small}>
+        An edge runs from a component&rsquo;s output to a later component&rsquo;s input through the residual stream. Its estimate is
+        (the sender&rsquo;s output on the {source} prompt − on the {receiver} prompt) · the gradient of the metric with respect to
+        the receiver&rsquo;s own copy of the residual stream, before its normalization. The gradient goes through that
+        normalization with its scale recomputed, as patching the edge would recompute it. Verify the strongest edges by path
+        patching from the results.
+      </p>
+      <Checkbox checked={form.edgeCurve} onChange={(edgeCurve) => onChange({ edgeCurve })}>
+        Patch the strongest edges as a circuit, for a faithfulness curve beside edges chosen at random
+      </Checkbox>
+      {form.edgeCurve && (
+        <>
+          <Choices
+            label="The curve patches"
+            value={form.edgePatch}
+            onChange={(edgePatch) => onChange({ edgePatch })}
+            columns={2}
+            options={[
+              {
+                value: "chosen",
+                title: "The chosen edges",
+                detail: `The ${receiver} prompts run with only the chosen edges carrying the ${source} values. ${restoring ? "Do they alone bring the behavior back?" : "Does corrupting only them take the behavior away?"}`,
+              },
+              {
+                value: "rest",
+                title: "Every edge but the chosen",
+                detail: `The ${receiver} prompts run with every other edge carrying the ${source} values, the chosen keeping their own. ${restoring ? "Does leaving only them corrupt keep the behavior away?" : "Do the chosen edges alone keep the behavior?"}`,
+              },
+            ]}
+          />
+          {!form.edgePatch && <p className={e.required}>Required: it decides what faithfulness 1 means, so there&rsquo;s no default.</p>}
+          <div className={s.grid3}>
+            <Field label="Numbers of edges" help={"error" in counts ? counts.error : "Each is a circuit of that many of the strongest edges. Numbers above the graph's size are left out."}>
+              <Input value={form.edgeCounts} onChange={(ev) => onChange({ edgeCounts: ev.target.value })} spellCheck={false} aria-invalid={"error" in counts} />
+            </Field>
+            <Field label="Random draws" help={validDraws ? "Edges chosen at random, this many times for each number." : "A whole number from 1 to 16."}>
+              <Input type="number" min={1} max={16} step={1} value={draws} onChange={(ev) => onChange({ edgeDraws: Number(ev.target.value) })} aria-invalid={!validDraws} />
+            </Field>
+            <Field label="Random seed">
+              <Input type="number" min={0} step={1} value={form.edgeSeed} onChange={(ev) => onChange({ edgeSeed: Number(ev.target.value) })} />
+            </Field>
+          </div>
+          <p className={s.small}>
+            Faithfulness is the share of the gap from no edge chosen (0) to every edge chosen (1) that the chosen edges close. The
+            patching is exact: each receiver reads its own input plus, for every patched edge into it, the sender&rsquo;s output on
+            the {source} prompt minus its output in that run. Each number of edges costs one patched forward pass per batch, and
+            one more per random draw.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** The graph an edge attribution run estimates: the edges into every layer or chosen ones, and
+ * into the logits; with its size on the loaded model. */
+function GraphScopeEditor({
+  scope,
+  onChange,
+  nLayers,
+  plan,
+}: {
+  scope: Extract<ScopeSpec, { kind: "graph" }>;
+  onChange: (s: ScopeSpec) => void;
+  nLayers: number | null;
+  plan: EdgePlanState;
+}) {
+  const layers = scope.layers;
+  const size = plan.plan;
+  return (
+    <div className={e.stack}>
+      <Segmented
+        label="Edges into"
+        value={layers === null ? "every" : "chosen"}
+        onChange={(v) => onChange({ ...scope, layers: v === "every" || nLayers === null ? null : Array.from({ length: nLayers }, (_, l) => l) })}
+        options={[
+          { value: "every", label: "Every layer" },
+          { value: "chosen", label: "Chosen layers", disabled: nLayers === null, reason: "Load a model to choose its layers." },
+        ]}
+      />
+      {layers !== null && nLayers !== null && (
+        <Field label="Layers whose heads and MLPs receive edges">
+          <div className={s.row} role="group" aria-label="Layers whose heads and MLPs receive edges">
+            {Array.from({ length: nLayers }, (_, l) => (
+              <Checkbox
+                key={l}
+                checked={layers.includes(l)}
+                onChange={(on) => onChange({ ...scope, layers: on ? [...layers, l].sort((a, b) => a - b) : layers.filter((x) => x !== l) })}
+              >
+                L{l}
+              </Checkbox>
+            ))}
+          </div>
+        </Field>
+      )}
+      <Checkbox checked={scope.logits} onChange={(logits) => onChange({ ...scope, logits })}>
+        Edges into the logits
+      </Checkbox>
+      <p className={s.small} aria-live="polite">
+        {size?.n_edges != null
+          ? `${capitalize(graphText(scope))}: ${count(size.n_edges)} edges from ${count(size.n_senders)} senders into ${count(size.n_receivers)} inputs on the loaded model.`
+          : plan.pending
+            ? "Counting the edges…"
+            : `${capitalize(graphText(scope))}. Its size is known once a model is loaded and prompts are chosen.`}
+      </p>
+      <p className={s.small}>
+        The graph&rsquo;s nodes are the embeddings, every attention head&rsquo;s output, every MLP and the logits. Each node&rsquo;s
+        output reaches every later node&rsquo;s input through the residual stream: a head&rsquo;s query, key and value are an edge
+        each, an MLP&rsquo;s input one, the logits one. Edges into a chosen layer come from every earlier node.
+      </p>
+    </div>
   );
 }
 
@@ -656,12 +889,15 @@ function PositionPicker({
   onChange,
   labels,
   allowAll = true,
+  unlined = null,
 }: {
   value: PositionSpec;
   onChange: (p: PositionSpec) => void;
   labels: string[];
   /** Steering adds at one token of each prompt, so "all positions" doesn't apply. */
   allowAll?: boolean;
+  /** Why every position and token indices can't be used here (prompts of different lengths). */
+  unlined?: string | null;
 }) {
   return (
     <div className={s.row}>
@@ -675,10 +911,15 @@ function PositionPicker({
           else onChange({ kind: "index", index: -1 });
         }}
         options={[
-          { value: "all", label: "All positions", disabled: !allowAll, reason: "Steering adds the direction at one token of each prompt, so it can't use all positions." },
+          {
+            value: "all",
+            label: "All positions",
+            disabled: !allowAll || !!unlined,
+            reason: !allowAll ? "Steering adds the direction at one token of each prompt, so it can't use all positions." : unlined ?? undefined,
+          },
           { value: "last", label: "Last token" },
           { value: "label", label: "Named position", disabled: labels.length === 0, reason: "This dataset has no named positions." },
-          { value: "index", label: "Token index" },
+          { value: "index", label: "Token index", disabled: !!unlined, reason: unlined ?? undefined },
         ]}
       />
       {value.kind === "label" && (
@@ -708,12 +949,18 @@ const LAST_TOKEN_NOTE = "Read at the last token, where the logit difference is m
 type FeaturesScope = Extract<ScopeSpec, { kind: "features" }>;
 
 /** Sets of sites to start from: the chosen sites as one set, or one set that replaces every head
- * (what a circuit is read against) to add sets beside. */
-function firstSets(scope: ScopeSpec): ScopeSpec {
+ * (what a circuit is read against) to add sets beside. Where every position doesn't line up
+ * (`lined` false: pairs of different lengths), a set to fill with sites at labels or the last
+ * token instead. */
+function firstSets(scope: ScopeSpec, lined: boolean): ScopeSpec {
   if (scope.kind === "sites") {
     const sites = scope.sites.filter((x) => SET_SITE_KINDS.includes(x.kind));
-    if (sites.length) return { kind: "site_sets", universe: null, sets: [{ label: sites.length === 1 ? siteText(sites[0]) : "Chosen sites", sites, complement: false }] };
+    if (sites.length) {
+      const sets: ScopeSpec = { kind: "site_sets", universe: null, sets: [{ label: sites.length === 1 ? siteText(sites[0]) : "Chosen sites", sites, complement: false }] };
+      return lined ? sets : lastInstead(sets);
+    }
   }
+  if (!lined) return { kind: "site_sets", universe: null, sets: [{ label: "Set 1", sites: [], complement: false }] };
   return { kind: "site_sets", universe: ["head"], sets: [{ label: EVERYTHING, sites: [], complement: true }] };
 }
 
@@ -758,8 +1005,64 @@ function HeldOutChoice({ scope, onChange }: { scope: FeaturesScope; onChange: (s
   );
 }
 
+/** Why a head input or a neuron can't be a site of the loaded model, as it was measured when it
+ * loaded; null when it can (or no model is loaded to say). */
+function missingNote(model: ModelInfo | null, kind: HeadInputKind | "neuron"): string | null {
+  if (!model || model.site_kinds.includes(kind)) return null;
+  return model.extra?.site_notes?.[kind] ?? `${model.id} has no ${kind} sites.`;
+}
+
+/** What a key or value site is in the loaded model: with grouped-query attention, a key/value head
+ * that every query head of its group reads. */
+function groupText(model: ModelInfo | null): string {
+  if (!model) {
+    return "With grouped-query attention (Llama, Qwen, Gemma), a model has fewer key and value heads than query heads: a key or value site is a key/value head, and every query head of its group reads it.";
+  }
+  const kv = model.extra?.n_key_value_heads ?? model.n_heads;
+  if (kv === model.n_heads) return `Each of the ${count(model.n_heads)} heads of a layer has its own query, key and value.`;
+  const group = model.n_heads / kv;
+  return `This model has ${count(kv)} key/value heads for its ${count(model.n_heads)} query heads: a key or value site is a key/value head, and every query head of its group reads it (${count(group)} each; key/value head 0 is read by ${queryHeadsText(queryHeadsOf(0, model.n_heads, kv))}). Patching one changes all of them.`;
+}
+
+/** The layers whose neurons a sweep covers, typed as a list ("3, 4" or "0-5"). The text is kept as
+ * typed; the scope changes once it reads as layers. */
+function LayersInput({
+  value,
+  onChange,
+  nLayers,
+}: {
+  value: number[];
+  onChange: (layers: number[]) => void;
+  nLayers: number | null;
+}) {
+  const [text, setText] = useState(value.join(", "));
+  const parsed = parseLayers(text);
+  // Undo, or another change of the scope, shows its layers.
+  useEffect(() => {
+    if (JSON.stringify(parseLayers(text) ?? []) !== JSON.stringify(value)) setText(value.join(", "));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only the scope's layers move the text
+  }, [value]);
+  const invalid = text.trim() !== "" && parsed === null;
+  return (
+    <Input
+      value={text}
+      placeholder={nLayers ? `such as ${Math.max(0, nLayers - 2)}, ${nLayers - 1}` : "such as 3, 4"}
+      aria-label="Layers whose neurons to sweep"
+      aria-invalid={invalid}
+      spellCheck={false}
+      onChange={(ev) => {
+        setText(ev.target.value);
+        const layers = parseLayers(ev.target.value);
+        if (layers) onChange([...new Set(layers)]);
+        else if (ev.target.value.trim() === "") onChange([]);
+      }}
+    />
+  );
+}
+
 function ScopeEditor({
   method,
+  model,
   saeLoaded,
   steersFeature,
   scope,
@@ -767,8 +1070,13 @@ function ScopeEditor({
   labels,
   uniformLength,
   lengths,
+  unlined,
+  nLayers,
+  plan,
 }: {
   method: ExperimentKind;
+  /** The loaded model: its key/value heads and neurons, and the sites it offers. */
+  model: ModelInfo | null;
   /** The loaded SAE: attribution patching can then estimate every one of its features. */
   saeLoaded: SAEInfo | null;
   /** Steering along an SAE feature: added where its SAE writes, at one site. */
@@ -778,8 +1086,26 @@ function ScopeEditor({
   labels: string[];
   uniformLength: boolean | null;
   lengths: number[] | null;
+  /** Why every position and token indices can't be used with this method (prompts of different
+   * lengths), or null. */
+  unlined: string | null;
+  nLayers: number | null;
+  plan: EdgePlanState;
 }) {
   const kind = scope.kind;
+  if (scope.kind === "graph") return <GraphScopeEditor scope={scope} onChange={onChange} nLayers={nLayers} plan={plan} />;
+  if (scope.kind === "edges") {
+    return (
+      <div className={e.stack}>
+        <p className={s.small}>
+          {scope.edges.length === 1 ? "One edge" : `${count(scope.edges.length)} edges`}, each path-patched alone with every other head and MLP
+          held: {scope.edges.slice(0, 6).map(edgeLabel).join(", ")}
+          {scope.edges.length > 6 ? ` and ${count(scope.edges.length - 6)} more` : ""}.
+        </p>
+        <p className={s.faint}>Set up by verifying an edge attribution run. Pick another method above to sweep components instead.</p>
+      </div>
+    );
+  }
   // Direct attribution splits what components write, at the last token only.
   const direct = method === "direct_logit_attribution";
   // Steering adds to one residual stream site per layer, at one token of each prompt.
@@ -793,13 +1119,18 @@ function ScopeEditor({
   const unavailable = steersFeature
     ? "Steering along an SAE feature adds it where the SAE writes, at one token: one site of one layer."
     : steering
-    ? "Steering adds a direction to the residual stream at one token, so it sweeps no heads, positions or sets of sites."
+    ? "Steering adds a direction to the residual stream at one token, so it sweeps no heads, positions, queries, keys, values, neurons or sets of sites."
     : direct
       ? "Direct effects are read at the last token only, and sets of sites need activation patching or ablation."
       : paths
-        ? "Paths start at heads, attention outputs or MLP outputs, and sets of sites need activation patching or ablation."
+        ? "Paths start at heads' outputs, attention outputs or MLP outputs, not at queries, keys, values or neurons, and sets of sites need activation patching or ablation."
         : "Sets of sites need activation patching or ablation.";
-  const position = (p: PositionSpec) => (direct ? { kind: "last" } as PositionSpec : p);
+  // Queries, keys and values (the loaded model may offer only some), and neurons.
+  const inputsMissing = missingNote(model, "q") && missingNote(model, "k") && missingNote(model, "v");
+  const neuronsMissing = missingNote(model, "neuron");
+  // New sweeps start where they can run: at the last token, for direct effects and for prompts of
+  // different lengths.
+  const position = (p: PositionSpec) => (direct || (unlined && (p.kind === "all" || p.kind === "index")) ? ({ kind: "last" } as PositionSpec) : p);
   return (
     <div className={e.stack}>
       <Segmented
@@ -810,14 +1141,26 @@ function ScopeEditor({
           else if (k === "layer_components" && steering) onChange({ kind: "layer_components", components: ["resid_pre"], position: { kind: "last" } });
           else if (k === "heads") onChange({ kind: "heads", position: position({ kind: "all" }) });
           else if (k === "layer_position")
-            onChange({ kind: "layer_position", site: "resid_pre", positions: uniformLength === false && labels.length ? "labels" : "each" });
+            onChange({ kind: "layer_position", site: "resid_pre", positions: (uniformLength === false || unlined) && labels.length ? "labels" : "each" });
           else if (k === "layer_components") onChange({ kind: "layer_components", components: ["attn_out", "mlp_out"], position: position({ kind: "all" }) });
-          else if (k === "site_sets") onChange(firstSets(scope));
+          else if (k === "site_sets") onChange(firstSets(scope, !unlined));
+          else if (k === "head_inputs") {
+            const input: HeadInputKind = direct || missingNote(model, "q") ? "v" : "q";
+            // A value's direct effect reads every position; prompts of different lengths can't.
+            onChange({ kind: "head_inputs", input, position: unlined ? { kind: "last" } : { kind: "all" } });
+          } else if (k === "neurons") onChange({ kind: "neurons", layers: [], position: position({ kind: "all" }) });
         }}
         options={[
           { value: "heads", label: "Layer × head", disabled: steering, reason: unavailable },
           { value: "layer_position", label: "Layer × position", disabled: direct || steering || paths, reason: unavailable },
           { value: "layer_components", label: steering ? "One site in every layer" : "Attention and MLP per layer", disabled: steersFeature, reason: unavailable },
+          {
+            value: "head_inputs" as const,
+            label: "Queries, keys, values",
+            disabled: steering || paths || !!inputsMissing,
+            reason: inputsMissing || unavailable,
+          },
+          { value: "neurons" as const, label: "Neurons", disabled: steering || paths || !!neuronsMissing, reason: neuronsMissing || unavailable },
           ...(method === "attribution_patching" && (saeLoaded || kind === "features")
             ? [{ value: "features" as const, label: "Every SAE feature" }]
             : []),
@@ -837,14 +1180,14 @@ function ScopeEditor({
             result. A set can replace its sites, or keep them and replace the rest of the model: keeping a circuit alone shows how
             much of the behavior it carries.
           </p>
-          <SiteSetsEditor scope={scope} onChange={onChange} labels={labels} />
+          <SiteSetsEditor scope={scope} onChange={onChange} labels={labels} unlined={unlined} />
         </>
       )}
       {scope.kind === "features" && (
         <div className={e.stack}>
           <div className={s.grid2}>
             <Field label="Estimate each feature at">
-              <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} />
+              <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} unlined={unlined} />
             </Field>
             <Field
               label="Keep the strongest"
@@ -863,9 +1206,68 @@ function ScopeEditor({
           </Field>
         ) : (
           <Field label={`${verb} each head's output (z) at`}>
-            <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} />
+            <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} unlined={unlined} />
           </Field>
         ))}
+      {scope.kind === "head_inputs" && (
+        <div className={e.stack}>
+          <Field label="Each head's">
+            <Segmented
+              label="Each head's query, key or value"
+              value={scope.input}
+              onChange={(input) => onChange({ ...scope, input })}
+              options={(["q", "k", "v"] as const).map((k) => {
+                const missing = missingNote(model, k);
+                const noDirect = direct && k !== "v";
+                return {
+                  value: k,
+                  label: { q: "Query", k: "Key", v: "Value" }[k],
+                  disabled: noDirect || !!missing,
+                  reason: noDirect
+                    ? "Queries and keys have no direct effect: they act on the logits only through the softmax of their head's attention. A value's direct effect is what it adds through the heads that read it."
+                    : missing ?? undefined,
+                };
+              })}
+            />
+          </Field>
+          <p className={s.small}>{scope.input === "q" ? "A query site is one head's query, as its projection computes it, before any rotary embedding." : groupText(model)}</p>
+          <Field label={`${direct ? "Read" : verb} each ${scope.input === "q" ? "query" : scope.input === "k" ? "key" : "value"} at`}>
+            <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} />
+          </Field>
+          {direct && (
+            <p className={s.small}>
+              A value at any position reaches the last token through the attention of the heads that read it, with their
+              attention patterns as they are in the run (the patterns don't depend on the values). All positions together are
+              the direct effect of the heads that read the value.
+            </p>
+          )}
+        </div>
+      )}
+      {scope.kind === "neurons" && (
+        <div className={s.grid2}>
+          <Field
+            label="Layers"
+            help={
+              model?.d_mlp
+                ? `Every neuron of each layer: ${count(model.d_mlp)} per layer, layers 0 to ${model.n_layers - 1}.`
+                : "Every neuron of each layer listed, such as 3, 4 or 0-5."
+            }
+          >
+            <LayersInput value={scope.layers} onChange={(layers) => onChange({ ...scope, layers })} nLayers={model?.n_layers ?? null} />
+          </Field>
+          <Field label={direct ? "Read each neuron at" : `${verb} each neuron at`}>
+            {direct ? (
+              <p className={s.small}>{LAST_TOKEN_NOTE} A neuron writes its activation times its row of the MLP's output projection.</p>
+            ) : (
+              <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} />
+            )}
+          </Field>
+          <p className={`${s.small} ${e.wide}`}>
+            A neuron's activation is the MLP's hidden activation after its nonlinearity (for a gated MLP, the gate's activation times
+            the up projection): the input to the MLP's output projection.
+          </p>
+        </div>
+      )}
       {scope.kind === "layer_components" && steering && (
         <div className={s.grid2}>
           <Field label="Residual stream site">
@@ -879,7 +1281,7 @@ function ScopeEditor({
             </Select>
           </Field>
           <Field label="Add the direction at">
-            <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} allowAll={false} />
+            <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} allowAll={false} unlined={unlined} />
           </Field>
         </div>
       )}
@@ -908,7 +1310,7 @@ function ScopeEditor({
             {direct ? (
               <p className={s.small}>{LAST_TOKEN_NOTE} Residual stream states aren't written by a component, so they have no direct effect.</p>
             ) : (
-              <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} />
+              <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} unlined={unlined} />
             )}
           </Field>
         </>
@@ -929,7 +1331,7 @@ function ScopeEditor({
             help={
               uniformLength === false
                 ? `Prompts have ${lengths?.[0]}–${lengths?.[lengths.length - 1]} tokens, so only named positions line up.`
-                : undefined
+                : unlined ?? undefined
             }
           >
             <Segmented
@@ -937,7 +1339,7 @@ function ScopeEditor({
               value={scope.positions}
               onChange={(positions) => onChange({ ...scope, positions })}
               options={[
-                { value: "each", label: "Every token", disabled: uniformLength === false },
+                { value: "each", label: "Every token", disabled: uniformLength === false || !!unlined },
                 { value: "labels", label: "Named positions", disabled: labels.length === 0 },
               ]}
             />
@@ -953,6 +1355,7 @@ function ScopeEditor({
                 value={site.position}
                 labels={labels}
                 allowAll={!steering}
+                unlined={unlined}
                 onChange={(position) =>
                   onChange({ kind: "sites", sites: scope.sites.map((x, j) => (j === i ? { ...x, position } : x)) })
                 }

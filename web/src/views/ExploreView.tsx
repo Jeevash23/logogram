@@ -33,8 +33,8 @@ export function ExploreView() {
   const layer = Math.min(selection?.layer ?? 0, Math.max(0, (arch?.nLayers ?? 1) - 1));
   const pins = useStore(st => st.headPins);
   const tokenPosition = useStore(st => st.tokenPosition);
-  // A set of sites (from a run over sets) has no single place on the map.
-  const current = selection && arch && selection.part !== "set" && selection.layer >= 0 && selection.layer < arch.nLayers ? selection : null;
+  // A set of sites or an edge (from a run over sets or edges) has no single place on the map.
+  const current = selection && arch && selection.part !== "set" && selection.part !== "edge" && selection.layer >= 0 && selection.layer < arch.nLayers ? selection : null;
   const profile = useRunProfile(run);
   const strongest = useMemo(
     () => Object.values(run.results).filter((x) => x.effect.mean !== null).sort((a, b) => Math.abs(b.effect.mean ?? 0) - Math.abs(a.effect.mean ?? 0)).slice(0, 3),

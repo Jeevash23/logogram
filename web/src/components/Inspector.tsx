@@ -9,6 +9,8 @@ import {
   findSite,
   isResidKind,
   KIND_NAMES,
+  queryHeadsOf,
+  queryHeadsText,
   selectionOfSite,
   sitesOnComponent,
   type ResidKind,
@@ -18,7 +20,7 @@ import { setWhat, universeText } from "../lib/circuits";
 import { metricWords } from "../lib/metrics";
 import { runTitle } from "../lib/runs";
 import { siteText } from "../lib/spec";
-import { baselineText, experimentText, measureOf, measureWords, positionText } from "../lib/spec";
+import { baselineText, experimentText, measureOf, measureWords, positionText, receiverInputWords, senderWords } from "../lib/spec";
 import { prefersReducedMotion } from "../lib/motion";
 import { useStore } from "../store/app";
 import { Distribution } from "./Distribution";
@@ -49,7 +51,8 @@ export function Inspector() {
             <ComponentHeader selection={selection} />
             {run.detail?.spec && pendingBase && (
               <p className={s.note}>
-                {experimentText(run.detail.spec.experiment)} · {pendingBase.kind === "site_set" ? "every site of the set at once" : positionText(pendingBase.position)}
+                {experimentText(run.detail.spec.experiment)} ·{" "}
+                {pendingBase.kind === "site_set" ? "every site of the set at once" : pendingBase.kind === "edge" ? "summed over every position" : positionText(pendingBase.position)}
               </p>
             )}
             {site && run.detail ? (
@@ -77,7 +80,7 @@ export function Inspector() {
                 receiver={run.detail.summary?.receiver ?? "clean"}
               />
             )}
-            {selection.part !== "set" && <Actions selection={selection} />}
+            {selection.part !== "set" && selection.part !== "edge" && <Actions selection={selection} />}
             {/* A set's label names different sites in different runs: no comparison across runs. */}
             {selection.part !== "set" && <AcrossRuns selection={selection} />}
           </>
@@ -95,6 +98,16 @@ function ComponentHeader({ selection }: { selection: Selection }) {
   else if (selection.part === "attn") kind = `The attention output of layer ${selection.layer}: all heads, after the output projection.`;
   else if (selection.part === "mlp") kind = `The MLP output of layer ${selection.layer}.`;
   else if (selection.part === "feature") kind = `Feature ${selection.feature} of the SAE on layer ${selection.layer}: a direction in the model the SAE finds active on some tokens.`;
+  else if (selection.part === "input") kind = inputText(selection, arch);
+  else if (selection.part === "neuron") {
+    kind = `Neuron ${selection.neuron} of the MLP in layer ${selection.layer}: its activation after the nonlinearity (for a gated MLP, the gate's activation times the up projection), the input to the MLP's output projection. It writes that activation times its row of the projection.`;
+  }
+  else if (selection.part === "edge") {
+    const edge = findSite(run.sites, selection)?.edge;
+    kind = edge
+      ? `An edge of the model's graph: ${senderWords(edge.sender)}, read directly by ${receiverInputWords(edge.receiver)} through the residual stream.`
+      : "An edge of the model's graph: a sender's output, read directly by a later component's input.";
+  }
   else if (selection.part === "set") {
     const set = findSite(run.sites, selection);
     const members = set?.members ?? [];
@@ -116,9 +129,26 @@ function ComponentHeader({ selection }: { selection: Selection }) {
     <div className={s.component}>
       <h2 className={s.componentTitle}>{label}</h2>
       <p className={s.componentText}>{kind}</p>
-      {arch && selection.part !== "set" && selection.layer >= arch.nLayers && <p className={s.note}>This model has only {arch.nLayers} layers.</p>}
+      {arch && selection.part !== "set" && selection.part !== "edge" && selection.layer >= arch.nLayers && <p className={s.note}>This model has only {arch.nLayers} layers.</p>}
     </div>
   );
+}
+
+/** What a head's query, key or value is, in words: with grouped-query attention a key or value
+ * belongs to a key/value head, which every query head of its group reads. */
+function inputText(selection: Selection, arch: { nHeads: number; nKvHeads?: number } | null): string {
+  const layer = selection.layer;
+  if (selection.kind === "q") {
+    return `The query of attention head ${selection.head} in layer ${layer}: what the head compares with every key to choose where to attend, as its projection computes it (before any rotary embedding).`;
+  }
+  const what = selection.kind === "v" ? "value" : "key";
+  const role = selection.kind === "v" ? "what the heads that read it take from each position they attend to" : "what each query compares with to choose where to attend";
+  const kv = arch?.nKvHeads ?? arch?.nHeads;
+  const readers =
+    arch && kv && kv < arch.nHeads
+      ? ` It is read by ${queryHeadsText(queryHeadsOf(selection.head ?? 0, arch.nHeads, kv))} (grouped-query attention), so changing it changes all of them.`
+      : "";
+  return `The ${what} of key/value head ${selection.head} in layer ${layer}: ${role}.${readers}`;
 }
 
 /** A set against replacing everything: its share, its faithfulness, what a site adds to it, and
@@ -195,9 +225,15 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
           ? "the MLP output"
           : selection.part === "feature"
             ? `feature ${selection.feature} of the SAE`
-            : resid
-            ? `the ${KIND_NAMES[resid]}`
-            : "the residual stream";
+            : selection.part === "input"
+              ? selection.kind === "q"
+                ? "this head's query"
+                : `this key/value head's ${selection.kind === "v" ? "value" : "key"}`
+              : selection.part === "neuron"
+                ? "this neuron's activation"
+                : resid
+                  ? `the ${KIND_NAMES[resid]}`
+                  : "the residual stream";
   let how: string;
   if (selection.part === "set" && (exp.kind === "activation_patching" || exp.kind === "ablation")) {
     const set = base ?? null;
@@ -209,15 +245,32 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
       ? `Runs each ${receiver} prompt and replaces ${universe} except the set's sites, all at once, with ${value}. A site at one position keeps only that position. What changes is what the rest of the model carried.`
       : `Runs each ${receiver} prompt and replaces every site of the set, all at once, with ${value}.`;
   } else if (exp.kind === "direct_logit_attribution") {
-    const written = selection.part === "head" ? "this head's output, through its share of the output projection," : `${what}`;
+    const written =
+      selection.part === "head"
+        ? "this head's output, through its share of the output projection,"
+        : selection.part === "neuron"
+          ? "this neuron's activation times its row of the MLP's output projection"
+          : `${what}`;
+    const value = selection.part === "input" && selection.kind === "v";
     return (
       <section className={s.section}>
         <h3 className={s.sectionTitle}>Method</h3>
         <p className={s.strong}>{experimentText(exp)}</p>
         <p className={s.text}>
-          Runs each {exp.prompts} prompt once and reads {written} at the last token through the final normalization, with its
-          scale held at its value in the run. This is the component's direct effect: it leaves out what the component does
-          through later components, which patching measures. Nothing is replaced.
+          {value ? (
+            <>
+              Runs each {exp.prompts} prompt once and reads what this value at {position} adds to the last token: through every
+              query head that reads it, its attention to that position times the value, through the head's share of the output
+              projection (the attention pattern doesn't depend on the values), then through the final normalization with its scale
+              held at its value in the run. This is its direct effect. Nothing is replaced.
+            </>
+          ) : (
+            <>
+              Runs each {exp.prompts} prompt once and reads {written} at the last token through the final normalization, with its
+              scale held at its value in the run. This is the component's direct effect: it leaves out what the component does
+              through later components, which patching measures. Nothing is replaced.
+            </>
+          )}
         </p>
         <h3 className={s.sectionTitle}>Metric</h3>
         <p className={s.text}>Logit difference at the last token: logit(answer) − logit(distractor).</p>
@@ -241,6 +294,19 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
     how =
       `Runs each ${receiver} prompt, encodes the activation the SAE reads, and changes only ${what} at ${position} to ${to}. ` +
       "The activation moves along the feature's decoder direction, and what the SAE misses (its error) is kept as it was.";
+  } else if (selection.part === "edge" && (exp.kind === "edge_attribution" || exp.kind === "path_patching")) {
+    const [receiver, source] = exp.direction === "clean_to_corrupt" ? ["corrupt", "clean"] : ["clean", "corrupt"];
+    const edge = base?.edge;
+    const from = edge ? senderWords(edge.sender) : "the sender's output";
+    const into = edge ? receiverInputWords(edge.receiver) : "the receiver's input";
+    how =
+      exp.kind === "edge_attribution"
+        ? `Estimates, to first order, what letting only ${into} read ${from} from the paired ${source} prompt would do in each ${receiver} prompt: ` +
+          `(${source} − ${receiver} output of the sender) · ${edgeGradient(exp, receiver, measured.label)}, summed over the positions. ` +
+          "Nothing is replaced; verify the strongest edges by path patching."
+        : `Runs each ${receiver} prompt with ${from} taken from the paired ${source} prompt and every other head and MLP held at its own value, ` +
+          `records what ${into} reads, and patches only that into an unchanged ${receiver} run. The effect is what travels along this edge ` +
+          "alone, directly through the residual stream.";
   } else if (selection.part === "feature" && exp.kind === "attribution_patching") {
     const [receiver, source] = exp.direction === "clean_to_corrupt" ? ["corrupt", "clean"] : ["clean", "corrupt"];
     how =
@@ -255,7 +321,7 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
       `Nothing is replaced. ${exp.method === "integrated_gradients" ? "Averaging the gradient along the way corrects much of the saturation one gradient misses, but it is still an estimate" : "The estimate misses saturation and can miss or even invert an effect"}; verify it by patching.`;
   } else if (exp.kind === "path_patching") {
     const [receiver, source] = exp.direction === "clean_to_corrupt" ? ["corrupt", "clean"] : ["clean", "corrupt"];
-    const into = exp.receivers.map((r) => (r.kind === "logits" ? "the logits" : `L${r.layer} H${r.head}'s ${{ q: "query", k: "key", v: "value" }[r.input]}`)).join(", ");
+    const into = exp.receivers.map(receiverInputWords).join(", ");
     how =
       `Runs each ${receiver} prompt with ${what} at ${position} taken from the paired ${source} prompt and every other attention head ` +
       `held at its own value${exp.freeze_mlps ? ", MLPs too" : ""}, records what ${into} read, and patches only that into an unchanged ` +
@@ -272,7 +338,7 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
       exp.direction === "clean_to_corrupt"
         ? `Runs each corrupt prompt and replaces ${what} at ${position} with its value from the paired clean prompt. Does this restore the behavior?`
         : `Runs each clean prompt and replaces ${what} at ${position} with its value from the paired corrupt prompt. Does this break it?`;
-  } else {
+  } else if (exp.kind === "ablation") {
     const b = exp.baseline;
     const source =
       b.kind === "zero"
@@ -281,14 +347,22 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
           ? `its mean over the dataset's ${b.reference} prompts`
           : `its value in ${b.donors} randomly drawn ${b.pool} prompts (seed ${b.seed}), averaging the result`;
     how = `Runs each clean prompt and replaces ${what} at ${position} with ${source}.`;
+  } else {
+    how = "";
   }
-  const receiver = summary?.receiver ?? ((exp.kind === "activation_patching" || exp.kind === "attribution_patching" || exp.kind === "path_patching") && exp.direction === "clean_to_corrupt" ? "corrupt" : "clean");
+  const receiver =
+    summary?.receiver ??
+    ((exp.kind === "activation_patching" || exp.kind === "attribution_patching" || exp.kind === "path_patching" || exp.kind === "edge_attribution") &&
+    exp.direction === "clean_to_corrupt"
+      ? "corrupt"
+      : "clean");
+  const estimate = exp.kind === "attribution_patching" || exp.kind === "edge_attribution";
   const metricText = `${measured.formula}${(summary?.metric ?? spec.metric).kind === "logit_diff" ? " at the last token" : ""}`;
   const reference = summary?.reference ?? (receiver === "corrupt" ? "clean" : "corrupt");
   const gap = summary?.metric.denominator;
   return (
     <section className={s.section}>
-      <h3 className={s.sectionTitle}>{exp.kind === "attribution_patching" ? "Estimate" : "Intervention"}</h3>
+      <h3 className={s.sectionTitle}>{estimate ? "Estimate" : "Intervention"}</h3>
       <p className={s.strong}>
         {experimentText(exp)}
         {exp.kind === "ablation" && <span className={s.muted}> · baseline: {baselineText(exp.baseline)}</span>}
@@ -299,7 +373,7 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
         {capitalize(measured.label)}: {metricText}.
       </p>
       <p className={s.text}>
-        {exp.kind === "attribution_patching" ? "Estimated effect = (estimated patched" : exp.kind === "steering" ? "Normalized effect = (steered" : "Normalized effect = (patched"} − {receiver}) ÷{" "}
+        {estimate ? "Estimated effect = (estimated patched" : exp.kind === "steering" ? "Normalized effect = (steered" : "Normalized effect = (patched"} − {receiver}) ÷{" "}
         {spec.metric.normalization === "dataset_gap" ? (
           <>
             mean({reference} − {receiver}){gap !== null && gap !== undefined && <> (denominator {num(gap, 3)})</>}
@@ -426,8 +500,9 @@ function Evidence({
   const values = useMemo(() => detail?.prompts.map((p) => ({ index: p.index, value: p.effect })) ?? [], [detail]);
   // A steered site and strength against its random control, paired over the same resamples.
   const control = summary?.steering?.control?.find((c) => c.index === site.index || c.control_index === site.index);
-  const nSites = summary?.sites.length ?? 0;
-  const unit = summary?.layout.kind === "site_sets" ? "sets" : "sites";
+  // An edge attribution run lists only its strongest edges; its corrections cover every edge.
+  const nSites = summary?.edges?.n_edges ?? summary?.sites.length ?? 0;
+  const unit = summary?.layout.kind === "site_sets" ? "sets" : summary?.layout.kind === "edges" ? "edges" : "sites";
 
   return (
     <section className={s.section}>
@@ -834,6 +909,16 @@ function RunOverview() {
 }
 
 /** The gradient an estimate multiplies by: at the receiver run, or averaged along the way. */
+/** The gradient an edge's estimate takes: with respect to the receiver's own copy of the residual
+ * stream, through its normalization with the scale recomputed (src/logogram/edges.py). */
+function edgeGradient(exp: { method?: string; steps?: number | null }, receiver: string, metric: string): string {
+  const where =
+    "with respect to the receiver's own copy of the residual stream, before its normalization and through it with its scale recomputed, as patching the edge would recompute it";
+  return exp.method === "integrated_gradients"
+    ? `the gradient of the ${metric} ${where}, averaged over ${exp.steps} runs between the ${receiver} prompt and the other (integrated gradients)`
+    : `the gradient of the ${metric} ${where}, at the ${receiver} run`;
+}
+
 function gradient(exp: { method?: string; steps?: number | null }, receiver: string, metric: string): string {
   return exp.method === "integrated_gradients"
     ? `the gradient of the ${metric}, averaged over ${exp.steps} runs between the ${receiver} prompt and the other (integrated gradients)`

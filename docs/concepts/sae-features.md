@@ -6,11 +6,56 @@ a direction in the model, plus an **error** it misses (Bricken et al., 2023; Cun
 2023). Features are often easier to read than neurons or heads, and Logogram treats them as sites
 like any other: they can be read on prompts, patched, estimated and steered along.
 
+## Finding a published SAE
+
+People name published SAEs by their SAELens release and id, such as `gpt2-small-res-jb` and
+`blocks.8.hook_resid_pre`. Logogram ships a catalogue of SAELens's registry: the 13,857 SAEs in
+the 170 releases of SAELens 6.54.0, each with the model it was trained on, its Hugging Face
+repository and folder, the hook it reads, its width, the architecture its configuration states,
+and whether Logogram reads it exactly. The catalogue is part of the package and is never fetched:
+`scripts/sae_catalogue.py` builds it from a sae-lens wheel, and SAELens's MIT notice travels with
+it. Nothing downloads until an SAE is loaded.
+
+* In **Explore → Features**, **Published SAEs** lists those trained on the loaded model, the ones
+  Logogram reads exactly first. Search by release, hook, site, layer (`layer 8`) or width (`16k`),
+  choose one to see where it is published, what it reads, its licence and how it was checked, and
+  press **Load this SAE**. **Or name a repository and folder** loads any other.
+* On the command line, `logogram saes MODEL` lists a model's SAEs by its Hugging Face id, with
+  words to search for after it (`logogram saes openai-community/gpt2 layer 8 resid_pre`),
+  `--exact` for those read exactly and `--json` for every field.
+* In Python, `lg.list_saes(model, "layer 8")` returns them as a table, and
+  `lg.load_sae(release="gpt2-small-res-jb", sae_id="blocks.8.hook_resid_pre", model=model)`
+  loads one; `lg.load_sae(repo, path, model=model)` loads one by its repository and folder.
+
+Each SAE's `reads` says what Logogram makes of it:
+
+* `exact`: Logogram's own readers, run on its configuration, read it exactly. `verified`, when
+  it was checked on its files at one commit, says how: its weights file's header, every
+  parameter's name and shape as Logogram reads them (`"read": "header"`), or its files read whole
+  (`"weights"`), with its `fit` when it was also run on its model: the share of the activations'
+  variance it explains and how many features fire per token, over plain text.
+* `refused`: Logogram doesn't read it, and `reason` says why. Most are the first Gemma Scope's
+  NumPy archives, PyTorch pickles (which Logogram never opens), formats Logogram doesn't read yet
+  (Llama Scope's, circuit-tracer's transcoders) and cross-layer transcoders. The app doesn't offer
+  to load them.
+* `unknown`: its configuration couldn't be read when the catalogue was made, so Logogram checks it
+  when it loads.
+
+Logogram reads 9,035 of the 13,857 exactly: GPT-2 small's SAELens SAEs (Joseph Bloom's, the
+feature-splitting ones and Apollo Research's), OpenAI's TopK SAEs on it but for those between
+attention and MLP, Pythia-70m's, Gemma 2B's, the matryoshka SAEs for Gemma 2 and Gemma 3 1B, and
+all of Gemma Scope 2's SAEs and transcoders. 424 SAEs across every release it reads were checked
+by their weights file's header, and 16, on GPT-2 small, Pythia-70m and Gemma 3 270M, by their
+weights and their fit to the model. An SAE that SAELens's registry reads with settings its own
+configuration doesn't state (Mistral 7B's, which SAELens rescales) is refused before anything
+downloads, also when it is named by its repository and folder: its files alone don't say what it
+computes. However an SAE is chosen, a spec records its repository, folder and revision, never its
+release and id.
+
 ## Loading an SAE
 
-In **Explore → Features**, load a published SAE from Hugging Face (Logogram suggests ones made
-for the suggested models, or give any repository), or from Python with `lg.load_sae`. Logogram
-reads:
+Whether chosen from the catalogue or named by its repository and folder, an SAE downloads once,
+at the repository's current commit unless a revision is given, and Logogram reads:
 
 * the SAELens format, the EleutherAI (sparsify) format, and Gemma Scope 2 (`config.json` and
   `params.safetensors`, with the JumpReLU activation of Rajamanoharan et al., 2024), including

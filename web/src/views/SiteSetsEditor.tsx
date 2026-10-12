@@ -6,6 +6,7 @@ import {
   freeLabel,
   MAX_LABEL,
   MAX_SETS,
+  overlaps,
   parseSiteQuery,
   SET_SITE_KINDS,
   siteOf,
@@ -22,8 +23,9 @@ import c from "./SiteSets.module.css";
 
 /**
  * What a set that keeps its sites replaces: every head, attention output or MLP output of the
- * model except those sites. A layer's attention output is the sum of its heads, so the rest of
- * the model holds one or the other.
+ * model except those sites, or every query, key, value or neuron. A component and what it is made
+ * of (a layer's attention output and its heads, a head's output and its query, key and value, an
+ * MLP output and its neurons) can't both be in the rest of the model.
  */
 export function UniverseChooser({
   value,
@@ -36,7 +38,7 @@ export function UniverseChooser({
   return (
     <div className={c.universe} role="group" aria-label="The rest of the model">
       {UNIVERSE_KINDS.map((kind) => {
-        const conflict = (kind === "head" && chosen.includes("attn_out")) || (kind === "attn_out" && chosen.includes("head"));
+        const conflict = chosen.some((other) => overlaps(kind, other));
         return (
           <Checkbox
             key={kind}
@@ -55,10 +57,11 @@ export function UniverseChooser({
   );
 }
 
-/** Positions a site typed into a set can take: all, the last token, or a named position. */
-function positionOptions(labels: string[]): { key: string; label: string; position: PositionSpec }[] {
+/** Positions a site typed into a set can take: all (unless the prompts don't line up), the last
+ * token, or a named position. */
+function positionOptions(labels: string[], lined: boolean): { key: string; label: string; position: PositionSpec }[] {
   return [
-    { key: "all", label: "All positions", position: { kind: "all" } },
+    ...(lined ? [{ key: "all", label: "All positions", position: { kind: "all" } as PositionSpec }] : []),
     { key: "last", label: "Last token", position: { kind: "last" } },
     ...labels.map((label) => ({ key: `label:${label}`, label: `Position ${label}`, position: { kind: "label" as const, label } })),
   ];
@@ -72,10 +75,14 @@ export function SiteSetsEditor({
   scope,
   onChange,
   labels,
+  unlined = null,
 }: {
   scope: SiteSetsScope;
   onChange: (scope: SiteSetsScope) => void;
   labels: string[];
+  /** Why a set can't take every position, or keep its sites and replace the rest: prompts of
+   * different lengths, matched at the last token or a label only. */
+  unlined?: string | null;
 }) {
   const model = useStore((st) => st.model.info);
   const staged = useStore((st) => st.stagedSites);
@@ -90,7 +97,7 @@ export function SiteSetsEditor({
         label="The rest of the model"
         help={
           keeps
-            ? `A set that keeps its sites replaces ${universeText(scope.universe)} except them, at every position. A layer's attention output is the sum of its heads, so choose one or the other.`
+            ? `A set that keeps its sites replaces ${universeText(scope.universe)} except them, at every position. A component and what it is made of can't both be chosen: a layer's attention output is the sum of its heads, a head's output is made from its query, key and value, and an MLP output from its neurons.`
             : "What a set that keeps its sites replaces. No set keeps its sites yet, so this can stay empty."
         }
       >
@@ -105,6 +112,7 @@ export function SiteSetsEditor({
               set={set}
               universe={scope.universe}
               labels={labels}
+              unlined={unlined}
               onChange={(next) => update(i, next)}
               onRemove={scope.sets.length > 1 ? () => onChange({ ...scope, sets: scope.sets.filter((_, j) => j !== i) }) : undefined}
             />
@@ -139,6 +147,7 @@ function SetEditor({
   set,
   universe,
   labels,
+  unlined,
   onChange,
   onRemove,
 }: {
@@ -146,12 +155,14 @@ function SetEditor({
   set: SiteSetSpec;
   universe: UniverseKind[] | null;
   labels: string[];
+  unlined: string | null;
   onChange: (set: SiteSetSpec) => void;
   onRemove?: () => void;
 }) {
   const [query, setQuery] = useState("");
-  const [at, setAt] = useState("all");
-  const options = positionOptions(labels);
+  const options = positionOptions(labels, !unlined);
+  const [chosen, setAt] = useState(options[0].key);
+  const at = options.some((o) => o.key === chosen) ? chosen : options[0].key;
   const parsed = parseSiteQuery(query);
   const position = (options.find((o) => o.key === at) ?? options[0]).position;
   const add = () => {
@@ -178,7 +189,7 @@ function SetEditor({
           onChange={(v) => onChange({ ...set, complement: v === "keep" })}
           options={[
             { value: "replace", label: "Replace these sites" },
-            { value: "keep", label: "Keep these, replace the rest" },
+            { value: "keep", label: "Keep these, replace the rest", disabled: !!unlined, reason: unlined ?? undefined },
           ]}
         />
         {onRemove && (
@@ -211,8 +222,8 @@ function SetEditor({
               add();
             }
           }}
-          placeholder="L9 H6 or L3 mlp"
-          aria-label={`Site to add to ${name}, like L9 H6, L3 attn or L3 mlp`}
+          placeholder="L9 H6, L3 mlp, L9 H6 q, L9 KV2 v or L3 N1201"
+          aria-label={`Site to add to ${name}, like L9 H6, L3 attn, L3 mlp, a head's query L9 H6 q, a key/value head's key L9 KV2 k or value L9 KV2 v, or a neuron L3 N1201`}
           aria-invalid={query.trim() !== "" && !parsed}
           spellCheck={false}
         />

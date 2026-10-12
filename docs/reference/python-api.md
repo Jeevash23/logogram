@@ -22,6 +22,10 @@ run.rename("Name movers").star()   # as the history shows it; the spec never cha
 lg.delete_run(project, old_run)    # its folder and everything in it, for good
 seeds = lg.sweep(run, field="statistics.seed", values=[0, 1, 2, 3])  # one run per value
 seeds.table()        # the strongest sites at every value: do they keep their sign and size?
+lg.list_saes(model, "layer 8")    # published SAEs for the model, and what Logogram reads of them
+sae = lg.load_sae(release="gpt2-small-res-jb", sae_id="blocks.8.hook_resid_pre", model=model)
+toy = lg.toy_model("induction")   # a model whose circuit is known, with experiments to run
+toy.run("which-heads").sites()    # the planted heads at 1, every other head at 0
 ```
 
 Tables come back as pandas DataFrames when pandas is installed, and as pyarrow Tables otherwise.
@@ -38,14 +42,16 @@ Every public name of `import logogram as lg`, from the docstrings in [`src/logog
 | [`lg.continue_text`](#lgcontinue_text) | What `model` writes after `text`: `tokens` new tokens (1 to 64), each the most likely one (ties to the lowest token id), as the app's Your text view continues it (`plain`). |
 | [`lg.create_project`](#lgcreate_project) | Create a project folder called after `name` inside `parent`. |
 | [`lg.delete_run`](#lgdelete_run) | Delete a finished, failed or cancelled run, or a draft (a [`Run`](#lgrun-1) or a run id): its folder and everything in it, for good. |
+| [`lg.edge_verification`](#lgedge_verification) | An edge attribution run's estimates beside their measurements by path patching (the run [`verify_run()`](#lgverify_run) made from it), edge by edge, ranked both ways, with Spearman's rank correlation of the two and how many have the same sign. |
 | [`lg.feature_writes`](#lgfeature_writes) | The tokens a feature promotes and suppresses directly, as the app's Features view shows them: one unit of the feature's decoder direction, added to the residual stream entering the final normalization at one token of `prompt`, read through that normalization with its scale held at its value there and through the unembedding, skipping every later layer. |
 | [`lg.generate`](#lggenerate) | Prompt pairs for a task (see `logogram.tasks.TASKS`). |
 | [`lg.head_kinds`](#lghead_kinds) | Score every head of `model` (from [`load_model()`](#lgload_model)) as a previous-token, duplicate-token and induction head, on `sequences` seeded random sequences of `length` tokens repeated twice. |
 | [`lg.list_local_models`](#lglist_local_models) | The models added from folders on this machine: name, folder, hash and size. |
 | [`lg.list_runs`](#lglist_runs) | Every run and draft in the project, newest first, as the history lists them: archived runs too (`archived`), and runs whose spec can't be read (`damaged`, with `error` saying why). |
+| [`lg.list_saes`](#lglist_saes) | The published SAEs trained on a model (a loaded model, or its Hugging Face id), from the catalogue of SAELens's registry that ships with Logogram (nothing is fetched): one row per SAE, those Logogram reads exactly first, with its release and id, repository and folder, the hook it reads, its site, layer and width, its architecture, whether Logogram reads it exactly (`reads`: exact, refused or unknown) and if not why (`reason`), and how it was checked on its files if it was (`verified`). |
 | [`lg.load_model`](#lgload_model) | Download (once) and load a model, checked as the app checks it. |
 | [`lg.load_run`](#lgload_run) | A run of `project` by its id (the name of its experiments/ folder). |
-| [`lg.load_sae`](#lgload_sae) | Download (once) and read a published SAE or transcoder at an exact revision, onto `model`'s device. |
+| [`lg.load_sae`](#lgload_sae) | Download (once) and read a published SAE or transcoder at an exact revision, onto `model`'s device: by its Hugging Face repository and folder, or by its SAELens release and id (`release="gpt2-small-res-jb", sae_id="blocks.8.hook_resid_pre"`), found in the catalogue of SAELens's registry that ships with Logogram (see [`list_saes()`](#lglist_saes)). |
 | [`lg.load_spec`](#lgload_spec) | A spec from a dict, a JSON string or a spec.json file. |
 | [`lg.load_sweep`](#lgload_sweep) | A sweep of `project` by its id, as its runs record it: its runs in the order of its values (a value whose run is gone, or never ran, has none). |
 | [`lg.look`](#lglook) | Read any text with `model` (from [`load_model()`](#lgload_model)), without making a dataset: its tokens, the `top_k` most likely next tokens after each, and at `position` (the last token by default) what each layer would predict, as the app's Your text view shows. |
@@ -54,7 +60,8 @@ Every public name of `import logogram as lg`, from the docstrings in [`src/logog
 | [`lg.remove_local_model`](#lgremove_local_model) | Forget a local model. |
 | [`lg.run`](#lgrun) | Run a spec and write its experiment folder into `project`, as the app does. |
 | [`lg.sweep`](#lgsweep) | Run a run's spec (or a spec, into `project`) across `values` of one `field`, one run after another, as `logogram sweep` does: a seed the spec states (`statistics.seed`, `experiment.baseline.seed`, `experiment.seed` or `scope.seed`), the dataset (`dataset.path`: dataset files of the project) or the model's revision (`model.revision`: commits, tags or branches, each run pinning its commit). |
-| [`lg.verify_run`](#lgverify_run) | Patch, for real, the `top` sites an attribution patching run estimated to matter most. |
+| [`lg.toy_model`](#lgtoy_model) | A model whose circuit is known, to learn the methods on and to check them against: `"induction"` (a previous-token head and an induction head) or `"ioi"` (GPT-2 small's indirect-object circuit, one head per step), with weights set by hand (see `logogram.toys`). |
+| [`lg.verify_run`](#lgverify_run) | Patch, for real, the `top` sites an attribution patching run estimated to matter most; for an edge attribution run, path patch its `top` strongest edges one at a time, at most 50 (compare the two with [`edge_verification()`](#lgedge_verification)). |
 | [`lg.write_dataset`](#lgwrite_dataset) | Write prompt pairs into the project's datasets/ folder; returns its path in the project. |
 
 ### lg.add_local_model
@@ -136,6 +143,16 @@ lg.delete_run(project: Project, run: Run | str) -> None
 Delete a finished, failed or cancelled run, or a draft (a [`Run`](#lgrun-1) or a run id): its
 folder and everything in it, for good. Archive a run to keep it out of the way instead. A run
 in progress can't be deleted. Runs derived from it stay, and keep its id in their manifest.
+
+### lg.edge_verification
+
+```python
+lg.edge_verification(estimated: Run, verified: Run) -> dict[str, Any]
+```
+
+An edge attribution run's estimates beside their measurements by path patching (the run
+[`verify_run()`](#lgverify_run) made from it), edge by edge, ranked both ways, with Spearman's rank
+correlation of the two and how many have the same sign.
 
 ### lg.feature_writes
 
@@ -220,6 +237,21 @@ lg.list_runs(project: Project) -> list[dict[str, Any]]
 Every run and draft in the project, newest first, as the history lists them: archived runs
 too (`archived`), and runs whose spec can't be read (`damaged`, with `error` saying why).
 
+### lg.list_saes
+
+```python
+lg.list_saes(model: Any, search: str = '') -> Any
+```
+
+The published SAEs trained on a model (a loaded model, or its Hugging Face id), from the
+catalogue of SAELens's registry that ships with Logogram (nothing is fetched): one row per SAE,
+those Logogram reads exactly first, with its release and id, repository and folder, the hook
+it reads, its site, layer and width, its architecture, whether Logogram reads it exactly
+(`reads`: exact, refused or unknown) and if not why (`reason`), and how it was checked on
+its files if it was (`verified`). `search` keeps the ones it matches, as the app's search
+does: `"layer 8"`, `"16k"`, `"resid_post"`, a release's name. Load one with
+[`load_sae()`](#lgload_sae) (`release=`, `sae_id=`).
+
 ### lg.load_model
 
 ```python
@@ -254,13 +286,25 @@ A run of `project` by its id (the name of its experiments/ folder).
 ### lg.load_sae
 
 ```python
-lg.load_sae(repo: str, path: str = '', *, model: Any, revision: str | None = None) -> Any
+lg.load_sae(
+    repo: str | None = None,
+    path: str = '',
+    *,
+    model: Any,
+    revision: str | None = None,
+    release: str | None = None,
+    sae_id: str | None = None,
+) -> Any
 ```
 
 Download (once) and read a published SAE or transcoder at an exact revision, onto
-`model`'s device. It is refused if it was made for another model's sizes or reads a site the
-model doesn't have. Pass it to [`run()`](#lgrun) with a spec that names it, or explore its features
-with [`feature_writes()`](#lgfeature_writes).
+`model`'s device: by its Hugging Face repository and folder, or by its SAELens release and
+id (`release="gpt2-small-res-jb", sae_id="blocks.8.hook_resid_pre"`), found in the
+catalogue of SAELens's registry that ships with Logogram (see [`list_saes()`](#lglist_saes)). Either way
+the SAE is its repository, folder and revision, which is what a spec records; without a
+revision, the repository's current commit is pinned. It is refused if Logogram can't read it
+exactly, was made for another model's sizes or reads a site the model doesn't have. Pass it to
+[`run()`](#lgrun) with a spec that names it, or explore its features with [`feature_writes()`](#lgfeature_writes).
 
 ### lg.load_spec
 
@@ -371,13 +415,37 @@ commits, tags or branches, each run pinning its commit). A finished run stands i
 value, which isn't run again. Returns the runs, one per value in the order given; a run that
 doesn't finish is kept with its status, and the next value runs.
 
+### lg.toy_model
+
+```python
+lg.toy_model(
+    name: str,
+    folder: str | Path | None = None,
+    *,
+    device: str = 'cpu',
+    dtype: str = 'float32',
+) -> ToyModel
+```
+
+A model whose circuit is known, to learn the methods on and to check them against:
+`"induction"` (a previous-token head and an induction head) or `"ioi"` (GPT-2 small's
+indirect-object circuit, one head per step), with weights set by hand (see
+`logogram.toys`). Writes its project into `folder` (by default `toy-NAME` in the
+projects folder): the model's files in `model/`, added to this machine's local models as
+`toy-NAME` so specs name it by the hash of its files, its datasets, and experiments whose
+notes say what each method should find. Then loads it, checked as any model is, and checks
+that it does its task and that its planted heads attend where they were built to; a toy that
+doesn't is refused. Run its experiments with `toy.run("which-heads")`.
+
 ### lg.verify_run
 
 ```python
 lg.verify_run(estimated: Run, top: int = 10, *, model: Any = None) -> Run
 ```
 
-Patch, for real, the `top` sites an attribution patching run estimated to matter most.
+Patch, for real, the `top` sites an attribution patching run estimated to matter most;
+for an edge attribution run, path patch its `top` strongest edges one at a time, at most 50
+(compare the two with [`edge_verification()`](#lgedge_verification)).
 
 ### lg.write_dataset
 
@@ -497,7 +565,8 @@ run.sites() -> Any
 ```
 
 One row per site: what it is, its mean effect and interval, the simultaneous band and
-q-value, sign flips and the metric patched.
+q-value, sign flips and the metric patched. An edge attribution run's summary lists its
+strongest edges only: `edges()` has every one.
 
 #### Run.methods
 
@@ -560,6 +629,25 @@ run.strongest(k: int = 10) -> list[dict[str, Any]]
 
 The `k` sites with the largest mean effects, by magnitude, as summary.json holds
 them: each site's label, effect with its interval, and the rest of its statistics.
+
+#### Run.edges
+
+```python
+run.edges() -> Any
+```
+
+An edge attribution run's every edge, one row each (its edges.parquet): the sender and
+receiver, the mean estimated effect and its interval, the simultaneous band and q-value.
+The summary lists only the strongest.
+
+#### Run.curve
+
+```python
+run.curve() -> dict[str, Any] | None
+```
+
+An edge attribution run's faithfulness curve: for each k, the faithfulness of the k
+strongest edges and of k edges chosen at random, with intervals; None without one.
 
 ### lg.Sweep
 

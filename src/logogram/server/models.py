@@ -230,6 +230,12 @@ class PromptIssue(_Out):
     message: str
 
 
+class UnevenPair(_Out):
+    index: int
+    clean: int
+    corrupt: int
+
+
 class DatasetDetail(_Out):
     name: str
     path: str
@@ -241,6 +247,10 @@ class DatasetDetail(_Out):
     # With a model loaded: the prompts whose answer or distractor it reads as a continuation of
     # several tokens (dataset indices), which the logit difference can't score.
     continuations: list[int] | None = None
+    # With a model loaded: the pairs whose clean and corrupt prompts have different token lengths
+    # (dataset indices), each with its two lengths. They are matched label by label, so they can
+    # be patched at a label or the last token only.
+    uneven: list[UnevenPair] | None = None
 
 
 class DatasetCreated(_Out):
@@ -309,6 +319,11 @@ class TokenStrip(_Out):
     aligned: bool
     differs: list[int]
     labels: dict[str, int]
+    # The corrupt prompt's own labels, when the dataset gives them (corrupt_positions).
+    corrupt_labels: dict[str, int] | None = None
+    # Prompts of different lengths, side by side: per column, a clean token's index and a corrupt
+    # token's (null where that prompt has none in the column); labelled tokens share a column.
+    columns: list[list[int | None]] | None = None
     answer: AnswerTokens
     distractor: AnswerTokens
     issues: list[PromptIssue]
@@ -412,6 +427,52 @@ class HeadKinds(_Out):
 
 class MethodsText(_Out):
     text: str
+
+
+class EdgePlan(_Out):
+    """What an edge attribution spec would do on the loaded model, before it runs: the graph's
+    size, the passes and memory a run takes, and why it would be refused (null when it
+    wouldn't)."""
+
+    n_edges: int | None
+    n_senders: int | None
+    n_receivers: int | None
+    structure: Literal["sequential", "parallel"] | None = None
+    cost: dict[str, Any] | None = None
+    text: str | None = None
+    free: int | None = None
+    refusal: str | None
+
+
+class EdgeStat(_Out):
+    mean: float | None
+    sd: float | None
+    lo: float | None
+    hi: float | None
+
+
+class EdgeVerificationRow(_Out):
+    """One verified edge: its estimate (the edge attribution run's) beside its measurement by
+    path patching, normalized effects with their intervals, and each one's rank by magnitude."""
+
+    label: str
+    edge: dict[str, Any]
+    estimate: EdgeStat
+    measured: EdgeStat
+    estimate_index: int
+    measured_index: int
+    estimate_rank: int | None = None
+    measured_rank: int | None = None
+
+
+class EdgeVerification(_Out):
+    """An edge attribution run's estimates against its latest verification by path patching."""
+
+    run: str
+    n: int
+    spearman: float | None
+    same_sign: int
+    rows: list[EdgeVerificationRow]
 
 
 class ChatWrapped(_Out):
@@ -590,6 +651,9 @@ class RunMemoryOut(_Out):
     available: int
     verdict: Literal["fits", "tight", "wont_fit"]
     explanation: str
+    # The sites the scope has, and what they hold (included in total).
+    sites: int = 0
+    site_bytes: int = 0
 
 
 class EstimateOut(_Out):
@@ -604,6 +668,58 @@ class EstimateOut(_Out):
     supported: bool
     support_note: str | None
     estimate: MemoryEstimateOut
+
+
+# -- published SAEs ----------------------------------------------------------------------------
+
+
+class CatalogueFitOut(_Out):
+    model: str
+    process_weights: bool
+    tokens: int
+    variance_explained: float
+    l0: float
+
+
+class CatalogueCheckOut(_Out):
+    revision: str
+    read: Literal["header", "weights"]
+    fit: CatalogueFitOut | None
+
+
+class CatalogueSAEOut(_Out):
+    """One SAE of SAELens's registry, as the bundled catalogue describes it."""
+
+    release: str
+    id: str
+    model: str
+    hf_model: str
+    repo: str
+    folder: str
+    # The commit whose files the catalogue read; loading pins the repository's current one.
+    revision: str | None
+    licence: str | None
+    gated: bool
+    hook: str | None
+    site: str | None
+    layer: int | None
+    width: int | None
+    architecture: str | None
+    kind: Literal["sae", "transcoder", "skip_transcoder"]
+    reads: Literal["exact", "refused", "unknown"]
+    reason: str | None
+    l0: float | None
+    verified: CatalogueCheckOut | None
+
+
+class CatalogueOut(_Out):
+    model: str
+    # Where the catalogue came from: SAELens's registry, in this version of sae-lens.
+    source: str
+    total: int
+    exact: int
+    matches: int
+    saes: list[CatalogueSAEOut]
 
 
 # -- runs --------------------------------------------------------------------------------------
@@ -664,6 +780,7 @@ class ComparisonChange(_Out):
     layer: int
     head: int | None
     feature: int | None = None
+    neuron: int | None = None
     position_key: str
     variant_key: str | None = None
     index_a: int
@@ -841,6 +958,7 @@ class SweepSite(_Out):
     layer: int
     head: int | None
     feature: int | None
+    neuron: int | None = None
     position: dict[str, Any] | None
     position_key: str
     variant: dict[str, Any] | None

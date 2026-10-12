@@ -1,9 +1,11 @@
 """Command line: ``logogram`` (start the app), ``open``, ``run``, ``doctor``, ``env``, ``serve``,
 commands that read and check runs without the app: ``list``, ``show``, ``compare``, ``diff``,
 ``verify``, ``robustness``, ``sweep``, ``export``, ``validate``, ``tasks`` and ``generate``;
+``saes``, the published SAEs for a model and what Logogram reads of them;
 commands that manage them: ``rename``, ``star``, ``archive`` and ``delete``; ``models add``,
-``models list`` and ``models remove`` for model folders on this machine; and the project's run
-queue: ``queue add``, ``queue list``, ``queue clear`` and ``queue run``."""
+``models list`` and ``models remove`` for model folders on this machine; ``toy``, a model whose
+circuit is known; and the project's run queue: ``queue add``, ``queue list``, ``queue clear`` and
+``queue run``."""
 
 from __future__ import annotations
 
@@ -706,15 +708,20 @@ def _print_summary(summary: dict, top: int) -> None:  # type: ignore[type-arg]
     flips = measure == "intervention"
     sites = sorted(summary["sites"], key=lambda s: -abs(s["effect"]["mean"] or 0.0))[:top]
     typer.echo("")
-    header = f"{'site':<22} {value:>9}  {f'{ci}% CI':<19} {change:>12}"
+    # Edges are named by both ends ("L5 H5 → L9 H6 q"): the column fits the longest.
+    width = max([22, *(len(s["label"]) for s in sites)])
+    header = f"{'site':<{width}} {value:>9}  {f'{ci}% CI':<19} {change:>12}"
     typer.echo(header + (f"  {'flipped':>8}" if flips else ""))
     for s in sites:
         e = s["effect"]
         interval = f"[{_fmt(e['lo'])}, {_fmt(e['hi'])}]"
         line = (
-            f"{s['label']:<22} {_fmt(e['mean']):>9}  {interval:<19} {_fmt(s['delta']['mean']):>12}"
+            f"{s['label']:<{width}} {_fmt(e['mean']):>9}  {interval:<19} "
+            f"{_fmt(s['delta']['mean']):>12}"
         )
         typer.echo(line + (f"  {s['sign_flips']:>3} / {s['n']:<3}" if flips else ""))
+    if summary.get("edges"):
+        _print_edges(summary["edges"], ci)
     if summary.get("direct"):
         d = summary["direct"]
         typer.echo(
@@ -778,7 +785,15 @@ def _print_summary(summary: dict, top: int) -> None:  # type: ignore[type-arg]
                     f"\n{r['label']}: beyond {i['a']} and {i['b']} alone, an effect of "
                     f"{_interval(i['effect'])}"
                 )
-    if stats.get("band_level") is not None:
+    corrections = (summary.get("edges") or {}).get("corrections")
+    if stats.get("band_level") is not None and corrections:
+        # Counted over every edge: the summary lists only the strongest.
+        typer.echo(
+            f"\nCorrected for {corrections['edges']:,} edges: {corrections['banded']:,} exclude "
+            f"zero with simultaneous bands, {corrections['discoveries']:,} have q < "
+            f"{1 - stats['ci']:g} (Benjamini–Hochberg)."
+        )
+    elif stats.get("band_level") is not None:
         sites_all = summary["sites"]
         alpha = 1 - stats["ci"]
         banded = sum(
@@ -1139,16 +1154,24 @@ def _run_and_report(project: Any, spec: Any, derived: dict[str, Any], top: int) 
 
 @app.command()
 def verify(
-    run: Annotated[str, typer.Argument(help="An attribution patching run.")],
-    top: Annotated[int, typer.Option(help="How many of the strongest estimates to patch.")] = 10,
+    run: Annotated[str, typer.Argument(help="An attribution or edge attribution run.")],
+    top: Annotated[
+        int,
+        typer.Option(
+            help="How many of the strongest estimates to patch (of an edge attribution run's, at "
+            "most 50)."
+        ),
+    ] = 10,
     project_dir: Annotated[Path | None, ProjectOption] = None,
 ) -> None:
-    """Patch, for real, the sites an attribution patching run estimated to matter most, and
-    compare the measurement with the estimate."""
+    """Patch, for real, the sites an attribution patching run estimated to matter most (or path
+    patch, one at a time, the edges an edge attribution run estimated), and compare the
+    measurement with the estimate."""
     from logogram.compare import compare_runs
+    from logogram.edges import VERIFY_MAX
     from logogram.robustness import require_finished
     from logogram.spec import Spec
-    from logogram.verify import verification_spec
+    from logogram.verify import verification_change, verification_spec
 
     project = _open_project(project_dir, Path(run) if Path(run).exists() else None)
     run_id = _run_id(project, run)
@@ -1164,15 +1187,66 @@ def verify(
         spec = verification_spec(Spec.from_path(folder / "spec.json"), summary, top)
     except ValueError as exc:
         raise _fail(str(exc)) from exc
-    n = len(spec.scope.sites)  # type: ignore[union-attr]
-    derived = {
-        "run": run_id,
-        "kind": "verification",
-        "change": f"the {n} strongest estimated site{'s' if n != 1 else ''}, patched",
-    }
+    if summary.get("edges") and top > VERIFY_MAX:
+        typer.echo(
+            f"Edges are path patched one at a time, so at most the strongest {VERIFY_MAX} are "
+            "verified.",
+            err=True,
+        )
+    derived = {"run": run_id, "kind": "verification", "change": verification_change(spec)}
     outcome = _run_and_report(project, spec, derived, top)
     typer.echo("")
+    if summary.get("edges") and outcome.summary:
+        from logogram.edges import verification_table
+
+        _print_edge_verification(verification_table(summary, outcome.summary))
+        return
     _print_comparison(compare_runs(project, run_id, outcome.run_id))
+
+
+def _print_edges(edges: dict[str, Any], ci: int) -> None:
+    """An edge attribution run's graph, what it cost, and its faithfulness curve."""
+    typer.echo(
+        f"\n{edges['n_edges']:,} edges ({edges['n_senders']} senders, {edges['n_receivers']} "
+        f"receivers); the summary lists the {edges['reported']:,} strongest, edges.parquet "
+        "every edge."
+    )
+    typer.echo(f"Cost: {edges['cost']['text']}.")
+    curve = edges.get("curve")
+    if not curve:
+        return
+    patched = (
+        "the chosen edges patched"
+        if curve["patch"] == "chosen"
+        else "every edge but the chosen ones patched"
+    )
+    typer.echo(f"\nFaithfulness, {patched} (0: no edge chosen, 1: every edge):")
+    typer.echo(f"{'edges':>8}  {'strongest':>10}  {f'{ci}% CI':<19} {'random':>8}")
+    for p, q in zip(curve["strongest"], curve["random"], strict=True):
+        f, r = p["faithfulness"], q["faithfulness"]
+        interval = f"[{_fmt(f['lo'])}, {_fmt(f['hi'])}]"
+        typer.echo(f"{p['k']:>8,}  {_fmt(f['mean']):>10}  {interval:<19} {_fmt(r['mean']):>8}")
+    difference = curve.get("source_difference")
+    if difference is not None:
+        typer.echo(f"Patching every edge reproduces the source run within {difference:.2g}.")
+
+
+def _print_edge_verification(table: dict[str, Any]) -> None:
+    """Each verified edge's estimate beside its path-patched measurement, and how they agree."""
+    rho = table["spearman"]
+    typer.echo(
+        f"Estimate against path patching, {table['n']} edges: Spearman's rank correlation "
+        f"{'n/a' if rho is None else f'{rho:.3f}'}, {table['same_sign']} of {table['n']} with the "
+        "same sign."
+    )
+    typer.echo(f"{'edge':<34}{'estimate':>12}{'measured':>12}")
+    for row in table["rows"]:
+        estimate, measured = row["estimate"]["mean"], row["measured"]["mean"]
+        typer.echo(
+            f"{row['label']:<34}"
+            f"{'n/a' if estimate is None else f'{estimate:+.3f}':>12}"
+            f"{'n/a' if measured is None else f'{measured:+.3f}':>12}"
+        )
 
 
 @app.command()
@@ -1424,7 +1498,12 @@ def export(
         typer.Option("--output", "-o", help="Where to write the CSV (default: stdout)."),
     ] = None,
     sites: Annotated[
-        bool, typer.Option("--sites", help="One row per site instead of per site and prompt.")
+        bool,
+        typer.Option(
+            "--sites",
+            help="One row per site instead of per site and prompt (for an edge attribution run, "
+            "every edge of its graph).",
+        ),
     ] = False,
     prompt_text: Annotated[
         bool, typer.Option("--prompt-text", help="Add each prompt's text to its rows.")
@@ -1435,6 +1514,7 @@ def export(
     from logogram.exports import results_csv, sites_csv
     from logogram.report import sites_table
     from logogram.runs import load_summary, run_records
+    from logogram.schema import EDGES_FILE
     from logogram.spec import Spec
 
     project = _open_project(project_dir, Path(run) if Path(run).exists() else None)
@@ -1443,8 +1523,12 @@ def export(
     path = folder / "results.parquet"
     if not path.is_file():
         raise _fail(f"{run_id} has no results to export.")
-    if sites:
-        chunks: Any = iter([sites_csv(sites_table(load_summary(project, run_id)))])
+    edges = folder / EDGES_FILE
+    if sites and edges.is_file():
+        # The summary lists the strongest edges; edges.parquet holds every one.
+        chunks: Any = results_csv(project.readable(edges))
+    elif sites:
+        chunks = iter([sites_csv(sites_table(load_summary(project, run_id)))])
     else:
         records = None
         if prompt_text:
@@ -1568,6 +1652,96 @@ def tasks() -> None:
             allowed = f" ({', '.join(option.allowed)})" if option.allowed else ""
             typer.echo(f"  --option {option.name}={default}{allowed}")
             typer.echo(f"      {option.description}")
+
+
+@app.command()
+def saes(
+    model: Annotated[
+        str, typer.Argument(help="The model's Hugging Face id, such as openai-community/gpt2.")
+    ],
+    search: Annotated[
+        list[str] | None,
+        typer.Argument(
+            help="Words to search for: a release, a hook, layer 8, a width such as 16k."
+        ),
+    ] = None,
+    exact: Annotated[
+        bool, typer.Option("--exact", help="List only the SAEs Logogram reads exactly.")
+    ] = False,
+    as_json: Annotated[bool, typer.Option("--json", help="Print them as JSON.")] = False,
+) -> None:
+    """List the published SAEs trained on MODEL, from SAELens's registry as the catalogue that
+    ships with Logogram records it (nothing is fetched), and whether Logogram reads each exactly
+    or why not."""
+    import json
+
+    from logogram.backends.catalogue import load_catalogue, order
+    from logogram.backends.catalogue import search as matching
+
+    catalogue = load_catalogue()
+    source = f"SAELens {catalogue.source.version}'s registry"
+    entries = catalogue.for_model(model)
+    if not entries:
+        close = sorted(
+            {
+                e.hf_models[0]
+                for e in catalogue.entries
+                if model.casefold() in e.hf_models[0].casefold()
+            }
+        )
+        hint = f" Did you mean {' or '.join(close[:4])}?" if close else ""
+        raise _fail(
+            f"{source} has no SAEs for {model}.{hint} It names models by their Hugging Face id, "
+            "such as openai-community/gpt2 or google/gemma-2-2b."
+        )
+    query = " ".join(search or [])
+    found = order(matching(entries, query) if query else entries)
+    if exact:
+        found = [e for e in found if e.exact]
+    if as_json:
+        typer.echo(json.dumps([e.to_dict() for e in found], indent=2))
+        return
+    n_exact = sum(e.exact for e in entries)
+    typer.echo(
+        f"{count_text(len(entries), 'SAE')} for {model} in {source}; Logogram reads "
+        f"{n_exact} exactly."
+    )
+    if query or exact:
+        typer.echo(f"{count_text(len(found), 'matches', 'match')} {_shown_filter(query, exact)}.")
+    by_release: dict[str, list[Any]] = {}
+    for e in found:
+        by_release.setdefault(e.release, []).append(e)
+    for release, rows in by_release.items():
+        first = rows[0]
+        typer.echo(f"\n{release}  ({first.repo})")
+        width = max(len(e.id) for e in rows)
+        for e in rows:
+            where = f"layer {e.layer}" if e.layer is not None else "layer ?"
+            size = f"{e.width:,}" if e.width else "?"
+            status = {"exact": "reads exactly", "refused": "refused", "unknown": "unknown"}
+            typer.echo(
+                f"  {e.id:<{width}}  {where:<9}  {e.site or '?':<10}  {size:>9}  "
+                f"{e.architecture or '?':<12}  {status[e.reads]}"
+            )
+        for reason in dict.fromkeys(e.reason for e in rows if e.reason):
+            typer.echo(f"  Why: {reason}")
+    typer.echo(
+        "\nLoad one in the app (Explore, Features), or from Python with "
+        "load_sae(release=..., sae_id=..., model=...). Specs record its repository and folder."
+    )
+
+
+def count_text(n: int, noun: str, singular: str | None = None) -> str:
+    """A count and its noun: "1 SAE", "3 SAEs", "1 match", "2 matches"."""
+    one = singular or noun
+    return f"{n:,} {one if n == 1 else noun if singular else noun + 's'}"
+
+
+def _shown_filter(query: str, exact: bool) -> str:
+    parts = [f"“{query}”"] if query else []
+    if exact:
+        parts.append("read exactly")
+    return " and ".join(parts)
 
 
 def _task_options(task_id: str, given: list[str]) -> dict[str, Any]:
@@ -1746,6 +1920,70 @@ def models_remove(
     except BackendError as exc:
         raise _fail(str(exc)) from exc
     typer.echo(f"Removed {model.name} from the local models. Its folder is untouched.")
+
+
+# -- toy models --------------------------------------------------------------------------------
+
+
+@app.command()
+def toy(
+    name: Annotated[
+        str | None, typer.Argument(help="induction or ioi. Leave it out to list the toys.")
+    ] = None,
+    folder: Annotated[
+        Path | None,
+        typer.Argument(help="Where its project goes (default: toy-NAME in the projects folder)."),
+    ] = None,
+) -> None:
+    """Write a model whose circuit is known, with its datasets and experiments that say what each
+    method should find, add it to the local models, and check that it does what it was built
+    to."""
+    from logogram.backends.base import BackendError
+    from logogram.toys import TOYS, ToyError, load_toy, write_toy
+
+    if name is None:
+        for t in TOYS.values():
+            typer.echo(f"{t.name}: {t.title}")
+            typer.echo(f"  {t.summary}")
+        typer.echo("\nWrite one with: logogram toy NAME [FOLDER]")
+        return
+    _quiet_environment()
+    try:
+        made = write_toy(name, folder)
+    except (ToyError, BackendError, OSError) as exc:
+        raise _fail(str(exc)) from exc
+    root = made.project.root
+    added = (
+        f"added to the local models as {made.local_name}"
+        if made.registered == "added"
+        else f"already added to the local models, as {made.local_name}"
+    )
+    typer.echo(f"Wrote the {made.toy.name} toy to {root} (a project):")
+    typer.echo(f"  model/  the model's files, {added}")
+    typer.echo(f"          (SHA-256 of its files: {made.toy.sha256})")
+    for path in made.datasets:
+        typer.echo(f"  {path}")
+    typer.echo(
+        f"  experiments/  {len(made.experiments)} experiments, each saying what it should find"
+    )
+    typer.echo("Loading and checking it…")
+    try:
+        model, check = load_toy(made.toy.name, made.local_name)
+    except (ToyError, BackendError) as exc:
+        raise _fail(str(exc)) from exc
+    model.close()
+    n, solved, diff = check["n_prompts"], check["solved"], check["logit_diff"]
+    typer.echo(
+        f"It prefers the answer on {solved['clean']} of {n} clean prompts and the distractor on "
+        f"{solved['corrupt']} of {n} corrupt ones, each by {check['margin']:g} or more (mean "
+        f"logit differences {diff['clean']:+.2f} and {diff['corrupt']:+.2f})."
+    )
+    for h in check["heads"]:
+        kind = h["kind"].replace("_", "-")
+        typer.echo(f"  {h['label']} {kind} head: attends {h['least']:.3f} {h['where']}")
+    first = root / made.experiments[0]
+    typer.echo(f"\nRun an experiment: logogram run {first}")
+    typer.echo(f"Or open the project in the app: logogram open {root}")
 
 
 # -- the run queue -----------------------------------------------------------------------------

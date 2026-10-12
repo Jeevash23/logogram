@@ -10,16 +10,22 @@ from dataclasses import dataclass
 from typing import Any
 
 from logogram.backends.base import ModelInfo
-from logogram.prompts import PreparedPrompt, common_labels
+from logogram.prompts import PreparedPrompt, common_labels, uneven_text
 from logogram.spec import (
+    HEAD_INPUTS,
     AllPositions,
+    Edge,
+    EdgesScope,
     FeaturesScope,
+    GraphScope,
+    HeadInputsScope,
     HeadsScope,
     IndexPosition,
     LabelPosition,
     LastPosition,
     LayerComponentsScope,
     LayerPositionScope,
+    NeuronsScope,
     Site,
     SiteSet,
     SiteSetsScope,
@@ -54,9 +60,14 @@ class ResolvedSite:
     # A set of sites intervened on together (a row of a site_sets scope); ``site`` is then its
     # first site, and the row reads as the whole set.
     site_set: SiteSet | None = None
+    # An edge of the model's graph (logogram.edges); ``site`` then stands at its receiver's
+    # layer, at every position.
+    edge: Edge | None = None
 
     @property
     def kind(self) -> str:
+        if self.edge is not None:
+            return "edge"
         return "site_set" if self.site_set is not None else self.site.kind
 
     @property
@@ -80,6 +91,7 @@ class ResolvedSite:
             "layer": self.layer,
             "head": self.head,
             "feature": None if self.site_set is not None else self.site.feature,
+            "neuron": None if self.site_set is not None else self.site.neuron,
             "position": self.site.position.model_dump(),
             "position_key": self.position_key(),
             "row": self.row,
@@ -88,6 +100,7 @@ class ResolvedSite:
             "variant": self.variant,
             "variant_key": self.variant_key,
             "members": members,
+            **({} if self.edge is None else {"edge": self.edge.model_dump(mode="json")}),
         }
 
 
@@ -107,31 +120,134 @@ def site_label(site: Site) -> str:
         return f"L{site.layer} H{site.head}{pos}"
     if site.kind == "sae_feature":
         return f"L{site.layer} F{site.feature}{pos}"
+    if site.kind == "q":
+        return f"L{site.layer} H{site.head} q{pos}"
+    if site.kind in ("k", "v"):
+        # A key/value head, which every query head of its group reads.
+        return f"L{site.layer} KV{site.head} {site.kind}{pos}"
+    if site.kind == "neuron":
+        return f"L{site.layer} N{site.neuron}{pos}"
     return f"L{site.layer} {COMPONENT_LABELS[site.kind]}{pos}"
 
 
+def site_unit(site: Site) -> int | None:
+    """The site's unit of its layer's activation: its head (query head, key/value head) for head,
+    q, k and v sites, its neuron for a neuron site; None for a site that is a whole vector."""
+    if site.kind == "neuron":
+        return site.neuron
+    if site.kind == "head" or site.kind in HEAD_INPUTS:
+        return site.head
+    return None
+
+
+def kv_heads(info: ModelInfo) -> int:
+    """The model's key/value heads: as many as its query heads without grouped-query attention."""
+    return int(info.extra.get("n_key_value_heads") or info.n_heads)
+
+
+def unit_count(kind: str, info: ModelInfo) -> int | None:
+    """How many units a layer's activation of ``kind`` has: heads for heads' outputs and queries,
+    key/value heads for keys and values, neurons for neurons; None for a whole vector."""
+    if kind in ("head", "q"):
+        return info.n_heads
+    if kind in ("k", "v"):
+        return kv_heads(info)
+    if kind == "neuron":
+        return info.d_mlp or 0
+    return None
+
+
+def activation_shape(kind: str, info: ModelInfo) -> tuple[int, ...]:
+    """The shape of a layer's activation of ``kind`` at one position."""
+    units = unit_count(kind, info)
+    if units is None:
+        return (info.d_model,)
+    return (units,) if kind == "neuron" else (units, info.d_head)
+
+
+def query_heads(info: ModelInfo, kv_head: int) -> list[int]:
+    """The query heads that read a key/value head: query head h reads key/value head
+    h // (query heads per key/value head), as the backend measured when the model loaded."""
+    group = max(1, info.n_heads // kv_heads(info))
+    return list(range(kv_head * group, (kv_head + 1) * group))
+
+
+def missing_kind(kind: str, info: ModelInfo) -> ScopeError:
+    """Why the loaded model has no ``kind`` sites, as the backend measured it."""
+    note = (info.extra.get("site_notes") or {}).get(kind)
+    if note:
+        return ScopeError(note)
+    return ScopeError(f"This model has no {kind} site in TransformerLens.")
+
+
 def resolve_position(
-    position: AllPositions | LastPosition | IndexPosition | LabelPosition, prompt: PreparedPrompt
+    position: AllPositions | LastPosition | IndexPosition | LabelPosition,
+    prompt: PreparedPrompt,
+    side: str = "clean",
 ) -> int | None:
-    """The token index a position refers to in this prompt, or None for all positions."""
+    """The token index a position refers to in this prompt's ``side`` (its clean or corrupt
+    prompt), or None for all positions. In a pair of equal length both sides agree, unless the
+    dataset labels the corrupt prompt's positions itself."""
     if isinstance(position, AllPositions):
         return None
+    length = prompt.length_of(side)
     if isinstance(position, LastPosition):
-        return prompt.length - 1
+        return length - 1
     if isinstance(position, IndexPosition):
-        idx = position.index if position.index >= 0 else prompt.length + position.index
-        if not 0 <= idx < prompt.length:
+        idx = position.index if position.index >= 0 else length + position.index
+        if not 0 <= idx < length:
             raise ScopeError(
                 f"Token index {position.index} is outside prompt {prompt.index}, which has "
-                f"{prompt.length} tokens."
+                f"{length} tokens."
             )
         return idx
-    if position.label not in prompt.labels:
+    labels = prompt.labels_of(side)
+    if position.label not in labels:
         raise ScopeError(
             f"Prompt {prompt.index} has no position named {position.label!r}. Add it to the "
             "dataset's positions, or choose another position."
         )
-    return prompt.labels[position.label]
+    return labels[position.label]
+
+
+# What carries a value from one prompt into another, in words, for refusing positions that don't
+# line up between prompts of different lengths.
+CARRIED = {
+    "patch": "Patching carries each activation from one prompt of a pair into the other",
+    "estimate": "Attribution patching compares each activation with the other prompt's",
+    "path": "Path patching carries the sender's activation from one prompt of a pair into the "
+    "other",
+    "mean": "Mean ablation carries each activation's mean over other prompts into the prompt",
+    "resample": "Resample ablation carries each activation from other prompts into the prompt",
+    "steer": "Steering by the mean difference compares each prompt with the other of its pair",
+}
+
+
+def check_lined_up(
+    positions: list[AllPositions | LastPosition | IndexPosition | LabelPosition],
+    prompts: list[PreparedPrompt],
+    carried: str,
+) -> None:
+    """Refuse positions that need the prompts' positions to line up (every position, or a token
+    index) when some pairs have prompts of different token lengths: a position is then matched
+    from one prompt to another by its label, or as the last token, and only so.
+
+    ``carried`` says how a value goes from one prompt into another (a key of :data:`CARRIED`)."""
+    uneven = [p.index for p in prompts if not p.even]
+    if not uneven:
+        return
+    bad = next((p for p in positions if isinstance(p, AllPositions | IndexPosition)), None)
+    if bad is None:
+        return
+    what = "every position" if isinstance(bad, AllPositions) else f"token index {bad.index}"
+    labels = common_labels(prompts)
+    named = f" or a labelled position ({', '.join(labels)})" if labels else ""
+    raise ScopeError(
+        f"{uneven_text(uneven, len(prompts))}, so their positions don't line up by index. "
+        f"{CARRIED[carried]}, and at {what} that has no meaning across different lengths. "
+        f"Choose the last token{named}, which are matched from one prompt to the other, or use "
+        "pairs of equal length."
+    )
 
 
 def _check_site(site: Site, info: ModelInfo) -> None:
@@ -142,9 +258,23 @@ def _check_site(site: Site, info: ModelInfo) -> None:
     if site.kind == "sae_feature":
         return  # checked against the SAE, which knows its layer and features
     if site.kind not in info.site_kinds:
-        raise ScopeError(f"This model has no {site.kind} site in TransformerLens.")
-    if site.kind == "head" and site.head is not None and site.head >= info.n_heads:
+        raise missing_kind(site.kind, info)
+    if site.kind in ("head", "q") and site.head is not None and site.head >= info.n_heads:
         raise ScopeError(f"Head {site.head} doesn't exist; this model has {info.n_heads} heads.")
+    if site.kind in ("k", "v") and site.head is not None and site.head >= kv_heads(info):
+        raise ScopeError(
+            f"Key/value head {site.head} doesn't exist; this model has {kv_heads(info)} key/value "
+            f"heads{_shared(info)}."
+        )
+    if site.kind == "neuron" and site.neuron is not None and site.neuron >= (info.d_mlp or 0):
+        raise ScopeError(
+            f"Neuron {site.neuron} doesn't exist; this model's MLPs have {info.d_mlp or 0} neurons."
+        )
+
+
+def _shared(info: ModelInfo) -> str:
+    group = info.n_heads // kv_heads(info)
+    return f", each read by {group} of its {info.n_heads} query heads" if group > 1 else ""
 
 
 def expand_scope(
@@ -173,7 +303,7 @@ def expand_scope(
         cols: list[dict[str, Any]] = []
         positions: list[AllPositions | LastPosition | IndexPosition | LabelPosition] = []
         if scope.positions == "each":
-            lengths = sorted({p.length for p in prompts})
+            lengths = sorted({p.length_of(side) for p in prompts for side in ("clean", "corrupt")})
             if len(lengths) > 1:
                 raise ScopeError(
                     f"Prompts have different token lengths ({lengths[0]}–{lengths[-1]}), so "
@@ -239,6 +369,55 @@ def expand_scope(
             "rows": [{"key": str(i), "label": site_label(s)} for i, s in enumerate(scope.sites)],
             "cols": [{"key": "effect", "label": "effect"}],
         }
+    elif isinstance(scope, HeadInputsScope):
+        kind = scope.input
+        if kind not in info.site_kinds:
+            raise missing_kind(kind, info)
+        count = info.n_heads if kind == "q" else kv_heads(info)
+        for layer in range(info.n_layers):
+            for head in range(count):
+                add(Site(kind=kind, layer=layer, head=head, position=scope.position), layer, head)
+        cols = []
+        for head in range(count):
+            col: dict[str, Any] = {"key": str(head), "label": str(head)}
+            if kind != "q":
+                col["query_heads"] = query_heads(info, head)
+            cols.append(col)
+        layout = {
+            "kind": "head_inputs",
+            "site": kind,
+            "row_title": "Layer",
+            "col_title": "Head" if kind == "q" else "Key/value head",
+            "rows": [{"key": str(r), "label": str(r)} for r in range(info.n_layers)],
+            "cols": cols,
+        }
+    elif isinstance(scope, NeuronsScope):
+        if "neuron" not in info.site_kinds or not info.d_mlp:
+            raise missing_kind("neuron", info)
+        for layer in scope.layers:
+            if layer >= info.n_layers:
+                raise ScopeError(
+                    f"Layer {layer} doesn't exist; this model has {info.n_layers} layers."
+                )
+        for row, layer in enumerate(scope.layers):
+            for neuron in range(info.d_mlp):
+                # Thousands of sites per layer, every field known to be valid: built directly.
+                site = Site.model_construct(
+                    kind="neuron", layer=layer, neuron=neuron, position=scope.position
+                )
+                add(site, row, neuron)
+        layout = {
+            "kind": "neurons",
+            "site": "neuron",
+            "row_title": "Layer",
+            "col_title": "Neuron",
+            # Each layer's neurons are its columns, too many to list: rows say how many.
+            "rows": [
+                {"key": str(layer), "label": str(layer), "neurons": info.d_mlp}
+                for layer in scope.layers
+            ],
+            "cols": [],
+        }
     elif isinstance(scope, SiteSetsScope):
         raise ScopeError(
             "Sets of sites are intervened on together, which activation patching and ablation do. "
@@ -248,6 +427,11 @@ def expand_scope(
         raise ScopeError(
             "Sweeping every SAE feature needs attribution patching, which estimates them all at "
             "once. To patch features for real, choose them as sites."
+        )
+    elif isinstance(scope, GraphScope | EdgesScope):
+        raise ScopeError(
+            "The edges of the graph are estimated by edge attribution and measured one at a time "
+            "by path patching. Choose one of those."
         )
     else:  # pragma: no cover - exhaustive
         raise ScopeError(f"Unknown scope {scope!r}")
@@ -259,5 +443,6 @@ def expand_scope(
         if key not in checked:
             checked.add(key)
             for prompt in prompts:
-                resolve_position(rs.site.position, prompt)
+                for side in ("clean", "corrupt"):
+                    resolve_position(rs.site.position, prompt, side)
     return sites, layout

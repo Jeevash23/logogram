@@ -32,11 +32,11 @@ from logogram.backends.base import ModelBackend, device_type
 from logogram.chat import chat_wrapper
 from logogram.datasets import decode_dataset, parse_jsonl, read_dataset_bytes
 from logogram.engine import Cancelled, run_experiment
-from logogram.fileio import atomic_output, write_text_atomic
+from logogram.fileio import atomic_output, remove_file, write_text_atomic
 from logogram.owner import claim_run, release_run
 from logogram.partial import Progress, keep_finished
 from logogram.project import TRACEBACK_FILE, Project, now_iso
-from logogram.prompts import prepare_prompts
+from logogram.prompts import prepare_prompts, uneven_text
 from logogram.results import (
     bootstrap_counts,
     build_summary,
@@ -45,8 +45,8 @@ from logogram.results import (
     site_payload,
     write_results,
 )
-from logogram.schema import CONTINUATIONS_FILE, ContinuationsFile, Manifest
-from logogram.spec import SINGLE_POSITION_METRICS, ModelRef, SAERef, Spec
+from logogram.schema import CONTINUATIONS_FILE, EDGES_FILE, ContinuationsFile, Manifest
+from logogram.spec import SINGLE_POSITION_METRICS, EdgeAttribution, ModelRef, SAERef, Spec
 
 EventFn = Callable[[str, dict[str, Any]], None]
 ModelProvider = Callable[[ModelRef], ModelBackend]
@@ -357,7 +357,7 @@ def run_spec(
     # The spec as executed: written first so a failed run still records what was attempted.
     write_json(folder / "spec.json", spec.model_dump(mode="json"))
     with contextlib.suppress(OSError):  # an earlier attempt's, in a reused folder
-        (folder / TRACEBACK_FILE).unlink(missing_ok=True)
+        remove_file(folder / TRACEBACK_FILE)
     # What the sweep finishes, so a run that stops early keeps it (see logogram.partial).
     progress = Progress()
 
@@ -386,9 +386,13 @@ def run_spec(
         kept = keep(status, again)
         # A run that kept what finished keeps the predictions it measured before the sweep too.
         # Continuations come after the sweep, so a run that stopped never has them.
-        names = ("results.parquet", "summary.json", "predictions.json") if kept is None else ()
+        names = (
+            ("results.parquet", "summary.json", "predictions.json", EDGES_FILE)
+            if kept is None
+            else ()
+        )
         for name in (*names, CONTINUATIONS_FILE):
-            (folder / name).unlink(missing_ok=True)
+            remove_file(folder / name)
         if detail is not None:
             # Before the manifest says the run failed, so whoever reads that finds why.
             with contextlib.suppress(OSError):
@@ -539,6 +543,7 @@ def run_spec(
             "id": info.id,
             "n_layers": info.n_layers,
             "n_heads": info.n_heads,
+            "n_key_value_heads": info.extra.get("n_key_value_heads"),
             "d_model": info.d_model,
             "d_head": info.d_head,
             "d_mlp": info.d_mlp,
@@ -574,6 +579,13 @@ def run_spec(
             if upgraded
             else []
         )
+        uneven = [p.index for p in prompts if not p.even]
+        if uneven:
+            notes.append(
+                f"{uneven_text(uneven, len(prompts))}: their positions were matched between the "
+                "two prompts by label and as the last token, each prompt read at its own token "
+                "there."
+            )
         progress.prepare(
             spec,
             model_shape,
@@ -592,7 +604,11 @@ def run_spec(
                     "n_prompts": len(prompts),
                     "model": model_shape,
                     "layout": layout,
-                    "sites": [s.to_dict() for s in sites],
+                    # An edge attribution run's edges (tens of thousands) arrive with its
+                    # summary, which lists the strongest.
+                    "sites": []
+                    if isinstance(spec.experiment, EdgeAttribution)
+                    else [s.to_dict() for s in sites],
                 },
             )
 
@@ -643,6 +659,10 @@ def run_spec(
             chat_template=chat.to_dict() if chat is not None else None,
         )
         write_results(folder / "results.parquet", results_table(result, stats))
+        if "edges" in result.extra:
+            from logogram.edges import write_edge_table
+
+            write_edge_table(folder / EDGES_FILE, result, stats)
         if continuations is not None:
             record = ContinuationsFile.model_validate({"run_id": run_id, **continuations})
             write_json(folder / CONTINUATIONS_FILE, record.model_dump(mode="json"))

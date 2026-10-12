@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import threading
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -17,6 +17,15 @@ import torch
 
 STREAM_KINDS = ("resid_pre", "resid_mid", "resid_post", "attn_out", "mlp_out")
 ALL_KINDS = (*STREAM_KINDS, "head")
+# A head's query, key and value: offered only where the backend measured, when the model loaded,
+# that they are all the attention reads and that each head reads its own (see the backend's
+# checks). Keys and values belong to key/value heads, fewer than query heads with grouped-query
+# attention.
+HEAD_INPUT_KINDS = ("q", "k", "v")
+# Sites that are one unit along an axis of their layer's activation: a head of the heads' outputs
+# (z), queries, keys or values (``[B, pos, heads, d_head]``), or a neuron of the MLP's hidden
+# activation (``[B, pos, d_mlp]``, one number per position).
+UNIT_KINDS = ("head", *HEAD_INPUT_KINDS, "neuron")
 
 # Devices with no float64 arithmetic: Apple's Metal has no doubles.
 NO_FLOAT64 = frozenset({"mps"})
@@ -82,13 +91,18 @@ class Tokenized:
 class Patch:
     """Replace one site's activation, row by row, during a forward pass.
 
-    ``heads`` gives each row's head for head sites. ``positions`` gives each row's single
-    position, or is ``None`` to replace every position. ``values`` is ``[B, pos, d]`` when every
-    position is replaced and ``[B, d]`` otherwise (``d`` is ``d_head`` for heads).
+    ``heads`` gives each row's head for head sites (its query head for q sites, its key/value
+    head for k and v sites); ``neurons`` gives each row's neuron for neuron sites. ``positions``
+    gives each row's single position, or is ``None`` to replace every position. ``values`` is
+    ``[B, pos, d]`` when every position is replaced and ``[B, d]`` otherwise (``d`` is ``d_head``
+    for heads, queries, keys and values; a neuron is one number, so its values are ``[B, pos]``
+    or ``[B]``).
 
     With ``mask``, the patch replaces any entries at once: ``values`` is the whole activation,
-    ``[B, pos, d]`` (``[B, pos, H, d_head]`` for heads), and ``mask`` (``[B, pos]``, or
-    ``[B, pos, H]`` for heads) says which entries take it; ``heads`` and ``positions`` are unused.
+    ``[B, pos, d]`` (``[B, pos, H, d_head]`` for heads, queries, keys and values, ``[B, pos,
+    d_mlp]`` for neurons), and ``mask`` (``[B, pos]``, ``[B, pos, H]`` for heads, queries, keys
+    and values, ``[B, pos, d_mlp]`` for neurons) says which entries take it; ``heads``,
+    ``neurons`` and ``positions`` are unused.
 
     A forward pass can be longer than the patch when tokens are appended to the prompt (an
     answer's continuation): every patch covers the prompt's positions only.
@@ -100,12 +114,56 @@ class Patch:
     heads: torch.Tensor | None = None
     positions: torch.Tensor | None = None
     mask: torch.Tensor | None = None
+    neurons: torch.Tensor | None = None
+
+    def units(self) -> torch.Tensor | None:
+        """Each row's unit of the activation: its head (or key/value head) for head, q, k and v
+        sites, its neuron for neuron sites; None for a site that is a whole vector."""
+        return self.neurons if self.kind == "neuron" else self.heads
 
 
 Patches = Patch | list[Patch] | None
 
 # score(logits [B, keep, vocab]) -> [B]: what a gradient is taken of, row by row.
 ScoreFn = Callable[[torch.Tensor], torch.Tensor]
+
+# The inputs of the model's graph (see logogram.edges): a head's query, key or value input, an
+# MLP's input, and the logits.
+EDGE_INPUTS = ("q", "k", "v", "mlp", "logits")
+
+
+@dataclass
+class InputGradients:
+    """The gradient of a score with respect to each receiver's own input: the copy of the residual
+    stream that only that receiver reads, before its normalization, which recomputes its scale
+    from the copy as the model does.
+
+    ``q``, ``k`` and ``v`` hold one tensor per layer, ``[B, pos, H, d_model]`` (keys and values
+    per key-value head), ``mlp`` one per layer ``[B, pos, d_model]``, and ``logits`` the final
+    residual stream's ``[B, pos, d_model]``. Layers that weren't asked for are None."""
+
+    q: list[torch.Tensor | None]
+    k: list[torch.Tensor | None]
+    v: list[torch.Tensor | None]
+    mlp: list[torch.Tensor | None]
+    logits: torch.Tensor | None
+
+
+class EdgePatcher:
+    """What an edge-patched forward pass asks as it goes (see :meth:`ModelBackend.edge_patch`).
+
+    ``sent`` gets each node's output as the pass computes it, in the order of the pass: the
+    embeddings (``"embed"``, layer -1, ``[B, pos, d_model]``), a layer's heads (``"head"``, their
+    outputs z, ``[B, pos, H, d_head]``) and a layer's MLP (``"mlp"``, ``[B, pos, d_model]``).
+    ``update`` returns what to add to a receiver's own input before it is read (``"q"``, ``"k"``
+    or ``"v"`` of a layer, ``[B, pos, H, d_model]``; ``"mlp"`` of a layer or ``"logits"``,
+    ``[B, pos, d_model]``), or None to leave it as it is."""
+
+    def sent(self, node: str, layer: int, output: torch.Tensor) -> None:  # pragma: no cover
+        raise NotImplementedError
+
+    def update(self, receiver: str, layer: int) -> torch.Tensor | None:  # pragma: no cover
+        raise NotImplementedError
 
 
 class BackendError(RuntimeError):
@@ -167,7 +225,9 @@ class ModelBackend(ABC):
     def capture(
         self, tokens: torch.Tensor, sites: list[tuple[str, int]]
     ) -> dict[tuple[str, int], torch.Tensor]:
-        """Activations for ``(kind, layer)`` sites: ``[B, pos, d]``, or ``[B, pos, H, d_head]``."""
+        """Activations for ``(kind, layer)`` sites: ``[B, pos, d]``, ``[B, pos, H, d_head]`` for
+        heads' outputs and queries, ``[B, pos, H_kv, d_head]`` for keys and values (``H_kv`` key/
+        value heads), ``[B, pos, d_mlp]`` for neurons."""
 
     @abstractmethod
     def attention_pattern(self, tokens: torch.Tensor, layer: int) -> torch.Tensor:
@@ -217,9 +277,44 @@ class ModelBackend(ABC):
         ``frozen_heads`` (the receiver run's own values, ``[B, pos, H, d_head]`` per layer) except
         the sender's, and so are MLP outputs when ``frozen_mlps`` is given; the receivers' inputs
         are recorded. Second pass: only those inputs are patched in. Receivers are
-        ``("head", layer, head, "q" | "k" | "v")`` or ``("logits", -1, -1, "")``.
+        ``("head", layer, head, "q" | "k" | "v")``, ``("mlp", layer, -1, "")`` (the MLP's own
+        input, before its normalization) or ``("logits", -1, -1, "")``. A sender of kind
+        ``resid_pre`` at layer 0 is the embeddings.
         """
         raise BackendError("Path patching isn't supported by this model backend.")
+
+    def edge_checks(self) -> dict[str, float]:
+        """Measure, once, what edge attribution relies on, and raise BackendError when the model
+        doesn't have it: that each head reads its own copy of the residual stream for its query,
+        key and value, before its normalization, without changing what the model computes; that
+        MLPs and the logits read theirs before their normalization; and that heads and MLPs add
+        into the residual stream (measured when the model loaded). Returns the measured errors."""
+        raise BackendError("Edge attribution isn't supported by this model backend.")
+
+    def head_output_weights(self, layer: int) -> torch.Tensor:
+        """``[H, d_head, d_model]`` in float64: each head's slice of the attention's output
+        projection at ``layer``, which writes its output z into the residual stream."""
+        raise BackendError("Reading heads' writes isn't supported by this model backend.")
+
+    def input_gradients(
+        self,
+        tokens: torch.Tensor,
+        score: ScoreFn,
+        layers: list[int],
+        logits: bool,
+        embeddings: torch.Tensor | None = None,
+    ) -> InputGradients:
+        """The gradient of ``score`` (summed over rows, read at the last position) with respect
+        to each receiver's own input in ``layers`` (and the logits', with ``logits``), in one
+        forward and backward pass. ``embeddings`` replaces the residual stream entering the first
+        layer, as in :meth:`gradients`."""
+        raise BackendError("Edge attribution isn't supported by this model backend.")
+
+    def edge_patch(self, tokens: torch.Tensor, patcher: EdgePatcher) -> torch.Tensor:
+        """Logits at the last position, ``[B, vocab]`` in float32, from a forward pass in which
+        each receiver's own input (before its normalization) gets what ``patcher`` adds, while the
+        residual stream itself runs on unchanged."""
+        raise BackendError("Edge patching isn't supported by this model backend.")
 
     def gradients(
         self,
@@ -245,6 +340,9 @@ class ModelBackend(ABC):
         answers: torch.Tensor,
         distractors: torch.Tensor,
         heads: bool,
+        *,
+        neurons: Sequence[int] = (),
+        values: Sequence[int] = (),
     ) -> dict[str, torch.Tensor]:
         """Direct contributions to logit(answer) - logit(distractor) at the last position.
 
@@ -254,6 +352,14 @@ class ModelBackend(ABC):
         minus every component's term) and ``logit_scale`` ``[B]`` (the larger magnitude of the
         answer's and the distractor's logit, which sets how finely the model's dtype resolves
         them).
+
+        For the layers in ``neurons``, ``neuron`` ``[B, len(neurons), d_mlp]``: each neuron's
+        activation at the last position times its row of the MLP's output projection. For the
+        layers in ``values``, ``value`` ``[B, len(values), H_kv, pos]``: what each key/value
+        head's value at each position adds to the last position's attention output, through
+        every query head that reads it (its attention to that position times the value through
+        the head's share of the output projection; the pattern doesn't depend on the values).
+        Both are read like the heads' terms, and only where the backend measured that they add up.
         """
         raise BackendError("Direct logit attribution isn't supported by this model backend.")
 

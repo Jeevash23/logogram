@@ -136,6 +136,9 @@ export interface SpanDraft {
   label: string;
   start: string;
   end: string;
+  /** The same label's span in the corrupt prompt, used when the draft labels the corrupt prompt. */
+  corruptStart: string;
+  corruptEnd: string;
 }
 
 /** A prompt pair as the editor's fields hold it. */
@@ -145,6 +148,9 @@ export interface RecordDraft {
   answer: AnswerDraft;
   distractor: AnswerDraft;
   positions: SpanDraft[];
+  /** Whether the positions are labelled in the corrupt prompt too (corrupt_positions), so the two
+   * prompts can have different lengths. */
+  labelCorrupt: boolean;
   id: string;
   /** JSON text of an object; empty for none. */
   meta: string;
@@ -167,7 +173,17 @@ export function draftOf(record: PromptRecord): RecordDraft {
     corrupt: record.corrupt,
     answer: answerDraft(record.answer),
     distractor: answerDraft(record.distractor),
-    positions: Object.entries(record.positions ?? {}).map(([label, [start, end]]) => ({ label, start: String(start), end: String(end) })),
+    positions: Object.entries(record.positions ?? {}).map(([label, [start, end]]) => {
+      const there = record.corrupt_positions?.[label];
+      return {
+        label,
+        start: String(start),
+        end: String(end),
+        corruptStart: there ? String(there[0]) : "",
+        corruptEnd: there ? String(there[1]) : "",
+      };
+    }),
+    labelCorrupt: record.corrupt_positions !== undefined,
     id: record.id ?? "",
     meta: record.meta ? jsonLine(record.meta) : "",
   };
@@ -178,13 +194,14 @@ export function setMembers(text: string): string[] {
   return text.split("\n").filter((line) => line !== "");
 }
 
-/** The characters of the clean prompt a span covers, or null when it isn't a span of it. */
-export function spanText(clean: string, span: SpanDraft): string | null {
+/** The characters of a prompt (the clean one, for the positions' own spans) a span covers, or
+ * null when it isn't a span of it. */
+export function spanText(text: string, span: SpanDraft): string | null {
   const start = Number(span.start);
   const end = Number(span.end);
   if (span.start.trim() === "" || span.end.trim() === "" || !Number.isInteger(start) || !Number.isInteger(end)) return null;
-  if (start < 0 || end <= start || end > clean.length) return null;
-  return clean.slice(start, end);
+  if (start < 0 || end <= start || end > text.length) return null;
+  return text.slice(start, end);
 }
 
 /**
@@ -214,6 +231,7 @@ export function recordOf(draft: RecordDraft): { record: PromptRecord; problem: n
     answers[what] = members;
   }
   const spans: [string, [number, number]][] = [];
+  const corruptSpans: [string, [number, number]][] = [];
   const labels = new Set<string>();
   for (const span of draft.positions) {
     const label = span.label;
@@ -233,6 +251,16 @@ export function recordOf(draft: RecordDraft): { record: PromptRecord; problem: n
       return fail(`Position “${label}” ends at character ${end}, but the clean prompt has ${draft.clean.length}.`);
     }
     spans.push([label, [start, end]]);
+    if (!draft.labelCorrupt) continue;
+    const there = [Number(span.corruptStart), Number(span.corruptEnd)];
+    if (span.corruptStart.trim() === "" || span.corruptEnd.trim() === "" || !there.every(Number.isInteger)) {
+      return fail(`Position “${label}” needs a start and an end in the corrupt prompt too, or leave the corrupt prompt unlabelled.`);
+    }
+    if (there[0] < 0 || there[1] <= there[0]) return fail(`Position “${label}” must end after it starts in the corrupt prompt, at 0 or later.`);
+    if (there[1] > draft.corrupt.length) {
+      return fail(`Position “${label}” ends at character ${there[1]} of the corrupt prompt, which has ${draft.corrupt.length}.`);
+    }
+    corruptSpans.push([label, [there[0], there[1]]]);
   }
   let meta: Record<string, unknown> | undefined;
   if (draft.meta.trim()) {
@@ -250,6 +278,7 @@ export function recordOf(draft: RecordDraft): { record: PromptRecord; problem: n
   // In the file's order of fields; the empty ones are left out, as the server writes them.
   const record: PromptRecord = { clean: draft.clean, corrupt: draft.corrupt, answer: answers.answer, distractor: answers.distractor };
   if (spans.length) record.positions = Object.fromEntries(spans);
+  if (draft.labelCorrupt) record.corrupt_positions = Object.fromEntries(corruptSpans);
   if (draft.id !== "") record.id = draft.id;
   if (meta) record.meta = meta;
   return { record, problem: null };

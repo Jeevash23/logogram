@@ -11,6 +11,10 @@ For each sender (a head, attention output or MLP output of the scope) and receiv
 
 The normalized effect is computed as for patching. A sender with no receiver after it has no path,
 so a sweep keeps only the layers before the last receiver.
+
+Between prompts of different token lengths, the sender is patched at a label or the last token:
+from the source prompt's token there into the receiver's. The rest of both passes runs on the
+receiver prompt alone.
 """
 
 from __future__ import annotations
@@ -21,7 +25,7 @@ from typing import Any
 
 import torch
 
-from logogram.backends.base import Cancelled, ModelBackend, ModelInfo
+from logogram.backends.base import Cancelled, ModelBackend, ModelInfo, Patch
 from logogram.engine import (
     EngineResult,
     LayerFn,
@@ -38,14 +42,36 @@ from logogram.engine import (
     make_scorer,
 )
 from logogram.prompts import PreparedPrompt, group_by_length
-from logogram.sites import ResolvedSite, ScopeError, expand_scope
-from logogram.spec import AllPositions, HeadReceiver, PathPatching, Spec
+from logogram.sites import ResolvedSite, ScopeError, check_lined_up, expand_scope
+from logogram.spec import (
+    ALL_POSITIONS,
+    AllPositions,
+    Edge,
+    EdgesScope,
+    HeadReceiver,
+    LogitsReceiver,
+    MlpReceiver,
+    PathPatching,
+    Site,
+    Spec,
+    edge_text,
+    receiver_text,
+    sender_text,
+)
 
 SENDER_KINDS = ("head", "attn_out", "mlp_out")
 
 
 def check_receivers(exp: PathPatching, info: ModelInfo) -> None:
     for receiver in exp.receivers:
+        if isinstance(receiver, MlpReceiver):
+            if receiver.layer >= info.n_layers:
+                raise ScopeError(
+                    f"L{receiver.layer} MLP doesn't exist; this model has {info.n_layers} layers."
+                )
+            if "mlp_out" not in info.site_kinds:
+                raise ScopeError("This model has no MLPs to receive a path.")
+            continue
         if not isinstance(receiver, HeadReceiver):
             continue
         if receiver.layer >= info.n_layers or receiver.head >= info.n_heads:
@@ -70,12 +96,24 @@ def path_sites(
     sites, layout = expand_scope(spec, info, prompts)
     for rs in sites:
         if rs.kind not in SENDER_KINDS:
-            raise ScopeError(
-                f"{rs.label} is a residual stream state. Path patching sends from heads, "
-                "attention outputs or MLP outputs; choose those."
+            what = (
+                "a residual stream state"
+                if rs.kind.startswith("resid")
+                else "a part of a head or an MLP, not a component that writes into the residual "
+                "stream"
             )
-    heads = [r.layer for r in exp.receivers if isinstance(r, HeadReceiver)]
-    limit = info.n_layers if len(heads) < len(exp.receivers) else max(heads)
+            raise ScopeError(
+                f"{rs.label} is {what}. Path patching sends from heads' outputs, attention "
+                "outputs or MLP outputs; choose those."
+            )
+    # A sender reaches a head in a later layer, and an MLP in its own layer or a later one (a
+    # layer's MLP reads its heads where the layer adds attention first: checked when it runs).
+    reach = [
+        r.layer if isinstance(r, HeadReceiver) else r.layer + 1
+        for r in exp.receivers
+        if not isinstance(r, LogitsReceiver)
+    ]
+    limit = info.n_layers if len(reach) < len(exp.receivers) else max(reach)
     kept = [rs for rs in sites if rs.layer < limit]
     if not kept:
         raise ScopeError(
@@ -105,13 +143,29 @@ def run_path_patching(
 ) -> EngineResult:
     exp = spec.experiment
     assert isinstance(exp, PathPatching)
+    if isinstance(spec.scope, EdgesScope):
+        return run_edge_paths(
+            spec,
+            backend,
+            prompts,
+            on_progress=on_progress,
+            on_layer=on_layer,
+            cancel=cancel,
+            on_start=on_start,
+        )
     info = backend.info
     batch_size = spec.execution.batch_size
     check_receivers(exp, info)
     sites, layout = path_sites(spec, info, prompts)
+    # Between prompts of different lengths, the sender is patched at a label or the last token.
+    check_lined_up([rs.site.position for rs in sites], prompts, "path")
     if on_start is not None:
         on_start(sites, layout)
-    groups = group_by_length(prompts)
+    receiver, source = (
+        ("corrupt", "clean") if exp.direction == "clean_to_corrupt" else ("clean", "corrupt")
+    )
+    # The receivers run in batches of their own length.
+    groups = group_by_length(prompts, receiver)
     scorer = make_scorer(spec, prompts)
     if not scorer.single_position():
         raise ScopeError(
@@ -121,14 +175,13 @@ def run_path_patching(
         )
     baselines = compute_baselines(backend, prompts, groups, batch_size, cancel, scorer)
     check_finite(baselines, info.dtype)
-    receiver, source = (
-        ("corrupt", "clean") if exp.direction == "clean_to_corrupt" else ("clean", "corrupt")
-    )
     reference = source
     warnings = check_gap(spec, baselines, prompts, receiver, reference)
     receivers = [
         ("head", r.layer, r.head, r.input)
         if isinstance(r, HeadReceiver)
+        else ("mlp", r.layer, -1, "")
+        if isinstance(r, MlpReceiver)
         else ("logits", -1, -1, "")
         for r in exp.receivers
     ]
@@ -161,7 +214,7 @@ def run_path_patching(
         kinds = list(dict.fromkeys(rs.kind for rs in layer_sites))
         sources = _LayerSources(backend, prompts, groups, layer, kinds, source, batch_size, cancel)
         for gi, group in enumerate(groups):
-            tokens = group.clean if receiver == "clean" else group.corrupt
+            tokens = group.tokens(receiver)
             buckets: dict[tuple[str, bool], list[_Row]] = {}
             for rs in layer_sites:
                 all_pos = isinstance(rs.site.position, AllPositions)
@@ -188,6 +241,7 @@ def run_path_patching(
                         info.d_head,
                         dtype,
                         backend.device,
+                        receiver=receiver,
                     )
                     local = torch.tensor([r.local for r in chunk], dtype=torch.long)
                     # The receiver run's own head (and MLP) outputs, which the first pass holds.
@@ -224,5 +278,177 @@ def run_path_patching(
                         on_progress(done, total, layer)
         if on_layer is not None:
             on_layer(layer, [rs.index for rs in layer_sites], result)
+    warnings.extend(check_values(patched, "patched values", info.dtype))
+    return result
+
+
+# -- edges, one at a time ------------------------------------------------------------------------
+
+
+def edge_rows(scope: EdgesScope, n_layers: int) -> tuple[list[ResolvedSite], dict[str, Any]]:
+    """One row per edge, in a senders × receivers layout of the senders and receivers it names.
+    A row stands at its receiver's layer (the logits at the last), as an edge attribution run's
+    rows do."""
+    senders = {e.sender.model_dump_json(): e.sender for e in scope.edges}
+    receivers = {e.receiver.model_dump_json(): e.receiver for e in scope.edges}
+    sender_keys, receiver_keys = list(senders), list(receivers)
+    sites = []
+    for i, edge in enumerate(scope.edges):
+        r = edge.receiver
+        layer = n_layers - 1 if isinstance(r, LogitsReceiver) else r.layer
+        sites.append(
+            ResolvedSite(
+                index=i,
+                site=Site(kind="resid_pre", layer=layer, position=ALL_POSITIONS),
+                row=sender_keys.index(edge.sender.model_dump_json()),
+                col=receiver_keys.index(r.model_dump_json()),
+                label=edge_text(edge),
+                edge=edge,
+            )
+        )
+    layout = {
+        "kind": "edges",
+        "row_title": "Sender",
+        "col_title": "Receiver",
+        "rows": [
+            {"key": str(i), "label": sender_text(senders[k]), "node": senders[k].kind}
+            for i, k in enumerate(sender_keys)
+        ],
+        "cols": [
+            {"key": str(i), "label": receiver_text(receivers[k]), "node": receivers[k].kind}
+            for i, k in enumerate(receiver_keys)
+        ],
+    }
+    return sites, layout
+
+
+def _check_edge(edge: Edge, info: ModelInfo) -> None:
+    s, r = edge.sender, edge.receiver
+    layers = [s.layer, None if isinstance(r, LogitsReceiver) else r.layer]
+    if any(layer is not None and layer >= info.n_layers for layer in layers):
+        raise ScopeError(
+            f"{edge_text(edge)} names a layer this model doesn't have; it has {info.n_layers}."
+        )
+    if s.head is not None and s.head >= info.n_heads:
+        raise ScopeError(f"{edge_text(edge)} names a head this model doesn't have.")
+    parallel = str(info.extra.get("block_structure")) == "parallel"
+    if parallel and isinstance(r, MlpReceiver) and s.kind == "head" and s.layer == r.layer:
+        raise ScopeError(
+            "In this model a layer's MLP reads the residual stream its heads read, not what they "
+            f"write, so {edge_text(edge)} isn't an edge."
+        )
+
+
+def run_edge_paths(
+    spec: Spec,
+    backend: ModelBackend,
+    prompts: list[PreparedPrompt],
+    *,
+    on_progress: ProgressFn | None = None,
+    on_layer: LayerFn | None = None,
+    cancel: threading.Event | None = None,
+    on_start: Callable[[list[ResolvedSite], dict[str, Any]], None] | None = None,
+) -> EngineResult:
+    """Path patching of each edge alone: the receiver prompt runs with the edge's sender taking
+    its source value and every head and MLP held at the receiver run's own, so the change reaches
+    the edge's receiver only directly; what the receiver reads there is recorded and patched into
+    an otherwise unchanged receiver run, where the metric is read. Each edge is a row, reported
+    once every prompt has run at it, so a run that stops early keeps the edges that finished."""
+    exp = spec.experiment
+    scope = spec.scope
+    assert isinstance(exp, PathPatching) and isinstance(scope, EdgesScope)
+    info = backend.info
+    batch_size = spec.execution.batch_size
+    check_receivers(exp, info)
+    for edge in scope.edges:
+        _check_edge(edge, info)
+    sites, layout = edge_rows(scope, info.n_layers)
+    if on_start is not None:
+        on_start(sites, layout)
+    groups = group_by_length(prompts)
+    scorer = make_scorer(spec, prompts)
+    if not scorer.single_position():
+        raise ScopeError(
+            "Path patching reads the metric at the last prompt position, so answers and "
+            "distractors must be single tokens or sets of single tokens. Use activation patching "
+            "for continuations of several tokens."
+        )
+    baselines = compute_baselines(backend, prompts, groups, batch_size, cancel, scorer)
+    check_finite(baselines, info.dtype)
+    receiver, source = (
+        ("corrupt", "clean") if exp.direction == "clean_to_corrupt" else ("clean", "corrupt")
+    )
+    warnings = check_gap(spec, baselines, prompts, receiver, source)
+    n = len(prompts)
+    patched, patched_prob, patched_pref = empty_values(len(sites), n)
+    result = EngineResult(
+        sites=sites,
+        layout=layout,
+        prompts=prompts,
+        baselines=baselines,
+        receiver=receiver,
+        reference=source,
+        patched=patched,
+        patched_prob=patched_prob,
+        patched_pref=patched_pref,
+        warnings=warnings,
+    )
+    held = [(kind, layer) for layer in range(info.n_layers) for kind in ("head", "mlp_out")]
+    total = len(sites) * n
+    done = 0
+    for rs in sites:
+        edge = rs.edge
+        assert edge is not None
+        s, r = edge.sender, edge.receiver
+        # The embeddings are the residual stream entering the first layer.
+        kind = {"embed": "resid_pre", "head": "head", "mlp": "mlp_out"}[s.kind]
+        key = (kind, s.layer or 0)
+        target = (
+            ("logits", -1, -1, "")
+            if isinstance(r, LogitsReceiver)
+            else ("mlp", r.layer, -1, "")
+            if isinstance(r, MlpReceiver)
+            else ("head", r.layer, r.head, r.input)
+        )
+        for group in groups:
+            tokens = group.clean if receiver == "clean" else group.corrupt
+            source_tokens = group.clean if source == "clean" else group.corrupt
+            for sl in _chunks(len(group.members), batch_size):
+                if cancel is not None and cancel.is_set():
+                    raise Cancelled()
+                idx = group.members[sl]
+                value = backend.capture(source_tokens[sl], [key])[key]
+                if s.head is not None:
+                    heads = torch.full((len(idx),), s.head, dtype=torch.long)
+                    sender = Patch(
+                        kind="head", layer=key[1], values=value[:, :, s.head], heads=heads
+                    )
+                else:
+                    sender = Patch(kind=kind, layer=key[1], values=value)
+                own = backend.capture(tokens[sl], held)
+                frozen_heads = {i: own[("head", i)] for i in range(info.n_layers)}
+                frozen_mlps = {i: own[("mlp_out", i)] for i in range(info.n_layers)}
+
+                def forward(
+                    toks: torch.Tensor,
+                    keep: int,
+                    sender: Patch = sender,
+                    frozen_heads: Any = frozen_heads,
+                    frozen_mlps: Any = frozen_mlps,
+                    target: tuple[str, int, int, str] = target,
+                ) -> torch.Tensor:
+                    assert keep == 1  # checked above: everything is read at one position
+                    logits = backend.path_patch(toks, sender, frozen_heads, frozen_mlps, [target])
+                    return logits[:, None, :]
+
+                scores = scorer.score(forward, tokens[sl], idx)
+                patched[rs.index, idx] = scores.metric
+                patched_prob[rs.index, idx] = scores.prob
+                patched_pref[rs.index, idx] = scores.pref
+                done += len(idx)
+                if on_progress is not None:
+                    on_progress(done, total, rs.layer)
+        if on_layer is not None:
+            on_layer(rs.layer, [rs.index], result)
     warnings.extend(check_values(patched, "patched values", info.dtype))
     return result

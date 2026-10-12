@@ -21,10 +21,10 @@ from typing import Any, cast
 import numpy as np
 import torch
 
-from logogram.backends.base import Cancelled, ModelBackend, Patch, Patches
+from logogram.backends.base import UNIT_KINDS, Cancelled, ModelBackend, Patch, Patches
 from logogram.metrics import Scorer
-from logogram.prompts import LengthGroup, PreparedPrompt, group_by_length
-from logogram.sites import ResolvedSite, expand_scope, resolve_position
+from logogram.prompts import LengthGroup, PreparedPrompt, group_by_length, side_groups
+from logogram.sites import ResolvedSite, check_lined_up, expand_scope, resolve_position, site_unit
 from logogram.spec import (
     METRIC_LABELS,
     Ablation,
@@ -32,6 +32,7 @@ from logogram.spec import (
     AllPositions,
     AttributionPatching,
     DirectLogitAttribution,
+    EdgeAttribution,
     FeaturesScope,
     MeanBaseline,
     PathPatching,
@@ -181,13 +182,19 @@ def continued_forward(
         else:
             key = (patch.kind, patch.layer)
             full = backend.capture(torch.cat([source, tail.to(source.device)], dim=1), [key])[key]
-            if patch.kind == "head":
-                assert patch.heads is not None
+            units = patch.units()
+            if units is not None:  # a head's (or key/value head's) vectors, or a neuron's values
                 rows = torch.arange(full.shape[0], device=full.device)
-                full = full[rows, :, patch.heads.to(full.device)]
+                full = full[rows, :, units.to(full.device)]
             extra = full[:, length:].to(dtype=patch.values.dtype, device=patch.values.device)
         values = torch.cat([patch.values, extra], dim=1)
-        whole = Patch(kind=patch.kind, layer=patch.layer, values=values, heads=patch.heads)
+        whole = Patch(
+            kind=patch.kind,
+            layer=patch.layer,
+            values=values,
+            heads=patch.heads,
+            neurons=patch.neurons,
+        )
         return backend.logits(tokens, whole, keep)
 
     return forward
@@ -213,7 +220,8 @@ def compute_baselines(
 ) -> Baselines:
     """Run every clean and corrupt prompt unpatched. For the KL divergence, the target prompts'
     own predictions are recorded first, in the same batches, so a target's divergence from itself
-    is exactly zero."""
+    is exactly zero. Each side runs in batches of its own prompts' length (``groups`` themselves,
+    for pairs of equal length)."""
     from logogram.spec import LogitDiffMetric
 
     scorer = scorer or Scorer(
@@ -221,9 +229,9 @@ def compute_baselines(
     )
     n = len(prompts)
     if scorer.kind == "kl" and len(scorer.target_logits) < n:
-        target = scorer.target
-        for group in groups:
-            tokens = group.clean if target == "clean" else group.corrupt
+        target = scorer.target or "clean"
+        for group in side_groups(groups, prompts, target):
+            tokens = group.tokens(target)
             for sl in _chunks(len(group.members), batch_size):
                 if cancel is not None and cancel.is_set():
                     raise Cancelled()
@@ -236,8 +244,8 @@ def compute_baselines(
     }
     plain = patched_forward(backend, None)
     for which in ("clean", "corrupt"):
-        for group in groups:
-            tokens = group.clean if which == "clean" else group.corrupt
+        for group in side_groups(groups, prompts, which):
+            tokens = group.tokens(which)
             for sl in _chunks(len(group.members), batch_size):
                 if cancel is not None and cancel.is_set():
                     raise Cancelled()
@@ -388,6 +396,9 @@ class _Row:
 class _LayerSources:
     """Activations captured for one layer: per length group, and at resolved positions.
 
+    ``which`` side of each pair is captured, in batches of that side's length (``groups``
+    themselves, for pairs of equal length), and positions are resolved in that side's prompts.
+
     A layer's activations for every prompt can be far larger than a batch. On a CUDA device they
     are kept in CPU memory when they would take more than a quarter of its free memory, and each
     batch's rows are moved back as they are used. Copies are exact, so where they are kept never
@@ -405,14 +416,16 @@ class _LayerSources:
         batch_size: int,
         cancel: threading.Event | None = None,
     ) -> None:
+        groups = side_groups(groups, prompts, which)
         self.prompts = prompts
         self.groups = groups
+        self.which = which
         self.device = backend.device
         self.offloaded: bool | None = None  # decided from the first batch's size
         self.by_group: dict[str, list[torch.Tensor]] = {k: [] for k in kinds}
         tokens_total = sum(len(g.members) * g.length for g in groups)
         for group in groups:
-            tokens = group.clean if which == "clean" else group.corrupt
+            tokens = group.tokens(which)
             # Capture in batches, so a forward pass never holds more than batch_size prompts.
             parts: dict[str, list[torch.Tensor]] = {k: [] for k in kinds}
             for sl in _chunks(len(group.members), batch_size):
@@ -434,12 +447,13 @@ class _LayerSources:
         self._means: dict[tuple[str, int], torch.Tensor] = {}
 
     def group_rows(
-        self, kind: str, group_index: int, local: list[int], heads: torch.Tensor | None
+        self, kind: str, group_index: int, local: list[int], units: torch.Tensor | None
     ) -> torch.Tensor:
-        """``[B, L, ...]``: these prompts' activations at every position (of these heads)."""
+        """``[B, L, ...]``: these prompts' activations at every position (of these heads, or
+        neurons: ``[B, L]``)."""
         acts = self.by_group[kind][group_index]
         idx = torch.tensor(local, dtype=torch.long, device=acts.device)
-        rows = acts[idx, :, heads.to(acts.device)] if heads is not None else acts[idx]
+        rows = acts[idx, :, units.to(acts.device)] if units is not None else acts[idx]
         return rows.to(self.device)
 
     def group_mean(self, kind: str, group_index: int) -> torch.Tensor:
@@ -458,7 +472,7 @@ class _LayerSources:
             for gi, group in enumerate(self.groups):
                 acts = self.by_group[kind][gi]
                 for local, p in enumerate(group.members):
-                    pos = resolve_position(site.site.position, self.prompts[p])
+                    pos = resolve_position(site.site.position, self.prompts[p], self.which)
                     rows.append((p, acts[local, pos]))
             rows.sort(key=lambda r: r[0])
             self._tables[key] = torch.stack([r[1] for r in rows]).to(self.device)
@@ -500,6 +514,10 @@ def run_experiment(
         from logogram.direct import run_direct_effects
 
         return run_direct_effects(spec, backend, prompts, on_prompts=on_prompts, **kwargs)
+    if isinstance(spec.experiment, EdgeAttribution):
+        from logogram.edges import run_edge_attribution
+
+        return run_edge_attribution(spec, backend, prompts, on_prompts=on_prompts, **kwargs)
     if isinstance(spec.experiment, AttributionPatching):
         from logogram.atp import run_attribution_patching
 
@@ -540,18 +558,6 @@ def run_engine(
     info = backend.info
     batch_size = spec.execution.batch_size
     sites, layout = expand_scope(spec, info, prompts)
-    if on_start is not None:
-        on_start(sites, layout)
-    groups = group_by_length(prompts)
-    group_of = {i: gi for gi, g in enumerate(groups) for i in g.members}
-    local_of = {i: li for g in groups for li, i in enumerate(g.members)}
-    n = len(prompts)
-    warnings: list[str] = []
-
-    scorer = make_scorer(spec, prompts)
-    baselines = compute_baselines(backend, prompts, groups, batch_size, cancel, scorer)
-    check_finite(baselines, info.dtype)
-
     exp = spec.experiment
     baseline_kind: str
     if isinstance(exp, ActivationPatching):
@@ -575,6 +581,22 @@ def run_engine(
         raise EngineError(f"Unknown experiment {exp!r}")
     receiver = receiver_override or receiver
     source = source_override or source
+    # Between prompts of different lengths, a value is carried at a label or the last token only.
+    # (Zero ablation carries nothing, and a prompt patched into itself lines up with itself.)
+    if baseline_kind != "zero" and not (baseline_kind == "patch" and source == receiver):
+        check_lined_up([s.site.position for s in sites], prompts, baseline_kind)
+    if on_start is not None:
+        on_start(sites, layout)
+    # The receivers run in batches of their own length.
+    groups = group_by_length(prompts, receiver)
+    group_of = {i: gi for gi, g in enumerate(groups) for i in g.members}
+    local_of = {i: li for g in groups for li, i in enumerate(g.members)}
+    n = len(prompts)
+    warnings: list[str] = []
+
+    scorer = make_scorer(spec, prompts)
+    baselines = compute_baselines(backend, prompts, groups, batch_size, cancel, scorer)
+    check_finite(baselines, info.dtype)
     warnings.extend(check_gap(spec, baselines, prompts, receiver, reference))
 
     donors: list[list[int]] | None = None
@@ -627,8 +649,7 @@ def run_engine(
             else None
         )
         for gi, group in enumerate(groups):
-            receiver_tokens = group.clean if receiver == "clean" else group.corrupt
-            source_tokens = group.clean if source == "clean" else group.corrupt
+            receiver_tokens = group.tokens(receiver)
             # Rows are grouped by (kind, all-positions?) so one hook serves the whole batch.
             buckets: dict[tuple[str, bool], list[_Row]] = {}
             for site in layer_sites:
@@ -661,11 +682,13 @@ def run_engine(
                         info.d_head,
                         model_dtype,
                         backend.device,
+                        receiver=receiver,
                     )
                     local_idx = torch.tensor([r.local for r in chunk], dtype=torch.long)
                     if baseline_kind in ("patch", "resample") and all_pos:
+                        # Every position lines up: pairs of equal length, or a prompt with itself.
                         donor = [r.prompt if r.donor is None else r.donor for r in chunk]
-                        own = source_tokens[torch.tensor([local_of[p] for p in donor])]
+                        own = group.tokens(source)[torch.tensor([local_of[p] for p in donor])]
                         forward = continued_forward(backend, patch, own)
                     elif baseline_kind == "zero" and all_pos:
                         forward = continued_forward(backend, patch, None)
@@ -706,25 +729,44 @@ def _build_patch(
     d_head: int,
     dtype: torch.dtype,
     device: torch.device,
+    *,
+    receiver: str = "clean",
 ) -> Patch:
+    """The patch for a batch of rows of one length group of ``receiver`` prompts: each row's
+    value goes into its own prompt's token at the site's position, from the source's token at
+    that position (``sources`` resolves it in the source prompts)."""
     B = len(rows)
-    is_head = kind == "head"
-    heads = torch.tensor([r.site.head for r in rows], dtype=torch.long) if is_head else None
+    # A head's output, query, key or value is one head's vector of its layer's activation; a
+    # neuron is one number of the MLP's hidden activation. Other sites are whole vectors.
+    is_unit = kind in UNIT_KINDS
+    units = (
+        torch.tensor([site_unit(r.site.site) for r in rows], dtype=torch.long) if is_unit else None
+    )
+    heads, neurons = (None, units) if kind == "neuron" else (units, None)
     positions = None
     if not all_pos:
         positions = torch.tensor(
-            [resolve_position(r.site.site.position, prompts[r.prompt]) for r in rows],
+            [resolve_position(r.site.site.position, prompts[r.prompt], receiver) for r in rows],
             dtype=torch.long,
         )
-    d = d_head if is_head else d_model
+    width: tuple[int, ...] = () if kind == "neuron" else (d_head,) if is_unit else (d_model,)
+
+    def patch(values: torch.Tensor) -> Patch:
+        return Patch(
+            kind=kind,
+            layer=layer,
+            values=values,
+            heads=heads,
+            positions=positions,
+            neurons=neurons,
+        )
 
     if baseline_kind == "zero":
-        shape = (B, length, d) if all_pos else (B, d)
-        values = torch.zeros(shape, dtype=dtype, device=device)
-        return Patch(kind=kind, layer=layer, values=values, heads=heads, positions=positions)
+        shape = (B, length, *width) if all_pos else (B, *width)
+        return patch(torch.zeros(shape, dtype=dtype, device=device))
 
     assert sources is not None
-    dev_heads = heads.to(device) if heads is not None else None
+    dev_units = units.to(device) if units is not None else None
 
     if baseline_kind in ("patch", "resample"):
         if baseline_kind == "patch":
@@ -735,7 +777,7 @@ def _build_patch(
             # Patch pairs share a length; resample donors are drawn from the same length group.
             assert all(group_of[p] == group_index for p in src_prompts)
             values = sources.group_rows(
-                kind, group_index, [local_of[p] for p in src_prompts], dev_heads
+                kind, group_index, [local_of[p] for p in src_prompts], dev_units
             )
         else:
             table = sources.table(kind, rows[0].site)
@@ -743,20 +785,20 @@ def _build_patch(
                 # Rows with different positions (layer x position sweeps) gather from their own table.
                 values = torch.stack(
                     [
-                        _table_row(sources.table(kind, r.site), p, r.site.head if is_head else None)
+                        _table_row(sources.table(kind, r.site), p, site_unit(r.site.site))
                         for r, p in zip(rows, src_prompts, strict=True)
                     ]
                 )
             else:
                 idx = torch.tensor(src_prompts, dtype=torch.long, device=device)
-                values = table[idx, dev_heads] if is_head else table[idx]
-        return Patch(kind=kind, layer=layer, values=values, heads=heads, positions=positions)
+                values = table[idx, dev_units] if is_unit else table[idx]
+        return patch(values)
 
     # Mean ablation.
     if all_pos:
         mean = sources.group_mean(kind, group_index)  # [L, ...]
-        if is_head:
-            values = mean[:, dev_heads].permute(1, 0, 2)  # [B, L, d_head]
+        if is_unit:
+            values = mean[:, dev_units].movedim(1, 0)  # [B, L, d_head], or [B, L] for neurons
         else:
             values = mean.unsqueeze(0).expand(B, *mean.shape)
     else:
@@ -767,11 +809,11 @@ def _build_patch(
             if key not in means:
                 means[key] = sources.table(kind, r.site).float().mean(dim=0)
             m = means[key]
-            out.append(m[r.site.head] if is_head else m)
+            out.append(m[site_unit(r.site.site)] if is_unit else m)
         values = torch.stack(out)
-    return Patch(kind=kind, layer=layer, values=values, heads=heads, positions=positions)
+    return patch(values)
 
 
-def _table_row(table: torch.Tensor, prompt: int, head: int | None) -> torch.Tensor:
+def _table_row(table: torch.Tensor, prompt: int, unit: int | None) -> torch.Tensor:
     row = table[prompt]
-    return row[head] if head is not None else row
+    return row[unit] if unit is not None else row

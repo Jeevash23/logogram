@@ -518,8 +518,101 @@ def test_options_left_out_or_none_take_their_defaults():
         "templates": ["went", "arrived", "got"],
         "patterns": ["ABBA", "BABA"],
         "corruption": "flip",
+        "full_vocabulary": False,
     }
     assert check_options("factual_recall", {"single_token_answers": False}) == {
         "templates": ["capital_of", "capital_city", "called"],
         "single_token_answers": False,
+        "full_vocabulary": False,
     }
+
+
+# -- the full vocabulary ------------------------------------------------------------------------
+
+# A word of each task that the stand-in splits, and so makes a pair whose prompts differ in length.
+SPLIT = {
+    "ioi": "Mary",
+    "greater_than": "war",
+    "docstring": "load",
+    "gendered_pronoun": "Mary",
+    "subject_verb_agreement": "keys",
+    "factual_recall": "France",
+}
+
+
+@pytest.mark.parametrize("task_id", ALL_TASKS)
+def test_the_full_vocabulary_keeps_split_words_and_labels_both_prompts(task_id):
+    """Words the model splits are kept, with pairs whose prompts then differ in length: both
+    prompts' positions are labelled, each at the same words, and the pairs prepare."""
+    word = SPLIT[task_id]
+    tok = StandIn(split={word})
+    options = {**every_template(task_id), "full_vocabulary": True}
+    records = generate_task(task_id, 100, 0, options, **tok.callbacks())
+    assert any(word in words(r.clean) + words(r.corrupt) for r in records)
+    # In greater-than both prompts hold the noun: their years make them differ (below).
+    uneven = task_id != "greater_than"
+    assert any(tok.count(r.clean) != tok.count(r.corrupt) for r in records) == uneven
+    assert dumps(parse_jsonl(to_jsonl(records))) == dumps(records)
+    for r in records:
+        assert r.meta["vocabulary"] == "full"
+        assert set(r.positions) == set(r.corrupt_positions) == LABELS[task_id]
+        start, end = r.corrupt_positions["end"]
+        assert end == len(r.corrupt) and r.corrupt[start - 1] in " \n"
+        for label, (a, b) in r.positions.items():
+            c, d = r.corrupt_positions[label]
+            # The same slot of the template in both prompts: the same text, or what replaced it.
+            assert r.clean[:a].count("\n") == r.corrupt[:c].count("\n")
+            if label == "end":
+                assert r.clean[a:b] == r.corrupt[c:d]
+    continuations = TASKS[task_id].recommended_metric(options) != "logit_diff"
+    prepared = prepare_prompts(StandInBackend(tok), records, True, continuations=continuations)
+    assert len(prepared) == len(records) and any(not p.even for p in prepared) == uneven
+    for p in prepared:
+        assert p.labels["end"] == len(p.clean.ids) - 1
+        assert p.corrupt_labels["end"] == len(p.corrupt.ids) - 1
+    # Without the option, the same seed gives what it always gave.
+    plain = generate_task(task_id, 100, 0, every_template(task_id), **tok.callbacks())
+    assert all(r.corrupt_positions is None and "vocabulary" not in r.meta for r in plain)
+
+
+def test_the_full_vocabulary_labels_what_each_prompt_holds_there():
+    tok = StandIn(split={"Mary", "John"})
+    records = generate_task("ioi", 40, 0, {"full_vocabulary": True}, **tok.callbacks())
+    for r in records:
+        io, s = r.answer.strip(), r.distractor.strip()
+        assert r.clean[slice(*r.positions["IO"])] == io
+        assert r.clean[slice(*r.positions["S2"])] == s
+        assert r.corrupt[slice(*r.corrupt_positions["S2"])] == io  # flipped
+        assert r.corrupt[slice(*r.corrupt_positions["IO"])] == io
+    # Names of several tokens are answers of several tokens: read with a log-probability metric.
+    assert TASKS["ioi"].recommended_metric({"full_vocabulary": True}) == "logprob_diff"
+    assert TASKS["ioi"].recommended_metric({}) == "logit_diff"
+    pronouns = generate_task(
+        "gendered_pronoun", 40, 0, {"full_vocabulary": True}, **tok.callbacks()
+    )
+    for r in pronouns:
+        assert r.clean[slice(*r.positions["name"])] in MALE_NAMES + FEMALE_NAMES
+        assert r.corrupt[slice(*r.corrupt_positions["name"])] in MALE_NAMES + FEMALE_NAMES
+    countries = generate_task("factual_recall", 40, 0, {"full_vocabulary": True})
+    names = {c for c, _ in CAPITALS}
+    for r in countries:
+        assert r.corrupt[slice(*r.corrupt_positions["country"])] in names
+
+
+def test_greater_than_keeps_years_of_other_lengths_with_the_full_vocabulary():
+    tok = StandIn()
+
+    def count(text: str) -> int:  # every corrupt year is one token longer
+        return tok.count(text) + (re.search(r"\d\d01 ", text) is not None)
+
+    records = generate_task(
+        "greater_than", 5, 0, {"full_vocabulary": True}, single_token=tok.single, token_count=count
+    )
+    assert len(records) == 5
+    for r in records:
+        for label in ("YY", "XX2", "end"):
+            a, b = r.positions[label]
+            c, d = r.corrupt_positions[label]
+            assert (r.clean[a:b], r.corrupt[c:d]) == (
+                (f"{r.meta['yy']:02d}", "01") if label == "YY" else (r.clean[a:b],) * 2
+            )
