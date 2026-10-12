@@ -37,7 +37,9 @@ a diverging cobalt to amber scale, always with its legend, and nothing else does
 * **Your text** reads any text without making a dataset: its tokens and the model's most likely
   next tokens after each, what each layer would predict at a chosen token, where a head attends,
   the SAE's features when one is loaded, and **Continue the text**, which shows what the model
-  writes next, with and without an SAE feature added. Nothing is saved.
+  writes next: 1 to 64 new tokens, each the most likely one (a tie goes to the lowest token id),
+  the whole text read again for each, and, with an SAE loaded, a second continuation with one of
+  its features added (see [steering](concepts/steering.md)). Nothing is saved.
 
 ## Experiment: set up what runs
 
@@ -54,7 +56,10 @@ a diverging cobalt to amber scale, always with its legend, and nothing else does
   made for chat). Beside it, a summary says what will run, how much work it is, whether a batch
   fits in memory, whether the baseline was checked, and what is still missing, above **Run**.
   While another job runs, **Run** reads **Queue**. Ctrl/⌘ Z and Ctrl/⌘ Shift Z undo and redo
-  changes to the form.
+  changes to the form. When an action elsewhere replaces the form (**Patch here**, **Edit and
+  rerun**, staged sites), a notice offers to undo it. A form that isn't saved is kept in this
+  browser for each project, and comes back when the project opens again, until it is saved, run
+  or queued.
 * **Spec** shows the complete `spec.json` of the form or of the open run: what the app, `logogram
   run` and the Python API all execute. See [the spec reference](reference/spec.md).
 
@@ -70,7 +75,10 @@ a diverging cobalt to amber scale, always with its legend, and nothing else does
   [compare two runs](guides/compare-runs.md)).
 * **Sweeps** shows a sweep: one spec run across several seeds, datasets or checkpoints, and which
   sites keep their sign and size across them (see [sweeps](guides/sweeps.md)).
-* **Research notes** keeps saved selections and notes, to reopen, edit or delete.
+* **Research notes** keeps saved selections and notes, to reopen, edit or delete. **Save
+  selection** (in Model) writes named sites, their exact positions, the model's settings, the run
+  they came from and your observations to the project's `research.json`. A note changed meanwhile
+  in another tab isn't overwritten: your text stays, to save as a separate note.
 
 ## Around the workspaces
 
@@ -82,7 +90,14 @@ a diverging cobalt to amber scale, always with its legend, and nothing else does
   **]** step through the prompts.
 * **History** lists every run in the project, the queue, and drafts: search by title, name, id,
   method, model or dataset; rename (F2), star, archive or delete a run from its menu. A run's
-  title, star and archive mark live beside its spec, which never changes.
+  title, star and archive mark live beside its spec, which never changes. Deleting asks first,
+  then removes the run's folder for good: there is no trash, since a deleted run kept out of sight
+  would still travel with the project when it is shared. Runs derived from a deleted run stay, and
+  say so. A run whose spec can't be read is listed as unreadable, with what is wrong and how to
+  fix it.
+* **The address** keeps your place: the view, and the run it shows or the two it compares. Back
+  and Forward move between views, a reload comes back to the same place, and **All projects**
+  leads back to the open project as you left it.
 * **Commands** (Ctrl/⌘ K) runs any action by name, or jumps to a head (`L9H9`).
 * **Help** opens the guide, the walkthrough of the example, the keyboard shortcuts, these pages
   on GitHub, a problem report to paste into an issue, the system check, and About.

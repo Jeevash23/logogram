@@ -11,8 +11,10 @@ checked when it loads rather than trusted to be what its architecture's name say
 GPT-2 small is the model the bundled examples were made for. Every method has been run end to end
 with real weights on GPT-2 small (with a SAELens and an OpenAI SAE), Pythia-70m (with an
 EleutherAI SAE) and Qwen 2.5 0.5B, and the test suite runs the sanity checks on tiny random models
-of the Llama, Pythia, Qwen 2, Gemma 2 and OLMo 2 families without downloading anything. Gemma
-Scope 2's files were checked on Gemma 3 270M with weight processing off.
+of the Llama, Pythia, Qwen 2, Gemma 2 and OLMo 2 families without downloading anything. On GPT-2
+small, patching the whole input gives an effect of exactly 1 under every metric, answers of several
+tokens included; the logit difference and the log-probability difference, equal in exact
+arithmetic for answers of one token, agree to 5 × 10⁻⁷; and reruns are bit-identical. Gemma Scope 2's files were checked on Gemma 3 270M with weight processing off.
 
 A small model may not do a task at all (Pythia-70m prefers the repeated name in IOI), and its runs
 then say so. The example's names are single tokens for GPT-2 and Qwen but not all for Pythia: for
