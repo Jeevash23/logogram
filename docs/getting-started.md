@@ -32,7 +32,7 @@ models from Hugging Face when you ask.
 
 The first time, a system check shows what Logogram found, and the bundled examples: experiments
 on GPT-2 small whose results can be read against the papers that found them. Choose **Open**
-beside *Indirect object identification*. Logogram copies the example into
+beside the *IOI example* (indirect object identification). Logogram copies the example into
 `Documents/Logogram/ioi-example`, an ordinary project folder, and opens it. A copy made before
 opens as you left it; it is never replaced.
 
