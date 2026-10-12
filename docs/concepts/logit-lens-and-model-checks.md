@@ -6,7 +6,7 @@ what the methods rely on, and offers a method only where the property it needs w
 
 ## The checks on loading
 
-On a short fixed input, every model is checked for three things:
+On a short fixed input, every model is checked for four things:
 
 * **Predictions.** TransformerLens's version of the model must predict what the original model
   predicts. If processing the weights (folding the normalization into the weights and centering
@@ -21,8 +21,20 @@ On a short fixed input, every model is checked for three things:
   isn't in models that normalize the attention output after combining the heads (Gemma 2 and 3,
   OLMo 2), so single heads' direct effects, and what features on heads' outputs write, are
   refused there.
+* **Queries, keys, values and neurons.** Taken from another input, every query, key and value of
+  every layer must give that input's attention outputs, and every neuron its MLP outputs; one
+  query, key or value replaced alone may change only the heads that read it. Only the sites that
+  pass are offered, and the model says why the others aren't: OLMo 2 normalizes every head's
+  queries and keys together, so it offers values and neurons only. Whether each head's output is
+  its attention pattern times its values, and each MLP's output the neurons' writes plus its bias,
+  is measured too, for direct logit attribution.
 * **The lens.** The logit lens below is offered when the model's final normalization and
   unembedding, with any soft cap on its logits, reproduce its own output.
+
+[Edge attribution](edge-attribution.md#limits) relies on more, measured the first time it plans
+or runs on a model: that giving each receiver its own copy of the residual stream doesn't change
+what the model predicts, that every copy is read before its normalization, and that changing one
+head's copy changes no other head.
 
 The measured layer structure is kept with each run's results, so a saved run's map can be drawn
 without loading the model. A model that looks made for chat (its name says so, such as `-Instruct`, or it stops generating at the token

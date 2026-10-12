@@ -1,9 +1,9 @@
 # Logogram's documentation
 
 Logogram is a local workbench for causal experiments inside language models: activation
-patching, ablation, attribution patching, path patching, direct logit attribution, steering and
-SAE features, with the statistics to read them by. These pages teach the app and the methods,
-from a first run to the exact definition of every number.
+patching, ablation, attribution patching, path patching, edge attribution, direct logit
+attribution, steering and SAE features, with the statistics to read them by. These pages teach
+the app and the methods, from a first run to the exact definition of every number.
 
 ## Start here
 
@@ -19,15 +19,16 @@ method comes from.
 
 | Page | What it covers |
 |---|---|
-| [Activation patching](concepts/activation-patching.md) | Copying an activation from one prompt into the run on the other; denoising and noising; what an effect of 1 means; sites and positions |
+| [Activation patching](concepts/activation-patching.md) | Copying an activation from one prompt into the run on the other; denoising and noising; what an effect of 1 means; sites (queries, keys, values and neurons too) and positions; pairs of different lengths |
 | [Ablation](concepts/ablation.md) | Replacing an activation with zeros, a mean or other prompts' values, and why the baseline has no default |
 | [Metrics and normalization](concepts/metrics.md) | The logit difference and the other metrics, answers of several tokens, the normalized effect |
 | [Statistics](concepts/statistics.md) | Bootstrap intervals, clusters, simultaneous bands, q-values, sign flips, paired comparisons |
-| [Attribution patching](concepts/attribution-patching.md) | Estimating every site from gradients, integrated gradients, and verifying estimates by patching |
-| [Path patching](concepts/path-patching.md) | A component's effect through chosen receivers only |
-| [Direct logit attribution](concepts/direct-logit-attribution.md) | Splitting the logit difference into what each component writes |
+| [Attribution patching](concepts/attribution-patching.md) | Estimating every site from gradients (neurons and SAE features included), integrated gradients, and verifying estimates by patching |
+| [Path patching](concepts/path-patching.md) | A component's effect through chosen receivers only, and single edges one at a time |
+| [Edge attribution](concepts/edge-attribution.md) | Estimating every edge of the model's graph from gradients (EAP and EAP-IG), verifying the strongest by path patching, and the faithfulness curve |
+| [Direct logit attribution](concepts/direct-logit-attribution.md) | Splitting the logit difference into what each component, neuron or value writes |
 | [Steering](concepts/steering.md) | Adding a direction to the residual stream, with held-out prompts and a random control |
-| [SAE features and transcoders](concepts/sae-features.md) | Sparse autoencoders, transcoders, patching features, what a feature writes |
+| [SAE features and transcoders](concepts/sae-features.md) | Finding a published SAE by name, sparse autoencoders, transcoders, patching features, what a feature writes |
 | [Circuits](concepts/circuits.md) | Sets of sites intervened on at once: faithfulness, completeness, minimality, interactions |
 | [The logit lens and the model checks](concepts/logit-lens-and-model-checks.md) | Reading each layer's prediction, and what Logogram measures about a model when it loads |
 | [Runs and projects](concepts/runs-and-projects.md) | What a run keeps, a run that stops early, reproducibility, the files of a project |
@@ -38,7 +39,7 @@ method comes from.
 |---|---|
 | [Replicate IOI on GPT-2](guides/replicate-ioi.md) | Find the heads that carry the indirect object, and read them against the paper |
 | [Find induction heads](guides/find-induction-heads.md) | Score every head with the head finder in the Attention view |
-| [Work with an SAE](guides/work-with-an-sae.md) | Load a published SAE, check its fit, read and patch its features, steer along one |
+| [Work with an SAE](guides/work-with-an-sae.md) | Find a published SAE by name and load it, check its fit, read and patch its features, steer along one |
 | [Check a finding's robustness](guides/check-robustness.md) | Rerun with one choice changed, and read what moved |
 | [Compare two runs](guides/compare-runs.md) | Paired differences, rank correlation and changed conclusions |
 | [Sweep seeds, datasets or checkpoints](guides/sweeps.md) | Run one spec across several values, and read which sites hold |

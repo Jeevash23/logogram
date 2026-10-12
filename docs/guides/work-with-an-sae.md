@@ -5,13 +5,22 @@ features on the IOI prompts, finds the ones that matter for the answer, patches 
 along one. [SAE features and transcoders](../concepts/sae-features.md) explains what each step
 computes.
 
-## 1. Load it
+## 1. Find it and load it
 
-With GPT-2 small loaded and the IOI example open, go to **Explore → Features** and load an SAE.
-Joseph Bloom's residual stream SAEs for GPT-2 small are a good start: repository
-`jbloom/GPT2-Small-SAEs-Reformatted`, folder `blocks.8.hook_resid_pre`, the residual stream
-entering layer 8, with 24,576 features. It downloads once (about 150 MB), from its safetensors
-file only.
+With GPT-2 small loaded and the IOI example open, go to **Explore → Features**. **Published SAEs**
+lists the SAEs that SAELens's registry has for the loaded model, from the catalogue that ships
+with Logogram, the ones Logogram reads exactly first. Joseph Bloom's residual stream SAEs for
+GPT-2 small are a good start: search for `layer 8 resid_pre` and choose `blocks.8.hook_resid_pre`
+of the release `gpt2-small-res-jb`, the residual stream entering layer 8, with 24,576 features.
+Its details say where it is published (repository `jbloom/GPT2-Small-SAEs-Reformatted`, folder
+`blocks.8.hook_resid_pre`), its licence, and that Logogram reads it exactly. **Load this SAE**
+downloads it once (about 150 MB), from its safetensors file only. An SAE the catalogue doesn't
+list loads by its Hugging Face repository and folder, under **Or name a repository and folder**.
+
+The same SAEs are listed by `logogram saes openai-community/gpt2 layer 8 resid_pre` on the
+command line, and `lg.load_sae(release="gpt2-small-res-jb", sae_id="blocks.8.hook_resid_pre",
+model=model)` loads this one from Python. However it is chosen, specs record the SAE's repository,
+folder and revision, as in step 4.
 
 An SAE fits activations like those it was trained on. These were trained on TransformerLens's
 processed weights, which is how Logogram loads models unless told otherwise; for SAEs trained on a
@@ -77,6 +86,8 @@ at once, without a run.
 
 The [SAE notebook](../../notebooks/sae-features.ipynb) does steps 1 and 3 to 5 with
 `lg.load_sae`, `lg.look(model, text, sae=sae)`, `lg.feature_writes` and `lg.run`.
+`lg.list_saes(model, "layer 8")` lists the published SAEs for the loaded model, as the app's
+search does.
 
 ## References
 

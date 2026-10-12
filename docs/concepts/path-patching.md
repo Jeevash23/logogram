@@ -25,10 +25,24 @@ nothing travels along it.
 
 * A sender in or after the last receiver's layer has no path to it, so a sweep keeps only the
   layers before the last receiver.
+* A path starts at a component that writes into the residual stream, so queries, keys, values and
+  neurons can't be senders.
 * In models whose heads share keys and values (grouped-query attention, as in Llama and Qwen),
   only queries can be receivers.
+* With [pairs of different lengths](activation-patching.md#pairs-of-different-lengths), the
+  sender is patched at a label or the last token, from the source prompt's token there into the
+  receiver's; the rest of both passes runs on the receiver prompt alone.
 * From the last layer to the logits, a path is the whole effect: tests check that path patching
   there gives exactly what activation patching gives.
+
+## Edges, one at a time
+
+With an `edges` scope, each result is one edge of the model's graph: one sender's effect through
+one receiver alone (a later head's query, key or value, a later MLP's input, or the logits), with
+every other head and every MLP held, so the change reaches the receiver only directly. This is how
+[edge attribution](edge-attribution.md) verifies its strongest estimates: **Verify top 20 by path
+patching** writes such a spec from an edge attribution run. It needs `freeze_mlps` set to `true`,
+and pairs of equal length.
 
 ## When to use it
 

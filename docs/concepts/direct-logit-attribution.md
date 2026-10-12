@@ -12,6 +12,9 @@ For the prompts the spec names (`prompts`: the clean or the corrupt ones; there 
 since they split differently), Logogram runs the model once and reads, at the last token:
 
 * what each head, attention output and MLP output of the scope wrote into the residual stream;
+  a neuron's term is its activation times its row of the MLP's output projection, and a value's
+  is what it adds to the last token's attention output through every head that reads it, with
+  their attention as it was in the run;
 * the final normalization, with its scale held at its value in that run, which makes the map
   from the residual stream to the logits linear;
 * the unembedding of the answer minus that of the distractor.
@@ -36,9 +39,13 @@ fifth of the logit difference directly: the heads Mathwin et al. (2023) found.
 Logogram refuses direct logit attribution where it isn't defined:
 
 * for residual stream sites, which no single component writes;
-* at positions other than the last token, which the logits don't read;
-* for single heads in models that normalize the attention output after combining the heads
-  (Gemma 2, OLMo 2), where a head's write has no fixed share;
+* at positions other than the last token, which the logits don't read (a value at an earlier
+  position reaches the last token through the attention, so values take any position);
+* for queries and keys, which act on the logits only through the softmax of their head's
+  attention;
+* for single heads and values in models that normalize the attention output after combining the
+  heads (Gemma 2, OLMo 2), where a head's write has no fixed share, and for neurons in models that
+  normalize the MLP's output (Gemma 2, OLMo 2);
 * for models that soft-cap their logits, which makes the map from the residual stream to the
   logits non-linear.
 

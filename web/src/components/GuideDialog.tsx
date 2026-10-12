@@ -189,6 +189,11 @@ function PageText({ page }: { page: GuidePageId }) {
           view draws the sites a run measured as a grid of their own.
         </p>
         <p>
+          Queries, keys, values, neurons and the edges between components have no cell on the map. The results view
+          shows queries, keys and values as a grid of layers by heads, neurons layer by layer with the strongest
+          listed, and edges drawn between the components they join.
+        </p>
+        <p>
           Color is the effect, on a scale symmetric around zero and always shown beside it: cobalt where the
           intervention moves the answer toward the other prompt, amber where it moves it away, and no color where it
           changes nothing. <strong>Show values</strong> prints each cell&rsquo;s mean, and <strong>±1</strong> fixes the

@@ -53,7 +53,9 @@ first run finishes, a button beside the tabs names the next of four steps.
 
 1. **Experiment → Prompts** shows each pair token by token, with the tokens that differ marked.
    Logogram checks that both prompts of a pair have the same number of tokens, so that each
-   position means the same thing in both, and says which pairs it can't use, and why.
+   position means the same thing in both (or, for
+   [pairs of different lengths](concepts/activation-patching.md#pairs-of-different-lengths), that
+   their positions are labelled in both), and says which pairs it can't use, and why.
 2. **Experiment → Baseline** runs the model on the clean and corrupt prompts without changing
    anything. Press **Check the baseline**: the clean prompts should prefer the answer and the
    corrupt ones the other name. The gap between them is what every effect is measured against,

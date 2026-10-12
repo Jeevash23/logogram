@@ -41,6 +41,7 @@ export const GUIDE_PAGES: GuidePage[] = [
       { title: "Reading the map", path: "docs/getting-started.md", anchor: "read-the-map" },
       { title: "The logogram", path: "docs/getting-started.md", anchor: "the-logogram" },
       { title: "Activation patching", path: "docs/concepts/activation-patching.md" },
+      { title: "Edge attribution", path: "docs/concepts/edge-attribution.md" },
     ],
   },
   {

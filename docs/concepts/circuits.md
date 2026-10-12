@@ -17,9 +17,17 @@ set:
   component; the component's other positions are replaced with the rest;
 * a `complement` set with no sites replaces the whole universe: **everything**.
 
+The universe can also be made of finer parts: every head's query, key or value, and every MLP
+neuron, so a circuit can keep, say, a few heads' values and a few neurons. A universe can't hold a
+component and its parts together (a head's output and its values, an MLP's output and its
+neurons), since one is made from the other.
+
 The replacement is the spec's experiment: the other prompt's activation
 ([patching](activation-patching.md)), donors (resample [ablation](ablation.md)), the mean over
-prompts of the same length at each position (mean ablation), or zeros.
+prompts of the same length at each position (mean ablation), or zeros. With
+[pairs of different lengths](activation-patching.md#pairs-of-different-lengths), sets are patched
+at labels or the last token, or zero-ablated: sets that keep their sites and patch the rest, and
+mean or resample ablation of sets, need pairs of equal length.
 
 ## Faithfulness, completeness, minimality
 

@@ -102,8 +102,8 @@ The [documentation](docs/README.md) teaches the app and the methods:
   for, and [Models](docs/models.md) which models load and how.
 * [Concepts](docs/README.md#concepts): what each method computes, exactly, and the papers it
   comes from: activation patching, ablation, metrics and normalization, statistics, attribution
-  patching, path patching, direct logit attribution, steering, SAE features, circuits, and the
-  logit lens with the checks each model passes when it loads.
+  patching, path patching, edge attribution, direct logit attribution, steering, SAE features,
+  circuits, and the logit lens with the checks each model passes when it loads.
 * [How-to guides](docs/README.md#how-to-guides): replicate IOI, find induction heads, work with
   an SAE, check a finding's robustness, compare runs, sweep seeds, datasets or checkpoints, queue
   runs and run them headless, run a chat model on its template, study your own fine-tune, share a
