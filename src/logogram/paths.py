@@ -180,6 +180,8 @@ def run_path_patching(
     receivers = [
         ("head", r.layer, r.head, r.input)
         if isinstance(r, HeadReceiver)
+        else ("mlp", r.layer, -1, "")
+        if isinstance(r, MlpReceiver)
         else ("logits", -1, -1, "")
         for r in exp.receivers
     ]

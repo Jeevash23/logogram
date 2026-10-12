@@ -192,3 +192,39 @@ def test_heads_and_logits_together_keep_both_paths(tiny_backend, project, spec_f
     assert np.abs(both[first] - through_logits[first]).max() > 1e-2
     # Close to the sum of the two paths (not exactly: the logits read them through a nonlinearity).
     np.testing.assert_allclose(both[first], (through_heads + through_logits[first]), atol=0.05)
+
+
+def test_a_path_into_an_mlp_is_measured_at_that_mlp_s_input(tiny_backend, project, spec_factory):
+    """Path patching into an MLP patches what the sender's change does to that MLP's own input:
+    with every other component held, each head's path into the last layer's MLP is the edge from
+    it to that MLP, as the edges scope measures it, and not its path into the logits."""
+    last = tiny_backend.info.n_layers - 1
+    heads = [(layer, h) for layer in range(last + 1) for h in range(2)]
+    scope = {
+        "kind": "sites",
+        "sites": [
+            {"kind": "head", "layer": layer, "head": h, "position": {"kind": "all"}}
+            for layer, h in heads
+        ],
+    }
+    mlp = [{"kind": "mlp", "layer": last}]
+    prompts = _prompts(tiny_backend, project)
+    into_mlp = run_experiment(
+        spec_factory(experiment=path(mlp, freeze_mlps=True), scope=scope), tiny_backend, prompts
+    )
+    into_logits = run_experiment(
+        spec_factory(experiment=path(LOGITS, freeze_mlps=True), scope=scope), tiny_backend, prompts
+    )
+    edges = [
+        {"sender": {"kind": "head", "layer": layer, "head": h}, "receiver": mlp[0]}
+        for layer, h in heads
+    ]
+    measured = run_experiment(
+        spec_factory(
+            experiment=path(mlp, freeze_mlps=True), scope={"kind": "edges", "edges": edges}
+        ),
+        tiny_backend,
+        prompts,
+    )
+    np.testing.assert_allclose(into_mlp.patched, measured.patched, rtol=1e-4, atol=TOL)
+    assert np.abs(into_mlp.patched - into_logits.patched).max() > 1e-3
