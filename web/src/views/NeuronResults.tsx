@@ -127,9 +127,9 @@ function NeuronLayer({
   return (
     <section className={n.layer} aria-labelledby={titleId}>
       <div className={n.head}>
-        <h3 id={titleId} className={n.title}>
+        <h2 id={titleId} className={n.title}>
           Layer {layer}
-        </h3>
+        </h2>
         <span className={n.counts}>
           {measured.length === 0
             ? `${count(total)} neurons`
@@ -206,8 +206,17 @@ function Histogram({
     for (let b = 0; b < BINS; b++) {
       if (!counts[b]) continue;
       const h = Math.max(1, (Math.sqrt(counts[b]) / tallest) * (HIST_HEIGHT - 6));
+      const x = b * step + 0.5;
+      const w = Math.max(1, step - 1);
       ctx.fillStyle = color(-m + ((b + 0.5) * 2 * m) / BINS);
-      ctx.fillRect(b * step + 0.5, HIST_HEIGHT - h, Math.max(1, step - 1), h);
+      ctx.fillRect(x, HIST_HEIGHT - h, w, h);
+      // The scale's neutral is close to the page in both themes: a faint outline keeps the many
+      // neurons near zero visible.
+      ctx.globalAlpha = 0.55;
+      ctx.strokeStyle = colors.faint;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x + 0.5, HIST_HEIGHT - h + 0.5, Math.max(0, w - 1), Math.max(0, h - 1));
+      ctx.globalAlpha = 1;
     }
     // The baseline, zero, and the scale's ends.
     ctx.fillStyle = colors.line;
