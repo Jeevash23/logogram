@@ -39,3 +39,10 @@ test("an ablation's methods text names its baseline in words", () => {
   expect(text).toContain("replaced by a baseline: zero");
   expect(text).not.toMatch(/[{}]/);
 });
+
+test("the methods text carries the spec's notes, and nothing when there are none", () => {
+  expect(methodsText(run({}))).not.toContain("Notes");
+  expect(methodsText(run({ notes: "  \n" }))).not.toContain("Notes");
+  const text = methodsText(run({ notes: "Expect the name movers 9.9 and 10.0 to restore the answer.\n" }));
+  expect(text).toContain("Notes saved with the spec: Expect the name movers 9.9 and 10.0 to restore the answer.\n\nThe run is run-1.");
+});

@@ -32,6 +32,7 @@ export function methodsText(run: RunDetail): string {
       ? "Effects were normalized by the mean clean–corrupt gap over the dataset"
       : "Effects were normalized by each prompt's own clean–corrupt gap";
   const formula = summary?.metric.normalized_effect;
+  const notes = s.notes?.trim();
   return [
     `${experimentText(s.experiment)}, at ${scopeText(s.scope)}.`,
     `The model was ${s.model.id} at ${revision}, run in ${s.model.dtype} on ${device}, ${weights}.`,
@@ -39,6 +40,8 @@ export function methodsText(run: RunDetail): string {
     `The metric, for each prompt, was ${describeMetric(s.metric)}. ${normalized}${formula ? `: ${formula}` : ""}.`,
     `Prompts ran in batches of ${s.execution.batch_size}. ${statisticsText(run)}`,
     methodText(run),
+    // What was expected, as the spec that ran states it, so the result can be read against it.
+    ...(notes ? [`Notes saved with the spec: ${notes}`] : []),
     `The run is ${run.id}.${
       manifest?.versions
         ? ` Software: ${Object.entries(manifest.versions).filter(([, v]) => v).map(([k, v]) => `${k} ${v}`).join(", ")}.`
