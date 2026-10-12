@@ -300,7 +300,9 @@ interface Store {
   setUpdateConsent: (allowed: boolean) => Promise<void>;
   fitSelection: () => void;
 
-  openRun: (id: string | null, view?: View) => Promise<void>;
+  /** Show a run. A run of another model (or revision) drops the selection, as a site of one model
+   * is no site of another; `at` selects a site once the run is open (a sweep's value at a site). */
+  openRun: (id: string | null, view?: View, at?: Selection) => Promise<void>;
   /** Load a saved, unrun experiment into the form. Quiet when opening a project, where the form
    * was empty: no undo step and no notice. */
   openDraft: (id: string, options?: { quiet?: boolean }) => Promise<void>;
@@ -774,7 +776,7 @@ export const useStore = create<Store>((set, get) => ({
     set({ datasetEdits: edits && hasEdits(edits) ? { ...rest, [path]: edits } : rest });
   },
 
-  openRun: async (id, view) => {
+  openRun: async (id, view, at) => {
     // A run whose spec can't be read has nothing to show: say why, as the history does.
     const listed = id ? get().runs.find((r) => r.id === id) : undefined;
     if (listed?.damaged) {
@@ -792,7 +794,7 @@ export const useStore = create<Store>((set, get) => ({
     if (detail.spec.dataset.path !== get().datasetPath) await get().selectDataset(detail.spec.dataset.path, "run");
     if (seq !== openSeq) return;
     const changed = previous && (previous.id !== detail.spec.model.id || previous.revision !== detail.spec.model.revision);
-    set({ analysisSource: "run", promptIndex: 0, tokenPosition: null, ...(changed ? { stagedSites: [], headPins: [], selection: null } : {}) });
+    set({ analysisSource: "run", promptIndex: 0, tokenPosition: null, ...(changed ? { stagedSites: [], headPins: [], selection: null } : {}), ...(at ? { selection: at } : {}) });
     void get().reloadDataset();
     get().fitSelection();
     if (detail.summary) {
@@ -1034,7 +1036,22 @@ export const useStore = create<Store>((set, get) => ({
     const made = out.plan.runs.filter((r) => !r.original).length;
     const kept = out.plan.runs.find((r) => r.original);
     const stands = kept ? `; this run stands in for ${out.plan.label} ${kept.label}` : "";
-    get().notify(`Queued ${plural(made, "run")} of the sweep over ${out.plan.plural}${stands}. They run one after another.`);
+    const queued = `Queued ${plural(made, "run")} of the sweep over ${out.plan.plural}${stands}.`;
+    // A paused queue starts nothing: what waits in it waits until it is started (the first run
+    // starts at once when nothing is running).
+    await get().refreshQueue();
+    if (seq !== projectSeq) return false;
+    const waiting = made - (out.job ? 1 : 0);
+    if (get().queueState === "paused" && waiting > 0) {
+      const which = out.job ? `The first has started; the other${waiting === 1 ? " waits" : ` ${count(waiting)} wait`}` : made === 1 ? "It waits" : "They wait";
+      get().notify(`${queued} ${which} in the queue, which is paused: nothing in it starts until you start it.`, "info", {
+        persist: true,
+        key: QUEUE_NOTICE,
+        action: { label: "Start the queue", run: () => void get().startQueue() },
+      });
+    } else {
+      get().notify(`${queued} They run one after another.`);
+    }
     await get().refreshRuns();
     if (seq === projectSeq) get().openSweep(out.sweep);
     return true;

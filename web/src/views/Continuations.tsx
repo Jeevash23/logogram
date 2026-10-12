@@ -27,10 +27,19 @@ export function TokenLine({ tokens }: { tokens: string[] }) {
  * steering and at each strength, the random control's lines marked. With several steered sites,
  * one site's lines at a time: the selected one's, or as chosen here. */
 export function Continuations({ data, selectedRow }: { data: ContinuationsFile; selectedRow: number | null }) {
-  const [row, setRow] = useState(selectedRow ?? data.rows[0]?.row ?? 0);
+  const first = data.rows[0]?.row ?? 0;
+  const [chosen, setChosen] = useState(selectedRow ?? first);
+  // Another run's continuations start again at its selected site, or at its first.
+  const [shownData, setShownData] = useState(data);
+  if (shownData !== data) {
+    setShownData(data);
+    setChosen(selectedRow ?? first);
+  }
   useEffect(() => {
-    if (selectedRow !== null) setRow(selectedRow);
+    if (selectedRow !== null) setChosen(selectedRow);
   }, [selectedRow]);
+  // A site this run didn't continue (or another run's) shows its first steered site instead.
+  const row = data.rows.some((r) => r.row === chosen) ? chosen : first;
   const titleId = useId();
   const several = data.rows.length > 1;
   return (
@@ -41,7 +50,7 @@ export function Continuations({ data, selectedRow }: { data: ContinuationsFile; 
         </h2>
         {several && (
           <Field label="Steered site" className={c.site}>
-            <Select value={String(row)} onChange={(ev) => setRow(Number(ev.target.value))}>
+            <Select value={String(row)} onChange={(ev) => setChosen(Number(ev.target.value))}>
               {data.rows.map((r) => (
                 <option key={r.row} value={r.row}>
                   {r.label}
