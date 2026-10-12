@@ -26,11 +26,12 @@ interface AxeNode {
   any: { data?: { fgColor?: string; bgColor?: string; contrastRatio?: number } | null }[];
 }
 
-async function violations(page: Page): Promise<Violation[]> {
+/** The violations on the page, or only in the part of it that ``within`` (a CSS selector) picks. */
+async function violations(page: Page, within?: string): Promise<Violation[]> {
   await page.evaluate(AXE);
-  return page.evaluate(async () => {
+  return page.evaluate(async (part) => {
     // @ts-expect-error axe is defined by the script above
-    const result = await window.axe.run(document, { resultTypes: ["violations"] });
+    const result = await window.axe.run(part ? { include: [[part]] } : document, { resultTypes: ["violations"] });
     return result.violations.map((v: { id: string; impact: string | null; help: string; nodes: AxeNode[] }) => ({
       id: v.id,
       impact: v.impact,
@@ -41,13 +42,13 @@ async function violations(page: Page): Promise<Violation[]> {
         return colors ? `${n.target.join(" ")}: ${colors.fgColor} on ${colors.bgColor}, ${colors.contrastRatio}:1` : n.target.join(" ");
       }),
     }));
-  });
+  }, within);
 }
 
 /** No violations once the view settles: a moment between two states (a reply arriving, a panel
  * filling in) can look different, so a view gets three seconds to come clean. */
-async function expectAccessible(page: Page, view: string) {
-  await expect.poll(() => violations(page), { message: `${view} has accessibility violations`, timeout: 3_000 }).toEqual([]);
+async function expectAccessible(page: Page, view: string, within?: string) {
+  await expect.poll(() => violations(page, within), { message: `${view} has accessibility violations`, timeout: 3_000 }).toEqual([]);
 }
 
 async function open(page: Page, name: string) {
@@ -100,4 +101,12 @@ test("every view has no accessibility violations", async ({ page }) => {
     await open(page, view);
     await expectAccessible(page, `Evidence, ${view}`);
   }
+  // The examples, where the screens before a project offer them.
+  const examples = 'section[aria-labelledby="examples-title"]';
+  await page.getByRole("button", { name: "All projects" }).click();
+  await expect(page.getByRole("list", { name: "Examples" })).toBeVisible();
+  await expectAccessible(page, "Projects, the examples", examples);
+  await page.getByRole("button", { name: "System check" }).click();
+  await expect(page.getByRole("list", { name: "Examples" })).toBeVisible();
+  await expectAccessible(page, "System check, the examples", examples);
 });
