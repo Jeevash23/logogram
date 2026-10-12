@@ -783,7 +783,15 @@ def _print_summary(summary: dict, top: int) -> None:  # type: ignore[type-arg]
                     f"\n{r['label']}: beyond {i['a']} and {i['b']} alone, an effect of "
                     f"{_interval(i['effect'])}"
                 )
-    if stats.get("band_level") is not None:
+    corrections = (summary.get("edges") or {}).get("corrections")
+    if stats.get("band_level") is not None and corrections:
+        # Counted over every edge: the summary lists only the strongest.
+        typer.echo(
+            f"\nCorrected for {corrections['edges']:,} edges: {corrections['banded']:,} exclude "
+            f"zero with simultaneous bands, {corrections['discoveries']:,} have q < "
+            f"{1 - stats['ci']:g} (Benjamini–Hochberg)."
+        )
+    elif stats.get("band_level") is not None:
         sites_all = summary["sites"]
         alpha = 1 - stats["ci"]
         banded = sum(

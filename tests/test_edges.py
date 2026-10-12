@@ -29,7 +29,7 @@ from logogram.engine import EngineError, run_experiment
 from logogram.prompts import group_by_length, prepare_prompts
 from logogram.runner import run_spec
 from logogram.spec import GraphScope, Spec
-from logogram.stats import compute_site_stats, resample_counts, spearman
+from logogram.stats import compute_site_stats, resample_counts
 
 CURVE = {"counts": [1, 3, 10, 30], "patch": "chosen", "control": {"seed": 0, "draws": 2}}
 
@@ -484,7 +484,9 @@ def test_each_estimate_is_the_slope_of_patching_its_edge(
     for group in group_by_length(prompts):
         clean, corrupt = backend.capture(group.clean, keys), backend.capture(group.corrupt, keys)
 
-        def metric(e: int, alpha: float, clean: Any = clean, corrupt: Any = corrupt) -> Any:
+        def metric(
+            e: int, alpha: float, clean: Any = clean, corrupt: Any = corrupt, group: Any = group
+        ) -> Any:
             # The sender's output moved a share alpha of the way to the source prompt's: the
             # patch adds alpha times its difference into the receiver's own input only.
             source = {k: corrupt[k] + alpha * (clean[k] - corrupt[k]) for k in keys}
@@ -651,7 +653,21 @@ def test_a_run_keeps_every_edge_and_lists_the_strongest(
     assert results.num_rows == 110 * summary["n_prompts"]
     assert set(results.column("kind").to_pylist()) == {"edge"}
     assert edges["curve"]["every"]["faithfulness"]["mean"] == pytest.approx(1.0, abs=1e-4)
-    assert edges["cost"]["edges"] == 110
+    cost = edges["cost"]
+    assert cost["edges"] == 110
+    # Per batch: the senders captured on both prompts and one gradient, then the curve's circuits
+    # (each number of edges, strongest and in each random draw, and every edge).
+    assert (cost["forward_per_batch"], cost["backward_per_batch"]) == (3, 1)
+    kept = len(edges["curve"]["counts"])
+    assert cost["patched_per_batch"] == kept * (1 + CURVE["control"]["draws"]) + 1
+    # The corrections count every edge, not only those listed.
+    alpha = 1 - spec.statistics.ci
+    assert edges["corrections"] == {
+        "edges": 110,
+        "single": sum(1 for r in table if r["effect_lo"] > 0 or r["effect_hi"] < 0),
+        "banded": sum(1 for r in table if r["band_lo"] > 0 or r["band_hi"] < 0),
+        "discoveries": sum(1 for r in table if r["q"] < alpha),
+    }
 
 
 def test_the_same_spec_twice_gives_identical_results(

@@ -312,6 +312,13 @@ class EdgeCurve(_Model):
     per_prompt: dict[str, list[list[float | None]]]
 
 
+class EdgeCorrections(_Model):
+    edges: int
+    single: int
+    banded: int
+    discoveries: int
+
+
 class EdgeRun(_Model):
     """An edge attribution run: the graph, how the estimates were taken, what the model was
     measured to do that they rely on, what the run cost, and the faithfulness curve. The summary
@@ -329,6 +336,9 @@ class EdgeRun(_Model):
     checks: dict[str, float]
     cost: dict[str, Any]
     curve: EdgeCurve | None = None
+    # Over every edge, not only those listed: intervals that exclude zero one edge at a time
+    # (single), simultaneous bands that do (banded), and q-values below 1 − the CI level.
+    corrections: EdgeCorrections | None = None
 
 
 class ChatTemplateInfo(_Model):

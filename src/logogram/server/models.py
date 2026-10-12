@@ -411,6 +411,21 @@ class MethodsText(_Out):
     text: str
 
 
+class EdgePlan(_Out):
+    """What an edge attribution spec would do on the loaded model, before it runs: the graph's
+    size, the passes and memory a run takes, and why it would be refused (null when it
+    wouldn't)."""
+
+    n_edges: int | None
+    n_senders: int | None
+    n_receivers: int | None
+    structure: Literal["sequential", "parallel"] | None = None
+    cost: dict[str, Any] | None = None
+    text: str | None = None
+    free: int | None = None
+    refusal: str | None
+
+
 class EdgeStat(_Out):
     mean: float | None
     sd: float | None

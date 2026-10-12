@@ -1109,6 +1109,43 @@ def create_app(
             all_layers=body.method in ALL_LAYER_METHODS,
         ).to_dict()
 
+    @app.post("/api/edges/plan", response_model=M.EdgePlan)
+    def plan_edges(body: RunRequest) -> dict[str, Any]:
+        """What an edge attribution spec would do on the loaded model and its prompts, before it
+        runs: the graph's size, the passes and memory a run takes, and why the run would be
+        refused, from the same checks the run makes."""
+        from logogram.backends.base import BackendError
+        from logogram.chat import chat_wrapper
+        from logogram.datasets import decode_dataset, parse_jsonl, read_dataset_bytes
+        from logogram.edges import edge_plan
+        from logogram.prompts import prepare_prompts
+        from logogram.spec import SINGLE_POSITION_METRICS, EdgeAttribution
+
+        spec = Spec.model_validate(body.spec)
+        if not isinstance(spec.experiment, EdgeAttribution):
+            raise ValueError("Only an edge attribution spec has a graph to plan.")
+        backend = state.backend
+        if backend is None:
+            raise Conflict("Load a model to see its graph and what a run on it costs.")
+        project = state.require_project()
+        path = spec.dataset.path
+        records = parse_jsonl(
+            decode_dataset(read_dataset_bytes(project.resolve_dataset(path)), path), source=path
+        )
+        if spec.dataset.limit is not None:
+            records = records[: spec.dataset.limit]
+        try:
+            prompts = prepare_prompts(
+                backend,
+                records,
+                spec.tokenization.prepend_bos,
+                continuations=spec.metric.kind not in SINGLE_POSITION_METRICS,
+                chat=chat_wrapper(backend, spec.tokenization.chat_template),
+            )
+        except (ValueError, BackendError) as exc:
+            return {"n_edges": None, "n_senders": None, "n_receivers": None, "refusal": str(exc)}
+        return edge_plan(spec, backend, prompts)
+
     @app.post("/api/models/load", response_model=M.JobInfo)
     def load(body: ModelRef) -> dict[str, Any]:
         return state.load_model_job(body).to_dict()

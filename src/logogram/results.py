@@ -212,8 +212,10 @@ def build_summary(
     every edge's statistics)."""
     b = result.baselines
     if kept is None and "edges" in result.extra:
-        from logogram.edges import reported_edges
+        from logogram.edges import correction_counts, reported_edges
 
+        # Counted over every edge: the summary lists only the strongest.
+        result.extra["edges"]["corrections"] = correction_counts(stats, 1 - spec.statistics.ci)
         top = reported_edges(stats)
         if len(top) < len(result.sites):
             kept, stats = top, take_rows(stats, top)

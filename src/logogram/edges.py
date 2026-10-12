@@ -400,7 +400,10 @@ def edge_cost(
     rows = min(batch_size, max(len(g.members) for g in groups))
     steps = exp.steps if exp.method == "integrated_gradients" else 1
     curve = exp.curve
-    patched = 0 if curve is None else len(curve.counts) * (1 + curve.control.draws) + 1
+    # The curve's circuits: each number of edges the graph has, strongest and in each random
+    # draw, and every edge. Its batches first capture the senders on the source prompts.
+    kept = 0 if curve is None else sum(1 for k in curve.counts if k <= len(graph))
+    patched = 0 if curve is None else kept * (1 + curve.control.draws) + 1
     D, H = info.d_model, info.n_heads
     n_receivers = len(graph.receivers)
     # Gradients at every receiver's copy (float32), the split copies the backward pass keeps
@@ -419,10 +422,11 @@ def edge_cost(
     return {
         "edges": len(graph),
         "batches": batches,
-        "forward_per_batch": 2,
+        # The senders captured on both prompts, then a forward and backward pass per gradient.
+        "forward_per_batch": 2 + steps,
         "backward_per_batch": steps,
         "patched_per_batch": patched,
-        "forward": 2 * batches + patched * batches,
+        "forward": (2 + steps + (patched + 1 if patched else 0)) * batches,
         "backward": steps * batches,
         "memory_per_batch": int(per_row * rows),
         "values": len(graph) * sum(len(g.members) for g in groups),
@@ -467,6 +471,46 @@ def check_cost(cost: dict[str, Any], batch_size: int, device: torch.device) -> N
         )
 
 
+def edge_plan(spec: Spec, backend: ModelBackend, prompts: list[PreparedPrompt]) -> dict[str, Any]:
+    """What an edge attribution spec would do on the loaded model and these prompts, before it
+    runs: the graph's size, what the run costs, and why it would be refused (None when it
+    wouldn't), from the same checks the run makes."""
+    from logogram.backends.base import BackendError
+
+    exp, scope = spec.experiment, spec.scope
+    assert isinstance(exp, EdgeAttribution) and isinstance(scope, GraphScope)
+    refusal: str | None = None
+    try:
+        backend.edge_checks()
+    except BackendError as exc:
+        refusal = str(exc)
+    try:
+        graph = build_graph(backend.info, scope)
+    except ScopeError as exc:
+        return {"refusal": str(exc), "n_edges": None, "n_senders": None, "n_receivers": None}
+    out: dict[str, Any] = {
+        "n_edges": len(graph),
+        "n_senders": len(graph.senders),
+        "n_receivers": len(graph.receivers),
+        "structure": "parallel" if graph.parallel else "sequential",
+    }
+    if not prompts:
+        return {**out, "refusal": refusal or "Choose prompts first."}
+    cost = edge_cost(graph, backend.info, group_by_length(prompts), spec.execution.batch_size, exp)
+    if refusal is None:
+        try:
+            check_cost(cost, spec.execution.batch_size, backend.device)
+        except EngineError as exc:
+            refusal = str(exc)
+    return {
+        **out,
+        "cost": cost,
+        "text": cost_text(cost),
+        "free": free_memory(backend.device),
+        "refusal": refusal,
+    }
+
+
 def cost_text(cost: dict[str, Any]) -> str:
     """What a run costs, in words, for the summary and the command line."""
     backward = cost["backward_per_batch"]
@@ -474,7 +518,8 @@ def cost_text(cost: dict[str, Any]) -> str:
     parts = [
         f"{cost['edges']:,} edges",
         f"{cost['batches']} batch{'es' if cost['batches'] != 1 else ''}",
-        f"2 forward and {backward} backward pass{'es' if backward != 1 else ''} per batch",
+        f"{cost['forward_per_batch']} forward and {backward} backward pass"
+        f"{'es' if backward != 1 else ''} per batch",
     ]
     if patched:
         parts.append(f"{patched} edge-patched passes per batch for the curve")
@@ -534,11 +579,10 @@ def _gradient_block(grads: InputGradients, block: Block) -> torch.Tensor:
 def _scores(graph: Graph, deltas: dict[Block, torch.Tensor], grads: InputGradients) -> torch.Tensor:
     """Every edge's estimate for each row, ``[B, E]`` in float64: the sender's difference dotted
     with the gradient at the receiver's own input, summed over positions."""
-    B = next(iter(deltas.values())).shape[0]
-    device = next(iter(deltas.values())).device
-    dense = torch.zeros(
-        (B, len(graph.senders), len(graph.receivers)), dtype=torch.float64, device=device
-    )
+    like = next(iter(deltas.values()))  # float64, where float64() put it
+    device = like.device
+    dense = like.new_zeros((like.shape[0], len(graph.senders), len(graph.receivers)))
+    # The pairs come receiving block by receiving block: each block's gradients convert once.
     converted: dict[Block, torch.Tensor] = {}
     for sblock, rblock in graph.pairs:
         if rblock not in converted:
@@ -1149,6 +1193,23 @@ def latest_verification(
 
 
 # -- what a run writes ---------------------------------------------------------------------------
+
+
+def correction_counts(stats: Any, alpha: float) -> dict[str, int] | None:
+    """Over every edge (the summary lists only the strongest): how many intervals exclude zero
+    one edge at a time, how many simultaneous bands do, and how many edges have a q-value below
+    ``alpha``; None when the run has no corrections (fewer than two edges)."""
+    if stats.band_lo is None or stats.band_hi is None or stats.q is None:
+        return None
+    lo, hi = np.asarray(stats.effect_lo), np.asarray(stats.effect_hi)
+    band_lo, band_hi = np.asarray(stats.band_lo), np.asarray(stats.band_hi)
+    with np.errstate(invalid="ignore"):
+        return {
+            "edges": len(lo),
+            "single": int(np.sum((lo > 0) | (hi < 0))),
+            "banded": int(np.sum((band_lo > 0) | (band_hi < 0))),
+            "discoveries": int(np.sum(np.asarray(stats.q) < alpha)),
+        }
 
 
 def reported_edges(stats: Any) -> list[int]:
