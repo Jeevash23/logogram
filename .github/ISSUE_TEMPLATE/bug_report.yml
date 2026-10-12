@@ -1,0 +1,61 @@
+name: Report a problem
+description: Something in Logogram doesn't work as it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting this. [Troubleshooting](https://github.com/Jeevash23/logogram#troubleshooting) explains the messages people see most often; it may have the fix.
+
+        Issues are public. Leave out anything you'd rather keep to yourself, such as prompts, project names or folder names. A security problem goes in a [private report](https://github.com/Jeevash23/logogram/security/advisories/new) instead.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what Logogram did instead. Quote error messages as Logogram showed them.
+      placeholder: I ran the example's head sweep on a GPU, and the run failed with …
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to make it happen again
+      description: The steps from starting Logogram. A spec that shows the problem helps most (below).
+      placeholder: |
+        1. logogram open …
+        2. …
+    validations:
+      required: false
+  - type: textarea
+    id: report
+    attributes:
+      label: Problem report
+      description: >-
+        In Logogram, choose Help, then Report a problem, then Copy the report, and paste it here.
+        Without the app, run `logogram doctor --report` and paste what it prints. The report lists
+        versions, the operating system's family, the device and the last error, and leaves out
+        names, paths and hardware models unless you include them.
+      render: text
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where it happened
+      multiple: true
+      options:
+        - The app, in the browser
+        - The command line (logogram run, show, compare and the others)
+        - The Python API
+        - Installing or updating
+        - On another machine, through an SSH tunnel
+    validations:
+      required: false
+  - type: textarea
+    id: spec
+    attributes:
+      label: Spec
+      description: The run's spec.json, if the problem is with a run. Its paths are relative to the project.
+      render: json
+    validations:
+      required: false

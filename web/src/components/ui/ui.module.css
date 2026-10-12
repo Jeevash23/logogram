@@ -526,9 +526,15 @@
   width: min(760px, calc(100vw - 32px));
 }
 
-/* A question with two answers: narrow, and its text reads at body size. */
+/* A question with two answers: narrow, and its text reads at body size. It blocks everything,
+   another dialog it was asked from included, so it and its scrim sit above them. */
 .confirm {
   width: min(440px, calc(100vw - 32px));
+  z-index: 53;
+}
+
+.confirmOverlay {
+  z-index: 52;
 }
 
 .confirm .dialogHeader {

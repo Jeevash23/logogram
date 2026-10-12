@@ -7,6 +7,7 @@ import errno
 import os
 import secrets
 import stat
+import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -29,7 +30,7 @@ def read_limited(path: Path, limit: int, fix: str) -> bytes:
     planted in a project can't hang the reader. ``fix`` says what to do about a file that is too
     large.
     """
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
+    fd = _open_for_reading(path)
     with os.fdopen(fd, "rb") as fh:
         info = os.fstat(fh.fileno())
         if not stat.S_ISREG(info.st_mode):
@@ -40,6 +41,21 @@ def read_limited(path: Path, limit: int, fix: str) -> bytes:
             f"{path.name} is larger than the {size_text(limit)} Logogram reads. {fix}"
         )
     return data
+
+
+def _open_for_reading(path: Path) -> int:
+    """Open ``path`` to read it, without blocking. On Windows a file can't be opened for a moment
+    while another thread replaces it (a run rewrites its spec and manifest as it goes, while the
+    history reads them), so try again briefly, as ``replace_file`` does from the writer's side."""
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
+    for attempt in range(25):
+        try:
+            return os.open(path, flags)
+        except PermissionError:
+            if sys.platform != "win32" or attempt == 24:
+                raise
+            time.sleep(0.02)
+    raise AssertionError("unreachable")
 
 
 def size_text(n: int) -> str:

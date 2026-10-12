@@ -50,8 +50,11 @@ export function useActiveRun() {
   const id = useStore((s) => s.activeRunId);
   const detail = useStore((s) => (id ? s.runDetails[id] : undefined));
   const live = useStore((s) => (id ? s.live[id] : undefined));
+  const listed = useStore((s) => (id ? s.runs.find((r) => r.id === id) : undefined));
   const view = useMemo(() => runView(detail, live), [detail, live]);
-  return { id, detail, live, ...view, ciLevel: ciLevelOf(detail) };
+  // What the run is called: the title someone gave it, or its spec's name (null until known).
+  const title = (listed ? listed.title || listed.name : detail?.listing?.title || detail?.spec.name) || null;
+  return { id, detail, live, ...view, ciLevel: ciLevelOf(detail), title };
 }
 
 /** The confidence level a run's intervals use, in percent. */

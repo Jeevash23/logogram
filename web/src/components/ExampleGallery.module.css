@@ -1,0 +1,114 @@
+/* The bundled examples: a ruled list, one example per row, its action at the end of the row. */
+.lead {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  max-width: 600px;
+  margin-bottom: 10px;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 2px solid var(--text);
+}
+
+.item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 4px 14px;
+  padding: 14px 8px 14px 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.glyph {
+  color: var(--text);
+  margin-top: 2px;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.name {
+  font-size: var(--text-md);
+  font-weight: 620;
+  font-stretch: inherit;
+  letter-spacing: inherit;
+  line-height: 1.35;
+}
+
+.question {
+  font-size: var(--text-md);
+  line-height: 1.45;
+}
+
+.method {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.expect {
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.label {
+  font-weight: 620;
+  margin-right: 4px;
+}
+
+.source {
+  color: var(--muted);
+}
+
+.path {
+  display: flex;
+  gap: 0.3em;
+  min-width: 0;
+  color: var(--faint);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.pathLabel {
+  flex: none;
+}
+
+/* A long folder keeps its end, the part that names the example. */
+.pathText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+  min-width: 0;
+}
+
+.open {
+  align-self: start;
+}
+
+.loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+@media (max-width: 560px) {
+  .item {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .open {
+    grid-column: 2;
+    justify-self: start;
+    margin-top: 6px;
+  }
+}

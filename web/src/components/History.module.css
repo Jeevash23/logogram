@@ -34,6 +34,67 @@
   font-size: var(--text-xs);
 }
 
+/* The search and what it shows: all runs that aren't archived, the starred ones, or the archive. */
+.tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 2px 14px 6px;
+  flex: none;
+}
+
+.search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 220px;
+  max-width: 400px;
+}
+
+.search > svg {
+  position: absolute;
+  left: 9px;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.search input {
+  width: 100%;
+  padding-left: 29px;
+  padding-right: 30px;
+}
+
+/* The browser's own clear button is drawn in its colors: this one is ink. */
+.search input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.clear {
+  position: absolute;
+  right: 2px;
+}
+
+.n {
+  margin-left: 3px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+}
+
+/* Empty until something is searched, but always there, so what it says next is announced. */
+.found {
+  margin: 0;
+  padding: 0 14px;
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+
+.showArchived {
+  align-self: flex-start;
+  margin: 2px 8px 4px;
+}
+
 .list {
   list-style: none;
   margin: 0;
@@ -116,6 +177,15 @@
   background: var(--hover);
 }
 
+/* A run whose spec can't be read: nothing to open, so no hover; it says what is wrong. */
+.damaged:hover {
+  background: transparent;
+}
+
+.damaged .state {
+  color: var(--alert);
+}
+
 .item[aria-current="true"] {
   box-shadow: inset 0 0 0 1.5px var(--text);
 }
@@ -151,6 +221,81 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* What is wrong with a run's files, in full: it says how to fix it. */
+.problem {
+  grid-column: 2 / -1;
+  font-size: var(--text-xs);
+  line-height: 1.45;
+  color: var(--muted);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* A run's star and its menu, beside its first line. Shown on hover and focus, and the star
+   always once it is set. */
+.star,
+.actions {
+  flex: none;
+  margin-top: 6px;
+  opacity: 0;
+  transition: opacity var(--dur) var(--ease);
+}
+
+.star {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--muted);
+}
+
+.star:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.star[aria-pressed="true"] {
+  color: var(--text);
+}
+
+.row:hover .star,
+.row:focus-within .star,
+.star[aria-pressed="true"],
+.row:hover .actions,
+.row:focus-within .actions,
+.actions[data-state="open"] {
+  opacity: 1;
+}
+
+/* A title being edited, in place of the run's line. */
+.rename {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 3px 10px;
+  align-items: center;
+  padding: 4px 8px;
+}
+
+.rename .glyph {
+  grid-row: 1;
+}
+
+.renameInput {
+  width: 100%;
+}
+
+.renameHint {
+  grid-column: 2;
+  font-size: var(--text-2xs);
+  color: var(--muted);
 }
 
 /* Runs waiting their turn, above the runs that have started. */

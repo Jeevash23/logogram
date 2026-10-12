@@ -212,6 +212,32 @@ test("edits made while the project opens win over the stored form", withStorage(
   } finally { globalThis.fetch = original; }
 }));
 
+test("a place chosen while the project opens wins over the one the URL names", withStorage(async () => {
+  const original = globalThis.fetch;
+  let release: () => void = () => {};
+  const runsListed = new Promise<void>((resolve) => { release = resolve; });
+  globalThis.fetch = (async (input: string) => {
+    if (input === "/api/runs") await runsListed;
+    return new Response("[]");
+  }) as typeof fetch;
+  try {
+    const store = useStore.getState();
+    store.leaveProject();
+    useStore.setState({ pendingRoute: { screen: "workbench", view: "baseline" } });
+    const opening = store.enterProject(project("moved"));
+    store.setView("explore");
+    release();
+    await opening;
+    expect(useStore.getState().view).toBe("explore");
+
+    // Without a choice, the URL's place is restored.
+    store.leaveProject();
+    useStore.setState({ pendingRoute: { screen: "workbench", view: "baseline" } });
+    await store.enterProject(project("stayed"));
+    expect(useStore.getState().view).toBe("baseline");
+  } finally { globalThis.fetch = original; }
+}));
+
 test("a stored form that doesn't parse is ignored, and a draft that has run is not refilled", withStorage(async (storage) => {
   // The draft ran (and failed) since: its folder holds a run now.
   const restore = stubApi([{ id: "2026-10-10-draft", status: "failed", name: "Ran", created: "", kind: "ablation" } as Partial<RunListing>]);

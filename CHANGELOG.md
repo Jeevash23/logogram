@@ -2,6 +2,80 @@
 
 What changed in each version of Logogram.
 
+## 0.4.0 (2026-10-12)
+
+Runs you can keep track of and trust across machines, a way to work on a remote GPU, help in the
+app, examples with the results they should give, and SAE features read more exactly.
+
+### Added
+
+- **Three more examples, each read against its paper**, on GPT-2 small: greater-than (Hanna et
+  al. 2023; MLPs 8 to 11 carry it, as published), factual recall traced with another country in
+  place of noise (Meng et al. 2022; the early site at the subject and the late site at the last
+  token, though one MLP at a time doesn't reproduce the MLP claim, as its notes say), and the
+  gendered pronoun (Mathwin et al. 2023; heads 10.9 and 9.7 write it). The welcome screens list
+  every example with its question, method, the result to expect and the paper; each opens as a
+  copy of its own, never overwritten. A weekly check runs all of them on GPT-2 small's real
+  weights.
+- **A run's notes beside its result**, folded to three lines, and in its methods paragraph.
+- **Managing runs.** Each run can have a title, shown instead of its spec's name, a star, and a
+  place in the archive. These are kept beside the spec, in `annotations.json`, so the spec never
+  changes. The history can be searched by title, name, id, method, model and dataset, and filtered
+  to starred or archived runs. Rename (F2), star, archive and delete from each row's menu. Deleting
+  asks first and removes the run's folder for good (archive keeps a run out of sight instead); runs
+  derived from it stay. The same is in the command line (`logogram rename`, `star`, `archive`,
+  `delete`; `logogram list --archived`) and the Python API (`run.rename()`, `run.star()`,
+  `run.archive()`, `lg.delete_run()`). The command palette searches every run.
+- **Runs in other processes.** A run started with `logogram run` or from a notebook is no longer
+  marked failed when the app opens its project: an owner record in its folder says which process
+  runs it, and the history shows it running and fills in its results when it ends. A run whose
+  process stopped is marked failed with that reason.
+- **A failed run's details.** A failed run keeps its traceback in `traceback.txt`, without this
+  machine's paths or names; the app shows it under **Show details**, with a copy button, and
+  `logogram show` and `Run.traceback` give it too. Ctrl+C during `logogram run`, or a notebook's
+  interrupt, records the run as cancelled. `--verbose` logs what the server does, and
+  `--log-file PATH` keeps the log.
+- **Where a run ran.** `logogram env` prints the versions and devices results depend on
+  (`--requirements` pins them). The Results view says when a run ran with other versions of
+  Logogram, PyTorch, TransformerLens, Transformers or NumPy, or on another kind of device, and
+  Compare lists how two runs' environments differ.
+- **A remote GPU over SSH.** `--forwarded-port N` (or `LOGOGRAM_FORWARDED_PORTS`) lets the browser
+  reach Logogram through a tunnel's local port; the server still listens on 127.0.0.1 only and still
+  answers only to loopback names. A request to an unknown port says exactly which option to add.
+  The README has a guide.
+- **A Help menu**: keyboard shortcuts, guides, **Report a problem** (a report to paste into an
+  issue, with versions, the loaded model and the last error, scrubbed of paths, names and tokens;
+  also `logogram doctor --report`), the system check and About.
+- **What a feature writes**: the tokens an SAE or transcoder feature promotes and suppresses
+  directly, through the final normalization (its scale held, as direct logit attribution holds it)
+  and the unembedding, in the Features view and the Inspector (`POST /api/sae/writes`,
+  `lg.feature_writes`).
+- **Transcoders with a skip connection** (EleutherAI's and Gemma Scope 2's affine ones) are read
+  exactly; attribution patching reports what flows through the skip connection. **SAEs on attention
+  heads' outputs** (`hook_z`) are read, from SAELens and Gemma Scope 2.
+- **Models made for chat** are recognized when they load (by their name, or by stopping at their
+  chat template's end-of-turn token). The model dialog, the summary beside **Run** and the baseline
+  say that their prompts run as plain text, and each run's manifest records it.
+- SECURITY.md, CONTRIBUTING.md, CITATION.cff and issue templates.
+
+### Changed
+
+- History opens failed and cancelled runs on Results, where the reason and **Edit and rerun** are.
+- A run whose spec can't be read is listed as damaged, with what is wrong, instead of vanishing.
+- `logogram list` hides archived runs unless `--archived` is given.
+- Typer 0.16 or later is required: earlier versions can't show `--help` with Click 8.2 or later.
+
+### Fixed
+
+- The welcome screens had no main landmark, and the tagline's green "Explore" had too little
+  contrast on white; its words are now ink, underlined in their workspace's color.
+- Opening a project marked runs going on in another process as failed.
+- A workspace chosen while a project was opening was undone a moment later.
+- Patching a feature of an SAE that standardizes its inputs (OpenAI's GPT-2 SAEs) failed.
+- Features of SAEs on attention heads' outputs weren't laid out by head in the Features view.
+- EleutherAI transcoders in the current format had `b_dec` subtracted from their input; files that
+  use settings sparsify's releases don't define were read as TopK instead of being refused.
+
 ## 0.3.0 (2026-10-11)
 
 The interface, made easier to work in: the result where you look first, links and Back, a run

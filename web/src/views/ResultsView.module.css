@@ -51,6 +51,52 @@
   color: var(--line);
 }
 
+/* The spec's notes: what was expected, in the experimenter's words, quietly under the method. */
+.notes {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  max-width: 760px;
+}
+
+.notesText {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.notesClamped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+}
+
+.notesLabel {
+  color: var(--text);
+  font-weight: 620;
+  margin-right: 2px;
+}
+
+.notesToggle {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.notesToggle:hover {
+  color: var(--text);
+}
+
 /* The run at a glance: four ruled figures. */
 .figures {
   display: grid;
@@ -221,6 +267,59 @@
   max-width: 520px;
 }
 
+/* Where a run ran, when a rerun here would run with other versions or on another device. */
+.environment {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  max-width: 900px;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.environment svg {
+  flex: none;
+  align-self: center;
+}
+
+/* A failed run's traceback, behind Show details. In the UI font: monospace is the spec view's. */
+.failure {
+  margin-top: 6px;
+}
+
+.failure summary {
+  width: fit-content;
+  color: var(--text);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.failureBody {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.traceback {
+  align-self: stretch;
+  max-height: 320px;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .runningText {
   font-size: var(--text-sm);
   color: var(--muted);
@@ -301,4 +400,11 @@
   gap: 6px;
   font-size: var(--text-xs);
   color: var(--muted);
+}
+
+/* Under a title someone gave the run: the name its spec ran with. */
+.specName {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
 }

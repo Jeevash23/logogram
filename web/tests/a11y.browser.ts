@@ -1,6 +1,9 @@
 import { test, expect, type Page } from "@playwright/test";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { fakeRuns, otherVersions, TRACEBACK } from "./fakeRuns";
 
 // Axe checks every view of the workbench, the inspector and a feature's details for
 // accessibility violations, from those that block people using assistive technology to headings
@@ -26,11 +29,12 @@ interface AxeNode {
   any: { data?: { fgColor?: string; bgColor?: string; contrastRatio?: number } | null }[];
 }
 
-async function violations(page: Page): Promise<Violation[]> {
+/** The violations on the page, or only in the part of it that ``within`` (a CSS selector) picks. */
+async function violations(page: Page, within?: string): Promise<Violation[]> {
   await page.evaluate(AXE);
-  return page.evaluate(async () => {
+  return page.evaluate(async (part) => {
     // @ts-expect-error axe is defined by the script above
-    const result = await window.axe.run(document, { resultTypes: ["violations"] });
+    const result = await window.axe.run(part ? { include: [[part]] } : document, { resultTypes: ["violations"] });
     return result.violations.map((v: { id: string; impact: string | null; help: string; nodes: AxeNode[] }) => ({
       id: v.id,
       impact: v.impact,
@@ -41,13 +45,13 @@ async function violations(page: Page): Promise<Violation[]> {
         return colors ? `${n.target.join(" ")}: ${colors.fgColor} on ${colors.bgColor}, ${colors.contrastRatio}:1` : n.target.join(" ");
       }),
     }));
-  });
+  }, within);
 }
 
 /** No violations once the view settles: a moment between two states (a reply arriving, a panel
  * filling in) can look different, so a view gets three seconds to come clean. */
-async function expectAccessible(page: Page, view: string) {
-  await expect.poll(() => violations(page), { message: `${view} has accessibility violations`, timeout: 3_000 }).toEqual([]);
+async function expectAccessible(page: Page, view: string, within?: string) {
+  await expect.poll(() => violations(page, within), { message: `${view} has accessibility violations`, timeout: 3_000 }).toEqual([]);
 }
 
 async function open(page: Page, name: string) {
@@ -99,5 +103,107 @@ test("every view has no accessibility violations", async ({ page }) => {
   for (const view of ["Results", "Compare runs", "Research notes"]) {
     await open(page, view);
     await expectAccessible(page, `Evidence, ${view}`);
+  }
+  // Help: its menu, the problem report (with and without the hardware) and About.
+  const help = page.getByRole("banner").getByRole("button", { name: "Help", exact: true });
+  await help.click();
+  await expect(page.getByRole("menu")).toBeVisible();
+  await expectAccessible(page, "The Help menu");
+  await page.getByRole("menuitem", { name: "Report a problem…" }).click();
+  const report = page.getByRole("dialog", { name: "Report a problem" });
+  await expect(report.getByRole("region", { name: "The report" })).toBeVisible();
+  await expectAccessible(page, "Report a problem");
+  await report.getByRole("checkbox", { name: "Include hardware details" }).check();
+  await expect(report.getByText("Processor", { exact: true })).toBeVisible();
+  await expectAccessible(page, "Report a problem, with hardware details");
+  await page.keyboard.press("Escape");
+  await expect(report).toBeHidden();
+  await help.click();
+  await page.getByRole("menuitem", { name: "About Logogram" }).click();
+  await expect(page.getByRole("dialog", { name: "About Logogram" }).getByRole("heading", { name: "Updates" })).toBeVisible();
+  await expectAccessible(page, "About Logogram");
+  await page.keyboard.press("Escape");
+  // The screens before a project, with the examples they offer.
+  await page.getByRole("button", { name: "All projects" }).click();
+  await expect(page.getByRole("list", { name: "Examples" })).toBeVisible();
+  await expectAccessible(page, "Projects");
+  await page.getByRole("button", { name: "System check" }).click();
+  await expect(page.getByRole("list", { name: "Examples" })).toBeVisible();
+  await expectAccessible(page, "System check");
+});
+
+test("runs that failed, run elsewhere or ran with other versions have no accessibility violations", async ({ page }) => {
+  await fakeRuns(page, () => [
+    { id: "fake-failed", name: "A sweep that failed", status: "failed", error: "Can't load the model.", traceback: TRACEBACK },
+    { id: "fake-elsewhere", name: "A sweep from a notebook", status: "running", elsewhere: true },
+  ]);
+  await otherVersions(page, { torch: "0.0.1", numpy: "0.0.2" });
+  await page.goto("/?token=browser-test-token");
+  await expect(page.getByRole("main").getByRole("heading", { name: "tiny-gpt2", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Evidence", exact: true }).click();
+  await open(page, "Results");
+  await expect(page.getByRole("note").filter({ hasText: "A rerun here may differ in the last digits." })).toBeVisible();
+  await expectAccessible(page, "Results, a run from other versions");
+  const history = page.getByRole("dialog", { name: "Experiment history" });
+  for (const [name, view] of [
+    ["A sweep from a notebook", "a run in another process"],
+    ["A sweep that failed", "a failed run"],
+  ]) {
+    await page.getByRole("button", { name: /^History/ }).click();
+    await expect(history.getByRole("button", { name: new RegExp(`^${name}`) })).toBeVisible();
+    await expectAccessible(page, `History, ${view}`);
+    await history.getByRole("button", { name: new RegExp(`^${name}`) }).click();
+    await expect(page.getByRole("main").getByRole("heading", { level: 1, name })).toBeVisible();
+    await expectAccessible(page, `Results, ${view}`);
+  }
+  await page.getByText("Show details", { exact: true }).click();
+  await expect(page.getByLabel("Traceback", { exact: true })).toBeVisible();
+  await expectAccessible(page, "Results, a failed run's traceback");
+});
+
+test("the history's states have no accessibility violations", async ({ page }) => {
+  await page.goto("/?token=browser-test-token");
+  await expect(page.getByRole("main").getByRole("heading", { name: "tiny-gpt2", exact: true })).toBeVisible();
+  // A run whose spec can't be read, beside the fixture's run while the test lasts.
+  const state = await (await page.request.get("/api/state")).json();
+  const broken = join(state.project.path, "experiments", "20000101-000000-broken");
+  mkdirSync(broken, { recursive: true });
+  writeFileSync(join(broken, "spec.json"), "{");
+  try {
+    await page.reload();
+    await page.getByRole("button", { name: /^History/ }).click();
+    const history = page.getByRole("dialog", { name: "Experiment history" });
+    await expect(history.getByText("unreadable", { exact: true })).toBeVisible();
+    await expectAccessible(page, "History");
+    const search = history.getByRole("searchbox", { name: "Search runs" });
+    await search.fill("without");
+    await expect(history.getByText("1 run found.")).toBeVisible();
+    await expectAccessible(page, "History, a search");
+    await search.fill("");
+    const run = history.locator("li[data-run]").filter({ hasText: "Without BOS" });
+    // (A menu, like every menu in the app, floats outside the page's landmarks while it is open.)
+    await run.getByRole("button", { name: "Actions for “Without BOS”" }).click();
+    await page.getByRole("menuitem", { name: "Rename…" }).click();
+    await expect(run.getByRole("textbox", { name: "Title of “Without BOS”" })).toBeFocused();
+    await expectAccessible(page, "History, renaming a run");
+    await page.keyboard.press("Escape");
+    // Starred, and shown alone; then the star comes off again, as the fixture had it.
+    await run.getByRole("button", { name: "Star “Without BOS”" }).click();
+    const show = history.getByRole("radiogroup", { name: "Show" });
+    await show.getByRole("radio", { name: /^Starred/ }).click();
+    await expect(run.getByRole("button", { name: "Star “Without BOS”" })).toHaveAttribute("aria-pressed", "true");
+    await expectAccessible(page, "History, starred runs");
+    await run.getByRole("button", { name: "Star “Without BOS”" }).click();
+    await expect(history.getByText("No starred runs.", { exact: false })).toBeVisible();
+    await show.getByRole("radio", { name: /^All/ }).click();
+    await run.getByRole("button", { name: "Actions for “Without BOS”" }).click();
+    await page.getByRole("menuitem", { name: "Delete…" }).click();
+    const question = page.getByRole("alertdialog", { name: "Delete “Without BOS”?" });
+    await expect(question.getByRole("button", { name: "Keep it" })).toBeFocused();
+    await expectAccessible(page, "History, deleting a run");
+    await question.getByRole("button", { name: "Keep it" }).click();
+    await expect(run).toBeVisible();
+  } finally {
+    rmSync(broken, { recursive: true, force: true });
   }
 });

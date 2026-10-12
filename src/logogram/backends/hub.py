@@ -22,8 +22,9 @@ from logogram.backends.base import BackendError, Cancelled
 
 log = logging.getLogger(__name__)
 
-# Top-level files needed to build the model and tokenizer. Weights are added separately.
-_SUPPORT_PATTERNS = ("*.json", "*.txt", "*.model", "*.tiktoken")
+# Top-level files needed to build the model and tokenizer (chat_template.jinja says whether it is
+# made for chat). Weights are added separately.
+_SUPPORT_PATTERNS = ("*.json", "*.txt", "*.model", "*.tiktoken", "*.jinja")
 _SKIP_FILES = {"README.md", ".gitattributes"}
 
 

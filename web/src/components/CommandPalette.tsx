@@ -2,6 +2,7 @@ import * as RadixDialog from "@radix-ui/react-dialog";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { architectureOf } from "../lib/keys";
+import { paletteRuns, runTitle, searchText } from "../lib/runs";
 import { parseHeadQuery } from "../lib/sites";
 import { useStore, workspaceFor, WORKSPACE_VIEWS } from "../store/app";
 import { MOD, SHIFT } from "./Header";
@@ -97,13 +98,15 @@ function useCommands(query: string): Command[] {
           { id: "across", label: "Compare across runs", group: "Selected component", shortcut: key("C"), run: () => st.focusInspector("runs") },
         );
       }
-      for (const r of st.runs.slice(0, 12)) {
+      // With nothing typed, the starred runs and the newest others; once something is typed,
+      // every run, archived ones too, found by title, name, id, method, model or dataset.
+      for (const r of paletteRuns(st.runs, query)) {
         cmds.push({
           id: `run-${r.id}`,
-          label: `Open run: ${r.name}`,
-          group: "Runs",
-          keywords: r.id,
-          run: () => void st.openRun(r.id, r.status === "finished" ? "results" : undefined),
+          label: `Open ${r.status === "draft" ? "draft" : "run"}: ${runTitle(r)}${r.archived ? " (archived)" : ""}`,
+          group: r.starred && !r.archived ? "Starred runs" : "Runs",
+          keywords: searchText(r),
+          run: () => void (r.status === "draft" ? st.openDraft(r.id) : st.openRun(r.id, r.status === "finished" ? "results" : undefined)),
         });
       }
     }
@@ -112,6 +115,8 @@ function useCommands(query: string): Command[] {
       { id: "system", label: "System check", group: "Project", keywords: "gpu cuda doctor hardware", run: () => st.goto("system") },
       { id: "updates", label: "Check for updates", group: "Project", keywords: "version upgrade new release pypi", run: () => void st.checkUpdates() },
       { id: "shortcuts", label: "Show keyboard shortcuts", group: "Help", keywords: "keys hotkeys keyboard help", shortcut: key("?"), run: () => useStore.setState({ shortcutsOpen: true }) },
+      { id: "report", label: "Report a problem…", group: "Help", keywords: "bug issue error support github", run: () => useStore.setState({ helpDialog: "report" }) },
+      { id: "about", label: "About Logogram", group: "Help", keywords: "version license source", run: () => useStore.setState({ helpDialog: "about" }) },
       st.singleKeys
         ? { id: "single-keys", label: "Turn off single-key shortcuts", group: "Help", keywords: "keys hotkeys keyboard speech accessibility", run: () => st.setSingleKeys(false) }
         : { id: "single-keys", label: "Turn on single-key shortcuts", group: "Help", keywords: "keys hotkeys keyboard speech accessibility", run: () => st.setSingleKeys(true) },

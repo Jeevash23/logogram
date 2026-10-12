@@ -184,10 +184,11 @@ def test_formats_logogram_cant_reproduce_are_refused(tmp_path):
             "rescales",
         ),
         ({"hook_name": "blocks.0.hook_resid_pre", "architecture": "gated"}, "gated"),
-        ({"hook_name": "blocks.0.attn.hook_z"}, "can't map"),
+        ({"hook_name": "blocks.0.hook_resid_mid"}, "can't map"),
     ):
         with pytest.raises(BackendError, match=message):
             read_sae(_saelens(tmp_path / message.replace(" ", "-").replace("'", ""), cfg, weights))
+    # A skip connection its weights don't have (test_skip_transcoders reads those that do).
     skip = tmp_path / "layers.1.mlp"
     skip.mkdir()
     (skip / "cfg.json").write_text(
@@ -256,6 +257,63 @@ def test_patching_a_feature_moves_the_activation_along_its_decoder_row(
         source_override="corrupt",
     )
     np.testing.assert_allclose(same.patched, same.receiver_metric[None, :], atol=1e-4)
+
+
+@pytest.mark.parametrize("position", ["last", "all"])
+def test_patching_a_feature_of_an_sae_that_standardizes_its_inputs(
+    tiny_backend, project, spec_factory, tmp_path, position
+):
+    """A unit of such a feature is its decoder row times the receiver's input's standard
+    deviation at each token (OpenAI's GPT-2 SAEs are of this kind)."""
+    d = tiny_backend.info.d_model
+    torch.manual_seed(2)
+    folder = _saelens(
+        tmp_path / "ln",
+        {
+            "hook_name": "blocks.1.hook_resid_pre",
+            "normalize_activations": "layer_norm",
+            "activation_fn_str": "topk",
+            "activation_fn_kwargs": {"k": 8},
+        },
+        {
+            "W_enc": torch.randn(d, 64),
+            "b_enc": torch.zeros(64),
+            "W_dec": torch.randn(64, d) * 0.3,
+            "b_dec": torch.randn(d) * 0.1,
+        },
+    )
+    sae = SAE(repo="local/exact", path="", revision="test", params=read_sae(folder))
+    prompts = _prompts(tiny_backend, project)
+    group = group_by_length(prompts)[0]
+    clean = tiny_backend.capture(group.clean, [("resid_pre", 1)])[("resid_pre", 1)]
+    corrupt = tiny_backend.capture(group.corrupt, [("resid_pre", 1)])[("resid_pre", 1)]
+    f_clean, _ = sae.encode(clean)
+    f_corrupt, (_, std) = sae.encode(corrupt)
+    last = clean.shape[1] - 1
+    feature = int(f_clean[:, last].sum(0).argmax())
+    site = {"kind": "sae_feature", "layer": 1, "feature": feature, "position": {"kind": position}}
+    spec = spec_factory(
+        sae=SAE_REF,
+        experiment={"kind": "activation_patching", "direction": "clean_to_corrupt"},
+        scope={"kind": "sites", "sites": [site]},
+    )
+    result = run_experiment(spec, tiny_backend, prompts, sae=sae)
+    moved = corrupt + (f_clean - f_corrupt)[..., feature, None] * sae.params.W_dec[feature] * std
+    rows = torch.arange(len(group.members))
+    if position == "last":
+        patch = Patch(
+            kind="resid_pre",
+            layer=1,
+            values=moved[:, last],
+            positions=torch.full((len(rows),), last),
+        )
+    else:
+        patch = Patch(kind="resid_pre", layer=1, values=moved)
+    logits = tiny_backend.final_logits(group.corrupt, patch)
+    answers = torch.tensor([prompts[i].answer_id for i in group.members])
+    distractors = torch.tensor([prompts[i].distractor_id for i in group.members])
+    expected = (logits[rows, answers] - logits[rows, distractors]).double().numpy()
+    np.testing.assert_allclose(result.patched[0, group.members], expected, atol=1e-4)
 
 
 def test_with_an_exact_sae_the_feature_estimates_add_up_to_the_site(

@@ -1,9 +1,10 @@
 name: Golden
 
-# Once a week, every method on GPT-2 small's real weights, and the head sweep of the bundled
-# example checked against GPT-2 small's published indirect-object circuit
-# (scripts/validate_real_weights.py --golden). The tests use tiny random models; this catches a
-# change, in Logogram or in a dependency, that moves results on a real model.
+# Once a week, every method on GPT-2 small's real weights, and each bundled example checked against
+# what was published about GPT-2 small: the IOI example's head sweep against the indirect-object
+# circuit, and the greater-than, factual recall and gendered pronoun examples against their papers'
+# findings (scripts/validate_real_weights.py --golden). The tests use tiny random models; this
+# catches a change, in Logogram or in a dependency, that moves results on a real model.
 
 on:
   schedule:
@@ -29,7 +30,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-      - name: Read the model and revision the bundled example pins
+      # Every example pins the same model and revision (tests/test_examples.py checks it).
+      - name: Read the model and revision the bundled examples pin
         id: model
         run: |
           spec=src/logogram/examples/ioi-gpt2/experiments/ioi-head-patching/spec.json

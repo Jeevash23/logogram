@@ -2,6 +2,7 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 
 import { useStore, type Workspace } from "../store/app";
 import { MOD, ProjectMenu } from "./Header";
+import { HelpMenu } from "./HelpMenu";
 import { BRAND_SEED, Logogram } from "./Logogram";
 import { UpdateNotice } from "./UpdateNotice";
 import { Icon, menuClasses, Tip } from "./ui";
@@ -90,6 +91,7 @@ export function TopBar({
             <kbd className={s.kbd}>{MOD} K</kbd>
           </button>
         </Tip>
+        <HelpMenu className={s.iconTool} />
         <ThemeMenu />
       </div>
     </header>

@@ -1,0 +1,42 @@
+{
+  "logogram_manifest": 1,
+  "run_id": "made-by-0.2.0",
+  "status": "finished",
+  "started_at": "2026-10-11T19:30:15Z",
+  "finished_at": "2026-10-11T19:30:15Z",
+  "wall_time_s": 0.103,
+  "error": null,
+  "versions": {
+    "logogram": "0.2.0",
+    "python": "3.12.3",
+    "torch": "2.14.1+cu130",
+    "transformer_lens": "4.0.0",
+    "transformers": "5.19.0",
+    "numpy": "2.5.3",
+    "pyarrow": "25.0.1"
+  },
+  "derived_from": null,
+  "model": {
+    "id": "tiny-gpt2",
+    "revision": "test",
+    "architecture": "GPT2LMHeadModel",
+    "process_weights": true,
+    "backend": "transformer_lens",
+    "backend_version": "4.0.0"
+  },
+  "device": {
+    "type": "cpu",
+    "name": "Example CPU",
+    "cuda": null,
+    "threads": 1,
+    "deterministic_algorithms": true
+  },
+  "dtype": "float32",
+  "dataset": {
+    "path": "datasets/snapshots/f5e2f2b1d68ac7ab59b1cefcd84f7f0cfc81c71c85c05c925f872e01c01d6e69.jsonl",
+    "sha256": "f5e2f2b1d68ac7ab59b1cefcd84f7f0cfc81c71c85c05c925f872e01c01d6e69",
+    "n": 6,
+    "source_path": "datasets/ioi.jsonl"
+  },
+  "sae": null
+}

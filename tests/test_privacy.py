@@ -64,6 +64,36 @@ def test_repository_is_clean():
     assert not findings, "\n".join(str(f) for f in findings)
 
 
+COMMUNITY_FILES = [
+    "SECURITY.md",
+    "CONTRIBUTING.md",
+    "CITATION.cff",
+    ".github/ISSUE_TEMPLATE/bug_report.yml",
+    ".github/ISSUE_TEMPLATE/feature_request.yml",
+    ".github/ISSUE_TEMPLATE/config.yml",
+]
+
+
+def test_the_community_files_are_checked_too():
+    """Files people copy their details into by habit (a security contact, a citation's authors)
+    are searched like any other."""
+    check = _load()
+    listed = {p.relative_to(ROOT).as_posix() for p in check.tracked_files(ROOT)}
+    assert set(COMMUNITY_FILES) <= listed
+
+
+@pytest.mark.parametrize("name", COMMUNITY_FILES)
+def test_a_personal_detail_in_a_community_file_would_be_found(tmp_path, name):
+    check = _load()
+    target = tmp_path / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    text = (ROOT / name).read_text(encoding="utf-8")
+    address = "maintainer@" + "university.edu"
+    target.write_text(f"{text}\ncontact: {address}\n", encoding="utf-8")
+    found = check.check(tmp_path)
+    assert [(f.path, f.kind) for f in found] == [(name, "email address")]
+
+
 def test_detects_paths_addresses_tokens_and_names(tmp_path):
     check = _load()
     home = "/" + "home" + "/someone"

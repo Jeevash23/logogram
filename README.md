@@ -57,8 +57,9 @@ logogram
 
 This starts a local server on 127.0.0.1, prints its address and opens your browser.
 
-1. The first time, a system check shows what Logogram found. Choose **Open the example project**.
-   Logogram copies it to `Documents/Logogram/ioi-example`, an ordinary project folder.
+1. The first time, a system check shows what Logogram found, and the [examples](#examples). Open
+   the IOI example. Logogram copies it to `Documents/Logogram/ioi-example`, an ordinary project
+   folder.
 2. The example contains 32 indirect object identification (IOI) prompts and a ready-made
    experiment: patch each head's output from the clean prompt into the corrupt prompt. Press
    **Run**. GPT-2 small (about 0.5 GB) downloads once from Hugging Face; the sweep then takes
@@ -89,6 +90,12 @@ jump to a head), **1–5** go to the open workspace's tabs, **[** and **]** step
 without Ctrl or ⌘ can be turned off there, or from the command palette, for speech input or keys
 pressed by accident.
 
+**Help**, in the top bar, lists the keyboard shortcuts, links to the sections of this guide,
+opens the system check, and shows the version and license with a way to check for updates.
+**Report a problem** builds a short report to paste into an issue: versions, the operating
+system's family, the device, the loaded model and the last error the app showed, with paths and
+names taken out. Nothing is sent; you copy it.
+
 The address keeps your place: the view, and the run it shows or the two it compares. Back and
 Forward move between views, a reload comes back to the same place, and **All projects** leads back
 to the open project as you left it.
@@ -106,6 +113,15 @@ When an action elsewhere replaces the experiment form (**Patch here**, **Edit an
 sites), a notice offers to undo it. An unsaved form is kept in this browser for each project and
 restored when the project opens again; saving, running or queueing it clears that copy.
 
+**History** finds runs by title, name, id, method, model or dataset, and shows every run, the
+starred ones, or the archive. A run's menu renames it (or F2 on it), stars it, archives it or
+deletes it. Its title, star and archive mark live in the run's `annotations.json`, never in its
+spec, which records what ran. Archiving keeps a run, out of the history's way; deleting asks
+first, then removes the run's folder for good. There is no trash: a deleted run kept out of sight
+in the project would still travel with it, manifest and all, when the project is shared. Runs
+derived from a deleted run stay, and say so. A run whose spec can't be read is listed as
+unreadable, with what is wrong and how to fix it, and can be deleted.
+
 Use **History** to reopen experiments or compare two runs. On **Compare runs**, choose a cell (or a
 row of the table) to see that site in both runs: each run's effect and interval, the difference
 (paired prompt by prompt when the runs share prompts), its flags, and a way into each run at that
@@ -119,6 +135,26 @@ settings** fills those choices in.
 Finished results offer a per-prompt CSV, a PNG heatmap with a symmetric legend, and a copyable or
 downloadable methods description. The CSV retains every site/prompt row; text fields that could
 be interpreted as spreadsheet formulas are prefixed with an apostrophe.
+
+## Examples
+
+Four example projects come with Logogram. Each is a spec and a dataset made by Logogram's own task
+generators for GPT-2 small, runs on a CPU in about a minute, and asks a question a paper answered
+by a causal experiment, so its result can be read against the paper. The first screens and **All
+projects** list them with the question, the model, the method and the result to expect. Opening
+one copies it into its own folder in `Documents/Logogram`; a copy made before opens as you left
+it, never replaced. Each spec's notes say what was published and what Logogram measured on GPT-2
+small (revision `607a30d`), and the results show them under the run's title.
+
+| Example | Experiment | Published | Measured on GPT-2 small |
+|---|---|---|---|
+| Indirect object identification: which heads carry the name? | Patch each head's output clean → corrupt at every position; logit difference | Name movers 9.9 and 10.0, S-inhibition heads 7.3, 7.9, 8.6 and 8.10, induction heads 5.5 and 6.9; negative name movers 10.7 and 11.10 (Wang et al. 2022) | 5.5 0.33, 8.6 0.30, 8.10 0.25, 7.9 0.21, 9.9 0.17, 10.0 0.11; 10.7 −0.45, 11.10 −0.21 |
+| Greater-than: which layers predict a year after 1732? | Patch each layer's attention and MLP output at the last token from the prompt starting in 01 (corrupt → clean); probability difference | MLPs 8 to 11 compute it, 9 and 10 most, after heads in layers 5 to 9 bring the start year (Hanna et al. 2023) | MLP 9 0.36, MLP 10 0.34, MLP 8 0.20, attention 9 0.16, MLP 11 0.09; layers 0 to 4 nothing |
+| Factual recall: where does France become Paris? | Patch the residual stream before each layer at the country's last token and at the last token, clean → corrupt; logit difference | An early site at the subject's last token, a late site at the last token (Meng et al. 2022) | The country restores 0.93 to 0.95 through layer 6 and 0.82 at layer 9; the last token takes over in layers 10 and 11 (0.48, 0.78). Unlike the paper's MLP windows, single middle-layer MLPs restore 0.04 or less each |
+| Gendered pronouns: which heads write “he”? | Direct logit attribution of every head at the last token | Heads 10.9 and 9.7 (Mathwin et al. 2023, in Conmy et al. 2023) | 10.9 0.35 and 9.7 0.22 of the logit difference, the next head 0.10 |
+
+Once a week, the Golden workflow runs every example on GPT-2 small's real weights and checks these
+findings (see Development).
 
 ## Explore, experiment, evidence
 
@@ -205,8 +241,12 @@ logogram                      start the app and open the browser
 logogram open PATH            start with a project open
 logogram run SPEC.json        run an experiment headlessly and print a summary
 logogram validate SPEC.json   check a spec without running it, and say what it left out
-logogram list                 the project's runs and drafts, newest first
-logogram show RUN             a finished run's method, baseline and strongest sites
+logogram list                 the project's runs and drafts, newest first (--archived for all)
+logogram rename RUN TITLE     show a title instead of the spec's name ("" clears it)
+logogram star RUN             star a run (--remove takes the star off)
+logogram archive RUN          keep a run out of the list (--restore brings it back)
+logogram delete RUN           delete a run's folder for good, after asking (--yes doesn't ask)
+logogram show RUN             a finished run's method, baseline and strongest sites, or why it failed
 logogram compare RUN RUN      how two runs agree, with paired differences where they can be paired
 logogram diff A B             every choice that differs between two runs or spec files
 logogram verify RUN           patch the strongest sites of an attribution patching run, and compare
@@ -215,14 +255,24 @@ logogram export RUN           a run's per-prompt values as CSV (-o FILE)
 logogram tasks                the tasks Logogram writes prompts for, with their options
 logogram generate TASK        a seeded dataset for a task (-n N --seed S, --option NAME=VALUE)
 logogram doctor               environment and hardware report, with fixes
+logogram env                  the versions and devices results depend on, as JSON (--requirements pins them)
+logogram doctor --report      a short report to paste into an issue (--hardware adds the hardware)
 logogram check-updates        ask PyPI whether a newer Logogram is out
 logogram serve --dev          API only, for working on the web app
 logogram --version
 ```
 
 The app listens on port 8765, or the next free one; `--port N` picks another (`--port 0` takes
-any free port) and `--no-browser` skips opening the browser. Commands that read runs use the
-project in the current folder or above it, or `--project PATH`; a run is its id or its folder.
+any free port) and `--no-browser` skips opening the browser. `--forwarded-port N` accepts the
+address of a port that forwards to the app, such as an SSH tunnel's (see
+[Running on a remote GPU](#running-on-a-remote-gpu)). Only errors reach the terminal; `--verbose`
+also logs what the server does, with the traceback of each failed run, and `--log-file PATH`
+appends the same to a file. Commands that read runs use the project in the current folder or
+above it, or `--project PATH`; a run is its id or its folder.
+
+A failed run keeps its traceback in `traceback.txt`, without this machine's paths or names:
+`logogram show RUN` prints it, `logogram run --verbose` prints it as the run fails, and the app
+shows it under **Show details**. Ctrl+C during `logogram run` records the run as cancelled.
 
 `logogram run` writes a new experiment folder next to the original. When the spec came from a
 finished run, it also checks the new results against the old ones:
@@ -264,11 +314,105 @@ lg.check_robustness(run, experiment={"kind": "ablation", "baseline": {"kind": "z
 
 records = lg.generate("greater_than", 200, seed=0, model=model)
 lg.write_dataset(project, "greater-than", records)
+
+sae = lg.load_sae("jbloom/GPT2-Small-SAEs-Reformatted", "blocks.8.hook_resid_pre", model=model)
+lg.feature_writes(model, sae, 1234, "When Mary and John went to the store, John gave a drink to",
+                  prepend_bos=True)   # the tokens the feature promotes and suppresses directly
 ```
 
 Tables come back as pandas DataFrames when pandas is installed, and as pyarrow Tables otherwise.
 `lg.list_runs(project)` and `lg.load_run(project, run_id)` read runs made anywhere. A run that
-fails raises `lg.api.LogogramError` with the reason.
+fails raises `lg.api.LogogramError` with the reason, and `lg.load_run(project, run_id).traceback`
+reads the traceback it kept. Interrupting the kernel records the run as cancelled.
+`run.rename("Name movers")`, `run.star()` and `run.archive()` change what the history shows
+(`run.title`, `run.starred`, `run.archived`), and `lg.delete_run(project, run)` deletes a run's
+folder for good.
+
+## Running on a remote GPU
+
+Logogram can run on a machine you reach over SSH, such as a rented GPU, while you use it in the
+browser on your own computer. Everything still runs on the remote machine, which still listens on
+127.0.0.1 only: SSH carries the page to you.
+
+1. **Install it on the remote machine** and check that PyTorch sees the GPU:
+
+   ```bash
+   uv tool install logogram
+   logogram doctor
+   ```
+
+   The default Linux wheels include CUDA. If the GPU isn't used, `logogram doctor` says why and
+   gives the command that fixes it.
+
+2. **Start it there without a browser.** Run it inside `tmux` or `screen`, so that it keeps
+   running when the SSH connection drops:
+
+   ```bash
+   logogram --no-browser
+   ```
+
+   With a project open, that is `logogram open PATH --no-browser`. Logogram prints its address,
+   with a new session token:
+
+   ```text
+   Logogram 0.3.0 is running at:
+
+     http://127.0.0.1:8765/?token=…
+   ```
+
+   The port is 8765, or the next free one if something else has it: read it in that line.
+
+3. **Forward the port** from your own computer, in a terminal of its own, with the port from the
+   address (`gpu-box` is the remote machine, as you name it to `ssh`):
+
+   ```bash
+   ssh -N -L 8765:127.0.0.1:8765 gpu-box
+   ```
+
+4. **Open the printed address** in the browser on your own computer. Copy it from the terminal
+   rather than putting the token in a command. It works until Logogram stops; each start makes a
+   new token.
+
+If port 8765 is taken on your own computer (by a Logogram of its own, say), forward another
+local port, and start the remote Logogram with that port allowed:
+
+```bash
+ssh -N -L 9000:127.0.0.1:8765 gpu-box
+```
+
+```bash
+logogram --no-browser --forwarded-port 9000
+```
+
+It then prints the address on port 9000 too. `logogram open` and `logogram serve` take the same
+option; it can be repeated, or given as `LOGOGRAM_FORWARDED_PORTS=9000,9001`. Without it, the
+page says that Logogram didn't answer (status 421) and which option to add. Only the loopback
+names 127.0.0.1, localhost and [::1] are accepted, and the session token is needed as always: a
+tunnel or service that puts Logogram on another address is refused by design.
+
+**Where things live.** Everything is on the remote machine:
+
+* Projects are in its documents folder, `~/Documents/Logogram` on Linux (the example is copied to
+  `~/Documents/Logogram/ioi-example`). The app's folder browser shows the remote machine's
+  folders.
+* Models download into its Hugging Face cache, `~/.cache/huggingface/hub` unless `HF_HOME` or
+  `HF_HUB_CACHE` says otherwise; point `HF_HOME` at a larger disk if the home folder is small
+  (`logogram doctor` warns when the cache's disk is nearly full). For gated models, run
+  `hf auth login` on the remote machine.
+* Settings and the list of recent projects are in `~/.config/logogram`.
+
+**Copying runs back.** A project is a folder: copy it with `rsync` or `scp`, from your own
+computer.
+
+```bash
+rsync -a gpu-box:Documents/Logogram/my-project/ my-project/
+```
+
+Each run is a folder in `experiments/`, and the prompts it ran on are in `datasets/` (with the
+exact bytes in `datasets/snapshots/`), so copy the whole project, or both of those folders. Inside
+the copy, `logogram list` and `logogram show RUN` read its runs, and `logogram open my-project`
+shows them in the app. The manifests record the remote device and GPU: a rerun on another device
+can differ in the last digits, so compare per-prompt values before treating the two as the same.
 
 ## Prompts
 
@@ -413,6 +557,23 @@ prompt and, for one feature, its activation along the prompt and the prompts whe
 all computed from your own prompts. Feature descriptions live on sites like Neuronpedia, which
 Logogram doesn't contact.
 
+**What a feature writes** lists the tokens it promotes and suppresses directly, in the feature's
+panel and in the inspector for a feature site of a run. One unit of the feature adds its decoder
+direction to the activation the SAE writes (times the input's spread at that token, for SAEs that
+standardize their inputs; through each head's slice of the output projection, for SAEs on
+attention heads' outputs). That direction is added to the residual stream entering the final
+normalization at one token, skipping every later layer, and read through the final normalization,
+with its scale held at its value at that token as direct logit attribution holds it, and the
+unembedding, before any soft cap on the logits. The values are each token's logit change per unit
+of the feature, relative to the mean change over the vocabulary (which also makes them the same
+with or without weight processing). The scale is one positive number per token, so the tokens rank
+the same at every token and only the sizes change. The token is the one chosen in the prompt,
+where the feature fires most, or, in the inspector, the site's position. It is refused where it
+isn't defined: when the residual stream couldn't be verified to be a sum of its components, when
+the final normalization and unembedding don't reproduce the model's output, and for SAEs on heads'
+outputs in models that normalize the attention output after combining its heads (Gemma 2 and 3,
+OLMo 2), where patching those features is still exact.
+
 Features are sites like any other (`sae_feature`, with a feature index). **Patching a feature**
 encodes the receiver's activation and changes only that feature, to its value in the source prompt
 (or to zero, for zero ablation): the activation moves along the feature's decoder direction, and the
@@ -423,14 +584,28 @@ thousands of features and reporting them on the same prompts biases their effect
 (the winner's curse), so the sweep can choose them on a seeded share of the prompts and report
 them only on the rest (`choose_on` and `seed` in the scope).
 
-Logogram reads the SAELens and EleutherAI formats, and Gemma Scope 2 (`config.json` and
-`params.safetensors`, JumpReLU), from safetensors files only; the first Gemma Scope's NumPy
-archives are refused, as are SAEs whose input scaling or architecture it can't reproduce exactly.
+Logogram reads the SAELens and EleutherAI (sparsify) formats, and Gemma Scope 2 (`config.json`
+and `params.safetensors`, JumpReLU), from safetensors files only; the first Gemma Scope's NumPy
+archives are refused, as are SAEs whose input scaling, architecture, settings or tensors it can't
+reproduce exactly (such as sparsify's group-max activation, or settings from forks of sparsify).
 **Transcoders** (from Gemma Scope 2 or EleutherAI) read an MLP's input and write its output: a
 feature's value comes from the MLP's input, and patching it changes the MLP's output along the
-feature's decoder direction. SAEs trained on attention heads' outputs (SAELens `hook_z`, Gemma
-Scope 2's attention SAEs) read every head of the layer at once. Cross-layer transcoders and
-crosscoders are refused for now.
+feature's decoder direction. **Skip transcoders** also add their input times a matrix:
+EleutherAI's add `x @ W_skip.T`, as sparsify computes it, and Gemma Scope 2's affine ones add
+`x @ affine_skip_connection` (on Gemma 3 270M this explains 91% of an MLP output's variance, and
+the transpose 34%, so this is the way round the files mean). The input doesn't change when a
+feature is patched, so neither does the skip connection, and attribution patching reports the
+part of the site's estimate that flows through it beside the features' part. sparsify files
+written before February 2025 don't record whether they are transcoders, so Logogram reads it from
+their training run's `config.json` at the top of the repository (they also subtract `b_dec` from
+the input, as sparsify did then). SAEs trained on attention heads' outputs (SAELens `hook_z`,
+Gemma Scope 2's attention SAEs) read the output `z` of every head of the layer, side by side as
+the output projection reads it; patching a feature changes every head's output, which reaches
+the residual stream through the output projection. SAEs with a skip connection (which rebuild an
+activation partly from itself), cross-layer transcoders and crosscoders are refused for now. The
+fit measured on your prompts remains the last check, since a file can be trained on something its
+configuration doesn't record: EleutherAI's SmolLM2 skip transcoders were trained on normalized
+inputs and outputs, which only their model card says, and they fit poorly as published.
 
 **Sites** are abstract: `resid_pre`, `resid_mid`, `resid_post`, `attn_out`, `mlp_out` and `head`
 (an attention head's output `z`), each at a layer, head and position. Positions are `all`,
@@ -546,6 +721,8 @@ my-project/
   experiments/<id>/summary.json       per-site statistics and the layout of the results
   experiments/<id>/predictions.json   optional per-layer prediction diagnostic
   experiments/<id>/manifest.json      versions, device, dtype, model revision, dataset hash, timing
+  experiments/<id>/traceback.txt      a failed run's traceback, without this machine's paths
+  experiments/<id>/owner.json         while a run runs: its process id and start time
   .gitignore
 ```
 
@@ -562,8 +739,11 @@ experiments when sharing a project. Older runs still use the dataset path in the
 
 Browser tabs follow the server's open project. Switching projects clears the other tabs' forms,
 prompts, cached analyses and results; stale requests are rejected. A project cannot be switched
-while a job runs. The status line shows lost connections, and interrupted runs are marked failed
-when their project is reopened, with their saved spec available to rerun.
+while a job runs. The status line shows lost connections. A run started elsewhere, by
+`logogram run` or from Python, lists as running in another process until it ends; the app
+notices when it does. A run whose process stopped before it finished (closed, killed or
+crashed) is marked failed, with its saved spec available to rerun. `owner.json` tells the two
+apart: the process id and its start time, and a random token, nothing about you or the machine.
 
 **Reproducibility.** Runs seed Python, NumPy and PyTorch from `statistics.seed`, require deterministic
 PyTorch algorithms (unsupported operations fail rather than merely warn), and disable
@@ -572,6 +752,26 @@ and GPU model, the dtype, the model id and revision, whether weights were proces
 hash and the wall time. The same spec on the same machine gives bit-identical results. Results
 on different devices or library versions can differ; compare their per-prompt values before
 treating them as equivalent.
+
+## Stability
+
+**What stays readable.** Each release reads the run folders earlier releases wrote: their specs,
+manifests, summaries and per-prompt results list, open, compare and export as before. What a
+later release added and an older run didn't measure (corrections for the number of sites, say)
+is left out; runs from 0.1, which measured the logit difference only, read it as their metric.
+Version 1 and version 2 specs both run: a version 1 spec takes version 1's value for each choice
+it left out, `logogram validate` lists them, and its runs say so. The tests keep run folders
+written by 0.1.0 and 0.2.0 to hold every release to this.
+
+**What is bit-identical.** The same spec, on the same machine, with the same versions of
+Logogram, PyTorch, TransformerLens, Transformers and NumPy, gives the same per-prompt values to
+the last bit. `logogram run` on a finished run's spec checks this.
+
+**What may differ.** On another device (the CPU, CUDA or MPS, or another GPU) or with other
+library versions, results may differ in the last digits, because the same sums run in another
+order. Each manifest records the versions and the device; the Results view says when they
+differ from this machine's, and Compare says when two runs differ in them. `logogram env`
+prints this machine's, and `logogram env --requirements` pins its versions.
 
 ## Privacy
 
@@ -586,12 +786,18 @@ treating them as equivalent.
 * The server listens on 127.0.0.1 only. Every request needs the random session token from the
   address printed in the terminal (exchanged for a same-site cookie when the page opens). The
   browser is opened with a single-use code instead, because other users of a shared machine can
-  read a program's command line. The server checks the Host and Origin headers, sends no CORS
+  read a program's command line. The server checks the Host and Origin headers (loopback names
+  on its own port, and on the forwarded ports you name with `--forwarded-port`), sends no CORS
   headers, and refuses cross-site requests.
+* A problem report (**Help → Report a problem**, or `logogram doctor --report`) is built on your
+  machine and sent nowhere. It never names users, hosts or paths (they are taken out of the error
+  it quotes), and names hardware models only if you tick **Include hardware details**.
+  To report a security problem, see [SECURITY.md](SECURITY.md).
 * Projects are often shared, so Logogram treats their contents with care: it writes only into
   folders that are really inside the project (never through a symlink that leads out of it), and
   a damaged, oversized or unexpected file shows up as an error on that file rather than breaking
-  the project. A failed run's error is saved without this machine's paths.
+  the project. A failed run's error and traceback are saved without this machine's paths, your
+  account name or the machine's name. `logogram env` names hardware only with `--hardware`.
 * Weights are loaded only from safetensors files, which cannot run code. Logogram never unpickles
   files.
 * Settings and the list of recent projects are kept in your user configuration folder, not in
@@ -655,15 +861,19 @@ Rather than trusting a list, Logogram checks every model when it loads, on a sho
 * Layer predictions are offered when the final normalization and unembedding, with any logit
   soft-capping, reproduce the model's output.
 
-GPT-2 small is the model the bundled example was made for. Every method has been run end to end
+GPT-2 small is the model the bundled examples were made for. Every method has been run end to end
 with real weights on GPT-2 small (with a SAELens and an OpenAI SAE), Pythia-70m (with an
 EleutherAI SAE) and Qwen 2.5 0.5B, and the test suite runs the sanity checks on tiny random models
 of the Llama, Pythia, Qwen 2, Gemma 2 and OLMo 2 families without downloading anything. What 0.2
 added was checked on GPT-2 small: patching the whole input gives an effect of exactly 1 under
 every metric, including for answers of several tokens; the logit and log-probability differences
 agree to 5 × 10⁻⁷; integrated gradients, sets of sites, the tasks and clustered bootstraps give
-the results described above; and reruns are bit-identical. Gemma Scope 2's SAEs and transcoders
-were read from their published files; running them needs Gemma 3, which wasn't checked. The
+the results described above; and reruns are bit-identical. Gemma Scope 2's files were checked on
+Gemma 3 270M with weight processing off: the points they read (each MLP's input and output, and
+the attention's output projection's input) are exactly TransformerLens's hooks, and as read here
+an affine transcoder explains 91% of its MLP output's variance, the same transcoder without the
+skip connection 89%, and an attention SAE 76% (with weights from an ungated copy whose file hash is
+Google's). Other methods weren't run on Gemma 3. The
 example's names are single tokens for GPT-2 and Qwen but not all for Pythia; for another model,
 generate IOI prompts in the app, which keeps only names that are single tokens for it. A small
 model may not do the task at all (Pythia-70m prefers the repeated name), and its runs then say so.
@@ -673,7 +883,128 @@ so an experiment can be rerun at several points of training.
 Some tokenizers, such as Qwen's, have no beginning-of-sequence token. Logogram then runs prompts
 without one, and the spec records it.
 
+**Models made for chat** (instruction-tuned ones, such as Gemma 3 270M IT or Qwen 2.5 0.5B
+Instruct) are trained on conversations wrapped in their chat template, but Logogram feeds every
+prompt as plain text, without it, so such a model can behave differently here than in a chat.
+When a model loads, Logogram checks whether it is made for chat: its name says so (`-it`,
+`-Instruct`, `-Chat`, ...), or it stops generating at the token that ends each turn in its chat
+template (Qwen3 0.6B). A chat template alone isn't enough, since some base models ship one
+(Qwen 2.5 0.5B). The model dialog, the summary beside **Run** and the baseline say so, the model's
+info and each run's manifest record it, and prompts and results are unchanged. Check the baseline
+before trusting a run on such a model; for tasks posed as plain text, its base model is the closer
+fit. Applying chat templates is not built yet.
+
+## Troubleshooting
+
+The messages people see most often, as Logogram shows them, and what to do. If yours isn't here,
+**Help → Report a problem** (or `logogram doctor --report`) builds a report to paste into a
+[new issue](https://github.com/Jeevash23/logogram/issues/new/choose); it sends nothing.
+
+**The page**
+
+* *Logogram needs its session token.* (status 401): the page was opened without the session
+  token, or with an old one. Open the address printed in the terminal where Logogram runs, the one
+  ending in `?token=…`. Each start makes a new token, and the address the browser was first
+  opened with works only once.
+* *This page's session has ended. Open the link printed in the terminal where Logogram is
+  running.* Logogram was restarted, so the tab's token is no longer valid: open the new address.
+* *Can't reach the Logogram server. Check that `logogram` is still running in your terminal.*
+  The server stopped, or the SSH tunnel to it closed. Start it, or the tunnel, again.
+* *Logogram didn't answer this request: it was sent to 127.0.0.1:9000, and this Logogram listens
+  on port 8765.* (status 421): the browser reached Logogram through a port it wasn't told about,
+  usually an SSH tunnel's local end. Start Logogram with `--forwarded-port 9000` (see
+  [Running on a remote GPU](#running-on-a-remote-gpu)). An address with another name, such as
+  the machine's own, is refused on any port: open it at 127.0.0.1 instead. Logogram answers only
+  to 127.0.0.1, localhost and [::1], so that other websites can't reach it.
+
+**A model that won't load**
+
+* *… is gated. Accept its license on huggingface.co, then log in on this machine with
+  `hf auth login` and try again.* Do both on the machine where Logogram runs.
+* *No model called … was found on Hugging Face.* Check the id, which looks like `owner/name`.
+  Private models need `hf auth login` first.
+* *Couldn't reach Hugging Face, and … isn't in your local cache.* A model downloads once, the first
+  time it loads: connect to the internet for that.
+* *This model only publishes pickle weights (.bin).* Logogram loads safetensors weights only,
+  because pickle files can run code when opened. Choose a model that publishes
+  `model.safetensors`.
+* *TransformerLens … can't load … models, so Logogram can't either.* The model dialog says so
+  before downloading anything: choose a model of a supported family, such as GPT-2, Llama, Qwen,
+  Gemma, Pythia or OLMo.
+* *Processing the weights of … changed its predictions …* Load it with weight processing off:
+  untick **Process weights** in the model dialog, or set `"process_weights": false` in the spec.
+* *In float16, …'s own forward pass gives values that aren't finite numbers (it overflows), so its
+  predictions can't be checked. Load it in bfloat16 or float32, which have a wider range than
+  float16.* Pythia is one such model.
+* *The spec asks for CUDA, but PyTorch can't see a CUDA GPU here.* `logogram doctor` names the
+  cause, usually a CPU-only PyTorch, and the command that fixes it. Or set `model.device` to
+  `auto` or `cpu` in the spec.
+
+**A model or a run that doesn't fit.** The model dialog estimates, before downloading, the memory
+a model needs against what is free, and the experiment form's summary says whether a batch fits.
+
+* *The model doesn't fit in GPU memory while its weights are processed …* Processing works on
+  float32 copies of the weights, several times their size, for a moment: load it with weight
+  processing off, or choose a 16-bit dtype, a smaller model or another device.
+* *The model doesn't fit in GPU memory. Choose a smaller model, a 16-bit dtype or another device.*
+* *The run ran out of GPU memory at a batch of 64 rows. Lower execution.batch_size in the spec …*
+  Attribution patching, direct logit attribution and path patching hold every layer's activations
+  at once, so they need smaller batches than patching does.
+
+**Prompts and answers.** The app shows both prompts of each pair token by token, and says which
+pairs can't be used, and why:
+
+* *the answer ' Mary Mary' is several tokens (' Mary' + ' Mary'). The logit difference reads one
+  token …* Use a single-token answer, usually with a leading space (`" Mary"`, not `"Mary"`), or a
+  log-probability or probability metric, which read answers of several tokens. Prompts generated
+  in the app with the model loaded use only words that are single tokens for it.
+* *clean has 15 tokens and corrupt has 16, so positions can't be aligned.* Change what differs
+  between the two prompts to words with the same number of tokens.
+* *position 'S2' (characters 38–42) doesn't cover any token.* The span's character offsets don't
+  reach a token of the clean prompt: correct them.
+* *This model's tokenizer has no beginning-of-sequence token. Set tokenization.prepend_bos to
+  false in the spec.* The app does this by itself when such a model loads; a spec written by hand
+  must say so.
+
+**Apple Silicon (MPS)**
+
+* **Automatic** runs on the CPU: TransformerLens reports that Apple's MPS can give silently wrong
+  results, and Logogram hasn't been checked on it, so MPS is used only when you choose it under
+  **Device**. Check results that matter by rerunning on the CPU and comparing the two runs.
+* *The spec asks for Apple's MPS, which isn't available here. Set model.device to auto or cpu.*
+  The spec was made on a Mac: change its `model.device`.
+* `logogram doctor` says *Python is running under Rosetta*: an Intel Python can't use the Apple
+  GPU. Install a native arm64 Python and reinstall Logogram with it, as it says.
+* `logogram doctor` says *Apple GPU (MPS) unavailable*: MPS needs macOS 12.3 or later.
+
+**Windows**
+
+* *dataset.path must be a path inside the project, written with forward slashes and without '..',
+  such as datasets/ioi.jsonl*: specs travel between machines, so their paths are relative to the
+  project and use forward slashes, on Windows too.
+* A path with spaces needs quotes, in PowerShell and the Command Prompt alike:
+  `logogram open "D:\Research projects\ioi"`. A project's path may start with `~` for your home
+  folder: `logogram open ~/Documents/Logogram/ioi-example`.
+* `logogram doctor` says *Your NVIDIA GPU isn't being used*: this PyTorch is CPU-only. Reinstall
+  with the command it gives, which picks the CUDA build that matches your driver.
+* A warning that the Hugging Face cache uses symlinks, but your machine doesn't support them, is
+  harmless: downloads take more disk space. Windows' Developer Mode lets the cache use symlinks.
+
+**A run that failed.** The results page says **This run failed**, with the reason, and
+**Edit and rerun** puts its spec back in the form; **Show details** shows the traceback. The same
+reason is saved in the run's folder, in `experiments/<id>/manifest.json` under `"error"`, and the
+traceback in `traceback.txt`, both without this machine's paths or names; `logogram show RUN`
+prints them, and `logogram list` shows the run as failed. *The server stopped before this run
+finished. Rerun its saved spec.* means Logogram stopped while the run was going (an SSH session
+that closed without `tmux`, for example), and *The process running this run stopped before it
+finished.* means the same of a `logogram run` or a notebook: the spec is saved, so run it again.
+Warnings from Logogram and its libraries appear in the terminal where it runs; `--verbose` shows
+what the server does, and `--log-file PATH` keeps it.
+
 ## Development
+
+[CONTRIBUTING.md](CONTRIBUTING.md) lists the checks to run before a pull request, the rules in
+[AGENTS.md](AGENTS.md) in short, and how to add a method.
 
 ```bash
 uv sync                       # Python environment with dev tools
@@ -719,9 +1050,10 @@ rules as well, checks that `uv.lock` matches `pyproject.toml`, keeps test covera
 the tests with every dependency at the lowest version `pyproject.toml` allows, and audits the
 locked Python and web dependencies for known vulnerabilities; its actions are pinned to commits,
 and Dependabot and CodeQL watch them. Once a week, the Golden workflow runs every method on GPT-2
-small's real weights and checks the bundled example against GPT-2 small's published
-indirect-object circuit (`scripts/validate_real_weights.py --golden`; `--golden-only` runs just
-those checks in a few minutes).
+small's real weights and checks the bundled examples against what was published about GPT-2
+small: the indirect-object circuit, greater-than, factual recall and gendered pronouns
+(`scripts/validate_real_weights.py --golden`; `--golden-only` runs just those checks in a few
+minutes).
 
 Releasing: raise `__version__` and set `__released__` to the release date in
 `src/logogram/__init__.py` (the date drives the "this version is getting old" hint), commit, and
@@ -744,10 +1076,12 @@ checked when they load and in the tiny-model tests.
 
 Model access goes through `logogram.backends.base.ModelBackend`. TransformerLens is the only
 backend today; remote execution and other libraries can be added behind the same interface.
-Not built yet, with room left for them: attribution graphs over transcoders, cross-layer
-transcoders and crosscoders, the first Gemma Scope's NumPy SAE files, steering with SAE features,
-remote compute, a native desktop wrapper, plugins and assistants.
+Not built yet, with room left for them: chat templates for models made for chat, attribution
+graphs over transcoders, cross-layer transcoders and crosscoders, the first Gemma Scope's NumPy
+SAE files, steering with SAE features, remote compute, a native desktop wrapper, plugins and
+assistants.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). To cite Logogram, see [CITATION.cff](CITATION.cff), which GitHub's
+**Cite this repository** reads.

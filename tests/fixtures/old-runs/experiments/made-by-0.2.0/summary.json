@@ -1,0 +1,509 @@
+{
+  "logogram_summary": 1,
+  "run_id": "made-by-0.2.0",
+  "name": "Heads, as Logogram 0.2.0 ran them",
+  "description": "Patch corrupt → clean · every head, all positions",
+  "model": {
+    "id": "tiny-gpt2",
+    "n_layers": 2,
+    "n_heads": 4,
+    "d_model": 32,
+    "d_head": 8,
+    "d_mlp": 128,
+    "site_kinds": [
+      "resid_pre",
+      "resid_mid",
+      "resid_post",
+      "attn_out",
+      "mlp_out",
+      "head"
+    ],
+    "block_structure": "sequential_pre_norm",
+    "normalization": "LN",
+    "activation": "gelu_new"
+  },
+  "n_prompts": 6,
+  "n_sites": 8,
+  "layout": {
+    "kind": "heads",
+    "site": null,
+    "row_title": "Layer",
+    "col_title": "Head",
+    "rows": [
+      {
+        "key": "0",
+        "label": "0"
+      },
+      {
+        "key": "1",
+        "label": "1"
+      }
+    ],
+    "cols": [
+      {
+        "key": "0",
+        "label": "0"
+      },
+      {
+        "key": "1",
+        "label": "1"
+      },
+      {
+        "key": "2",
+        "label": "2"
+      },
+      {
+        "key": "3",
+        "label": "3"
+      }
+    ],
+    "universe": null
+  },
+  "receiver": "clean",
+  "reference": "corrupt",
+  "measure": "intervention",
+  "metric": {
+    "kind": "logit_diff",
+    "target": null,
+    "label": "logit difference",
+    "normalization": "dataset_gap",
+    "denominator": 0.522232304016749,
+    "description": "logit(answer) − logit(distractor) at the last position",
+    "normalized_effect": "(patched − clean) ÷ mean(corrupt − clean) logit difference; mean gap = 0.5222"
+  },
+  "statistics": {
+    "bootstrap": 200,
+    "ci": 0.95,
+    "seed": 0,
+    "method": "percentile bootstrap over prompts",
+    "cluster": null,
+    "clusters": null,
+    "band_level": 0.0075,
+    "multiple_comparisons": "Simultaneous bands hold for all 8 sites together with 95% confidence (max-rank percentile method); q-values are Benjamini–Hochberg adjusted bootstrap p-values over the same sites."
+  },
+  "baseline": {
+    "clean": {
+      "logit_diff": {
+        "mean": -1.1356444259484608,
+        "sd": 2.6754787376098843
+      },
+      "answer_prob": {
+        "mean": 0.001635402841202449,
+        "sd": 0.0020029821150257263
+      },
+      "prefers_answer": 2,
+      "metric": {
+        "mean": -1.1356444259484608,
+        "sd": 2.6754787376098843
+      }
+    },
+    "corrupt": {
+      "logit_diff": {
+        "mean": -0.6134121219317118,
+        "sd": 2.904773890123781
+      },
+      "answer_prob": {
+        "mean": 0.0013305678633817781,
+        "sd": 0.0019311441721999876
+      },
+      "prefers_answer": 2,
+      "metric": {
+        "mean": -0.6134121219317118,
+        "sd": 2.904773890123781
+      }
+    },
+    "gap": {
+      "mean": 0.522232304016749,
+      "sd": 0.3159409385124445
+    }
+  },
+  "sites": [
+    {
+      "index": 0,
+      "kind": "head",
+      "layer": 0,
+      "head": 0,
+      "feature": null,
+      "position": {
+        "kind": "all"
+      },
+      "position_key": "all",
+      "row": 0,
+      "col": 0,
+      "label": "L0 H0",
+      "variant": null,
+      "variant_key": null,
+      "members": null,
+      "n": 6,
+      "effect": {
+        "mean": 0.06940515554371941,
+        "sd": 0.1951221777124238,
+        "lo": -0.050420971305122374,
+        "hi": 0.2764083226771416
+      },
+      "delta": {
+        "mean": 0.03624561429023743,
+        "sd": 0.10189910443152463,
+        "lo": -0.032258749008178704,
+        "hi": 0.10451840534806252
+      },
+      "patched_metric": -1.0993988116582234,
+      "patched_logit_diff": -1.0993988116582234,
+      "answer_prob": 0.001770896449064215,
+      "answer_prob_delta": 0.00013549360786176598,
+      "sign_flips": 0,
+      "opposite_sign": 3,
+      "band": {
+        "lo": -0.062034337765621506,
+        "hi": 0.3331857611232387
+      },
+      "q": 0.7860696517412935
+    },
+    {
+      "index": 1,
+      "kind": "head",
+      "layer": 0,
+      "head": 1,
+      "feature": null,
+      "position": {
+        "kind": "all"
+      },
+      "position_key": "all",
+      "row": 0,
+      "col": 1,
+      "label": "L0 H1",
+      "variant": null,
+      "variant_key": null,
+      "members": null,
+      "n": 6,
+      "effect": {
+        "mean": 1.1489637789883416,
+        "sd": 0.584206051344688,
+        "lo": 0.9278096438076148,
+        "hi": 1.546294353933109
+      },
+      "delta": {
+        "mean": 0.6000260015328726,
+        "sd": 0.3050912722142636,
+        "lo": 0.412464256832997,
+        "hi": 0.8201756390432516
+      },
+      "patched_metric": -0.5356184244155884,
+      "patched_logit_diff": -0.5356184244155884,
+      "answer_prob": 0.0013627580410684459,
+      "answer_prob_delta": -0.00027264480013400316,
+      "sign_flips": 0,
+      "opposite_sign": 0,
+      "band": {
+        "lo": 0.8830565036996043,
+        "hi": 1.7150783960321911
+      },
+      "q": 0.07960199004975124
+    },
+    {
+      "index": 2,
+      "kind": "head",
+      "layer": 0,
+      "head": 2,
+      "feature": null,
+      "position": {
+        "kind": "all"
+      },
+      "position_key": "all",
+      "row": 0,
+      "col": 2,
+      "label": "L0 H2",
+      "variant": null,
+      "variant_key": null,
+      "members": null,
+      "n": 6,
+      "effect": {
+        "mean": -0.172801822345128,
+        "sd": 0.3866016688082032,
+        "lo": -0.5637387010111055,
+        "hi": 0.06830598120735135
+      },
+      "delta": {
+        "mean": -0.09024269382158916,
+        "sd": 0.20189588023842808,
+        "lo": -0.24323945865035038,
+        "hi": 0.03576809863249461
+      },
+      "patched_metric": -1.22588711977005,
+      "patched_logit_diff": -1.22588711977005,
+      "answer_prob": 0.0015225688669791755,
+      "answer_prob_delta": -0.0001128339742232735,
+      "sign_flips": 0,
+      "opposite_sign": 3,
+      "band": {
+        "lo": -0.7409468000745597,
+        "hi": 0.12762212930074426
+      },
+      "q": 0.5837479270315091
+    },
+    {
+      "index": 3,
+      "kind": "head",
+      "layer": 0,
+      "head": 3,
+      "feature": null,
+      "position": {
+        "kind": "all"
+      },
+      "position_key": "all",
+      "row": 0,
+      "col": 3,
+      "label": "L0 H3",
+      "variant": null,
+      "variant_key": null,
+      "members": null,
+      "n": 6,
+      "effect": {
+        "mean": 0.06915413606241248,
+        "sd": 0.4960667897673679,
+        "lo": -0.24303291416764414,
+        "hi": 0.6281164426133016
+      },
+      "delta": {
+        "mean": 0.036114523808161415,
+        "sd": 0.2590621025664048,
+        "lo": -0.10731705824534093,
+        "hi": 0.24856110811233534
+      },
+      "patched_metric": -1.0995299021402996,
+      "patched_logit_diff": -1.0995299021402996,
+      "answer_prob": 0.0016471022342254098,
+      "answer_prob_delta": 1.1699393022960672e-05,
+      "sign_flips": 0,
+      "opposite_sign": 3,
+      "band": {
+        "lo": -0.2825780396350547,
+        "hi": 0.7598995789437084
+      },
+      "q": 0.7860696517412935
+    },
+    {
+      "index": 4,
+      "kind": "head",
+      "layer": 1,
+      "head": 0,
+      "feature": null,
+      "position": {
+        "kind": "all"
+      },
+      "position_key": "all",
+      "row": 1,
+      "col": 0,
+      "label": "L1 H0",
+      "variant": null,
+      "variant_key": null,
+      "members": null,
+      "n": 6,
+      "effect": {
+        "mean": -0.07726960198023097,
+        "sd": 0.4429626983214784,
+        "lo": -0.5223004984498903,
+        "hi": 0.23051202424078612
+      },
+      "delta": {
+        "mean": -0.04035268227259318,
+        "sd": 0.23132943053790184,
+        "lo": -0.23793275654315946,
+        "hi": 0.1010009360810121
+      },
+      "patched_metric": -1.175997108221054,
+      "patched_logit_diff": -1.175997108221054,
+      "answer_prob": 0.0015322969508512567,
+      "answer_prob_delta": -0.0001031058903511924,
+      "sign_flips": 0,
+      "opposite_sign": 3,
+      "band": {
+        "lo": -0.5952422353405372,
+        "hi": 0.31546004974391323
+      },
+      "q": 0.7860696517412935
+    },
+    {
+      "index": 5,
+      "kind": "head",
+      "layer": 1,
+      "head": 1,
+      "feature": null,
+      "position": {
+        "kind": "all"
+      },
+      "position_key": "all",
+      "row": 1,
+      "col": 1,
+      "label": "L1 H1",
+      "variant": null,
+      "variant_key": null,
+      "members": null,
+      "n": 6,
+      "effect": {
+        "mean": 0.12792299735826534,
+        "sd": 0.20310245602459565,
+        "lo": 0.016454046643215293,
+        "hi": 0.2179196404848252
+      },
+      "delta": {
+        "mean": 0.06680552164713542,
+        "sd": 0.10606666356118503,
+        "lo": 0.007262857755025258,
+        "hi": 0.15908794204394022
+      },
+      "patched_metric": -1.0688389043013256,
+      "patched_logit_diff": -1.0688389043013256,
+      "answer_prob": 0.0017304618449998088,
+      "answer_prob_delta": 9.505900379735976e-05,
+      "sign_flips": 0,
+      "opposite_sign": 1,
+      "band": {
+        "lo": -0.025580324597360028,
+        "hi": 0.2231164287042393
+      },
+      "q": 0.19900497512437812
+    },
+    {
+      "index": 6,
+      "kind": "head",
+      "layer": 1,
+      "head": 2,
+      "feature": null,
+      "position": {
+        "kind": "all"
+      },
+      "position_key": "all",
+      "row": 1,
+      "col": 2,
+      "label": "L1 H2",
+      "variant": null,
+      "variant_key": null,
+      "members": null,
+      "n": 6,
+      "effect": {
+        "mean": -0.05331272574228938,
+        "sd": 0.40539650250197296,
+        "lo": -0.24491474243132144,
+        "hi": 0.28840286019445766
+      },
+      "delta": {
+        "mean": -0.027841627597808838,
+        "sd": 0.21171114954193712,
+        "lo": -0.17849795172611865,
+        "hi": 0.11731548955043158
+      },
+      "patched_metric": -1.1634860535462697,
+      "patched_logit_diff": -1.1634860535462697,
+      "answer_prob": 0.0014022294781170785,
+      "answer_prob_delta": -0.0002331733630853705,
+      "sign_flips": 0,
+      "opposite_sign": 2,
+      "band": {
+        "lo": -0.2952097436133912,
+        "hi": 0.3335233980060497
+      },
+      "q": 0.7860696517412935
+    },
+    {
+      "index": 7,
+      "kind": "head",
+      "layer": 1,
+      "head": 3,
+      "feature": null,
+      "position": {
+        "kind": "all"
+      },
+      "position_key": "all",
+      "row": 1,
+      "col": 3,
+      "label": "L1 H3",
+      "variant": null,
+      "variant_key": null,
+      "members": null,
+      "n": 6,
+      "effect": {
+        "mean": 0.03028296283262436,
+        "sd": 0.28911089362992887,
+        "lo": -0.24603357901924167,
+        "hi": 0.2661152470125117
+      },
+      "delta": {
+        "mean": 0.015814741452534992,
+        "sd": 0.15098304809669902,
+        "lo": -0.11975361903508504,
+        "hi": 0.13268434007962546
+      },
+      "patched_metric": -1.119829684495926,
+      "patched_logit_diff": -1.119829684495926,
+      "answer_prob": 0.001582259244363134,
+      "answer_prob_delta": -5.3143596839314945e-05,
+      "sign_flips": 0,
+      "opposite_sign": 3,
+      "band": {
+        "lo": -0.3212424035766887,
+        "hi": 0.3708062304103121
+      },
+      "q": 0.7860696517412935
+    }
+  ],
+  "per_prompt": {
+    "clean_logit_diff": [
+      -2.710327625274658,
+      -4.010311126708984,
+      3.279942274093628,
+      -2.7946105003356934,
+      0.5369635224342346,
+      -1.115523099899292
+    ],
+    "corrupt_logit_diff": [
+      -2.3782401084899902,
+      -3.602233648300171,
+      4.382616996765137,
+      -2.180105447769165,
+      1.0102920532226562,
+      -0.9128025770187378
+    ],
+    "clean_answer_prob": [
+      0.0006078302976675332,
+      0.00038280722219496965,
+      0.005194045137614012,
+      0.0005311827990226448,
+      0.002878006314858794,
+      0.00021854527585674077
+    ],
+    "corrupt_answer_prob": [
+      0.0007598023512400687,
+      0.00017332134302705526,
+      0.005180984735488892,
+      0.00048331223661080003,
+      0.0012520287418738008,
+      0.00013395777205005288
+    ],
+    "clean_metric": [
+      -2.710327625274658,
+      -4.010311126708984,
+      3.279942274093628,
+      -2.7946105003356934,
+      0.5369635224342346,
+      -1.115523099899292
+    ],
+    "corrupt_metric": [
+      -2.3782401084899902,
+      -3.602233648300171,
+      4.382616996765137,
+      -2.180105447769165,
+      1.0102920532226562,
+      -0.9128025770187378
+    ]
+  },
+  "donors": null,
+  "warnings": [
+    "On the clean prompts the model prefers the distractor (mean log P(answer) − log P(distractor) -1.136; 2 of 6 prefer the answer), so it doesn't show the behavior these prompts test. Check the baseline, or use prompts this model solves."
+  ],
+  "direct": null,
+  "steering": null,
+  "features": null,
+  "circuit": null,
+  "attribution": null
+}

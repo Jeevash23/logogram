@@ -32,6 +32,10 @@ export interface ModelInfo {
     /** Whether the tokenizer has a beginning-of-sequence token to prepend. */
     bos?: boolean;
     checks?: ModelChecks;
+    /** Whether it is made for chat (prompts run as plain text, without its chat template). */
+    chat?: ChatFormat;
+    /** A soft cap on its logits, or null. */
+    logit_soft_cap?: number | null;
   };
 }
 
@@ -160,11 +164,37 @@ export interface RecentProject {
   modified: string;
 }
 
+/** A bundled example (logogram.gallery): what it asks, the result to expect, and its spec. */
+export interface ExampleInfo {
+  id: string;
+  name: string;
+  question: string;
+  expect: string;
+  /** The publication the result is read against. */
+  source: string;
+  /** Where its copy goes in the projects folder, and whether one is there already (opening the
+   * example then opens that copy as it was left). */
+  path: string;
+  copied: boolean;
+  experiment: string;
+  n_prompts: number;
+  spec: Spec;
+}
+
 export interface FolderListing {
   path: string;
   parent: string | null;
   is_project: boolean;
   entries: { name: string; path: string; is_project: boolean }[];
+}
+
+/** A problem report to paste into an issue (logogram.support): its rows, and the same as text. */
+export interface ProblemReport {
+  rows: { label: string; value: string }[];
+  /** Whether the processor, GPUs, memory and operating system's version are in it. */
+  hardware: boolean;
+  text: string;
+  new_issue_url: string;
 }
 
 export interface SystemIssue {
@@ -239,7 +269,8 @@ export interface SAEFit {
 }
 
 export interface SAEInfo extends SAERef {
-  site: StreamKind;
+  /** The site it writes: heads' outputs (z, every head of the layer side by side) for "head". */
+  site: StreamKind | "head";
   layer: number;
   d_in: number;
   d_sae: number;
@@ -249,6 +280,46 @@ export interface SAEInfo extends SAERef {
   format: string;
   note: string;
   fit: SAEFit | null;
+  /** The site it reads: the MLP's input ("mlp_in") for a transcoder. */
+  site_in?: string;
+  transcoder?: boolean;
+  /** A transcoder that also adds its input times a skip matrix to what it writes. */
+  skip?: boolean;
+}
+
+/** What one feature writes directly into the logits: one unit of its decoder direction, read
+ * through the final normalization (its scale held at its value at one token) and the
+ * unembedding, skipping every later layer. Logit changes are relative to the vocabulary's mean. */
+export interface FeatureWrites {
+  feature: number;
+  site: StreamKind | "head";
+  layer: number;
+  index: number;
+  which: "clean" | "corrupt";
+  tokens: string[];
+  /** The token it was read at, and why that one: chosen, where the feature fires most in the
+   * prompt, or the last token (it fires nowhere in the prompt). */
+  position: number;
+  token: string;
+  chosen: "given" | "fires_most" | "last";
+  /** The feature's activation at that token. */
+  activation: number;
+  promoted: { id: number; token: string; logit: number }[];
+  suppressed: { id: number; token: string; logit: number }[];
+  /** The length of one unit of the feature in the residual stream. */
+  norm: number;
+  /** The model's soft cap on its logits (the values are before it), or null. */
+  soft_cap: number | null;
+}
+
+/** Whether a loaded model is made for chat: Logogram runs prompts as plain text, without the chat
+ * template such models are trained on. */
+export interface ChatFormat {
+  instruct: boolean;
+  /** Whether its tokenizer has a chat template. */
+  template: boolean;
+  /** Why it counts as made for chat, or null. */
+  reason: string | null;
 }
 
 export interface SAEStatus {
@@ -542,6 +613,8 @@ export interface Summary {
     fit: SAEFit;
     site_estimate?: number | null;
     features_estimate?: number | null;
+    /** Through a transcoder's skip connection, which no feature carries. */
+    skip_estimate?: number | null;
     evaluated?: number | null;
     /** Every feature, chosen on some prompts and reported on the others: their dataset indices. */
     chosen_on?: number[] | null;
@@ -645,6 +718,8 @@ export interface Manifest {
     process_weights: boolean;
     backend: string;
     backend_version: string;
+    /** Whether the model is made for chat: its prompts ran as plain text, without its template. */
+    chat?: ChatFormat | null;
   };
   device?: {
     type: string;
@@ -683,6 +758,29 @@ export interface RunListing {
   error: string | null;
   /** Per layer, the largest normalized effect (signed): writes the run's logogram. */
   profile?: number[] | null;
+  /** Running in another process (logogram run, a notebook, another server): its progress isn't
+   * streamed here, so the app reads the history again to see it end. */
+  elsewhere?: boolean;
+  /** The dataset the run read, as it was named when it ran (`dataset` is then its snapshot). */
+  dataset_source?: string | null;
+  /** What a person says about the run, kept beside its spec (annotations.json): a title shown
+   * instead of the spec's name, a star, archived (kept out of the history until shown). */
+  title?: string | null;
+  starred?: boolean;
+  archived?: boolean;
+  /** Why the run's annotations.json was ignored, when it can't be read. */
+  annotations_error?: string | null;
+  /** The run's spec can't be read: `error` says what is wrong and how to fix it. Its folder can
+   * be deleted; it can't be opened. */
+  damaged?: boolean;
+}
+
+/** A change to what is said about a run. What is left out stays; a title of "" or null (or the
+ * spec's own name) shows the spec's name again. */
+export interface RunAnnotationsChange {
+  title?: string | null;
+  starred?: boolean;
+  archived?: boolean;
 }
 
 export interface RunDetail {
@@ -693,6 +791,8 @@ export interface RunDetail {
   predictions?: PredictionReport | null;
   listing: RunListing | null;
   folder: string;
+  /** A failed run's traceback, without the paths and names of the machine it ran on. */
+  traceback?: string | null;
 }
 
 export interface PromptEvidence {
@@ -899,6 +999,31 @@ export interface Comparison {
   paired?: boolean;
   /** Sites whose paired difference excludes zero. */
   n_differs?: number;
+  /** Versions or devices the two manifests differ in: these alone can change the last digits. */
+  environment_differences?: EnvironmentDifference[];
+}
+
+export interface EnvironmentDifference {
+  /** A version ("torch"), or a device's "device.type", "device.name" or "device.cuda". */
+  key: string;
+  label: string;
+  a: string;
+  b: string;
+}
+
+/** What the server's results depend on beyond a spec (GET /api/environment). */
+export interface Environment {
+  logogram: string;
+  python: string;
+  implementation: string;
+  os: string;
+  architecture: string;
+  /** Named as in run manifests: torch, transformer_lens, transformers, numpy, … */
+  versions: Record<string, string | null>;
+  torch_cuda: string | null;
+  devices: string[];
+  /** What a spec's "auto" device runs on here. */
+  default_device: string;
 }
 
 /** What a run would need beyond the loaded model's weights (POST /api/models/run-memory). */

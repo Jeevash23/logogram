@@ -1,7 +1,9 @@
 import { useEffect } from "react";
 
 import { connectEvents } from "./api/events";
+import { AboutDialog } from "./components/AboutDialog";
 import { CommandPalette } from "./components/CommandPalette";
+import { ReportDialog } from "./components/ReportDialog";
 import { ShortcutsDialog } from "./components/ShortcutsDialog";
 import { Notices } from "./components/Notices";
 import { BRAND_SEED, Logogram } from "./components/Logogram";
@@ -69,6 +71,8 @@ export function App() {
       {screen === "workbench" && <Workbench />}
       <CommandPalette />
       <ShortcutsDialog />
+      <ReportDialog />
+      <AboutDialog />
       <Notices />
     </TooltipProvider>
   );

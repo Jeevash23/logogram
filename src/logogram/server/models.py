@@ -121,6 +121,22 @@ class RecentProject(_Out):
     modified: str
 
 
+class ExampleInfo(_Out):
+    """A bundled example (logogram.gallery): what it asks, the result to expect and its spec."""
+
+    id: str
+    name: str
+    question: str
+    expect: str
+    source: str
+    # Where its copy goes in the projects folder, and whether one is there already.
+    path: str
+    copied: bool
+    experiment: str
+    n_prompts: int
+    spec: dict[str, Any]
+
+
 class FolderEntry(_Out):
     name: str
     path: str
@@ -173,6 +189,20 @@ class Settings(BaseModel):
 
 class OkOut(_Out):
     ok: bool
+
+
+class ReportRow(_Out):
+    label: str
+    value: str
+
+
+class ProblemReport(_Out):
+    """A problem report (logogram.support): its rows, and the same as text to paste."""
+
+    rows: list[ReportRow]
+    hardware: bool
+    text: str
+    new_issue_url: str
 
 
 # -- datasets and prompts ----------------------------------------------------------------------
@@ -428,6 +458,8 @@ class RunDetail(_Out):
     predictions: PredictionReport | None = None
     listing: RunListing | None
     folder: str
+    # A failed run's traceback, as kept in its folder (with the machine's paths scrubbed).
+    traceback: str | None = None
 
 
 class PromptEvidence(_Out):
@@ -497,6 +529,15 @@ class SpecDifference(_Out):
     b: Any
 
 
+class EnvironmentDifference(_Out):
+    """Something the two runs' manifests record differently about where they ran."""
+
+    key: str
+    label: str
+    a: str
+    b: str
+
+
 class Comparison(_Out):
     run_a: str
     run_b: str
@@ -516,3 +557,19 @@ class Comparison(_Out):
     spec_differences: list[SpecDifference]
     paired: bool = False
     n_differs: int = 0
+    # Versions or devices that differ: these alone can change results in the last digits.
+    environment_differences: list[EnvironmentDifference] = []
+
+
+class EnvironmentOut(_Out):
+    """What the server's numbers can depend on beyond a spec (logogram.system.environment)."""
+
+    logogram: str
+    python: str
+    implementation: str
+    os: str
+    architecture: str
+    versions: dict[str, str | None]
+    torch_cuda: str | None
+    devices: list[str]
+    default_device: str

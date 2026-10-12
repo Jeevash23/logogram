@@ -1,0 +1,5 @@
+/* The guide's sections are links that look like the menu's other items. */
+.link {
+  color: var(--text);
+  text-decoration: none;
+}

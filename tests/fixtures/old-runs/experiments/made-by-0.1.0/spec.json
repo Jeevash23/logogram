@@ -1,0 +1,44 @@
+{
+  "logogram_spec": 1,
+  "name": "Heads, as Logogram 0.1.0 ran them",
+  "notes": "",
+  "model": {
+    "id": "tiny-gpt2",
+    "revision": "test",
+    "dtype": "float32",
+    "device": "cpu",
+    "process_weights": true
+  },
+  "dataset": {
+    "path": "datasets/snapshots/f5e2f2b1d68ac7ab59b1cefcd84f7f0cfc81c71c85c05c925f872e01c01d6e69.jsonl",
+    "sha256": "f5e2f2b1d68ac7ab59b1cefcd84f7f0cfc81c71c85c05c925f872e01c01d6e69",
+    "limit": null
+  },
+  "tokenization": {
+    "prepend_bos": true
+  },
+  "experiment": {
+    "kind": "activation_patching",
+    "direction": "clean_to_corrupt"
+  },
+  "scope": {
+    "kind": "heads",
+    "position": {
+      "kind": "all"
+    }
+  },
+  "metric": {
+    "kind": "logit_diff",
+    "normalization": "dataset_gap"
+  },
+  "statistics": {
+    "bootstrap": 200,
+    "ci": 0.95,
+    "seed": 0
+  },
+  "execution": {
+    "batch_size": 16
+  },
+  "predictions": null,
+  "sae": null
+}
