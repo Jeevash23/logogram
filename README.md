@@ -163,6 +163,8 @@ What each method finds, as normalized effects (every other head 0):
 | Direct logit attribution | L1 H1 writes all of the logit difference | L3 H0 writes all of it |
 | Attribution patching | L1 H1 1.0, exact; L0 H2 0, though patching gives 1.0: it acts through saturated attention, whose gradient is about e⁻²⁰. Integrated gradients: 0.47 with 8 steps, 0.92 with 16, 0.999 with 32 | L3 H0 1.0; the upstream heads stay near 0, even with 64 steps of integrated gradients |
 | Steering | none: the difference is a token's identity, not a direction | on ABBA prompts, the mean difference after layer 2 at the last token flips the answer (1.0 at ×1, 2/3 at ×0.5) and beats a random direction; with ABBA and BABA mixed it cancels to 0 |
+| Edges, each path patched alone | 1.0 for each planted edge along which the prompts differ (the embeddings → L0 H2's value, L0 H2 → L1 H1's key, L1 H1 → the logits), 0 for the others | 1.0 for the embeddings → L1 H1's query, L1 H1 → L2 H3's value, L2 H3 → L3 H0's query and L3 H0 → the logits, 0 for the others |
+| Edge attribution | one gradient: L1 H1 → logits 1.0, exact; edges into queries and keys about 0. With 32 steps of integrated gradients, L0 H2 → L1 H1's key about 1.0 | one gradient: L3 H0 → logits 1.0, exact; edges into queries and keys about 0 |
 
 How the weights do it: every direction of the residual stream is one named feature (a token's
 identity, the previous token's, the token to predict, the position p/128 and its square, a few
