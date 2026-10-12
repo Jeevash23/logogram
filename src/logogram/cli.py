@@ -707,15 +707,20 @@ def _print_summary(summary: dict, top: int) -> None:  # type: ignore[type-arg]
     flips = measure == "intervention"
     sites = sorted(summary["sites"], key=lambda s: -abs(s["effect"]["mean"] or 0.0))[:top]
     typer.echo("")
-    header = f"{'site':<22} {value:>9}  {f'{ci}% CI':<19} {change:>12}"
+    # Edges are named by both ends ("L5 H5 → L9 H6 q"): the column fits the longest.
+    width = max([22, *(len(s["label"]) for s in sites)])
+    header = f"{'site':<{width}} {value:>9}  {f'{ci}% CI':<19} {change:>12}"
     typer.echo(header + (f"  {'flipped':>8}" if flips else ""))
     for s in sites:
         e = s["effect"]
         interval = f"[{_fmt(e['lo'])}, {_fmt(e['hi'])}]"
         line = (
-            f"{s['label']:<22} {_fmt(e['mean']):>9}  {interval:<19} {_fmt(s['delta']['mean']):>12}"
+            f"{s['label']:<{width}} {_fmt(e['mean']):>9}  {interval:<19} "
+            f"{_fmt(s['delta']['mean']):>12}"
         )
         typer.echo(line + (f"  {s['sign_flips']:>3} / {s['n']:<3}" if flips else ""))
+    if summary.get("edges"):
+        _print_edges(summary["edges"], ci)
     if summary.get("direct"):
         d = summary["direct"]
         typer.echo(
@@ -779,7 +784,15 @@ def _print_summary(summary: dict, top: int) -> None:  # type: ignore[type-arg]
                     f"\n{r['label']}: beyond {i['a']} and {i['b']} alone, an effect of "
                     f"{_interval(i['effect'])}"
                 )
-    if stats.get("band_level") is not None:
+    corrections = (summary.get("edges") or {}).get("corrections")
+    if stats.get("band_level") is not None and corrections:
+        # Counted over every edge: the summary lists only the strongest.
+        typer.echo(
+            f"\nCorrected for {corrections['edges']:,} edges: {corrections['banded']:,} exclude "
+            f"zero with simultaneous bands, {corrections['discoveries']:,} have q < "
+            f"{1 - stats['ci']:g} (Benjamini–Hochberg)."
+        )
+    elif stats.get("band_level") is not None:
         sites_all = summary["sites"]
         alpha = 1 - stats["ci"]
         banded = sum(
@@ -1140,16 +1153,17 @@ def _run_and_report(project: Any, spec: Any, derived: dict[str, Any], top: int) 
 
 @app.command()
 def verify(
-    run: Annotated[str, typer.Argument(help="An attribution patching run.")],
+    run: Annotated[str, typer.Argument(help="An attribution or edge attribution run.")],
     top: Annotated[int, typer.Option(help="How many of the strongest estimates to patch.")] = 10,
     project_dir: Annotated[Path | None, ProjectOption] = None,
 ) -> None:
-    """Patch, for real, the sites an attribution patching run estimated to matter most, and
-    compare the measurement with the estimate."""
+    """Patch, for real, the sites an attribution patching run estimated to matter most (or path
+    patch, one at a time, the edges an edge attribution run estimated), and compare the
+    measurement with the estimate."""
     from logogram.compare import compare_runs
     from logogram.robustness import require_finished
     from logogram.spec import Spec
-    from logogram.verify import verification_spec
+    from logogram.verify import verification_change, verification_spec
 
     project = _open_project(project_dir, Path(run) if Path(run).exists() else None)
     run_id = _run_id(project, run)
@@ -1165,15 +1179,60 @@ def verify(
         spec = verification_spec(Spec.from_path(folder / "spec.json"), summary, top)
     except ValueError as exc:
         raise _fail(str(exc)) from exc
-    n = len(spec.scope.sites)  # type: ignore[union-attr]
-    derived = {
-        "run": run_id,
-        "kind": "verification",
-        "change": f"the {n} strongest estimated site{'s' if n != 1 else ''}, patched",
-    }
+    derived = {"run": run_id, "kind": "verification", "change": verification_change(spec)}
     outcome = _run_and_report(project, spec, derived, top)
     typer.echo("")
+    if summary.get("edges") and outcome.summary:
+        from logogram.edges import verification_table
+
+        _print_edge_verification(verification_table(summary, outcome.summary))
+        return
     _print_comparison(compare_runs(project, run_id, outcome.run_id))
+
+
+def _print_edges(edges: dict[str, Any], ci: int) -> None:
+    """An edge attribution run's graph, what it cost, and its faithfulness curve."""
+    typer.echo(
+        f"\n{edges['n_edges']:,} edges ({edges['n_senders']} senders, {edges['n_receivers']} "
+        f"receivers); the summary lists the {edges['reported']:,} strongest, edges.parquet "
+        "every edge."
+    )
+    typer.echo(f"Cost: {edges['cost']['text']}.")
+    curve = edges.get("curve")
+    if not curve:
+        return
+    patched = (
+        "the chosen edges patched"
+        if curve["patch"] == "chosen"
+        else "every edge but the chosen ones patched"
+    )
+    typer.echo(f"\nFaithfulness, {patched} (0: no edge chosen, 1: every edge):")
+    typer.echo(f"{'edges':>8}  {'strongest':>10}  {f'{ci}% CI':<19} {'random':>8}")
+    for p, q in zip(curve["strongest"], curve["random"], strict=True):
+        f, r = p["faithfulness"], q["faithfulness"]
+        interval = f"[{_fmt(f['lo'])}, {_fmt(f['hi'])}]"
+        typer.echo(f"{p['k']:>8,}  {_fmt(f['mean']):>10}  {interval:<19} {_fmt(r['mean']):>8}")
+    difference = curve.get("source_difference")
+    if difference is not None:
+        typer.echo(f"Patching every edge reproduces the source run within {difference:.2g}.")
+
+
+def _print_edge_verification(table: dict[str, Any]) -> None:
+    """Each verified edge's estimate beside its path-patched measurement, and how they agree."""
+    rho = table["spearman"]
+    typer.echo(
+        f"Estimate against path patching, {table['n']} edges: Spearman's rank correlation "
+        f"{'n/a' if rho is None else f'{rho:.3f}'}, {table['same_sign']} of {table['n']} with the "
+        "same sign."
+    )
+    typer.echo(f"{'edge':<34}{'estimate':>12}{'measured':>12}")
+    for row in table["rows"]:
+        estimate, measured = row["estimate"]["mean"], row["measured"]["mean"]
+        typer.echo(
+            f"{row['label']:<34}"
+            f"{'n/a' if estimate is None else f'{estimate:+.3f}':>12}"
+            f"{'n/a' if measured is None else f'{measured:+.3f}':>12}"
+        )
 
 
 @app.command()

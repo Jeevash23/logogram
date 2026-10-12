@@ -7,6 +7,7 @@ import type {
   Answer,
   Continuations,
   DatasetDetail,
+  FaithfulnessCurveSpec,
   MetricSpec,
   ModelStatus,
   PositionSpec,
@@ -153,6 +154,9 @@ export function lastInstead(scope: ScopeSpec): ScopeSpec {
       return scope.positions === "each" ? { ...scope, positions: "labels" } : scope;
     case "site_sets":
       return { ...scope, sets: scope.sets.map((set) => ({ ...set, sites: set.sites.map((x) => ({ ...x, position: fix(x.position) })) })) };
+    case "graph":
+    case "edges":
+      return scope; // edges have no position to choose
   }
 }
 
@@ -167,7 +171,9 @@ function unlinedPosition(scope: ScopeSpec): PositionSpec | null {
         ? scope.sets.flatMap((set) => set.sites.map((x) => x.position))
         : scope.kind === "layer_position"
           ? scope.positions === "each" ? [{ kind: "all" }] : []
-          : [scope.position];
+          : scope.kind === "graph" || scope.kind === "edges"
+            ? [{ kind: "all" }] // an edge carries its sender's output at every position
+            : [scope.position];
   return positions.find(bad) ?? null;
 }
 
@@ -181,6 +187,10 @@ function unevenError(form: FormState, experiment: Spec["experiment"], scope: Sco
   }
   if (scope.kind === "site_sets" && experiment.kind === "ablation" && (experiment.baseline.kind === "mean" || experiment.baseline.kind === "resample")) {
     return `${pairs}. ${experiment.baseline.kind === "mean" ? "Mean" : "Resample"} ablation of a set replaces whole activations position by position with other prompts', which needs the prompts to line up. Patch the sets at labels or the last token, zero-ablate them, or use pairs of equal length.`;
+  }
+  if (scope.kind === "graph" || scope.kind === "edges") {
+    const what = scope.kind === "graph" ? "Edge attribution" : "Path patching an edge";
+    return `${pairs}. ${what} carries each sender's output from one prompt to the other at every position, which needs their positions to line up. Use pairs of equal length.`;
   }
   const method = carriedBy(form);
   if (!method) return null;
@@ -218,6 +228,19 @@ export function parseStrengths(text: string): { values: number[] } | { error: st
   if (bad !== undefined) return { error: `“${bad}” isn't a number. Separate strengths with commas, like -1, 1, 2.` };
   if (new Set(values).size !== values.length) return { error: "Each steering strength appears once." };
   if (values.length > 16) return { error: "Use at most 16 steering strengths." };
+  return { values };
+}
+
+/** A faithfulness curve's numbers of edges as typed: whole numbers from 1, in increasing order,
+ * separated by commas or spaces. */
+export function parseCounts(text: string): { values: number[] } | { error: string } {
+  const parts = text.split(/[\s,;]+/).filter(Boolean);
+  if (parts.length === 0) return { error: "Give at least one number of edges for the curve, such as 10." };
+  const values = parts.map(Number);
+  const bad = parts.find((_, i) => !Number.isInteger(values[i]) || values[i] < 1);
+  if (bad !== undefined) return { error: `“${bad}” isn't a whole number from 1. Separate the numbers of edges with commas, like 10, 100, 1000.` };
+  if (values.length > 24) return { error: "Use at most 24 numbers of edges for the curve." };
+  if (values.some((v, i) => i > 0 && v <= values[i - 1])) return { error: "List the curve's numbers of edges in increasing order, each once." };
   return { values };
 }
 
@@ -303,6 +326,26 @@ export function buildSpec(
       control: form.steerControl,
       continuations,
     };
+  } else if (form.kind === "edge_attribution") {
+    let steps: number | null = null;
+    if (form.atpMethod === "integrated_gradients") {
+      if (!Number.isInteger(form.atpSteps) || form.atpSteps < 2 || form.atpSteps > 64) {
+        return { error: "Integrated gradients take a whole number of steps from 2 to 64." };
+      }
+      steps = form.atpSteps;
+    }
+    let curve: FaithfulnessCurveSpec | null = null;
+    if (form.edgeCurve) {
+      if (!form.edgePatch) return { error: "Choose which edges the faithfulness curve patches." };
+      const counts = parseCounts(form.edgeCounts);
+      if ("error" in counts) return counts;
+      if (!isSeed(form.edgeSeed)) return { error: "The random control's seed is a whole number from 0." };
+      if (!Number.isInteger(form.edgeDraws) || form.edgeDraws < 1 || form.edgeDraws > 16) {
+        return { error: "Draw the random edges from 1 to 16 times." };
+      }
+      curve = { counts: counts.values, patch: form.edgePatch, control: { seed: form.edgeSeed, draws: form.edgeDraws } };
+    }
+    experiment = { kind: "edge_attribution", direction: form.direction, method: form.atpMethod, steps, curve };
   } else if (form.kind === "direct_logit_attribution") {
     if (!form.dlaPrompts) return { error: "Choose which prompts' logit difference to split." };
     experiment = { kind: "direct_logit_attribution", prompts: form.dlaPrompts };
@@ -311,6 +354,32 @@ export function buildSpec(
     experiment = { kind: "ablation", baseline: form.baseline };
   }
   const scope = form.scope;
+  // The edges of the model's graph are edge attribution's, and only it estimates them.
+  if ((experiment.kind === "edge_attribution") !== (scope.kind === "graph")) {
+    return {
+      error:
+        experiment.kind === "edge_attribution"
+          ? "Edge attribution estimates the edges of the model's graph. Choose the whole graph or some of its layers under What to sweep."
+          : "Only edge attribution estimates the edges of the model's graph. Choose it, or another sweep.",
+    };
+  }
+  if (scope.kind === "graph" && scope.layers !== null) {
+    if (scope.layers.length === 0) return { error: "Choose at least one layer whose heads and MLPs receive edges, or every layer." };
+    const layers = ctx.model.info?.n_layers;
+    if (layers !== undefined && scope.layers.some((l) => l >= layers)) {
+      return { error: `The loaded model has ${plural(layers, "layer")} (0 to ${layers - 1}). Choose layers it has.` };
+    }
+  }
+  // Edges one at a time (an edge attribution's verification): path patching, every head and MLP
+  // held, into the receivers the edges name.
+  if (scope.kind === "edges") {
+    if (experiment.kind !== "path_patching") return { error: "Edges are measured one at a time by path patching. Choose it, or another sweep." };
+    if (!experiment.freeze_mlps) {
+      return { error: "Edges are path-patched with every head and MLP held, so the change reaches each receiver directly. Hold the MLPs." };
+    }
+    const receivers = new Map(scope.edges.map((x) => [JSON.stringify(x.receiver), x.receiver]));
+    experiment = { ...experiment, receivers: [...receivers.values()] };
+  }
   const positionError = (p: PositionSpec) =>
     p.kind === "label" && !p.label ? "Choose which named position to use." : null;
   if (scope.kind === "heads" || scope.kind === "layer_components" || scope.kind === "features" || scope.kind === "head_inputs" || scope.kind === "neurons") {
@@ -411,6 +480,9 @@ export function buildSpec(
       return {
         error: `${have(several)} an answer or distractor of several tokens${example}. The logit difference reads one token: choose the log-probability difference, or another metric that reads answers of several tokens.`,
       };
+    }
+    if (several > 0 && experiment.kind === "edge_attribution") {
+      return { error: `Edge attribution reads the metric at the last prompt position, and ${have(several)} an answer or distractor of several tokens${example}. Use single-token answers or sets.` };
     }
     if (several > 0 && experiment.kind === "path_patching") {
       return { error: `Path patching reads the metric at the last prompt position, and ${have(several)} an answer or distractor of several tokens${example}. Use single-token answers or sets, or activation patching.` };

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pyarrow as pa
@@ -80,6 +80,31 @@ def compute_stats(
         delta=None if result.delta is None else result.delta[rows],
         gap=result.gap,
         family=indices is None,
+        # An edge attribution run's many edges don't keep their resampled means (nothing
+        # compares edges by them), so they go through in chunks.
+        keep_boot="edges" not in result.extra,
+    )
+
+
+def take_rows(stats: SiteStats, rows: list[int]) -> SiteStats:
+    """``stats`` for the sites at ``rows`` only (row i is site rows[i]), with the corrections
+    computed over every site kept as they are."""
+    at = np.asarray(rows, dtype=np.int64)
+    names = (
+        "effect", "effect_mean", "effect_sd", "effect_lo", "effect_hi", "delta", "delta_mean",
+        "delta_sd", "delta_lo", "delta_hi", "patched_mean", "pref_mean", "prob_mean",
+        "prob_delta_mean", "sign_flips", "opposite_sign", "effect_boot", "delta_boot", "band_lo",
+        "band_hi", "q",
+    )  # fmt: skip
+    arrays = {name: getattr(stats, name) for name in names}
+    return SiteStats(
+        n=stats.n,
+        denominator=stats.denominator,
+        band_level=stats.band_level,
+        **cast(
+            dict[str, Any],
+            {name: None if value is None else value[at] for name, value in arrays.items()},
+        ),
     )
 
 
@@ -185,8 +210,18 @@ def build_summary(
 ) -> dict[str, Any]:
     """The summary of a run. ``chat_template``: how the prompts were wrapped (logogram.chat), if
     they were, for the methods text to say. With ``kept`` (a run that stopped early), only those
-    sites are reported, and ``stats`` rows follow ``kept``; ``partial`` says what the run kept."""
+    sites are reported, and ``stats`` rows follow ``kept``; ``partial`` says what the run kept.
+    An edge attribution run reports its strongest edges (edges.parquet beside the summary holds
+    every edge's statistics)."""
     b = result.baselines
+    if kept is None and "edges" in result.extra:
+        from logogram.edges import correction_counts, reported_edges
+
+        # Counted over every edge: the summary lists only the strongest.
+        result.extra["edges"]["corrections"] = correction_counts(stats, 1 - spec.statistics.ci)
+        top = reported_edges(stats)
+        if len(top) < len(result.sites):
+            kept, stats = top, take_rows(stats, top)
     indices = list(range(len(result.sites))) if kept is None else list(kept)
     # What compares sites by their index reads the statistics laid out by site.
     aligned = stats if kept is None else by_site(stats, indices, len(result.sites))
@@ -239,15 +274,30 @@ def build_summary(
         circuit["rows"] = [r for r in circuit["rows"] if r["index"] in reported]
         result.extra["circuit"].update(circuit)
     if result.measure == "estimate":
+        estimated = result.extra.get("attribution") or result.extra.get("edges") or {}
         how = (
             "integrated gradients along the way from receiver to source"
-            if (result.extra.get("attribution") or {}).get("method") == "integrated_gradients"
+            if estimated.get("method") == "integrated_gradients"
             else "its gradient at the receiver run"
         )
         description = (
             f"first-order estimate of the change patching would cause in {description}: "
             f"(source − receiver activation) · {how}"
         )
+        if "edges" in result.extra:
+            edges = result.extra["edges"]
+            gradient = (
+                f"the metric's gradient averaged over {edges['steps']} runs between the two "
+                "prompts' input embeddings (integrated gradients)"
+                if edges["method"] == "integrated_gradients"
+                else "the metric's gradient at the receiver run"
+            )
+            description = (
+                f"first-order estimate of the change patching each edge alone would cause in "
+                f"{describe_metric(spec.metric)}: (the sender's output on the source prompt − on "
+                f"the receiver prompt) · {gradient}, summed over positions; the gradient is "
+                f"{edges['gradient']}"
+            )
         norm_text = f"estimated {norm_text}"
     method = "percentile bootstrap over prompts"
     if spec.statistics.cluster is not None:
@@ -315,6 +365,7 @@ def build_summary(
         **({"features": result.extra["features"]} if "features" in result.extra else {}),
         **({"circuit": result.extra["circuit"]} if "circuit" in result.extra else {}),
         **({"attribution": result.extra["attribution"]} if "attribution" in result.extra else {}),
+        **({"edges": result.extra["edges"]} if "edges" in result.extra else {}),
         **({"chat_template": chat_template} if chat_template is not None else {}),
         **({"partial": partial} if partial is not None else {}),
     }

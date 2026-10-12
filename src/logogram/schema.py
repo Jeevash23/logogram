@@ -42,6 +42,7 @@ class SiteRef(_Model):
         "k",
         "v",
         "neuron",
+        "edge",
     ]
     layer: int
     # The head of a head site, the query head of a q site, the key/value head of a k or v site.
@@ -59,6 +60,8 @@ class SiteRef(_Model):
     variant_key: str | None = None
     # The sites of a set intervened on together (kind site_set).
     members: list[dict[str, Any]] | None = None
+    # An edge of the model's graph (kind edge): its sender and receiver, as the spec writes them.
+    edge: dict[str, Any] | None = None
 
 
 class Band(_Model):
@@ -105,6 +108,7 @@ class Layout(_Model):
         # Every neuron of the chosen layers: a row per layer, which says how many neurons it has;
         # there are too many to list as columns.
         "neurons",
+        "edges",
     ]
     site: str | None = None
     row_title: str
@@ -299,6 +303,65 @@ class AttributionInfo(_Model):
     steps: int | None = None
 
 
+class EdgeCurvePoint(_Model):
+    """One point of a faithfulness curve: k edges, and how much of the behavior they carry, from
+    the run's resamples. ``metric`` is the mean metric of the patched runs; for the random control,
+    ``draws`` holds each draw's mean faithfulness (the point averages them prompt by prompt)."""
+
+    k: int
+    faithfulness: Stat
+    metric: float | None
+    draws: list[float | None] | None = None
+
+
+class EdgeCurve(_Model):
+    """The k strongest edges as a circuit, for each k, beside edges chosen at random: see
+    logogram.edges. ``every`` patches every edge of the scope (the end of the curve that patches
+    most), and ``source_difference`` is the largest difference, over prompts, between its metric
+    and the source prompt's when the scope is the whole graph (it measures the source run then)."""
+
+    patch: Literal["chosen", "rest"]
+    counts: list[int]
+    dropped: list[int] = []
+    seed: int
+    draws: int
+    strongest: list[EdgeCurvePoint]
+    random: list[EdgeCurvePoint]
+    every: EdgeCurvePoint
+    source_difference: float | None = None
+    # The patched metric per prompt: one list per point, in the order of ``counts``.
+    per_prompt: dict[str, list[list[float | None]]]
+
+
+class EdgeCorrections(_Model):
+    edges: int
+    single: int
+    banded: int
+    discoveries: int
+
+
+class EdgeRun(_Model):
+    """An edge attribution run: the graph, how the estimates were taken, what the model was
+    measured to do that they rely on, what the run cost, and the faithfulness curve. The summary
+    lists the ``reported`` strongest edges; edges.parquet beside it holds every edge's
+    statistics, and results.parquet every edge's per-prompt values."""
+
+    method: Literal["gradient", "integrated_gradients"]
+    steps: int | None = None
+    n_edges: int
+    n_senders: int
+    n_receivers: int
+    reported: int
+    structure: Literal["sequential", "parallel"]
+    gradient: str
+    checks: dict[str, float]
+    cost: dict[str, Any]
+    curve: EdgeCurve | None = None
+    # Over every edge, not only those listed: intervals that exclude zero one edge at a time
+    # (single), simultaneous bands that do (banded), and q-values below 1 − the CI level.
+    corrections: EdgeCorrections | None = None
+
+
 class ChatTemplateInfo(_Model):
     """How the prompts were wrapped in the model's own chat template (logogram.chat): as the
     person's message, or as the start of the model's reply to a fixed message; the template's
@@ -368,6 +431,7 @@ class Summary(_Model):
     features: FeatureRun | None = None
     circuit: CircuitInfo | None = None
     attribution: AttributionInfo | None = None
+    edges: EdgeRun | None = None
     chat_template: ChatTemplateInfo | None = None
     # A run that stopped before the end: what it kept. None for a finished run.
     partial: PartialRun | None = None
@@ -483,6 +547,11 @@ class Manifest(_Model):
     # The chat template the prompts were wrapped in: how, and its SHA-256.
     chat_template: ChatTemplateProvenance | None = None
 
+
+# -- edges.parquet -----------------------------------------------------------------------------
+
+# Every edge's statistics, beside an edge attribution run's summary (logogram.edges.edge_table).
+EDGES_FILE = "edges.parquet"
 
 # -- continuations.json ------------------------------------------------------------------------
 

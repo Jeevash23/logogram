@@ -20,6 +20,10 @@ import type {
 /** Steps of integrated gradients the form offers until changed; the spec allows 2 to 64. */
 export const DEFAULT_IG_STEPS = 10;
 
+/** The numbers of edges a faithfulness curve keeps until changed: counts beyond the graph's size
+ * are left out when it runs. */
+export const DEFAULT_EDGE_COUNTS = "1, 3, 10, 30, 100, 300, 1000, 3000, 10000";
+
 /** The experiment form. Choices that change a number, such as an ablation's baseline, which
  * prompts a direct attribution splits or which prompt a KL divergence is measured from, have no
  * default: they stay empty until chosen. The others start at a value the form shows. */
@@ -50,9 +54,18 @@ export interface FormState {
   /** Path patching: where the paths end (at least one), and whether MLPs are held too. */
   pathReceivers: PathReceiverSpec[];
   pathFreezeMlps: boolean;
-  /** Attribution patching: one gradient, or integrated gradients over a number of steps. */
+  /** Attribution patching and edge attribution: one gradient, or integrated gradients over a
+   * number of steps. */
   atpMethod: AttributionMethod;
   atpSteps: number;
+  /** Edge attribution: whether the faithfulness curve runs, its numbers of edges as typed, which
+   * edges it patches (no default: it decides what faithfulness 1 means), and its random control's
+   * seed and number of draws. */
+  edgeCurve: boolean;
+  edgeCounts: string;
+  edgePatch: "chosen" | "rest" | null;
+  edgeSeed: number;
+  edgeDraws: number;
   /** The SAE a saved spec's features belong to; used when no SAE is loaded. */
   saeRef: SAERef | null;
   scope: ScopeSpec;
@@ -105,6 +118,11 @@ export const DEFAULT_FORM: FormState = {
   pathFreezeMlps: false,
   atpMethod: "gradient",
   atpSteps: DEFAULT_IG_STEPS,
+  edgeCurve: true,
+  edgeCounts: DEFAULT_EDGE_COUNTS,
+  edgePatch: null,
+  edgeSeed: 0,
+  edgeDraws: 1,
   saeRef: null,
   scope: { kind: "heads", position: { kind: "all" } },
   metric: "logit_diff",
@@ -134,7 +152,10 @@ export function formFromSpec(spec: Spec): FormState {
     name: spec.name,
     nameEdited: true,
     kind: e.kind,
-    direction: e.kind === "activation_patching" || e.kind === "attribution_patching" || e.kind === "path_patching" ? e.direction : "clean_to_corrupt",
+    direction:
+      e.kind === "activation_patching" || e.kind === "attribution_patching" || e.kind === "path_patching" || e.kind === "edge_attribution"
+        ? e.direction
+        : "clean_to_corrupt",
     baseline: e.kind === "ablation" ? e.baseline : null,
     dlaPrompts: e.kind === "direct_logit_attribution" ? e.prompts : null,
     steerApplyTo: e.kind === "steering" ? e.apply_to : null,
@@ -150,8 +171,13 @@ export function formFromSpec(spec: Spec): FormState {
     steerContinueTokens: e.kind === "steering" && e.continuations ? e.continuations.tokens : DEFAULT_FORM.steerContinueTokens,
     pathReceivers: e.kind === "path_patching" ? e.receivers : [],
     pathFreezeMlps: e.kind === "path_patching" ? e.freeze_mlps : false,
-    atpMethod: e.kind === "attribution_patching" ? (e.method ?? "gradient") : DEFAULT_FORM.atpMethod,
-    atpSteps: e.kind === "attribution_patching" && e.steps ? e.steps : DEFAULT_FORM.atpSteps,
+    atpMethod: e.kind === "attribution_patching" || e.kind === "edge_attribution" ? (e.method ?? "gradient") : DEFAULT_FORM.atpMethod,
+    atpSteps: (e.kind === "attribution_patching" || e.kind === "edge_attribution") && e.steps ? e.steps : DEFAULT_FORM.atpSteps,
+    edgeCurve: e.kind === "edge_attribution" ? !!e.curve : DEFAULT_FORM.edgeCurve,
+    edgeCounts: e.kind === "edge_attribution" && e.curve ? e.curve.counts.join(", ") : DEFAULT_FORM.edgeCounts,
+    edgePatch: e.kind === "edge_attribution" && e.curve ? e.curve.patch : null,
+    edgeSeed: e.kind === "edge_attribution" && e.curve ? e.curve.control.seed : DEFAULT_FORM.edgeSeed,
+    edgeDraws: e.kind === "edge_attribution" && e.curve ? e.curve.control.draws : DEFAULT_FORM.edgeDraws,
     saeRef: spec.sae ?? null,
     scope: spec.scope.kind === "features"
       ? { ...spec.scope, choose_on: spec.scope.choose_on ?? null, seed: spec.scope.seed ?? null }

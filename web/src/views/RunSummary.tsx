@@ -6,7 +6,8 @@ import { MOD } from "../components/Header";
 import { RunButton } from "../components/RunButton";
 import { Button, Callout, Kbd } from "../components/ui";
 import { chatAdvice, chatReason } from "../lib/chat";
-import { bytes, plural } from "../lib/format";
+import { bytes, count, plural } from "../lib/format";
+import type { EdgePlanState } from "../lib/edgePlan";
 import { modelName, useAnalysisContext } from "../lib/hooks";
 import { metricWords } from "../lib/metrics";
 import { experimentText, scopeText, workloadText } from "../lib/spec";
@@ -31,6 +32,7 @@ export function RunSummary({
   differences,
   onRun,
   onQueue,
+  edgePlan = null,
 }: {
   spec: Spec | null;
   /** Why the form can't run yet. */
@@ -49,6 +51,8 @@ export function RunSummary({
   differences: string[];
   onRun: (spec: Spec) => void;
   onQueue: (spec: Spec) => void;
+  /** Edge attribution: the graph and what a run on the loaded model costs. */
+  edgePlan?: EdgePlanState | null;
 }) {
   const titleId = useId();
   const waiting = useStore(runWouldQueue);
@@ -72,10 +76,16 @@ export function RunSummary({
         <p className={e.missing}>{error}</p>
       )}
       <dl className={e.facts}>
-        <dt>Memory</dt>
-        <dd>
-          <MemoryFit method={method} batchSize={batchSize} scope={scope} prompts={n} bootstrap={bootstrap} />
-        </dd>
+        {method === "edge_attribution" ? (
+          <EdgeFacts plan={edgePlan} />
+        ) : (
+          <>
+            <dt>Memory</dt>
+            <dd>
+              <MemoryFit method={method} batchSize={batchSize} scope={scope} prompts={n} bootstrap={bootstrap} />
+            </dd>
+          </>
+        )}
         <dt>Baseline</dt>
         <dd>
           <BaselineState />
@@ -189,6 +199,40 @@ function MemoryFit({
         About {bytes(memory.total)} of the {bytes(memory.available)} free: {verdict}
       </span>
       <span className={e.factNote}>{memory.explanation}</span>
+    </>
+  );
+}
+
+/** An edge attribution run on the loaded model: its graph's size, the passes it takes and the
+ * memory a batch needs against what is free, from the checks the run makes. */
+function EdgeFacts({ plan }: { plan: EdgePlanState | null }) {
+  const ready = useStore((st) => st.model.state === "ready");
+  const p = plan?.plan;
+  const pending = <span className="faint">{plan?.pending ? "Counting…" : !ready ? "Known once a model is loaded." : plan?.error ?? "Known once the experiment is ready."}</span>;
+  return (
+    <>
+      <dt>Graph</dt>
+      <dd>{p?.n_edges != null ? <span>{count(p.n_edges)} edges, from {count(p.n_senders)} senders into {count(p.n_receivers)} inputs</span> : pending}</dd>
+      <dt>Cost</dt>
+      <dd>
+        {p?.cost ? (
+          <>
+            <span className={p.refusal ? e.alert : undefined}>
+              {plural(p.cost.batches, "batch", "batches")} of {count(p.cost.forward_per_batch)} forward and{" "}
+              {plural(p.cost.backward_per_batch, "backward pass", "backward passes")} each
+              {p.cost.patched_per_batch ? `, then ${count(p.cost.patched_per_batch)} edge-patched forward passes each for the curve` : ""}.
+            </span>
+            <span className={e.factNote}>
+              About {bytes(p.cost.memory_per_batch)} a batch{p.free != null ? ` of the ${bytes(p.free)} free` : ""}, and{" "}
+              {count(p.cost.values)} per-prompt values kept.{p.refusal ? ` ${p.refusal}` : ""}
+            </span>
+          </>
+        ) : p?.refusal ? (
+          <span className={e.alert}>{p.refusal}</span>
+        ) : (
+          pending
+        )}
+      </dd>
     </>
   );
 }

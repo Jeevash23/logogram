@@ -3,12 +3,13 @@ import { useEffect, useMemo, useState } from "react";
 import type { BaselineSpec, ExperimentKind, HeadInputKind, ModelInfo, PathReceiverSpec, PositionSpec, SAEInfo, ScopeSpec, StreamKind } from "../api/types";
 import { Button, Checkbox, Choices, Field, Input, Segmented, Select, TextArea } from "../components/ui";
 import { MOD } from "../components/Header";
-import { count, plural, shortRevision } from "../lib/format";
+import { capitalize, count, plural, shortRevision } from "../lib/format";
 import { modelName } from "../lib/hooks";
 import { EVERYTHING, SET_SITE_KINDS } from "../lib/circuits";
 import { KIND_SHORT, parseHeadQuery, queryHeadsOf, queryHeadsText } from "../lib/sites";
-import { buildSpec, carriedBy, datasetFacts, lastInstead, parseStrengths, savedDifferences, unlinedReason, unevenPairsText, usesFeatures } from "../lib/buildSpec";
-import { parseLayers, receiverLabel, saeWritesText, scopeFor, scopeShort, siteText, steerSiteOf, suggestName, workload } from "../lib/spec";
+import { buildSpec, carriedBy, datasetFacts, lastInstead, parseCounts, parseStrengths, savedDifferences, unlinedReason, unevenPairsText, usesFeatures } from "../lib/buildSpec";
+import { useEdgePlan, type EdgePlanState } from "../lib/edgePlan";
+import { edgeLabel, graphText, parseLayers, receiverLabel, receiverWords, saeWritesText, scopeFor, scopeShort, siteText, steerSiteOf, suggestName, workload } from "../lib/spec";
 import { useStore, type FormState } from "../store/app";
 import { ChatTemplateSettings } from "./ChatTemplateSettings";
 import { MetricSettings } from "./MetricSettings";
@@ -43,6 +44,11 @@ const METHODS: { value: ExperimentKind; title: string; detail: string }[] = [
     title: "Steering",
     detail: "Add the mean clean–corrupt difference or an SAE feature at several strengths, against a random control.",
   },
+  {
+    value: "edge_attribution",
+    title: "Edge attribution",
+    detail: "Estimate every edge between components from gradients, then patch the strongest as a circuit.",
+  },
 ];
 
 export function ExperimentView() {
@@ -71,9 +77,20 @@ export function ExperimentView() {
   // Pairs of different lengths: the positions a method that carries values between prompts can't use.
   const unlined = unlinedReason(form, facts);
   const uneven = facts?.uneven ?? [];
-  const built = buildSpec(form, { model, datasetPath, datasetSha: dataset?.sha256 ?? null, sae, facts });
+  const buildContext = { model, datasetPath, datasetSha: dataset?.sha256 ?? null, sae, facts };
+  const built = buildSpec(form, buildContext);
   const differences = savedDifferences(form, model, datasetPath, dataset?.sha256 ?? null, modelName, sae);
   const spec = "spec" in built ? built.spec : null;
+  // Edge attribution: the graph's size and what a run costs on the loaded model, and why a run
+  // would be refused (too many edges, or too little memory), before it runs. Neither depends on
+  // which edges the curve patches, so they are known before that is chosen.
+  let planned = spec;
+  if (!planned && form.kind === "edge_attribution" && form.edgeCurve && !form.edgePatch) {
+    const unchosen = buildSpec({ ...form, edgePatch: "chosen" }, buildContext);
+    planned = "spec" in unchosen ? unchosen.spec : null;
+  }
+  const plan = useEdgePlan(form.kind === "edge_attribution" ? planned : null);
+  const refusal = form.kind === "edge_attribution" ? (plan.plan?.refusal ?? null) : null;
 
   const suggested = spec
     ? suggestName(spec)
@@ -200,6 +217,8 @@ export function ExperimentView() {
             </div>
           ) : form.kind === "path_patching" ? (
             <PathSettings form={form} onChange={setForm} />
+          ) : form.kind === "edge_attribution" ? (
+            <EdgeSettings form={form} onChange={setForm} />
           ) : form.kind === "activation_patching" || form.kind === "attribution_patching" ? (
             <div className={e.stack}>
               <Choices
@@ -240,6 +259,8 @@ export function ExperimentView() {
             uniformLength={uniformLength}
             lengths={lengths}
             unlined={unlined}
+            nLayers={arch?.n_layers ?? null}
+            plan={plan}
           />
         </section>
 
@@ -338,8 +359,9 @@ export function ExperimentView() {
 
       </div>
       <RunSummary
-        spec={spec}
-        error={"error" in built ? built.error : null}
+        spec={refusal ? null : spec}
+        error={refusal ?? ("error" in built ? built.error : null)}
+        edgePlan={form.kind === "edge_attribution" ? plan : null}
         method={form.kind}
         scope={form.scope}
         bootstrap={form.bootstrap}
@@ -388,8 +410,10 @@ const DIRECTIONS = [
 
 function PathSettings({ form, onChange }: { form: FormState; onChange: (patch: Partial<FormState>) => void }) {
   const [query, setQuery] = useState("");
-  const [part, setPart] = useState<"q" | "k" | "v">("q");
-  const head = parseHeadQuery(query);
+  const [part, setPart] = useState<"q" | "k" | "v" | "mlp">("q");
+  const head = part === "mlp" ? null : parseHeadQuery(query);
+  // An MLP is named by its layer: "L3" or "3".
+  const mlp = part === "mlp" ? /^\s*l?\s*(\d+)\s*$/i.exec(query) : null;
   const has = (r: PathReceiverSpec) => form.pathReceivers.some((x) => JSON.stringify(x) === JSON.stringify(r));
   const add = (r: PathReceiverSpec) => {
     if (!has(r)) onChange({ pathReceivers: [...form.pathReceivers, r] });
@@ -401,7 +425,7 @@ function PathSettings({ form, onChange }: { form: FormState; onChange: (patch: P
         <div className={e.receivers}>
           {form.pathReceivers.map((r) => (
             <span key={receiverLabel(r)} className={e.receiver}>
-              {r.kind === "logits" ? "Logits, read directly" : `L${r.layer} H${r.head} ${{ q: "query", k: "key", v: "value" }[r.input]}`}
+              {receiverWords(r)}
               <button type="button" aria-label={`Remove ${receiverLabel(r)}`} onClick={() => onChange({ pathReceivers: form.pathReceivers.filter((x) => x !== r) })}>
                 ×
               </button>
@@ -411,15 +435,29 @@ function PathSettings({ form, onChange }: { form: FormState; onChange: (patch: P
         </div>
       </Field>
       <div className={s.row}>
-        <Input value={query} onChange={(ev) => setQuery(ev.target.value)} placeholder="L9 H9" aria-label="Receiver head, like L9 H9" style={{ width: 110 }} spellCheck={false} />
-        <Select value={part} onChange={(ev) => setPart(ev.target.value as "q" | "k" | "v")} aria-label="Which input of the head">
-          <option value="q">Query</option>
-          <option value="k">Key</option>
-          <option value="v">Value</option>
+        <Input
+          value={query}
+          onChange={(ev) => setQuery(ev.target.value)}
+          placeholder={part === "mlp" ? "L3" : "L9 H9"}
+          aria-label={part === "mlp" ? "Receiver MLP's layer, like L3" : "Receiver head, like L9 H9"}
+          style={{ width: 110 }}
+          spellCheck={false}
+        />
+        <Select value={part} onChange={(ev) => setPart(ev.target.value as "q" | "k" | "v" | "mlp")} aria-label="Which input receives the path">
+          <option value="q">Head's query</option>
+          <option value="k">Head's key</option>
+          <option value="v">Head's value</option>
+          <option value="mlp">MLP's input</option>
         </Select>
-        <Button size="small" disabled={!head} onClick={() => head && (add({ kind: "head", layer: head.layer, head: head.head, input: part }), setQuery(""))}>
-          Add head
-        </Button>
+        {part === "mlp" ? (
+          <Button size="small" disabled={!mlp} onClick={() => mlp && (add({ kind: "mlp", layer: Number(mlp[1]) }), setQuery(""))}>
+            Add MLP
+          </Button>
+        ) : (
+          <Button size="small" disabled={!head} onClick={() => head && (add({ kind: "head", layer: head.layer, head: head.head, input: part }), setQuery(""))}>
+            Add head
+          </Button>
+        )}
         <Button size="small" disabled={has({ kind: "logits" })} onClick={() => add({ kind: "logits" })}>
           Add the logits
         </Button>
@@ -491,6 +529,174 @@ function AttributionSettings({ form, onChange, features, uneven }: { form: FormS
         strongest sites by patching from the results.
       </p>
     </>
+  );
+}
+
+/** Edge attribution: the direction, how each edge is estimated, and the faithfulness curve. */
+function EdgeSettings({ form, onChange }: { form: FormState; onChange: (patch: Partial<FormState>) => void }) {
+  const steps = form.atpSteps;
+  const validSteps = Number.isInteger(steps) && steps >= 2 && steps <= 64;
+  const counts = parseCounts(form.edgeCounts);
+  const draws = form.edgeDraws;
+  const validDraws = Number.isInteger(draws) && draws >= 1 && draws <= 16;
+  const [receiver, source] = form.direction === "clean_to_corrupt" ? ["corrupt", "clean"] : ["clean", "corrupt"];
+  const restoring = form.direction === "clean_to_corrupt";
+  return (
+    <div className={e.stack}>
+      <Choices
+        label="Direction"
+        value={form.direction}
+        onChange={(direction) => onChange({ direction })}
+        columns={2}
+        options={[
+          {
+            value: "clean_to_corrupt",
+            title: "Clean → corrupt",
+            detail: "Run the corrupt prompts; each edge carries its sender's clean output. Which edges bring the behavior back?",
+          },
+          {
+            value: "corrupt_to_clean",
+            title: "Corrupt → clean",
+            detail: "Run the clean prompts; each edge carries its sender's corrupt output. Which edges does the behavior need?",
+          },
+        ]}
+      />
+      <Choices
+        label="Estimate with"
+        value={form.atpMethod}
+        onChange={(atpMethod) => onChange({ atpMethod })}
+        columns={2}
+        options={[
+          {
+            value: "gradient",
+            title: "One gradient (EAP)",
+            detail: "Each receiver's gradient at the receiver run: three forward passes and one backward pass per batch, for every edge at once.",
+          },
+          {
+            value: "integrated_gradients",
+            title: "Integrated gradients (EAP-IG)",
+            detail: "Each receiver's gradient averaged over runs between the two prompts, which corrects much of the saturation one gradient misses. Each step costs another forward and backward pass.",
+          },
+        ]}
+      />
+      {form.atpMethod === "integrated_gradients" && (
+        <div className={s.grid3}>
+          <Field label="Steps" help={validSteps ? `${steps} forward and backward passes per batch.` : "A whole number from 2 to 64."}>
+            <Input type="number" min={2} max={64} step={1} value={steps} onChange={(ev) => onChange({ atpSteps: Number(ev.target.value) })} aria-invalid={!validSteps} />
+          </Field>
+        </div>
+      )}
+      <p className={s.small}>
+        An edge runs from a component&rsquo;s output to a later component&rsquo;s input through the residual stream. Its estimate is
+        (the sender&rsquo;s output on the {source} prompt − on the {receiver} prompt) · the gradient of the metric with respect to
+        the receiver&rsquo;s own copy of the residual stream, before its normalization. The gradient goes through that
+        normalization with its scale recomputed, as patching the edge would recompute it. Verify the strongest edges by path
+        patching from the results.
+      </p>
+      <Checkbox checked={form.edgeCurve} onChange={(edgeCurve) => onChange({ edgeCurve })}>
+        Patch the strongest edges as a circuit, for a faithfulness curve beside edges chosen at random
+      </Checkbox>
+      {form.edgeCurve && (
+        <>
+          <Choices
+            label="The curve patches"
+            value={form.edgePatch}
+            onChange={(edgePatch) => onChange({ edgePatch })}
+            columns={2}
+            options={[
+              {
+                value: "chosen",
+                title: "The chosen edges",
+                detail: `The ${receiver} prompts run with only the chosen edges carrying the ${source} values. ${restoring ? "Do they alone bring the behavior back?" : "Does corrupting only them take the behavior away?"}`,
+              },
+              {
+                value: "rest",
+                title: "Every edge but the chosen",
+                detail: `The ${receiver} prompts run with every other edge carrying the ${source} values, the chosen keeping their own. ${restoring ? "Does leaving only them corrupt keep the behavior away?" : "Do the chosen edges alone keep the behavior?"}`,
+              },
+            ]}
+          />
+          {!form.edgePatch && <p className={e.required}>Required: it decides what faithfulness 1 means, so there&rsquo;s no default.</p>}
+          <div className={s.grid3}>
+            <Field label="Numbers of edges" help={"error" in counts ? counts.error : "Each is a circuit of that many of the strongest edges. Numbers above the graph's size are left out."}>
+              <Input value={form.edgeCounts} onChange={(ev) => onChange({ edgeCounts: ev.target.value })} spellCheck={false} aria-invalid={"error" in counts} />
+            </Field>
+            <Field label="Random draws" help={validDraws ? "Edges chosen at random, this many times for each number." : "A whole number from 1 to 16."}>
+              <Input type="number" min={1} max={16} step={1} value={draws} onChange={(ev) => onChange({ edgeDraws: Number(ev.target.value) })} aria-invalid={!validDraws} />
+            </Field>
+            <Field label="Random seed">
+              <Input type="number" min={0} step={1} value={form.edgeSeed} onChange={(ev) => onChange({ edgeSeed: Number(ev.target.value) })} />
+            </Field>
+          </div>
+          <p className={s.small}>
+            Faithfulness is the share of the gap from no edge chosen (0) to every edge chosen (1) that the chosen edges close. The
+            patching is exact: each receiver reads its own input plus, for every patched edge into it, the sender&rsquo;s output on
+            the {source} prompt minus its output in that run. Each number of edges costs one patched forward pass per batch, and
+            one more per random draw.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** The graph an edge attribution run estimates: the edges into every layer or chosen ones, and
+ * into the logits; with its size on the loaded model. */
+function GraphScopeEditor({
+  scope,
+  onChange,
+  nLayers,
+  plan,
+}: {
+  scope: Extract<ScopeSpec, { kind: "graph" }>;
+  onChange: (s: ScopeSpec) => void;
+  nLayers: number | null;
+  plan: EdgePlanState;
+}) {
+  const layers = scope.layers;
+  const size = plan.plan;
+  return (
+    <div className={e.stack}>
+      <Segmented
+        label="Edges into"
+        value={layers === null ? "every" : "chosen"}
+        onChange={(v) => onChange({ ...scope, layers: v === "every" || nLayers === null ? null : Array.from({ length: nLayers }, (_, l) => l) })}
+        options={[
+          { value: "every", label: "Every layer" },
+          { value: "chosen", label: "Chosen layers", disabled: nLayers === null, reason: "Load a model to choose its layers." },
+        ]}
+      />
+      {layers !== null && nLayers !== null && (
+        <Field label="Layers whose heads and MLPs receive edges">
+          <div className={s.row} role="group" aria-label="Layers whose heads and MLPs receive edges">
+            {Array.from({ length: nLayers }, (_, l) => (
+              <Checkbox
+                key={l}
+                checked={layers.includes(l)}
+                onChange={(on) => onChange({ ...scope, layers: on ? [...layers, l].sort((a, b) => a - b) : layers.filter((x) => x !== l) })}
+              >
+                L{l}
+              </Checkbox>
+            ))}
+          </div>
+        </Field>
+      )}
+      <Checkbox checked={scope.logits} onChange={(logits) => onChange({ ...scope, logits })}>
+        Edges into the logits
+      </Checkbox>
+      <p className={s.small} aria-live="polite">
+        {size?.n_edges != null
+          ? `${capitalize(graphText(scope))}: ${count(size.n_edges)} edges from ${count(size.n_senders)} senders into ${count(size.n_receivers)} inputs on the loaded model.`
+          : plan.pending
+            ? "Counting the edges…"
+            : `${capitalize(graphText(scope))}. Its size is known once a model is loaded and prompts are chosen.`}
+      </p>
+      <p className={s.small}>
+        The graph&rsquo;s nodes are the embeddings, every attention head&rsquo;s output, every MLP and the logits. Each node&rsquo;s
+        output reaches every later node&rsquo;s input through the residual stream: a head&rsquo;s query, key and value are an edge
+        each, an MLP&rsquo;s input one, the logits one. Edges into a chosen layer come from every earlier node.
+      </p>
+    </div>
   );
 }
 
@@ -865,6 +1071,8 @@ function ScopeEditor({
   uniformLength,
   lengths,
   unlined,
+  nLayers,
+  plan,
 }: {
   method: ExperimentKind;
   /** The loaded model: its key/value heads and neurons, and the sites it offers. */
@@ -881,8 +1089,23 @@ function ScopeEditor({
   /** Why every position and token indices can't be used with this method (prompts of different
    * lengths), or null. */
   unlined: string | null;
+  nLayers: number | null;
+  plan: EdgePlanState;
 }) {
   const kind = scope.kind;
+  if (scope.kind === "graph") return <GraphScopeEditor scope={scope} onChange={onChange} nLayers={nLayers} plan={plan} />;
+  if (scope.kind === "edges") {
+    return (
+      <div className={e.stack}>
+        <p className={s.small}>
+          {scope.edges.length === 1 ? "One edge" : `${count(scope.edges.length)} edges`}, each path-patched alone with every other head and MLP
+          held: {scope.edges.slice(0, 6).map(edgeLabel).join(", ")}
+          {scope.edges.length > 6 ? ` and ${count(scope.edges.length - 6)} more` : ""}.
+        </p>
+        <p className={s.faint}>Set up by verifying an edge attribution run. Pick another method above to sweep components instead.</p>
+      </div>
+    );
+  }
   // Direct attribution splits what components write, at the last token only.
   const direct = method === "direct_logit_attribution";
   // Steering adds to one residual stream site per layer, at one token of each prompt.

@@ -480,10 +480,12 @@ def compare_runs(a: Run, b: Run) -> dict[str, Any]:
 
 
 def verify_run(estimated: Run, top: int = 10, *, model: Any = None) -> Run:
-    """Patch, for real, the ``top`` sites an attribution patching run estimated to matter most."""
+    """Patch, for real, the ``top`` sites an attribution patching run estimated to matter most;
+    for an edge attribution run, path patch its ``top`` strongest edges one at a time (compare the
+    two with :func:`edge_verification`)."""
     from logogram.robustness import require_finished
     from logogram.runner import run_spec
-    from logogram.verify import verification_spec
+    from logogram.verify import verification_change, verification_spec
 
     try:
         require_finished(estimated.project, estimated.id, "Verifying by patching")
@@ -491,8 +493,10 @@ def verify_run(estimated: Run, top: int = 10, *, model: Any = None) -> Run:
         raise LogogramError(str(exc)) from exc
     if estimated.summary is None:
         raise LogogramError("Only a finished run can be verified.")
-    variant = verification_spec(estimated.spec, estimated.summary, top)
-    n = len(variant.scope.sites)  # type: ignore[union-attr]
+    try:
+        variant = verification_spec(estimated.spec, estimated.summary, top)
+    except ValueError as exc:
+        raise LogogramError(str(exc)) from exc
     outcome = run_spec(
         variant,
         estimated.project,
@@ -500,12 +504,25 @@ def verify_run(estimated: Run, top: int = 10, *, model: Any = None) -> Run:
         derived_from={
             "run": estimated.id,
             "kind": "verification",
-            "change": f"the {n} strongest estimated site{'s' if n != 1 else ''}, patched",
+            "change": verification_change(variant),
         },
     )
     if outcome.status != "finished":
         raise LogogramError(_ended(outcome, "The verification"))
     return load_run(estimated.project, outcome.run_id, model=outcome.backend)
+
+
+def edge_verification(estimated: Run, verified: Run) -> dict[str, Any]:
+    """An edge attribution run's estimates beside their measurements by path patching (the run
+    :func:`verify_run` made from it), edge by edge, ranked both ways, with Spearman's rank
+    correlation of the two and how many have the same sign."""
+    from logogram.edges import verification_table
+
+    if not (estimated.summary or {}).get("edges"):
+        raise LogogramError(f"{estimated.id} isn't an edge attribution run.")
+    if verified.summary is None:
+        raise LogogramError(f"{verified.id} has no results ({verified.status}).")
+    return verification_table(estimated.summary or {}, verified.summary)
 
 
 def check_robustness(
@@ -752,15 +769,18 @@ class Run:
         """The run as one self-contained HTML page anyone can open: its map, strongest sites,
         every site's numbers, the methods and where it came from. Written to ``path`` when given;
         hardware model names are left out unless ``hardware`` is true."""
+        from logogram.edges import latest_verification
         from logogram.report import run_report
 
+        summary = self._summary()
         page = run_report(
             self.spec,
-            self._summary(),
+            summary,
             self.manifest,
             self.id,
             hardware=hardware,
             continuations=self.continuations(),
+            verification=latest_verification(self.project, self.id, summary),
         )
         if path is not None:
             Path(path).expanduser().write_text(page, encoding="utf-8")
@@ -800,6 +820,29 @@ class Run:
         them: each site's label, effect with its interval, and the rest of its statistics."""
         sites = [s for s in self._summary()["sites"] if s["effect"]["mean"] is not None]
         return sorted(sites, key=lambda s: -abs(s["effect"]["mean"]))[:k]
+
+    def edges(self) -> Any:
+        """An edge attribution run's every edge, one row each (its edges.parquet): the sender and
+        receiver, the mean estimated effect and its interval, the simultaneous band and q-value.
+        The summary lists only the strongest."""
+        import pyarrow.parquet as pq
+
+        from logogram.schema import EDGES_FILE
+
+        self._summary()
+        path = self.folder / EDGES_FILE
+        if not path.is_file():
+            raise LogogramError(f"{self.id} isn't an edge attribution run: it has no edges.")
+        table = pq.read_table(self.project.readable(path))
+        try:
+            return table.to_pandas()
+        except ImportError:
+            return table
+
+    def curve(self) -> dict[str, Any] | None:
+        """An edge attribution run's faithfulness curve: for each k, the faithfulness of the k
+        strongest edges and of k edges chosen at random, with intervals; None without one."""
+        return (self._summary().get("edges") or {}).get("curve")
 
     def _repr_html_(self) -> str:
         if self.summary is None:

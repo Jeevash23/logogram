@@ -1,6 +1,7 @@
 // Selections and how they map onto sites of a run.
 
-import type { HeadInputKind, Layout, ResultKind, SiteBase, SiteKind } from "../api/types";
+import type { EdgeSpec, HeadInputKind, Layout, ResultKind, SiteBase, SiteKind } from "../api/types";
+import { edgeKey } from "./edges";
 
 /** A component on the model map, optionally at a position (for layer × position runs). */
 export interface Selection {
@@ -22,13 +23,15 @@ export interface Selection {
 
 /** Where a selection sits: a component of the model map, a head's query, key or value (part
  * "input", its head in `head`: a key/value head for keys and values), an MLP neuron (part
- * "neuron"), or a set of sites (part "set", named by its label in variantKey). Inputs, neurons
- * and sets have no cell of their own on the map. */
-export type MapPart = "resid" | "head" | "attn" | "mlp" | "feature" | "set" | "input" | "neuron";
+ * "neuron"), a set of sites (part "set", named by its label in variantKey), or an edge of the
+ * model's graph (part "edge", named by its label in variantKey). Inputs, neurons, sets and edges
+ * have no cell of their own on the map. */
+export type MapPart = "resid" | "head" | "attn" | "mlp" | "feature" | "set" | "input" | "neuron" | "edge";
 export type ResidKind = "resid_pre" | "resid_mid" | "resid_post";
 
 export function partOfKind(kind: ResultKind): MapPart {
   if (kind === "site_set") return "set";
+  if (kind === "edge") return "edge";
   if (kind === "head") return "head";
   if (kind === "sae_feature") return "feature";
   if (kind === "attn_out") return "attn";
@@ -47,8 +50,10 @@ export function isHeadInputKind(kind: string | null | undefined): kind is HeadIn
 }
 
 export function selectionOfSite(
-  site: Pick<SiteBase, "layer" | "kind" | "head" | "position_key" | "variant_key" | "feature" | "neuron">,
+  site: Pick<SiteBase, "layer" | "kind" | "head" | "position_key" | "variant_key" | "feature" | "neuron"> & { label?: string },
 ): Selection {
+  // An edge is named by its label ("L5 H5 → L9 H6 q"): it has no place of its own on the map.
+  if (site.kind === "edge") return { layer: site.layer, part: "edge", variantKey: site.label };
   return {
     layer: site.layer,
     part: partOfKind(site.kind),
@@ -77,6 +82,7 @@ export function sameSelection(a: Selection | null, b: Selection | null): boolean
 
 /** Sites of a run that sit on the same map component as the selection. */
 export function sitesOnComponent<T extends SiteBase>(sites: T[], sel: Selection): T[] {
+  if (sel.part === "edge") return sites.filter((s) => s.kind === "edge" && s.label === sel.variantKey);
   return sites.filter(
     (s) =>
       s.layer === sel.layer &&
@@ -114,7 +120,8 @@ export function fitSelection<T extends SiteBase>(sites: T[], sel: Selection): Se
   return tries.find((t) => findSite(sites, t)) ?? { ...sel, positionKey: undefined };
 }
 
-/** What a site measures, independent of its index in a run: comparable across runs. */
+/** What a site measures, independent of its index in a run: comparable across runs. An edge is
+ * named by its sender and receiver. */
 export function siteKey(site: {
   kind: ResultKind;
   layer: number;
@@ -123,7 +130,9 @@ export function siteKey(site: {
   neuron?: number | null;
   position_key: string;
   variant_key?: string | null;
+  edge?: EdgeSpec | null;
 }): string {
+  if (site.kind === "edge" && site.edge) return `edge|${edgeKey(site.edge)}`;
   const neuron = site.neuron === null || site.neuron === undefined ? "" : `|${site.neuron}`;
   return `${site.kind}|${site.layer}|${site.head ?? ""}|${site.feature ?? ""}|${site.position_key}|${site.variant_key ?? ""}${neuron}`;
 }
@@ -167,6 +176,8 @@ export function componentLabel(sel: Selection): string {
       return `L${sel.layer} N${sel.neuron}${pos}`;
     case "set":
       return sel.variantKey ?? "Set of sites";
+    case "edge":
+      return sel.variantKey ?? "Edge";
     default:
       return `L${sel.layer} ${sel.kind ? KIND_SHORT[sel.kind] : "resid"}${pos}`;
   }
@@ -230,6 +241,8 @@ export function layoutTitle(layout: Layout): string {
       return layout.site === "q" ? "Layer × head, queries" : `Layer × key/value head, ${layout.site === "v" ? "values" : "keys"}`;
     case "neurons":
       return "Every neuron, layer by layer";
+    case "edges":
+      return "Edges";
     default:
       return "Chosen sites";
   }

@@ -32,6 +32,7 @@ from logogram.spec import (
     AllPositions,
     AttributionPatching,
     DirectLogitAttribution,
+    EdgeAttribution,
     FeaturesScope,
     MeanBaseline,
     PathPatching,
@@ -513,6 +514,10 @@ def run_experiment(
         from logogram.direct import run_direct_effects
 
         return run_direct_effects(spec, backend, prompts, on_prompts=on_prompts, **kwargs)
+    if isinstance(spec.experiment, EdgeAttribution):
+        from logogram.edges import run_edge_attribution
+
+        return run_edge_attribution(spec, backend, prompts, on_prompts=on_prompts, **kwargs)
     if isinstance(spec.experiment, AttributionPatching):
         from logogram.atp import run_attribution_patching
 

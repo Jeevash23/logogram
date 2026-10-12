@@ -38,7 +38,7 @@ import numpy as np
 from logogram.engine import EngineResult, check_values
 from logogram.results import build_summary, compute_stats, results_table, write_results
 from logogram.sites import ResolvedSite
-from logogram.spec import Spec
+from logogram.spec import EdgeAttribution, Spec
 
 CountsFn = Callable[[EngineResult], np.ndarray]
 
@@ -130,7 +130,8 @@ def keep_finished(
         result = dataclasses.replace(result, warnings=[*progress.notes, *result.warnings])
         kept = None
         stats = compute_stats(spec, result, counts(result))
-        partial = _by_prompts(result, progress.n_prompts, status)
+        curve = isinstance(spec.experiment, EdgeAttribution) and spec.experiment.curve is not None
+        partial = _by_prompts(result, progress.n_prompts, status, curve)
     else:
         return None
     summary = build_summary(
@@ -144,6 +145,11 @@ def keep_finished(
         partial=partial,
     )
     write_results(folder / "results.parquet", results_table(result, stats, kept))
+    if "edges" in result.extra:
+        from logogram.edges import write_edge_table
+        from logogram.schema import EDGES_FILE
+
+        write_edge_table(folder / EDGES_FILE, result, stats)
     from logogram.runner import write_json
 
     write_json(folder / "summary.json", summary)
@@ -237,18 +243,30 @@ def _by_sites(spec: Spec, result: EngineResult, kept: list[int], status: str) ->
     }
 
 
-def _by_prompts(result: EngineResult, total: int, status: str) -> dict[str, Any]:
+def _by_prompts(
+    result: EngineResult, total: int, status: str, curve: bool = False
+) -> dict[str, Any]:
     """What a method that measures every site at once kept: every site, over the prompts that
-    finished, of ``total``."""
+    finished, of ``total``. ``curve``: the run would have measured a faithfulness curve after
+    estimating every edge."""
     done = len(result.prompts)
     rest = total - done
     others = "The other prompt wasn't" if rest == 1 else f"The other {rest:,} prompts weren't"
-    left_out = [
-        f"{others} measured. Prompts run in groups of the same token length, so the ones that "
-        "finished aren't a random sample of the dataset.",
-    ]
+    left_out = (
+        [
+            f"{others} measured. Prompts run in groups of the same token length, so the ones "
+            "that finished aren't a random sample of the dataset.",
+        ]
+        if rest
+        else []
+    )
     if "direct" in result.extra:
         left_out.append("The split of the logit difference is over the prompts that finished.")
+    if curve and "curve" not in result.extra.get("edges", {}):
+        left_out.append(
+            "The faithfulness curve is left out: it runs once every edge is estimated on every "
+            "prompt, and it didn't finish."
+        )
     return {
         "status": status,
         "unit": "prompts",

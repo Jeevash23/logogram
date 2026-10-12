@@ -7,7 +7,7 @@ import { experimentText } from "../lib/spec";
 import { useStore } from "../store/app";
 import { Button, Choices, Dialog, Field, Input, Select } from "./ui";
 
-type Option = "direction" | "zero" | "mean" | "resample" | "donors" | "seed" | "total" | "prompts" | "exact" | "estimator" | "split" | "other" | "mlps" | "pathdirection" | "whole" | "float32";
+type Option = "direction" | "zero" | "mean" | "resample" | "donors" | "seed" | "total" | "prompts" | "exact" | "estimator" | "split" | "other" | "mlps" | "pathdirection" | "whole" | "float32" | "edgedirection";
 
 function suggest(e: ExperimentSpec): Option {
   if (e.kind === "activation_patching") return e.direction === "clean_to_corrupt" ? "direction" : "resample";
@@ -15,6 +15,7 @@ function suggest(e: ExperimentSpec): Option {
   if (e.kind === "attribution_patching") return "exact";
   if (e.kind === "steering") return "split";
   if (e.kind === "path_patching") return "mlps";
+  if (e.kind === "edge_attribution") return "estimator";
   if (e.baseline.kind === "resample") return "donors";
   if (e.baseline.kind === "zero") return "mean";
   return "resample";
@@ -44,10 +45,13 @@ function variant(e: ExperimentSpec, option: Option, params: { donors: number; se
       return { kind: "activation_patching", direction: e.kind === "attribution_patching" ? e.direction : "clean_to_corrupt" };
     case "estimator":
       // The same estimate made the other way: integrated gradients for one gradient, and back.
-      if (e.kind !== "attribution_patching") return e;
+      if (e.kind !== "attribution_patching" && e.kind !== "edge_attribution") return e;
       return e.method === "gradient"
         ? { ...e, method: "integrated_gradients", steps: params.steps }
         : { ...e, method: "gradient", steps: null };
+    case "edgedirection":
+      // The same edges estimated the other way: the other prompt of each pair as the receiver.
+      return e.kind === "edge_attribution" ? { ...e, direction: e.direction === "clean_to_corrupt" ? "corrupt_to_clean" : "clean_to_corrupt" } : e;
     case "prompts":
       return { kind: "direct_logit_attribution", prompts: e.kind === "direct_logit_attribution" && e.prompts === "clean" ? "corrupt" : "clean" };
     case "direction":
@@ -170,6 +174,24 @@ export function RobustnessDialog() {
           }
         : { value: "estimator", title: "Estimate with one gradient", detail: "The gradient at the receiver run only: what the steps of integrated gradients changed." },
     );
+  } else if (exp.kind === "edge_attribution") {
+    options.push(
+      exp.method === "gradient"
+        ? {
+            value: "estimator",
+            title: "Estimate with integrated gradients",
+            detail: `Average each receiver's gradient over ${DEFAULT_IG_STEPS} steps between the prompts, which corrects much of the saturation one gradient misses, at ${DEFAULT_IG_STEPS} times the cost of the estimates.`,
+          }
+        : { value: "estimator", title: "Estimate with one gradient", detail: "The gradient at the receiver run only: what the steps of integrated gradients changed." },
+    );
+    options.push({
+      value: "edgedirection",
+      title: "Opposite direction",
+      detail:
+        exp.direction === "clean_to_corrupt"
+          ? "Estimate the edges on the clean prompts, carrying corrupt values: which edges the behavior needs."
+          : "Estimate the edges on the corrupt prompts, carrying clean values: which edges bring the behavior back.",
+    });
   } else if (exp.kind === "activation_patching") {
     options.push({
       value: "direction",
@@ -184,7 +206,7 @@ export function RobustnessDialog() {
     options.push({ value: "donors", title: "More donors", detail: "Same pool and seed rule, more donors per prompt." });
     options.push({ value: "seed", title: "Another donor seed", detail: "Same number of donors, drawn differently." });
   }
-  if (exp.kind !== "direct_logit_attribution" && exp.kind !== "attribution_patching" && exp.kind !== "steering" && exp.kind !== "path_patching") {
+  if (exp.kind === "activation_patching" || exp.kind === "ablation") {
     if (!(exp.kind === "ablation" && exp.baseline.kind === "zero")) options.push({ value: "zero", title: "Zero ablation", detail: "Replace the activation with zeros." });
     if (!(exp.kind === "ablation" && exp.baseline.kind === "mean" && !isResample))
       options.push({ value: "mean", title: "Mean ablation", detail: "Replace it with its mean over a reference set." });

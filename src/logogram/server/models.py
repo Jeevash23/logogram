@@ -429,6 +429,52 @@ class MethodsText(_Out):
     text: str
 
 
+class EdgePlan(_Out):
+    """What an edge attribution spec would do on the loaded model, before it runs: the graph's
+    size, the passes and memory a run takes, and why it would be refused (null when it
+    wouldn't)."""
+
+    n_edges: int | None
+    n_senders: int | None
+    n_receivers: int | None
+    structure: Literal["sequential", "parallel"] | None = None
+    cost: dict[str, Any] | None = None
+    text: str | None = None
+    free: int | None = None
+    refusal: str | None
+
+
+class EdgeStat(_Out):
+    mean: float | None
+    sd: float | None
+    lo: float | None
+    hi: float | None
+
+
+class EdgeVerificationRow(_Out):
+    """One verified edge: its estimate (the edge attribution run's) beside its measurement by
+    path patching, normalized effects with their intervals, and each one's rank by magnitude."""
+
+    label: str
+    edge: dict[str, Any]
+    estimate: EdgeStat
+    measured: EdgeStat
+    estimate_index: int
+    measured_index: int
+    estimate_rank: int | None = None
+    measured_rank: int | None = None
+
+
+class EdgeVerification(_Out):
+    """An edge attribution run's estimates against its latest verification by path patching."""
+
+    run: str
+    n: int
+    spearman: float | None
+    same_sign: int
+    rows: list[EdgeVerificationRow]
+
+
 class ChatWrapped(_Out):
     """A prompt in the model's own chat template: the whole text, where the prompt is in it
     (characters; None when the template changes the prompt, as ``problem`` says), the template's
