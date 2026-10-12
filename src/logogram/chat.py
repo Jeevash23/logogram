@@ -60,8 +60,18 @@ class ChatWrapper:
 
     def wrap(self, backend: ModelBackend, prompt: str) -> tuple[str, int]:
         """The prompt in the template, and where it begins in that text. Raises
-        :class:`WrapError` when the template doesn't keep the prompt as it is."""
-        text = _render(backend, self.kind, self.system, self.user, prompt)
+        :class:`WrapError` when the template doesn't keep the prompt as it is, or can't render
+        it at all."""
+        try:
+            text = _render(backend, self.kind, self.system, self.user, prompt)
+        except TemplateFailed as exc:
+            # Some templates rewrite a reply (keeping only what follows a closing think tag, say)
+            # and then can't continue it: this prompt is unusable, not the run.
+            raise WrapError(
+                f"the chat template can't render this prompt ({exc}). Edit the prompt, or run "
+                "without the chat template.",
+                prompt,
+            ) from exc
         if text != self.before + prompt + self.after:
             raise WrapError(self._mismatch(prompt, text), text)
         return text, len(self.before)
@@ -97,7 +107,8 @@ class ChatWrapper:
 
 
 class WrapError(ValueError):
-    """A prompt the chat template doesn't keep as it is. ``text`` is what the template made."""
+    """A prompt the chat template doesn't keep as it is. ``text`` is what the template made of
+    it (the prompt itself when the template couldn't render it)."""
 
     def __init__(self, message: str, text: str) -> None:
         super().__init__(message)

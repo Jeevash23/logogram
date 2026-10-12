@@ -174,6 +174,36 @@ def test_a_template_that_changes_the_prompt_leaves_it_unusable(chat_backend, mon
     assert "removes the spaces" in message and "Remove those spaces" in message
 
 
+def test_a_prompt_the_template_cant_render_is_unusable_not_a_crash(chat_backend, monkeypatch):
+    # Like a template that rewrites a reply (keeping what follows a closing think tag) and then
+    # can't continue it: it raises for this prompt only.
+    refusing = TINY_CHAT_TEMPLATE.replace(
+        "{% for m in messages %}",
+        "{% for m in messages %}{% if 'think' in m.content %}"
+        "{{ raise_exception('the reply was rewritten') }}{% endif %}",
+    )
+    monkeypatch.setattr(chat_backend, "_chat_template", refusing)
+    record = PromptRecord(
+        clean="When Mary and John think, John gave",
+        corrupt="When Mary and John went, John gave",
+        answer=" a",
+        distractor=" the",
+    )
+    strip = tokenize_pair(chat_backend, record, False, chat_template=REPLY)
+    message = next(i["message"] for i in strip["issues"] if i["kind"] == "chat_template")
+    assert message.startswith("in the clean prompt, the chat template can't render this prompt")
+    assert "the reply was rewritten" in message and "Edit the prompt" in message
+    with pytest.raises(ValueError, match="In the text, the chat template can't render"):
+        look_report(
+            chat_backend,
+            "They think so",
+            prepend_bos=False,
+            top_k=3,
+            position=None,
+            chat_template=REPLY,
+        )
+
+
 def test_the_start_of_a_reply_ends_the_text(chat_backend, monkeypatch):
     # A template that adds to the reply after the prompt: the model wouldn't go on from it.
     trailing = TINY_CHAT_TEMPLATE.replace("world {{ m.content }}.", "world {{ m.content }} world.")
