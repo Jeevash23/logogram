@@ -151,10 +151,11 @@ const isPosition: Check = (v) => {
 
 const isSite: Check = (v) =>
   isObject(v) &&
-  oneOf(...STREAMS, "head", "sae_feature")(v.kind) &&
+  oneOf(...STREAMS, "head", "sae_feature", "q", "k", "v", "neuron")(v.kind) &&
   isNumber(v.layer) &&
   optional(isNumber)(v.head) &&
   optional(isNumber)(v.feature) &&
+  optional(isNumber)(v.neuron) &&
   isPosition(v.position);
 
 const isSiteSet: Check = (v) => isObject(v) && isString(v.label) && listOf(isSite)(v.sites) && isBoolean(v.complement);
@@ -175,7 +176,11 @@ const isScope: Check = (v) => {
       return isPosition(v.position) && isNumber(v.top) &&
         (("choose_on" in v) ? orNull(isNumber)(v.choose_on) && orNull(isNumber)(v.seed) : !("seed" in v));
     case "site_sets":
-      return orNull(listOf(oneOf("head", "attn_out", "mlp_out")))(v.universe) && listOf(isSiteSet)(v.sets);
+      return orNull(listOf(oneOf("head", "attn_out", "mlp_out", "q", "k", "v", "neuron")))(v.universe) && listOf(isSiteSet)(v.sets);
+    case "head_inputs":
+      return oneOf("q", "k", "v")(v.input) && isPosition(v.position);
+    case "neurons":
+      return listOf(isNumber)(v.layers) && isPosition(v.position);
     default:
       return false;
   }

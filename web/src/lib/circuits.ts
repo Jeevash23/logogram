@@ -13,16 +13,43 @@ export const MAX_LABEL = 80;
 /** A set holds at most this many sites. */
 export const MAX_SET_SITES = 4096;
 
-/** Sites a set can hold: what writes into the residual stream, and the stream before or after a
- * layer. (Between attention and the MLP it isn't a single hook.) */
-export const SET_SITE_KINDS: readonly SiteKind[] = ["head", "attn_out", "mlp_out", "resid_pre", "resid_post"];
-export const UNIVERSE_KINDS: readonly UniverseKind[] = ["head", "attn_out", "mlp_out"];
+/** Sites a set can hold: what writes into the residual stream and the parts it is made of (heads'
+ * queries, keys and values, MLP neurons), and the stream before or after a layer. (Between
+ * attention and the MLP it isn't a single hook.) */
+export const SET_SITE_KINDS: readonly SiteKind[] = ["head", "attn_out", "mlp_out", "resid_pre", "resid_post", "q", "k", "v", "neuron"];
+export const UNIVERSE_KINDS: readonly UniverseKind[] = ["head", "attn_out", "mlp_out", "q", "k", "v", "neuron"];
 
 export const UNIVERSE_NAMES: Record<UniverseKind, { one: string; many: string }> = {
   head: { one: "head", many: "heads" },
   attn_out: { one: "attention output", many: "attention outputs" },
   mlp_out: { one: "MLP output", many: "MLP outputs" },
+  q: { one: "query", many: "queries" },
+  k: { one: "key", many: "keys" },
+  v: { one: "value", many: "values" },
+  neuron: { one: "neuron", many: "neurons" },
 };
+
+/** What a component is made of: a layer's attention output of its heads' outputs, and those of
+ * the heads' queries, keys and values; an MLP output of its neurons. The rest of the model, or a
+ * set in one layer, holds one or the other (as the server's spec and check_sets require). */
+export const MADE_OF: Partial<Record<SiteKind, readonly SiteKind[]>> = {
+  attn_out: ["head", "q", "k", "v"],
+  head: ["q", "k", "v"],
+  mlp_out: ["neuron"],
+};
+
+/** Whether two kinds can't both be in the rest of the model, or in a set at one layer: one is
+ * made of the other. */
+export function overlaps(a: SiteKind, b: SiteKind): boolean {
+  return a !== b && (!!MADE_OF[a]?.includes(b) || !!MADE_OF[b]?.includes(a));
+}
+
+/** Why the rest of the model can't hold both kinds, in words. */
+function overlapText(a: SiteKind, b: SiteKind): string {
+  const [whole, part] = MADE_OF[a]?.includes(b) ? [a, b] : [b, a];
+  const name = (k: SiteKind) => (k in UNIVERSE_NAMES ? UNIVERSE_NAMES[k as UniverseKind].many : k);
+  return `${name(whole)} are made from ${name(part)}`;
+}
 
 /** "every head and MLP output": what a set that keeps its sites replaces. */
 export function universeText(universe: readonly UniverseKind[] | null | undefined): string {
@@ -57,6 +84,13 @@ export function universeFor(sites: SiteSpec[]): { universe: UniverseKind[] } | {
   if (kinds.has("head") && kinds.has("attn_out")) {
     return { error: "A circuit can hold heads or attention outputs, not both: a layer's attention output is the sum of its heads." };
   }
+  for (const a of kinds) {
+    for (const b of kinds) {
+      if (overlaps(a, b) && (MADE_OF[a]?.includes(b) ?? false)) {
+        return { error: `A circuit can't hold both ${UNIVERSE_NAMES[a as UniverseKind].many} and ${UNIVERSE_NAMES[b as UniverseKind].many}: ${overlapText(a, b)}.` };
+      }
+    }
+  }
   if (kinds.size === 0) return { error: "Choose at least one site for the circuit." };
   return { universe: UNIVERSE_KINDS.filter((k) => kinds.has(k)) };
 }
@@ -69,6 +103,10 @@ const KIND_PLURAL: Record<SiteKind, string> = {
   mlp_out: "MLP outputs",
   head: "heads",
   sae_feature: "SAE features",
+  q: "queries",
+  k: "keys",
+  v: "values",
+  neuron: "neurons",
 };
 
 export const CIRCUIT_KEPT = "Circuit kept";
@@ -133,13 +171,20 @@ export function topKSets(ranked: SiteSpec[], k: number): SiteSetSpec[] {
   return sets;
 }
 
-/** A run's single heads, attention outputs and MLP outputs that have an effect, strongest first
- * (ties by index), as sites of a spec: what a circuit can be built from. */
+/** A run's single heads, attention outputs, MLP outputs, queries, keys, values and neurons that
+ * have an effect, strongest first (ties by index), as sites of a spec: what a circuit can be built
+ * from. */
 export function rankedSites(sites: SiteResult[]): SiteSpec[] {
   return sites
     .filter((x) => isUniverseKind(x.kind) && !x.variant && x.effect.mean !== null)
     .sort((a, b) => Math.abs(b.effect.mean ?? 0) - Math.abs(a.effect.mean ?? 0) || a.index - b.index)
-    .map((x) => ({ kind: x.kind as SiteKind, layer: x.layer, head: x.kind === "head" ? x.head : null, position: x.position }));
+    .map((x) => ({
+      kind: x.kind as SiteKind,
+      layer: x.layer,
+      head: x.kind === "head" || x.kind === "q" || x.kind === "k" || x.kind === "v" ? x.head : null,
+      ...(x.kind === "neuron" ? { neuron: x.neuron ?? 0 } : {}),
+      position: x.position,
+    }));
 }
 
 /** Two sites alone and together: the run reports what intervening on both does beyond the sum. */
@@ -165,9 +210,26 @@ export function freeLabel(sets: SiteSetSpec[], base: string): string {
   }
 }
 
-/** Parse a site typed as on the map: "L9 H6", "L3 mlp", "L3 attn", "L2 resid pre", "L2 resid post". */
-export function parseSiteQuery(query: string): { kind: SiteKind; layer: number; head: number | null } | null {
+/** A site typed into a set, before its position is chosen. */
+export interface ParsedSite {
+  kind: SiteKind;
+  layer: number;
+  head: number | null;
+  neuron?: number;
+}
+
+/** Parse a site typed as on the map: "L9 H6", "L3 mlp", "L3 attn", "L2 resid pre", "L2 resid post";
+ * a head's query, key or value as the results write them, "L9 H6 q", "L9 KV2 k", "L9 KV2 v" (a
+ * key or value names its key/value head); a neuron, "L3 N1201". */
+export function parseSiteQuery(query: string): ParsedSite | null {
   const q = query.trim().toLowerCase().replace(/[_-]/g, " ").replace(/\s+/g, " ");
+  const input = q.match(/^l?\s*(\d+)\s*[.,\s]?\s*(?:h|kv)\s*(\d+)\s*[.,\s]?\s*(q|k|v|query|key|value)$/);
+  if (input) {
+    const kind = input[3][0] as "q" | "k" | "v";
+    return { kind, layer: Number(input[1]), head: Number(input[2]) };
+  }
+  const neuron = q.match(/^l?\s*(\d+)\s*[.,\s]?\s*n(?:euron)?\s*(\d+)$/);
+  if (neuron) return { kind: "neuron", layer: Number(neuron[1]), head: null, neuron: Number(neuron[2]) };
   const head = q.match(/^l?\s*(\d+)\s*[.,\s]?\s*h\s*(\d+)$/) ?? q.match(/^(\d+)\s*[.,]\s*(\d+)$/);
   if (head) return { kind: "head", layer: Number(head[1]), head: Number(head[2]) };
   const part = q.match(/^l?\s*(\d+)\s+(attn|attention|attn out|attention output|mlp|mlp out|mlp output|resid pre|resid post|residual pre|residual post)$/);
@@ -184,8 +246,24 @@ export function parseSiteQuery(query: string): { kind: SiteKind; layer: number; 
 }
 
 /** A site as a spec writes it. */
-export function siteOf(parsed: { kind: SiteKind; layer: number; head: number | null }, position: PositionSpec): SiteSpec {
-  return { kind: parsed.kind, layer: parsed.layer, head: parsed.kind === "head" ? parsed.head : null, position };
+export function siteOf(parsed: ParsedSite, position: PositionSpec): SiteSpec {
+  const headed = parsed.kind === "head" || parsed.kind === "q" || parsed.kind === "k" || parsed.kind === "v";
+  return {
+    kind: parsed.kind,
+    layer: parsed.layer,
+    head: headed ? parsed.head : null,
+    ...(parsed.kind === "neuron" ? { neuron: parsed.neuron ?? 0 } : {}),
+    position,
+  };
+}
+
+/** The shape of the loaded model a scope of sets is checked against. */
+export interface SetsModel {
+  n_layers: number;
+  n_heads: number;
+  site_kinds: string[];
+  d_mlp?: number | null;
+  extra?: { n_key_value_heads?: number; site_notes?: Partial<Record<string, string>> };
 }
 
 /** The first thing wrong with a scope of sets, as the server would refuse it; null when it is
@@ -193,7 +271,7 @@ export function siteOf(parsed: { kind: SiteKind; layer: number; head: number | n
 export function siteSetsError(
   universe: UniverseKind[] | null,
   sets: SiteSetSpec[],
-  model?: { n_layers: number; n_heads: number; site_kinds: string[] } | null,
+  model?: SetsModel | null,
 ): string | null {
   if (sets.length === 0) return "Add at least one set of sites.";
   if (sets.length > MAX_SETS) return `A run holds at most ${MAX_SETS} sets; this has ${sets.length}. Remove ${plural(sets.length - MAX_SETS, "set")}.`;
@@ -209,6 +287,10 @@ export function siteSetsError(
     if (universe.length === 0) return "Choose what the rest of the model is made of: heads, attention outputs or MLP outputs.";
     if (universe.includes("head") && universe.includes("attn_out")) {
       return "The rest of the model can't be both heads and attention outputs: a layer's attention output is the sum of its heads. Choose one.";
+    }
+    for (const a of universe) {
+      const b = universe.find((x) => MADE_OF[a]?.includes(x));
+      if (b) return `The rest of the model can't hold both ${UNIVERSE_NAMES[a].many} and ${UNIVERSE_NAMES[b].many}: ${overlapText(a, b)}. Choose one.`;
     }
   }
   for (const set of sets) {
@@ -226,14 +308,29 @@ export function siteSetsError(
       }
       if (model) {
         if (site.layer >= model.n_layers) return `The set ${name} has a site in layer ${site.layer}; this model has ${plural(model.n_layers, "layer")}.`;
-        if (site.kind === "head" && (site.head ?? 0) >= model.n_heads) return `The set ${name} has head ${site.head}; this model has ${plural(model.n_heads, "head")} per layer.`;
-        if (model.site_kinds.length && !model.site_kinds.includes(site.kind)) return `This model has no ${site.kind} site, which the set ${name} uses.`;
+        if (model.site_kinds.length && !model.site_kinds.includes(site.kind)) {
+          return model.extra?.site_notes?.[site.kind] ?? `This model has no ${site.kind} site, which the set ${name} uses.`;
+        }
+        if ((site.kind === "head" || site.kind === "q") && (site.head ?? 0) >= model.n_heads) return `The set ${name} has head ${site.head}; this model has ${plural(model.n_heads, "head")} per layer.`;
+        const kv = model.extra?.n_key_value_heads ?? model.n_heads;
+        if ((site.kind === "k" || site.kind === "v") && (site.head ?? 0) >= kv) {
+          return `The set ${name} has key/value head ${site.head}; this model has ${plural(kv, "key/value head")} per layer.`;
+        }
+        if (site.kind === "neuron" && model.d_mlp && (site.neuron ?? 0) >= model.d_mlp) {
+          return `The set ${name} has neuron ${site.neuron}; this model's MLPs have ${plural(model.d_mlp, "neuron")}.`;
+        }
       }
     }
     const attention = new Set(set.sites.filter((x) => x.kind === "attn_out").map((x) => x.layer));
     const both = set.sites.find((x) => x.kind === "head" && attention.has(x.layer));
     if (both) {
       return `The set ${name} has both heads and the attention output of layer ${both.layer}; the attention output is the sum of the heads. Use one or the other.`;
+    }
+    for (const site of set.sites) {
+      const whole = set.sites.find((x) => x.layer === site.layer && MADE_OF[x.kind]?.includes(site.kind));
+      if (whole) {
+        return `The set ${name} has both ${KIND_PLURAL[site.kind]} and ${KIND_PLURAL[whole.kind]} of layer ${site.layer}, which ${whole.kind === "head" ? "are" : "is"} made from them. Use one or the other.`;
+      }
     }
   }
   if (sets.some((x) => x.complement) && universe === null) {

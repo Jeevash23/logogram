@@ -9,6 +9,8 @@ import {
   findSite,
   isResidKind,
   KIND_NAMES,
+  queryHeadsOf,
+  queryHeadsText,
   selectionOfSite,
   sitesOnComponent,
   type ResidKind,
@@ -95,6 +97,10 @@ function ComponentHeader({ selection }: { selection: Selection }) {
   else if (selection.part === "attn") kind = `The attention output of layer ${selection.layer}: all heads, after the output projection.`;
   else if (selection.part === "mlp") kind = `The MLP output of layer ${selection.layer}.`;
   else if (selection.part === "feature") kind = `Feature ${selection.feature} of the SAE on layer ${selection.layer}: a direction in the model the SAE finds active on some tokens.`;
+  else if (selection.part === "input") kind = inputText(selection, arch);
+  else if (selection.part === "neuron") {
+    kind = `Neuron ${selection.neuron} of the MLP in layer ${selection.layer}: its activation after the nonlinearity (for a gated MLP, the gate's activation times the up projection), the input to the MLP's output projection. It writes that activation times its row of the projection.`;
+  }
   else if (selection.part === "set") {
     const set = findSite(run.sites, selection);
     const members = set?.members ?? [];
@@ -119,6 +125,23 @@ function ComponentHeader({ selection }: { selection: Selection }) {
       {arch && selection.part !== "set" && selection.layer >= arch.nLayers && <p className={s.note}>This model has only {arch.nLayers} layers.</p>}
     </div>
   );
+}
+
+/** What a head's query, key or value is, in words: with grouped-query attention a key or value
+ * belongs to a key/value head, which every query head of its group reads. */
+function inputText(selection: Selection, arch: { nHeads: number; nKvHeads?: number } | null): string {
+  const layer = selection.layer;
+  if (selection.kind === "q") {
+    return `The query of attention head ${selection.head} in layer ${layer}: what the head compares with every key to choose where to attend, as its projection computes it (before any rotary embedding).`;
+  }
+  const what = selection.kind === "v" ? "value" : "key";
+  const role = selection.kind === "v" ? "what the heads that read it take from each position they attend to" : "what each query compares with to choose where to attend";
+  const kv = arch?.nKvHeads ?? arch?.nHeads;
+  const readers =
+    arch && kv && kv < arch.nHeads
+      ? ` It is read by ${queryHeadsText(queryHeadsOf(selection.head ?? 0, arch.nHeads, kv))} (grouped-query attention), so changing it changes all of them.`
+      : "";
+  return `The ${what} of key/value head ${selection.head} in layer ${layer}: ${role}.${readers}`;
 }
 
 /** A set against replacing everything: its share, its faithfulness, what a site adds to it, and
@@ -195,9 +218,15 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
           ? "the MLP output"
           : selection.part === "feature"
             ? `feature ${selection.feature} of the SAE`
-            : resid
-            ? `the ${KIND_NAMES[resid]}`
-            : "the residual stream";
+            : selection.part === "input"
+              ? selection.kind === "q"
+                ? "this head's query"
+                : `this key/value head's ${selection.kind === "v" ? "value" : "key"}`
+              : selection.part === "neuron"
+                ? "this neuron's activation"
+                : resid
+                  ? `the ${KIND_NAMES[resid]}`
+                  : "the residual stream";
   let how: string;
   if (selection.part === "set" && (exp.kind === "activation_patching" || exp.kind === "ablation")) {
     const set = base ?? null;
@@ -209,15 +238,32 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
       ? `Runs each ${receiver} prompt and replaces ${universe} except the set's sites, all at once, with ${value}. A site at one position keeps only that position. What changes is what the rest of the model carried.`
       : `Runs each ${receiver} prompt and replaces every site of the set, all at once, with ${value}.`;
   } else if (exp.kind === "direct_logit_attribution") {
-    const written = selection.part === "head" ? "this head's output, through its share of the output projection," : `${what}`;
+    const written =
+      selection.part === "head"
+        ? "this head's output, through its share of the output projection,"
+        : selection.part === "neuron"
+          ? "this neuron's activation times its row of the MLP's output projection"
+          : `${what}`;
+    const value = selection.part === "input" && selection.kind === "v";
     return (
       <section className={s.section}>
         <h3 className={s.sectionTitle}>Method</h3>
         <p className={s.strong}>{experimentText(exp)}</p>
         <p className={s.text}>
-          Runs each {exp.prompts} prompt once and reads {written} at the last token through the final normalization, with its
-          scale held at its value in the run. This is the component's direct effect: it leaves out what the component does
-          through later components, which patching measures. Nothing is replaced.
+          {value ? (
+            <>
+              Runs each {exp.prompts} prompt once and reads what this value at {position} adds to the last token: through every
+              query head that reads it, its attention to that position times the value, through the head's share of the output
+              projection (the attention pattern doesn't depend on the values), then through the final normalization with its scale
+              held at its value in the run. This is its direct effect. Nothing is replaced.
+            </>
+          ) : (
+            <>
+              Runs each {exp.prompts} prompt once and reads {written} at the last token through the final normalization, with its
+              scale held at its value in the run. This is the component's direct effect: it leaves out what the component does
+              through later components, which patching measures. Nothing is replaced.
+            </>
+          )}
         </p>
         <h3 className={s.sectionTitle}>Metric</h3>
         <p className={s.text}>Logit difference at the last token: logit(answer) − logit(distractor).</p>

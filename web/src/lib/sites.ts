@@ -1,6 +1,6 @@
 // Selections and how they map onto sites of a run.
 
-import type { Layout, ResultKind, SiteBase, SiteKind } from "../api/types";
+import type { HeadInputKind, Layout, ResultKind, SiteBase, SiteKind } from "../api/types";
 
 /** A component on the model map, optionally at a position (for layer × position runs). */
 export interface Selection {
@@ -9,17 +9,22 @@ export interface Selection {
   head?: number;
   positionKey?: string;
   /** Which residual stream site (before, between or after the layer's blocks), when known. The
-   * map draws the three in one column, so a run can have several on one map cell. */
-  kind?: ResidKind;
+   * map draws the three in one column, so a run can have several on one map cell. For part
+   * "input", which of a head's inputs: its query, key or value. */
+  kind?: ResidKind | HeadInputKind;
   /** Which variant of the site, such as a steering strength ("×2" or "random ×2"). */
   variantKey?: string;
   /** A feature of the run's SAE (part "feature"). */
   feature?: number;
+  /** An MLP neuron (part "neuron"). */
+  neuron?: number;
 }
 
-/** Where a selection sits: a component of the model map, or a set of sites (part "set", named by
- * its label in variantKey), which has no single place on the map. */
-export type MapPart = "resid" | "head" | "attn" | "mlp" | "feature" | "set";
+/** Where a selection sits: a component of the model map, a head's query, key or value (part
+ * "input", its head in `head`: a key/value head for keys and values), an MLP neuron (part
+ * "neuron"), or a set of sites (part "set", named by its label in variantKey). Inputs, neurons
+ * and sets have no cell of their own on the map. */
+export type MapPart = "resid" | "head" | "attn" | "mlp" | "feature" | "set" | "input" | "neuron";
 export type ResidKind = "resid_pre" | "resid_mid" | "resid_post";
 
 export function partOfKind(kind: ResultKind): MapPart {
@@ -28,6 +33,8 @@ export function partOfKind(kind: ResultKind): MapPart {
   if (kind === "sae_feature") return "feature";
   if (kind === "attn_out") return "attn";
   if (kind === "mlp_out") return "mlp";
+  if (kind === "q" || kind === "k" || kind === "v") return "input";
+  if (kind === "neuron") return "neuron";
   return "resid";
 }
 
@@ -35,15 +42,22 @@ export function isResidKind(kind: ResultKind): kind is ResidKind {
   return kind === "resid_pre" || kind === "resid_mid" || kind === "resid_post";
 }
 
-export function selectionOfSite(site: Pick<SiteBase, "layer" | "kind" | "head" | "position_key" | "variant_key" | "feature">): Selection {
+export function isHeadInputKind(kind: string | null | undefined): kind is HeadInputKind {
+  return kind === "q" || kind === "k" || kind === "v";
+}
+
+export function selectionOfSite(
+  site: Pick<SiteBase, "layer" | "kind" | "head" | "position_key" | "variant_key" | "feature" | "neuron">,
+): Selection {
   return {
     layer: site.layer,
     part: partOfKind(site.kind),
     head: site.head ?? undefined,
     positionKey: site.position_key === "all" ? undefined : site.position_key,
-    kind: isResidKind(site.kind) ? site.kind : undefined,
+    kind: isResidKind(site.kind) || isHeadInputKind(site.kind) ? site.kind : undefined,
     variantKey: site.variant_key ?? undefined,
     feature: site.feature ?? undefined,
+    neuron: site.neuron ?? undefined,
   };
 }
 
@@ -56,7 +70,8 @@ export function sameSelection(a: Selection | null, b: Selection | null): boolean
     (a.positionKey ?? "") === (b.positionKey ?? "") &&
     (a.kind ?? "") === (b.kind ?? "") &&
     (a.variantKey ?? "") === (b.variantKey ?? "") &&
-    (a.feature ?? -1) === (b.feature ?? -1)
+    (a.feature ?? -1) === (b.feature ?? -1) &&
+    (a.neuron ?? -1) === (b.neuron ?? -1)
   );
 }
 
@@ -66,8 +81,9 @@ export function sitesOnComponent<T extends SiteBase>(sites: T[], sel: Selection)
     (s) =>
       s.layer === sel.layer &&
       partOfKind(s.kind) === sel.part &&
-      (sel.part !== "head" || s.head === sel.head) &&
+      ((sel.part !== "head" && sel.part !== "input") || s.head === sel.head) &&
       (sel.part !== "feature" || s.feature === sel.feature) &&
+      (sel.part !== "neuron" || s.neuron === sel.neuron) &&
       (sel.kind === undefined || s.kind === sel.kind) &&
       (sel.variantKey === undefined || (s.variant_key ?? undefined) === sel.variantKey),
   );
@@ -99,8 +115,17 @@ export function fitSelection<T extends SiteBase>(sites: T[], sel: Selection): Se
 }
 
 /** What a site measures, independent of its index in a run: comparable across runs. */
-export function siteKey(site: { kind: ResultKind; layer: number; head?: number | null; feature?: number | null; position_key: string; variant_key?: string | null }): string {
-  return `${site.kind}|${site.layer}|${site.head ?? ""}|${site.feature ?? ""}|${site.position_key}|${site.variant_key ?? ""}`;
+export function siteKey(site: {
+  kind: ResultKind;
+  layer: number;
+  head?: number | null;
+  feature?: number | null;
+  neuron?: number | null;
+  position_key: string;
+  variant_key?: string | null;
+}): string {
+  const neuron = site.neuron === null || site.neuron === undefined ? "" : `|${site.neuron}`;
+  return `${site.kind}|${site.layer}|${site.head ?? ""}|${site.feature ?? ""}|${site.position_key}|${site.variant_key ?? ""}${neuron}`;
 }
 
 export function siteAt<T extends SiteBase>(sites: T[], row: number, col: number): T | null {
@@ -136,6 +161,10 @@ export function componentLabel(sel: Selection): string {
       return `L${sel.layer} mlp${pos}`;
     case "feature":
       return `L${sel.layer} F${sel.feature}${pos}`;
+    case "input":
+      return sel.kind === "q" ? `L${sel.layer} H${sel.head} q${pos}` : `L${sel.layer} KV${sel.head} ${sel.kind ?? "k"}${pos}`;
+    case "neuron":
+      return `L${sel.layer} N${sel.neuron}${pos}`;
     case "set":
       return sel.variantKey ?? "Set of sites";
     default:
@@ -151,6 +180,10 @@ export const KIND_NAMES: Record<SiteKind, string> = {
   mlp_out: "MLP output",
   head: "attention head output (z)",
   sae_feature: "SAE feature",
+  q: "attention head query",
+  k: "attention key (of a key/value head)",
+  v: "attention value (of a key/value head)",
+  neuron: "MLP neuron",
 };
 
 export const KIND_SHORT: Record<SiteKind, string> = {
@@ -161,7 +194,25 @@ export const KIND_SHORT: Record<SiteKind, string> = {
   mlp_out: "mlp out",
   head: "head",
   sae_feature: "feature",
+  q: "query",
+  k: "key",
+  v: "value",
+  neuron: "neuron",
 };
+
+/** Which query heads read key/value head `kv`: with grouped-query attention, query head h reads
+ * key/value head h ÷ (query heads per key/value head), as measured when the model loaded. */
+export function queryHeadsOf(kv: number, nHeads: number, nKvHeads: number): number[] {
+  const group = nKvHeads > 0 && nHeads % nKvHeads === 0 ? nHeads / nKvHeads : 1;
+  return Array.from({ length: group }, (_, i) => kv * group + i);
+}
+
+/** "query heads 4–7", "query head 3": a range of query heads in words. */
+export function queryHeadsText(heads: number[]): string {
+  if (heads.length === 0) return "no query head";
+  if (heads.length === 1) return `query head ${heads[0]}`;
+  return `query heads ${heads[0]}–${heads[heads.length - 1]}`;
+}
 
 export function layoutTitle(layout: Layout): string {
   switch (layout.kind) {
@@ -175,6 +226,10 @@ export function layoutTitle(layout: Layout): string {
       return "Layer × strength";
     case "site_sets":
       return "Sets of sites";
+    case "head_inputs":
+      return layout.site === "q" ? "Layer × head, queries" : `Layer × key/value head, ${layout.site === "v" ? "values" : "keys"}`;
+    case "neurons":
+      return "Every neuron, layer by layer";
     default:
       return "Chosen sites";
   }

@@ -1,7 +1,7 @@
 import { useEffect, useId, useState } from "react";
 
 import { api } from "../api/client";
-import type { ExperimentKind, RunMemory, Spec } from "../api/types";
+import type { ExperimentKind, RunMemory, ScopeSpec, Spec } from "../api/types";
 import { MOD } from "../components/Header";
 import { RunButton } from "../components/RunButton";
 import { Button, Callout, Kbd } from "../components/ui";
@@ -23,6 +23,8 @@ export function RunSummary({
   spec,
   error,
   method,
+  scope,
+  bootstrap,
   batchSize,
   n,
   rows,
@@ -34,6 +36,10 @@ export function RunSummary({
   /** Why the form can't run yet. */
   error: string | null;
   method: ExperimentKind;
+  /** What the run sweeps, and its bootstrap resamples: thousands of neurons hold more than a
+   * batch, which the estimate counts. */
+  scope: ScopeSpec;
+  bootstrap: number;
   batchSize: number;
   /** Prompts the run uses. */
   n: number;
@@ -68,7 +74,7 @@ export function RunSummary({
       <dl className={e.facts}>
         <dt>Memory</dt>
         <dd>
-          <MemoryFit method={method} batchSize={batchSize} />
+          <MemoryFit method={method} batchSize={batchSize} scope={scope} prompts={n} bootstrap={bootstrap} />
         </dd>
         <dt>Baseline</dt>
         <dd>
@@ -115,14 +121,31 @@ export function RunSummary({
 }
 
 /** Whether a batch of this size fits in the memory free with the loaded model, by the server's
- * estimate for the method (some hold every layer's activations at once). */
-function MemoryFit({ method, batchSize }: { method: ExperimentKind; batchSize: number }) {
+ * estimate for the method (some hold every layer's activations at once) and for what the scope's
+ * sites hold. */
+function MemoryFit({
+  method,
+  batchSize,
+  scope,
+  prompts,
+  bootstrap,
+}: {
+  method: ExperimentKind;
+  batchSize: number;
+  scope: ScopeSpec;
+  prompts: number;
+  bootstrap: number;
+}) {
   const ready = useStore((st) => st.model.state === "ready");
   const lengths = useStore((st) => st.dataset?.lengths);
   const seqLen = lengths && lengths.length > 0 ? Math.max(...lengths) : null;
   const usable = Number.isFinite(batchSize) && batchSize >= 1 && batchSize <= 4096;
   const [memory, setMemory] = useState<RunMemory | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The scope as the server reads it; a scope the form can't run yet (no layers chosen) is left out.
+  const scopeKey = JSON.stringify(scope);
+  const counted = scope.kind !== "neurons" || scope.layers.length > 0;
+  const resamples = Number.isInteger(bootstrap) && bootstrap >= 1 && bootstrap <= 100_000 ? bootstrap : null;
 
   useEffect(() => {
     setMemory(null);
@@ -131,7 +154,14 @@ function MemoryFit({ method, batchSize }: { method: ExperimentKind; batchSize: n
     let cancelled = false;
     // While a number is typed, ask once it settles.
     const timer = window.setTimeout(() => {
-      api.runMemory({ batch_size: Math.round(batchSize), seq_len: seqLen, method }).then(
+      api.runMemory({
+        batch_size: Math.round(batchSize),
+        seq_len: seqLen,
+        method,
+        ...(counted ? { scope: JSON.parse(scopeKey) as ScopeSpec } : {}),
+        ...(prompts > 0 ? { prompts } : {}),
+        ...(resamples ? { bootstrap: resamples } : {}),
+      }).then(
         (m) => !cancelled && setMemory(m),
         (err: Error) => !cancelled && setError(err.message),
       );
@@ -140,7 +170,7 @@ function MemoryFit({ method, batchSize }: { method: ExperimentKind; batchSize: n
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [ready, seqLen, batchSize, usable, method]);
+  }, [ready, seqLen, batchSize, usable, method, scopeKey, counted, prompts, resamples]);
 
   if (!ready) return <span className="faint">Known once a model is loaded.</span>;
   if (seqLen === null) return <span className="faint">Known once the prompts are read by the model.</span>;

@@ -65,6 +65,8 @@ export function ciLevelOf(detail: RunDetail | undefined): number {
 export interface Architecture {
   nLayers: number;
   nHeads: number;
+  /** Key/value heads: fewer than nHeads with grouped-query attention. */
+  nKvHeads: number;
   id: string;
   dModel: number | null;
   dHead: number | null;
@@ -84,6 +86,10 @@ export function useArchitecture(): Architecture | null {
     const matching = info && (!run.detail || (info.id === run.detail.spec.model.id && (!run.detail.spec.model.revision || info.revision === run.detail.spec.model.revision)));
     return {
       nLayers: shape.n_layers, nHeads: shape.n_heads, id: shape.id,
+      nKvHeads:
+        ("n_key_value_heads" in shape ? shape.n_key_value_heads : null) ??
+        (matching ? info.extra?.n_key_value_heads : null) ??
+        shape.n_heads,
       dModel: shape.d_model ?? (matching ? info.d_model : null), dHead: shape.d_head ?? (matching ? info.d_head : null),
       dMlp: shape.d_mlp ?? (matching ? info.d_mlp : null),
       siteKinds: shape.site_kinds ?? (matching ? info.site_kinds : [...new Set(run.sites.map(s => s.kind))]),

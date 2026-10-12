@@ -206,7 +206,34 @@ export function scopeText(s: ScopeSpec): string {
       }`;
     case "site_sets":
       return `${s.sets.length} set${s.sets.length === 1 ? "" : "s"} of sites, each at once`;
+    case "head_inputs":
+      return `${s.input === "q" ? "every head's query" : s.input === "k" ? "every key" : "every value"}, ${positionText(s.position)}`;
+    case "neurons":
+      return `every MLP neuron of ${layersText(s.layers)}, ${positionText(s.position)}`;
   }
+}
+
+/** "layer 3", "layers 3, 4 and 9". */
+export function layersText(layers: number[]): string {
+  if (layers.length === 1) return `layer ${layers[0]}`;
+  return `layers ${layers.slice(0, -1).join(", ")} and ${layers[layers.length - 1]}`;
+}
+
+/** Layers typed as a list: "3, 4", "3 4", ranges like "0-5". Null when they can't be read. */
+export function parseLayers(text: string): number[] | null {
+  const parts = text.replace(/[–—]/g, "-").split(/[\s,;]+/).filter(Boolean);
+  if (parts.length === 0) return null;
+  const out: number[] = [];
+  for (const part of parts) {
+    const range = part.match(/^(\d+)-(\d+)$/);
+    if (range) {
+      const [a, b] = [Number(range[1]), Number(range[2])];
+      if (b < a || b - a > 1024) return null;
+      for (let layer = a; layer <= b; layer++) out.push(layer);
+    } else if (/^\d+$/.test(part)) out.push(Number(part));
+    else return null;
+  }
+  return out;
 }
 
 export function scopeShort(s: ScopeSpec): string {
@@ -224,12 +251,28 @@ export function scopeShort(s: ScopeSpec): string {
       return "SAE features";
     case "site_sets":
       return "Sets of sites";
+    case "head_inputs":
+      return s.input === "q" ? "Heads' queries" : s.input === "k" ? "Keys" : "Values";
+    case "neurons":
+      return s.layers.length === 1 ? `Neurons of layer ${s.layers[0]}` : "Neurons";
   }
 }
 
 export function siteFromSelection(sel: Selection, residKind: SiteSpec["kind"] = sel.kind ?? "resid_pre"): SiteSpec {
   const kind: SiteSpec["kind"] =
-    sel.part === "head" ? "head" : sel.part === "attn" ? "attn_out" : sel.part === "mlp" ? "mlp_out" : sel.part === "feature" ? "sae_feature" : residKind;
+    sel.part === "head"
+      ? "head"
+      : sel.part === "attn"
+        ? "attn_out"
+        : sel.part === "mlp"
+          ? "mlp_out"
+          : sel.part === "feature"
+            ? "sae_feature"
+            : sel.part === "input"
+              ? (sel.kind === "k" || sel.kind === "v" ? sel.kind : "q")
+              : sel.part === "neuron"
+                ? "neuron"
+                : residKind;
   const position: PositionSpec =
     sel.positionKey === undefined
       ? { kind: "all" }
@@ -241,8 +284,9 @@ export function siteFromSelection(sel: Selection, residKind: SiteSpec["kind"] = 
   return {
     kind,
     layer: sel.layer,
-    head: sel.part === "head" ? sel.head : null,
+    head: sel.part === "head" || sel.part === "input" ? sel.head : null,
     ...(sel.part === "feature" ? { feature: sel.feature } : {}),
+    ...(sel.part === "neuron" ? { neuron: sel.neuron } : {}),
     position,
   };
 }
@@ -257,12 +301,27 @@ export function suggestName(spec: Pick<Spec, "experiment" | "scope">): string {
   return `${what} · ${where}`;
 }
 
+/** A site as the results write it (src/logogram/sites.py, site_label): a key or value names its
+ * key/value head ("L9 KV2 k"), a query its query head ("L9 H6 q"). */
 export function siteText(site: SiteSpec): string {
   const pos = site.position.kind === "all" ? "" : ` @ ${positionKey(site.position)}`;
-  if (site.kind === "head") return `L${site.layer} H${site.head}${pos}`;
-  if (site.kind === "sae_feature") return `L${site.layer} F${site.feature}${pos}`;
-  const name = { resid_pre: "resid pre", resid_mid: "resid mid", resid_post: "resid post", attn_out: "attn", mlp_out: "mlp" }[site.kind];
-  return `L${site.layer} ${name}${pos}`;
+  switch (site.kind) {
+    case "head":
+      return `L${site.layer} H${site.head}${pos}`;
+    case "sae_feature":
+      return `L${site.layer} F${site.feature}${pos}`;
+    case "q":
+      return `L${site.layer} H${site.head} q${pos}`;
+    case "k":
+    case "v":
+      return `L${site.layer} KV${site.head} ${site.kind}${pos}`;
+    case "neuron":
+      return `L${site.layer} N${site.neuron}${pos}`;
+    default: {
+      const name = { resid_pre: "resid pre", resid_mid: "resid mid", resid_post: "resid post", attn_out: "attn", mlp_out: "mlp" }[site.kind];
+      return `L${site.layer} ${name}${pos}`;
+    }
+  }
 }
 
 export function positionKey(p: PositionSpec): string {
@@ -288,8 +347,19 @@ export function splitCount(n: number, share: number): number {
 }
 
 /** Rows the sweep will run: sites × prompts × donors. A decomposition runs each prompt once, an
- * estimate once per prompt (once per step of integrated gradients). */
-export function workload(spec: Spec, n: number, nLayers: number, nHeads: number, nPositions: number | null, nLabels: number): number | null {
+ * estimate once per prompt (once per step of integrated gradients). Keys and values have
+ * `nKvHeads` heads a layer (fewer than `nHeads` with grouped-query attention), an MLP `dMlp`
+ * neurons. */
+export function workload(
+  spec: Spec,
+  n: number,
+  nLayers: number,
+  nHeads: number,
+  nPositions: number | null,
+  nLabels: number,
+  nKvHeads: number = nHeads,
+  dMlp: number = 0,
+): number | null {
   if (spec.experiment.kind === "direct_logit_attribution") return n;
   if (spec.experiment.kind === "attribution_patching") {
     return spec.experiment.method === "integrated_gradients" ? n * (spec.experiment.steps ?? 1) : n;
@@ -303,6 +373,8 @@ export function workload(spec: Spec, n: number, nLayers: number, nHeads: number,
   }
   let sites = 0;
   if (s.kind === "heads") sites = nLayers * nHeads;
+  else if (s.kind === "head_inputs") sites = nLayers * (s.input === "q" ? nHeads : nKvHeads);
+  else if (s.kind === "neurons") sites = s.layers.length * dMlp;
   else if (s.kind === "layer_components") sites = nLayers * s.components.length;
   else if (s.kind === "sites") sites = s.sites.length;
   else if (s.kind === "site_sets") sites = s.sets.length;
@@ -371,6 +443,18 @@ export function scopeFor(kind: ExperimentKind, scope: ScopeSpec, steerSite: { ki
   const last: PositionSpec = { kind: "last" };
   // Only attribution patching sweeps every SAE feature; other methods patch chosen ones.
   if (scope.kind === "features" && kind !== "attribution_patching") return { kind: "heads", position: { kind: "all" } };
+  // Queries, keys, values and neurons are patched, ablated or estimated one by one; steering adds
+  // to the residual stream and paths start at components, so those methods sweep heads instead.
+  // Direct effects: a neuron's at the last token, a value's at any position (through the heads
+  // that read it); queries and keys have none.
+  if (scope.kind === "head_inputs" || scope.kind === "neurons") {
+    if (kind === "steering" || kind === "path_patching") return scopeFor(kind, { kind: "heads", position: { kind: "all" } }, steerSite);
+    if (kind === "direct_logit_attribution") {
+      if (scope.kind === "neurons") return { ...scope, position: last };
+      return scope.input === "v" ? scope : { kind: "head_inputs", input: "v", position: scope.position };
+    }
+    return scope;
+  }
   // Sets are intervened on by patching or ablation; other methods measure their sites one by one.
   if (scope.kind === "site_sets" && kind !== "activation_patching" && kind !== "ablation") {
     const sites = setMembers(scope.sets);
@@ -421,15 +505,19 @@ export function scopeFor(kind: ExperimentKind, scope: ScopeSpec, steerSite: { ki
     case "layer_position":
       return { kind: "heads", position: last };
     case "sites": {
+      // Values keep their positions (any token's value reaches the last through the attention);
+      // queries and keys have no direct effect.
       const sites = scope.sites
-        .filter((x) => x.kind === "head" || x.kind === "attn_out" || x.kind === "mlp_out")
-        .map((x) => ({ ...x, position: last }));
+        .filter((x) => x.kind === "head" || x.kind === "attn_out" || x.kind === "mlp_out" || x.kind === "neuron" || x.kind === "v")
+        .map((x) => (x.kind === "v" ? x : { ...x, position: last }));
       return sites.length ? { kind: "sites", sites } : { kind: "heads", position: last };
     }
     case "features":
       return { kind: "heads", position: last };
     case "site_sets":
       return { kind: "heads", position: last };
+    default:
+      return scope;
   }
 }
 
