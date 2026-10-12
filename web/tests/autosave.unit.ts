@@ -34,7 +34,7 @@ const DETAILED: FormState = {
   limit: 12,
   prependBos: false,
   notes: "Expect the name movers to carry most of it.",
-  modelRef: { id: "gpt2", revision: "abc", dtype: "float32", device: "auto", process_weights: true },
+  modelRef: { id: "gpt2", source: "hub", revision: "abc", sha256: null, dtype: "float32", device: "auto", process_weights: true },
   savedDataset: { path: "datasets/ioi.jsonl", sha256: null },
   draftId: "2026-10-10-draft",
 };
@@ -105,12 +105,14 @@ test("anything that isn't exactly a form is ignored", () => {
 function olderForm(): Record<string, unknown> {
   const data = JSON.parse(serializeForm(DETAILED, 7));
   for (const key of ["metric", "klTarget", "cluster", "atpMethod", "atpSteps"]) delete data.form[key];
+  delete data.form.modelRef.source;
+  delete data.form.modelRef.sha256;
   data.form.kind = "attribution_patching";
   data.form.scope = { kind: "features", position: { kind: "last" }, top: 50 };
   return data;
 }
 
-test("a form stored before the metric, clusters and integrated gradients existed takes the form's starting values for them", () => {
+test("a form stored before the metric, clusters, integrated gradients and local models existed takes the form's starting values for them", () => {
   const stored = parseStoredForm(JSON.stringify(olderForm()));
   expect(stored?.form).toEqual({
     ...DETAILED,

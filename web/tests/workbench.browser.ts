@@ -31,11 +31,25 @@ test("saved analysis context, keyboard attention and exports", async ({ page }) 
   await expect(page.getByText(/Query 1:.*Key 0:.*Value/)).toBeVisible();
   await page.getByRole("button", { name: "Evidence", exact: true }).click();
   await page.getByRole("button", { name: "Results", exact: true }).click();
-  for (const name of ["Export per-prompt CSV", "Export figure PNG", "Download methods"]) {
+  for (const name of [
+    "Download the report (HTML)",
+    "Export per-site CSV",
+    "Export per-prompt CSV",
+    "Export per-prompt CSV with prompt text",
+    "Export figure PNG",
+    "Export figure SVG",
+    "Download methods",
+  ]) {
     await page.getByRole("button", { name: "Export", exact: true }).click();
     const download = page.waitForEvent("download");
     await page.getByRole("menuitem", { name, exact: true }).click();
-    expect(await (await download).failure()).toBeNull();
+    const file = await download;
+    expect(await file.failure()).toBeNull();
+    if (name === "Download the report (HTML)") {
+      const text = await (await import("node:fs/promises")).readFile((await file.path()) as string, "utf8");
+      expect(text).toContain("<!doctype html>");
+      expect(text).toContain("Without BOS");
+    }
   }
   expect(errors).toEqual([]);
 });

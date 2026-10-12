@@ -7,7 +7,7 @@ import type { Answer, DatasetDetail, MetricSpec, ModelStatus, PositionSpec, SAES
 import { siteSetsError } from "./circuits";
 import { plural, shortRevision, visibleToken } from "./format";
 import type { FormState } from "./formState";
-import { splitCount, suggestName } from "./spec";
+import { modelRefOf, splitCount, suggestName } from "./spec";
 
 /** What the form knows about the prompts it will run on. */
 export interface DatasetFacts {
@@ -139,10 +139,12 @@ export function buildSpec(
     experiment = {
       kind: "steering",
       apply_to: form.steerApplyTo,
+      direction: { kind: "mean_difference" },
       coefficients: strengths.values,
       train_fraction: form.steerTrain,
       seed: form.steerSeed,
       control: form.steerControl,
+      continuations: null,
     };
   } else if (form.kind === "direct_logit_attribution") {
     if (!form.dlaPrompts) return { error: "Choose which prompts' logit difference to split." };
@@ -265,16 +267,12 @@ export function buildSpec(
   const info = ctx.model.info;
   const ref = ctx.model.ref;
   const model: Spec["model"] = info
-    ? {
-        id: info.id,
-        revision: info.revision,
-        dtype: info.dtype,
-        device: ref?.device ?? info.device,
-        process_weights: info.process_weights,
-      }
+    ? modelRefOf(info, ref?.device ?? info.device)
     : (form.modelRef ?? {
         id: "openai-community/gpt2",
+        source: "hub",
         revision: null,
+        sha256: null,
         dtype: "float32",
         device: "auto",
         process_weights: true,
@@ -288,12 +286,12 @@ export function buildSpec(
     return { error: "Only attribution patching estimates every SAE feature. Choose it, or patch chosen features." };
   }
   const spec: Spec = {
-    logogram_spec: 2,
+    logogram_spec: 3,
     name: form.name.trim() || suggestName({ experiment, scope }),
     notes: form.notes,
     model,
     dataset: { path: ctx.datasetPath, sha256: ctx.datasetSha, limit: form.limit },
-    tokenization: { prepend_bos: form.prependBos },
+    tokenization: { prepend_bos: form.prependBos, chat_template: null },
     experiment,
     scope: scope.kind === "site_sets" ? { ...scope, sets: scope.sets.map((set) => ({ ...set, label: set.label.trim() })) } : scope,
     metric,

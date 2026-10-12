@@ -61,7 +61,15 @@ export function parseForm(value: unknown): FormState | null {
     form[key] = value[key];
   }
   form.scope = upgradeScope(form.scope as Record<string, unknown>);
+  form.modelRef = upgradeModelRef(form.modelRef as Record<string, unknown> | null);
   return form as unknown as FormState;
+}
+
+/** A model stored before models had a source came from Hugging Face. */
+function upgradeModelRef(ref: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!ref || "source" in ref) return ref;
+  const { id, revision, ...rest } = ref;
+  return { id, source: "hub", revision, sha256: null, ...rest };
 }
 
 /** Fields of the form that a form stored by an earlier version doesn't have. */

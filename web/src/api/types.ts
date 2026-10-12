@@ -15,9 +15,12 @@ export interface ModelInfo {
   n_ctx: number;
   n_params: number | null;
   dtype: Dtype;
-  device: "cpu" | "cuda" | "mps";
+  device: "cpu" | "cuda" | "mps" | `cuda:${number}`;
   device_name: string;
   process_weights: boolean;
+  /** Where the weights came from (Hugging Face when absent), and a local model's files' hash. */
+  source?: "hub" | "local";
+  sha256?: string | null;
   site_kinds: string[];
   backend: string;
   backend_version: string;
@@ -67,7 +70,7 @@ export interface ModelStatus {
   revision?: string;
   info?: ModelInfo;
   memory?: number | null;
-  ref?: { id: string; revision: string | null; dtype: Dtype; device: Device; process_weights: boolean };
+  ref?: ModelRef;
 }
 
 export interface Job {
@@ -232,7 +235,8 @@ export interface SystemReport {
 export type Dtype = "float32" | "float16" | "bfloat16";
 /** A robustness check reruns a sweep with one choice changed: the experiment, or the precision. */
 export type RobustnessChange = { experiment: ExperimentSpec } | { dtype: Dtype };
-export type Device = "auto" | "cpu" | "cuda" | "mps";
+/** Where the model runs: `cuda:N` is one GPU of several. */
+export type Device = "auto" | "cpu" | "cuda" | "mps" | `cuda:${number}`;
 export type StreamKind = "resid_pre" | "resid_mid" | "resid_post" | "attn_out" | "mlp_out";
 export type SiteKind = StreamKind | "head" | "sae_feature";
 
@@ -391,6 +395,16 @@ export type PathReceiverSpec = { kind: "head"; layer: number; head: number; inpu
  * averaged over `steps` runs between the two prompts (2 to 64; null for one gradient). */
 export type AttributionMethod = "gradient" | "integrated_gradients";
 
+/** What steering adds: the mean difference of the training pairs, or one SAE feature's decoder
+ * direction where the SAE reads. */
+export type SteeringDirection = { kind: "mean_difference" } | { kind: "sae_feature"; feature: number };
+
+/** Greedy continuations of the first held-out prompts, unsteered and at each strength. */
+export interface Continuations {
+  prompts: number;
+  tokens: number;
+}
+
 export type ExperimentSpec =
   | { kind: "activation_patching"; direction: Direction }
   | { kind: "ablation"; baseline: BaselineSpec }
@@ -400,10 +414,12 @@ export type ExperimentSpec =
   | {
       kind: "steering";
       apply_to: "clean" | "corrupt";
+      direction: SteeringDirection;
       coefficients: number[];
       train_fraction: number;
       seed: number;
       control: boolean;
+      continuations: Continuations | null;
     };
 
 export type ExperimentKind = ExperimentSpec["kind"];
@@ -422,20 +438,32 @@ export type MetricSpec =
   | { kind: Exclude<MetricKind, "kl">; normalization: Normalization }
   | { kind: "kl"; target: Side; normalization: Normalization };
 
-/** A version 2 spec: every choice that can change a number is stated. */
+/** The model of a spec: from Hugging Face, pinned by its revision, or a local folder found by the
+ * hash of its files (`sha256`). */
+export interface ModelRef {
+  id: string;
+  source: "hub" | "local";
+  revision: string | null;
+  sha256: string | null;
+  dtype: Dtype;
+  device: Device;
+  process_weights: boolean;
+}
+
+/** How prompts are wrapped in the model's own chat template: as the person's message, or as the
+ * start of the model's reply to a fixed message. */
+export type ChatTemplateSpec =
+  | { kind: "user_turn"; system: string | null }
+  | { kind: "assistant_prefix"; system: string | null; user: string };
+
+/** A version 3 spec: every choice that can change a number is stated. */
 export interface Spec {
-  logogram_spec: 2;
+  logogram_spec: 3;
   name: string;
   notes: string;
-  model: {
-    id: string;
-    revision: string | null;
-    dtype: Dtype;
-    device: Device;
-    process_weights: boolean;
-  };
+  model: ModelRef;
   dataset: { path: string; sha256: string | null; limit: number | null };
-  tokenization: { prepend_bos: boolean };
+  tokenization: { prepend_bos: boolean; chat_template: ChatTemplateSpec | null };
   experiment: ExperimentSpec;
   scope: ScopeSpec;
   metric: MetricSpec;
@@ -936,6 +964,69 @@ export interface BaselineReport {
     corrupt_answer_prob: number | null;
     metric?: BaselineMetric | null;
   } | null;
+}
+
+export interface LookToken {
+  id: number;
+  token: string;
+  prob: number;
+}
+
+/** Any text read without a dataset (POST /api/look). */
+export interface LookReport {
+  tokens: string[];
+  ids: number[];
+  prepend_bos: boolean;
+  top_k: number;
+  position: number;
+  /** After each token: the model's most likely next tokens. */
+  predictions: LookToken[][];
+  /** At `position`: what each layer would predict, when the logit lens holds for this model. */
+  lens: { layer: number; top: LookToken[] }[] | null;
+  lens_note: string | null;
+}
+
+export interface LookAttention {
+  tokens: string[];
+  layer: number;
+  head: number;
+  pattern: number[][];
+}
+
+export interface LookFeatures {
+  tokens: string[];
+  features: { feature: number; activation: number }[][];
+  active: number[];
+  first_real_token: number;
+}
+
+export type HeadKindName = "previous_token" | "duplicate_token" | "induction";
+
+export interface HeadKindScores {
+  description: string;
+  /** [layer][head]: the mean over sequences and its bootstrap interval. */
+  mean: number[][];
+  lo: number[][];
+  hi: number[][];
+  /** [sequence][layer][head]: the values the statistics come from. */
+  per_sequence: number[][][];
+}
+
+export interface TopHead {
+  layer: number;
+  head: number;
+  mean: number;
+  lo: number;
+  hi: number;
+}
+
+/** Every head scored by what it attends to on random tokens repeated twice (POST /api/heads/kinds). */
+export interface HeadKindsReport {
+  settings: { seed: number; sequences: number; length: number; prepend_bos: boolean; batch_size: number; bootstrap: number; ci: number };
+  n_layers: number;
+  n_heads: number;
+  kinds: Record<HeadKindName, HeadKindScores>;
+  top: Record<HeadKindName, TopHead[]>;
 }
 
 export interface AttentionData {

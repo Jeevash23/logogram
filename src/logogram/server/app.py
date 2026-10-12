@@ -333,6 +333,38 @@ class AttentionRequest(AnalysisRequest):
     which: Literal["clean", "corrupt"] = "clean"
 
 
+class HeadKindsRequest(AnalysisRequest):
+    """Score every head as a previous-token, duplicate-token and induction head on seeded random
+    sequences repeated twice. Every choice that changes the scores is stated."""
+
+    seed: int = Field(ge=0, lt=2**32)
+    sequences: int = Field(ge=2, le=512)
+    length: int = Field(ge=2, le=4096)
+    bootstrap: int = Field(ge=100, le=100_000)
+    ci: float = Field(gt=0.5, lt=1.0)
+
+
+class LookRequest(AnalysisRequest):
+    """Any text, read without making a dataset."""
+
+    text: str = Field(min_length=1, max_length=4000)
+
+
+class LookPredictionsRequest(LookRequest):
+    top_k: int = Field(ge=1, le=20)
+    # The token whose layer-by-layer predictions to read; the last one when absent.
+    position: int | None = Field(default=None, ge=0)
+
+
+class LookAttentionRequest(LookRequest):
+    layer: int = Field(ge=0)
+    head: int = Field(ge=0)
+
+
+class LookFeaturesRequest(LookRequest):
+    top_k: int = Field(ge=1, le=20)
+
+
 class PredictionRequest(AnalysisRequest):
     dataset: str
     index: int = Field(ge=0)
@@ -972,6 +1004,55 @@ def create_app(
                 batch_size=body.batch_size,
             )
 
+    @app.post("/api/heads/kinds", response_model=M.HeadKinds)
+    def head_kinds(body: HeadKindsRequest) -> dict[str, Any]:
+        from logogram.heads import HeadKindSettings, head_kind_scores
+
+        backend = _analysis_backend(body)
+        settings = HeadKindSettings(
+            seed=body.seed,
+            sequences=body.sequences,
+            length=body.length,
+            prepend_bos=body.prepend_bos,
+            batch_size=body.batch_size,
+            bootstrap=body.bootstrap,
+            ci=body.ci,
+        )
+        with backend.lock:
+            return head_kind_scores(backend, settings)
+
+    @app.post("/api/look", response_model=M.LookReport)
+    def look(body: LookPredictionsRequest) -> dict[str, Any]:
+        from logogram.inside import look_report
+
+        backend = _analysis_backend(body)
+        with backend.lock:
+            return look_report(
+                backend,
+                body.text,
+                prepend_bos=body.prepend_bos,
+                top_k=body.top_k,
+                position=body.position,
+            )
+
+    @app.post("/api/look/attention", response_model=M.LookAttention)
+    def look_attention(body: LookAttentionRequest) -> dict[str, Any]:
+        from logogram.inside import look_attention as attention
+
+        backend = _analysis_backend(body)
+        with backend.lock:
+            return attention(
+                backend, body.text, prepend_bos=body.prepend_bos, layer=body.layer, head=body.head
+            )
+
+    @app.post("/api/look/features", response_model=M.LookFeatures)
+    def look_features(body: LookFeaturesRequest) -> dict[str, Any]:
+        from logogram.inside import look_features as features
+
+        backend, sae = _analysis_backend(body), _sae()
+        with backend.lock:
+            return features(backend, sae, body.text, prepend_bos=body.prepend_bos, top_k=body.top_k)
+
     @app.post("/api/predictions", response_model=M.PredictionReport)
     def predictions(body: PredictionRequest) -> dict[str, Any]:
         from logogram.analysis import prediction_report
@@ -1147,22 +1228,102 @@ def create_app(
     def get_run(run_id: str) -> dict[str, Any]:
         return _read_run(state.require_project(), run_id)
 
-    @app.get("/api/runs/{run_id}/export.csv")
-    def export_run(run_id: str) -> StreamingResponse:
-        from logogram.exports import results_csv
-
-        project = state.require_project()
+    def _finished(project: Project, run_id: str) -> None:
         listing = project.run_listing(run_id)
         if listing is None or listing.status != "finished":
             raise Conflict("Only finished runs can be exported. Select a finished run first.")
-        path = project.readable(project.run_dir(run_id) / "results.parquet")
+
+    @app.get("/api/runs/{run_id}/export.csv")
+    def export_run(run_id: str, text: bool = False) -> StreamingResponse:
+        """Every site and prompt, one row each; with ``text``, each row carries its prompt."""
+        from logogram.exports import results_csv
+        from logogram.runs import run_records
+
+        project = state.require_project()
+        _finished(project, run_id)
+        folder = project.run_dir(run_id)
+        path = project.readable(folder / "results.parquet")
+        records = None
+        if text:
+            records = run_records(project, Spec.from_path(project.readable(folder / "spec.json")))
+            if records is None:
+                raise Conflict(
+                    "This run's prompts are gone or have changed since it ran, so its rows can't "
+                    "carry their text. Export without prompt text."
+                )
         return StreamingResponse(
-            results_csv(path),
+            results_csv(path, records),
             media_type="text/csv",
             headers={
                 "content-disposition": f'attachment; filename="{run_id}.csv"',
             },
         )
+
+    @app.get("/api/runs/{run_id}/sites.csv")
+    def export_sites(run_id: str) -> Response:
+        """One row per site: its mean, intervals, q-value and counts."""
+        from logogram.exports import sites_csv
+        from logogram.report import sites_table
+        from logogram.runs import load_summary
+
+        project = state.require_project()
+        _finished(project, run_id)
+        return Response(
+            sites_csv(sites_table(load_summary(project, run_id))),
+            media_type="text/csv",
+            headers={"content-disposition": f'attachment; filename="{run_id}-sites.csv"'},
+        )
+
+    @app.get("/api/runs/{run_id}/report.html")
+    def report_run(run_id: str, hardware: bool = False) -> Response:
+        """The run as one self-contained HTML page, to download and pass on."""
+        from logogram.report import run_report
+        from logogram.runs import load_summary
+
+        project = state.require_project()
+        _finished(project, run_id)
+        folder = project.run_dir(run_id)
+        spec = Spec.from_path(project.readable(folder / "spec.json"))
+        manifest = project.read_json(folder / "manifest.json", optional=True) or {}
+        page = run_report(spec, load_summary(project, run_id), manifest, run_id, hardware=hardware)
+        return Response(
+            page,
+            media_type="text/html; charset=utf-8",
+            headers={"content-disposition": f'attachment; filename="{run_id}.html"'},
+        )
+
+    @app.get("/api/runs/{run_id}/figure.svg")
+    def figure_run(
+        run_id: str, value: Literal["effect", "delta"] = "effect", unit: bool = False
+    ) -> Response:
+        """The run's map as a vector figure: the normalized effect or the change in the metric,
+        on a fitted scale or fixed at ±1."""
+        from logogram.report import figure_svg
+        from logogram.runs import load_summary
+
+        project = state.require_project()
+        _finished(project, run_id)
+        summary = load_summary(project, run_id)
+        if (summary.get("layout") or {}).get("kind") in ("sites", "site_sets"):
+            raise Conflict("This run has no map to draw: its results are a list. Export a CSV.")
+        spec = Spec.from_path(project.readable(project.run_dir(run_id) / "spec.json"))
+        return Response(
+            figure_svg(spec, summary, value, unit),
+            media_type="image/svg+xml",
+            headers={"content-disposition": f'attachment; filename="{run_id}.svg"'},
+        )
+
+    @app.get("/api/runs/{run_id}/methods", response_model=M.MethodsText)
+    def run_methods(run_id: str) -> dict[str, Any]:
+        """The methods paragraph, as the app copies it and the report prints it."""
+        from logogram.report import methods_text
+
+        project = state.require_project()
+        folder = project.run_dir(run_id)
+        spec = Spec.from_path(project.readable(folder / "spec.json"))
+        summary = project.read_json(folder / "summary.json", optional=True)
+        manifest = project.read_json(folder / "manifest.json", optional=True) or {}
+        return {"text": methods_text(spec, summary, manifest, run_id)}
 
     @app.post("/api/runs", response_model=M.StartedRun)
     def start_run(body: RunRequest) -> dict[str, Any]:

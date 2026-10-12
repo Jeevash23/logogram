@@ -47,7 +47,7 @@ const SECTIONS: { title: string; rows: [ReactNode, string][] }[] = [
         <span className={s.keys}>
           <Kbd>1</Kbd>
           <span className={s.or}>to</span>
-          <Kbd>5</Kbd>
+          <Kbd>6</Kbd>
         </span>,
         "Go to a tab of the open workspace, counting from the left.",
       ],

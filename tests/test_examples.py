@@ -19,7 +19,7 @@ from logogram.gallery import DEFAULT_EXAMPLE, EXAMPLES, example_spec, get_exampl
 from logogram.project import PROJECT_FILE, ProjectError, example_source, open_example
 from logogram.server.app import create_app
 from logogram.server.security import SecurityConfig
-from logogram.spec import Spec, describe_experiment
+from logogram.spec import SPEC_VERSION, Spec, describe_experiment
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES_DIR = ROOT / "src" / "logogram" / "examples"
@@ -38,13 +38,13 @@ def test_the_gallery_lists_every_bundled_example():
 
 
 @pytest.mark.parametrize("example_id", IDS)
-def test_each_example_is_a_pinned_version_2_spec_with_its_dataset(example_id: str):
+def test_each_example_is_a_pinned_spec_of_this_version_with_its_dataset(example_id: str):
     source = example_source(example_id)
     experiment, spec = example_spec(example_id)
     path = source / "experiments" / experiment / "spec.json"
     raw = json.loads(path.read_text(encoding="utf-8"))
     # Version 2 states every choice: nothing is filled in from version 1's values.
-    assert raw["logogram_spec"] == 2 and spec.upgraded_fields == []
+    assert raw["logogram_spec"] == SPEC_VERSION and spec.upgraded_fields == []
     assert Spec.model_validate(raw) == spec
     assert spec.model.id == "openai-community/gpt2" and COMMIT.match(spec.model.revision or "")
     assert spec.model.dtype == "float32" and spec.dataset.limit is None

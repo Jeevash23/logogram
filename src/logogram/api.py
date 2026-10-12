@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import html
 import json
-import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -41,11 +40,13 @@ __all__ = [
     "delete_run",
     "feature_writes",
     "generate",
+    "head_kinds",
     "list_runs",
     "load_model",
     "load_run",
     "load_sae",
     "load_spec",
+    "look",
     "open_project",
     "run",
     "verify_run",
@@ -167,6 +168,54 @@ def run(
     if outcome.status != "finished":
         raise LogogramError(_ended(outcome, "The run"))
     return load_run(project, outcome.run_id, model=outcome.backend)
+
+
+def head_kinds(
+    model: Any,
+    *,
+    seed: int = 0,
+    sequences: int = 32,
+    length: int = 32,
+    prepend_bos: bool = True,
+    batch_size: int = 16,
+    bootstrap: int = 1000,
+    ci: float = 0.95,
+) -> dict[str, Any]:
+    """Score every head of ``model`` (from :func:`load_model`) as a previous-token,
+    duplicate-token and induction head, on ``sequences`` seeded random sequences of ``length``
+    tokens repeated twice. Returns, per kind, each head's mean score with its bootstrap interval
+    over sequences, the per-sequence values, and the strongest heads; the app shows the same in
+    the Attention view."""
+    from logogram.heads import HeadKindSettings, head_kind_scores
+
+    settings = HeadKindSettings(
+        seed=seed,
+        sequences=sequences,
+        length=length,
+        prepend_bos=prepend_bos,
+        batch_size=batch_size,
+        bootstrap=bootstrap,
+        ci=ci,
+    )
+    with model.lock:
+        return head_kind_scores(model, settings)
+
+
+def look(
+    model: Any,
+    text: str,
+    *,
+    prepend_bos: bool = True,
+    top_k: int = 5,
+    position: int | None = None,
+) -> dict[str, Any]:
+    """Read any text with ``model`` (from :func:`load_model`), without making a dataset: its
+    tokens, the ``top_k`` most likely next tokens after each, and at ``position`` (the last token
+    by default) what each layer would predict, as the app's Your text view shows."""
+    from logogram.inside import look_report
+
+    with model.lock:
+        return look_report(model, text, prepend_bos=prepend_bos, top_k=top_k, position=position)
 
 
 def _ended(outcome: Any, what: str) -> str:
@@ -400,34 +449,27 @@ class Run:
     def sites(self) -> Any:
         """One row per site: what it is, its mean effect and interval, the simultaneous band and
         q-value, sign flips and the metric patched."""
-        rows = []
-        for s in self._summary()["sites"]:
-            band = s.get("band") or {}
-            rows.append(
-                {
-                    "index": s["index"],
-                    "label": s["label"],
-                    "kind": s["kind"],
-                    "layer": s["layer"],
-                    "head": s.get("head"),
-                    "feature": s.get("feature"),
-                    "position": s["position_key"],
-                    "variant": s.get("variant_key"),
-                    "n": s["n"],
-                    "effect": s["effect"]["mean"],
-                    "effect_sd": s["effect"]["sd"],
-                    "effect_lo": s["effect"]["lo"],
-                    "effect_hi": s["effect"]["hi"],
-                    "band_lo": band.get("lo"),
-                    "band_hi": band.get("hi"),
-                    "q": s.get("q"),
-                    "delta": s["delta"]["mean"],
-                    "patched_metric": s.get("patched_metric"),
-                    "sign_flips": s["sign_flips"],
-                    "opposite_sign": s["opposite_sign"],
-                }
-            )
-        return _table(rows)
+        from logogram.report import sites_table
+
+        return _table(sites_table(self._summary()))
+
+    def methods(self) -> str:
+        """The methods paragraph: every choice that can change a number, in sentences, as the app
+        copies it."""
+        from logogram.report import methods_text
+
+        return methods_text(self.spec, self.summary, self.manifest, self.id)
+
+    def report(self, path: str | Path | None = None, *, hardware: bool = False) -> str:
+        """The run as one self-contained HTML page anyone can open: its map, strongest sites,
+        every site's numbers, the methods and where it came from. Written to ``path`` when given;
+        hardware model names are left out unless ``hardware`` is true."""
+        from logogram.report import run_report
+
+        page = run_report(self.spec, self._summary(), self.manifest, self.id, hardware=hardware)
+        if path is not None:
+            Path(path).expanduser().write_text(page, encoding="utf-8")
+        return page
 
     def results(self) -> Any:
         """results.parquet as a pyarrow Table: one row per site and prompt."""
@@ -477,51 +519,12 @@ def _num(x: float | None) -> str:
     return "—" if x is None else f"{x:+.3f}"
 
 
-# The effect scale: cobalt for positive, amber for negative, neutral at zero (as in the app).
-_POSITIVE = (37, 87, 222)
-_NEGATIVE = (200, 120, 20)
-_NEUTRAL = (236, 236, 236)
-
-
-def _color(value: float | None, bound: float) -> str:
-    if value is None or not math.isfinite(value):
-        return "#ffffff"
-    t = max(-1.0, min(1.0, value / bound)) if bound > 0 else 0.0
-    end = _POSITIVE if t >= 0 else _NEGATIVE
-    mix = [round(n + abs(t) * (e - n)) for n, e in zip(_NEUTRAL, end, strict=True)]
-    return "#" + "".join(f"{c:02x}" for c in mix)
-
-
 def heatmap_svg(summary: dict[str, Any], cell: int = 18) -> str:
-    """A run's results as an SVG grid in the effect colors, with its scale's bound: for notebooks,
-    with no plotting library."""
-    layout = summary["layout"]
-    rows, cols = layout["rows"], layout["cols"]
-    values = {(s["row"], s["col"]): s["effect"]["mean"] for s in summary["sites"]}
-    finite = [abs(v) for v in values.values() if v is not None and math.isfinite(v)]
-    bound = max(finite) if finite else 1.0
-    left, top = 60, 20
-    width, height = left + cell * len(cols) + 10, top + cell * len(rows) + 30
-    parts = [
-        f"<svg xmlns='http://www.w3.org/2000/svg' width='{width}' height='{height}' "
-        "font-family='sans-serif' font-size='10'>"
-    ]
-    for r, row in enumerate(rows):
-        label = html.escape(str(row.get("label", r)))[:10]
-        parts.append(
-            f"<text x='{left - 4}' y='{top + r * cell + cell * 0.7}' text-anchor='end'>{label}</text>"
-        )
-        for c in range(len(cols)):
-            fill = _color(values.get((r, c)), bound)
-            parts.append(
-                f"<rect x='{left + c * cell}' y='{top + r * cell}' width='{cell - 1}' "
-                f"height='{cell - 1}' fill='{fill}'/>"
-            )
-    parts.append(
-        f"<text x='{left}' y='{height - 8}'>{html.escape(layout['row_title'])} × "
-        f"{html.escape(layout['col_title'] or 'site')} · scale ±{bound:.3g}</text></svg>"
-    )
-    return "".join(parts)
+    """A run's results as an SVG grid in the effect colors, with its scale: for notebooks, with
+    no plotting library (the same map as the HTML report's)."""
+    from logogram.report import heatmap_svg as svg
+
+    return svg(summary, cell=cell)
 
 
 def dumps(value: Any) -> str:

@@ -1,7 +1,6 @@
 import type { RunDetail } from "../api/types";
 import { divergingScale, niceBound, SCALE_FLOOR, textOn } from "./color";
-import { describeMetric } from "./metrics";
-import { baselineText, experimentText, measureWords, scopeText } from "./spec";
+import { experimentText, measureWords, scopeText } from "./spec";
 
 export function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
@@ -10,94 +9,6 @@ export function downloadBlob(blob: Blob, filename: string) {
   anchor.download = filename;
   anchor.click();
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-/** A copyable methods paragraph derived only from the executed spec and saved provenance, in
- * sentences a reader can follow: every choice that can change a number, said in words. */
-export function methodsText(run: RunDetail): string {
-  const { spec: s, summary, manifest } = run;
-  const n = summary?.n_prompts;
-  const revision = s.model.revision ? `revision ${s.model.revision}` : "an unpinned revision (the main branch when it ran)";
-  const device = manifest?.device?.type ?? s.model.device;
-  const weights = s.model.process_weights
-    ? "with TransformerLens's weight processing (LayerNorm weights folded, writing weights and the unembedding centered), which leaves logit differences unchanged"
-    : "with its original weights, unprocessed";
-  const prompts = `${n === undefined ? "The" : `${n}`} prompt pair${n === 1 ? " was" : "s were"} read from ${s.dataset.path}${
-    s.dataset.sha256 ? ` (SHA-256 ${s.dataset.sha256})` : " (not pinned by a checksum)"
-  }${s.dataset.limit ? `, the first ${s.dataset.limit} of the file` : ""}, and tokenized ${
-    s.tokenization.prepend_bos ? "with" : "without"
-  } a beginning-of-sequence token.`;
-  const normalized =
-    s.metric.normalization === "dataset_gap"
-      ? "Effects were normalized by the mean clean–corrupt gap over the dataset"
-      : "Effects were normalized by each prompt's own clean–corrupt gap";
-  const formula = summary?.metric.normalized_effect;
-  const notes = s.notes?.trim();
-  return [
-    `${experimentText(s.experiment)}, at ${scopeText(s.scope)}.`,
-    `The model was ${s.model.id} at ${revision}, run in ${s.model.dtype} on ${device}, ${weights}.`,
-    prompts,
-    `The metric, for each prompt, was ${describeMetric(s.metric)}. ${normalized}${formula ? `: ${formula}` : ""}.`,
-    `Prompts ran in batches of ${s.execution.batch_size}. ${statisticsText(run)}`,
-    methodText(run),
-    // What was expected, as the spec that ran states it, so the result can be read against it.
-    ...(notes ? [`Notes saved with the spec: ${notes}`] : []),
-    `The run is ${run.id}.${
-      manifest?.versions
-        ? ` Software: ${Object.entries(manifest.versions).filter(([, v]) => v).map(([k, v]) => `${k} ${v}`).join(", ")}.`
-        : ""
-    }`,
-    ...(summary?.warnings.map((warning) => `Note from the run: ${warning}`) ?? []),
-  ].join("\n\n");
-}
-
-/** What the method did, beyond its name: the baseline, the paths, the steering or the estimate. */
-function methodText(run: RunDetail): string {
-  const { spec: s, summary } = run;
-  const e = s.experiment;
-  const arrow = (d: "clean_to_corrupt" | "corrupt_to_clean") =>
-    d === "clean_to_corrupt" ? "from the clean prompt into the corrupt one" : "from the corrupt prompt into the clean one";
-  switch (e.kind) {
-    case "ablation":
-      return `Each site's activation was replaced by a baseline: ${baselineText(e.baseline)}.`;
-    case "activation_patching":
-      return `Each site's activation was copied ${arrow(e.direction)} of each pair.`;
-    case "direct_logit_attribution":
-      return `Direct logit attribution of the ${e.prompts} prompts: each component's output at the last token, read through the final normalization with its scale held at its value in the run.${
-        summary?.direct
-          ? ` The mean logit difference was ${summary.direct.logit_diff?.toFixed(4)}: attention ${summary.direct.attention?.toFixed(4)}, MLPs ${summary.direct.mlp?.toFixed(4)}, embeddings ${summary.direct.embeddings?.toFixed(4)} and biases ${summary.direct.biases?.toFixed(4)}.`
-          : ""
-      }`;
-    case "path_patching":
-      return `Path patching ${arrow(e.direction)}, into ${e.receivers.map((r) => (r.kind === "logits" ? "the logits" : `L${r.layer} H${r.head} ${r.input}`)).join(", ")}: each sender was patched while every other attention head was held at its value in the receiver run${
-        e.freeze_mlps ? ", and the MLPs were held too" : ", with the MLPs recomputed"
-      }; the receivers' recorded inputs were then patched into an unchanged run.`;
-    case "steering": {
-      const other = e.apply_to === "clean" ? "corrupt" : "clean";
-      return `Steering: a direction was added to the ${e.apply_to} prompts, the mean of (${other} − ${e.apply_to}) activations at each site over a training split of ${Math.round(
-        e.train_fraction * 100,
-      )}% of the pairs (split seed ${e.seed}), at strengths ${e.coefficients.join(", ")}. ${
-        e.control ? "A random direction of the same length was run as a control." : "No random control was run."
-      }${summary?.steering ? ` The directions came from dataset prompts ${summary.steering.train.join(", ")}; effects were measured on the ${summary.steering.test.length} held-out prompts.` : ""}`;
-    }
-    case "attribution_patching":
-      return `Attribution patching ${arrow(e.direction)}: a first-order estimate of each site's patching effect, (source − receiver activation) · ${
-        e.method === "integrated_gradients"
-          ? `the gradient of the metric averaged over ${e.steps} runs whose input embeddings lie evenly between the receiver's and the source's (integrated gradients)`
-          : "the gradient of the metric at the receiver run"
-      }, not a patched forward pass.`;
-  }
-}
-
-/** The bootstrap as run: over prompts or clusters of them, with the corrections for many sites. */
-function statisticsText(run: RunDetail): string {
-  const st = run.spec.statistics;
-  const summary = run.summary?.statistics;
-  const over = st.cluster
-    ? `over clusters of prompts with the same ${st.cluster}${summary?.clusters ? ` (${summary.clusters} clusters)` : ""}`
-    : "over prompts";
-  const corrected = summary?.multiple_comparisons ? ` ${summary.multiple_comparisons}` : "";
-  return `Intervals are ${st.ci * 100}% percentile bootstrap intervals ${over}, from ${st.bootstrap} resamples with seed ${st.seed}.${corrected}`;
 }
 
 /** Render an export with a fixed light background, full axis labels and a symmetric legend. */

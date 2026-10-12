@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import uuid
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from logogram.fileio import write_text_atomic
 from logogram.project import Project, ProjectError, now_iso
@@ -20,6 +20,14 @@ class NoteInput(BaseModel):
     model: ModelRef
     sites: list[Site] = Field(min_length=1, max_length=512)
     run_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+    @field_validator("model", mode="before")
+    @classmethod
+    def _model_before_sources(cls, value: Any) -> Any:
+        # Notes saved before models had a source (Logogram 0.4 and earlier) name Hugging Face models.
+        if isinstance(value, dict) and "source" not in value:
+            return {"source": "hub", "sha256": None, **value}
+        return value
 
 
 class ResearchNote(NoteInput):

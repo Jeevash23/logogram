@@ -83,7 +83,7 @@ This starts a local server on 127.0.0.1, prints its address and opens your brows
    and flags them on the map.
 
 Keyboard: arrow keys move across the map, **Ctrl/⌘ K** opens the command palette (type `L9H9` to
-jump to a head), **1–5** go to the open workspace's tabs, **[** and **]** step through prompts,
+jump to a head), **1–6** go to the open workspace's tabs, **[** and **]** step through prompts,
 **P**, **B**, **A** and **C** patch, ablate, show attention or compare the selected component, and
 **Ctrl/⌘ Enter** runs the experiment form (or queues it while another job runs). **Ctrl/⌘ Z** and
 **Ctrl/⌘ Shift Z** undo and redo changes to the form, and **?** lists every shortcut. The keys
@@ -132,9 +132,14 @@ form, including BOS, prompt limit and batch size. Inspecting a saved run require
 revision, dtype, device and weight processing; **Load a model → Use saved experiment model
 settings** fills those choices in.
 
-Finished results offer a per-prompt CSV, a PNG heatmap with a symmetric legend, and a copyable or
-downloadable methods description. The CSV retains every site/prompt row; text fields that could
-be interpreted as spreadsheet formulas are prefixed with an apostrophe.
+Finished results offer a **report**: one HTML file anyone can open without Logogram, with the
+run's map, its strongest sites with their intervals, every site's numbers, the baseline, the
+methods paragraph, the spec and where the run came from. It runs no script and fetches nothing,
+and it leaves out the CPU or GPU's name unless asked (`logogram report RUN --hardware`). They also
+offer per-site and per-prompt CSV (with each prompt's text if you like), the map as PNG or SVG,
+and the methods paragraph, which says every choice that can change a number in sentences. The CSV
+retains every site/prompt row; text fields that could be interpreted as spreadsheet formulas are
+prefixed with an apostrophe.
 
 ## Examples
 
@@ -188,6 +193,19 @@ bootstrap resamples prompts or clusters of them, from the fields the prompts' `m
 says before a run what the prompts allow: answers of several tokens need a metric that reads
 them, and splits and donors need enough prompts. **Prompts → Generate a task** writes any of the
 six tasks' datasets and offers to switch the form to the metric that reads their answers.
+
+**Your text** reads any text without making a dataset: its tokens, the model's most likely next
+tokens after each, what each layer would predict at a chosen token (the logit lens, when it holds
+for the model), where a head attends, and, with an SAE loaded, the features that fire. Nothing is
+saved. From Python, `lg.look(model, "some text")` returns the same.
+
+**Attention** also finds heads by what they attend to, on seeded sequences of random tokens
+repeated twice (as in Olsson et al., 2022): previous-token heads attend to the token just before,
+duplicate-token heads to the earlier copy of the current token, and induction heads to the token
+that followed that copy. Each head's score is the attention it pays there, averaged over the second
+copy, with a bootstrap interval over sequences; the number of sequences, their length and the seed
+are shown and can be changed. Choosing a head shows its attention on the prompts. From Python,
+`lg.head_kinds(model)` returns the same scores, per sequence too.
 
 Pin up to two heads for **Head comparison**. Both attention maps use the same prompt variant,
 analysis context, and 0–1 ink scale. Selecting a query token in either map or the token ribbon
@@ -251,7 +269,9 @@ logogram compare RUN RUN      how two runs agree, with paired differences where 
 logogram diff A B             every choice that differs between two runs or spec files
 logogram verify RUN           patch the strongest sites of an attribution patching run, and compare
 logogram robustness RUN       rerun with one choice changed (--experiment JSON, or --dtype)
-logogram export RUN           a run's per-prompt values as CSV (-o FILE)
+logogram export RUN           a run's per-prompt values as CSV (-o FILE; --sites, --prompt-text)
+logogram report RUN           a run as one HTML page anyone can open (-o FILE, --hardware)
+logogram methods RUN          a run's methods paragraph
 logogram tasks                the tasks Logogram writes prompts for, with their options
 logogram generate TASK        a seeded dataset for a task (-n N --seed S, --option NAME=VALUE)
 logogram doctor               environment and hardware report, with fixes
@@ -303,6 +323,8 @@ run = lg.run(spec, project, model=model)
 run                  # in a notebook: the method, a heatmap and the strongest sites
 run.sites()          # one row per site: mean effect, interval, simultaneous band, q-value, …
 run.per_prompt()     # one row per site and prompt: everything the statistics came from
+run.methods()        # the methods paragraph, in sentences
+run.report("run.html")   # the run as one HTML page anyone can open
 run.strongest(5)
 
 estimate = lg.run(lg.load_spec({**spec.model_dump(), "experiment": {
@@ -665,24 +687,25 @@ control the same way. Per-prompt values are always kept.
 
 ## The spec
 
-Every experiment is a `spec.json`. Nothing that can change a number is left implicit: a version 2
-spec must state every such choice, and a spec that leaves one out is refused with the field's
-name.
+Every experiment is a `spec.json`. Nothing that can change a number is left implicit: a spec
+must state every such choice, and a spec that leaves one out is refused with the field's name.
 
 ```json
 {
-  "logogram_spec": 2,
+  "logogram_spec": 3,
   "name": "Which heads restore the answer?",
   "notes": "",
   "model": {
     "id": "openai-community/gpt2",
+    "source": "hub",
     "revision": "607a30d783dfa663caf39e06633721c8d4cfcd7e",
+    "sha256": null,
     "dtype": "float32",
     "device": "auto",
     "process_weights": true
   },
   "dataset": {"path": "datasets/ioi.jsonl", "sha256": "2bd046d5…", "limit": null},
-  "tokenization": {"prepend_bos": true},
+  "tokenization": {"prepend_bos": true, "chat_template": null},
   "experiment": {"kind": "activation_patching", "direction": "clean_to_corrupt"},
   "scope": {"kind": "heads", "position": {"kind": "all"}},
   "metric": {"kind": "logit_diff", "normalization": "dataset_gap"},
@@ -693,14 +716,20 @@ name.
 
 Version 1 specs (from Logogram 0.1) still run. Where one leaves a choice out, it takes the value
 version 1 gave it, the run's first warning lists each such value, and the spec saved with the run
-states them all. `logogram validate SPEC.json` shows the list without running anything.
+states them all. `logogram validate SPEC.json` shows the list without running anything. Version 2
+specs (Logogram 0.2 to 0.4) read as version 3 with what version 3 added turned off, which is what
+they did: no chat template, a model from Hugging Face, and steering along the mean difference
+without continuations.
 
 | Field | Values |
 |---|---|
-| `model.revision` | A commit. `null` resolves the current main branch at run time; the saved spec pins what ran. |
+| `model.source` | `"hub"` for Hugging Face, or `"local"` for a folder on this machine added to Logogram's local models. A local model's `id` is the name it was added under, and its folder is found by `model.sha256`, the hash of its files, so the spec never holds a path. |
+| `model.revision` | A commit. `null` resolves the current main branch at run time; the saved spec pins what ran. Always `null` for a local model. |
+| `model.device` | `auto`, `cpu`, `cuda`, `cuda:N` (one GPU of several, such as `cuda:1`) or `mps`. |
+| `tokenization.chat_template` | `null` feeds each prompt as raw text. `{"kind": "user_turn", "system": null}` makes each prompt the person's message in the model's own chat template, so the answer is the first token of the reply; `{"kind": "assistant_prefix", "system": null, "user": "…"}` makes it the start of the model's reply to a fixed message. The template is the one the tokenizer ships at the model's revision. With a template, `prepend_bos` is `false`: the template writes the beginning of the text. |
 | `model.process_weights` | Fold LayerNorm and center weights, as TransformerLens does by default. Logit differences don't change. Value biases are folded into the attention output's bias, so zero ablation of head outputs and heads' direct effects do change (by up to several logits in Qwen 2.5, whose value biases are large); a layer's attention output doesn't. |
 | `dataset.sha256` | If set, the run refuses a dataset file that has changed. |
-| `experiment` | `{"kind": "activation_patching", "direction": "clean_to_corrupt" \| "corrupt_to_clean"}`, `{"kind": "ablation", "baseline": …}` with `{"kind": "zero"}`, `{"kind": "mean", "reference": "clean" \| "corrupt"}` or `{"kind": "resample", "pool": "clean" \| "corrupt", "donors": 10, "seed": 0}`, `{"kind": "attribution_patching", "direction": …, "method": "gradient", "steps": null}` (same directions as patching; or `"method": "integrated_gradients", "steps": 8`), `{"kind": "direct_logit_attribution", "prompts": "clean" \| "corrupt"}`, `{"kind": "path_patching", "direction": …, "receivers": [{"kind": "head", "layer": 9, "head": 9, "input": "q" \| "k" \| "v"}, {"kind": "logits"}], "freeze_mlps": false}`, or `{"kind": "steering", "apply_to": "clean" \| "corrupt", "coefficients": [-1, 1, 2], "train_fraction": 0.5, "seed": 0, "control": true}` with a scope of one residual component per layer (`layer_components`) or residual `sites`, at one token |
+| `experiment` | `{"kind": "activation_patching", "direction": "clean_to_corrupt" \| "corrupt_to_clean"}`, `{"kind": "ablation", "baseline": …}` with `{"kind": "zero"}`, `{"kind": "mean", "reference": "clean" \| "corrupt"}` or `{"kind": "resample", "pool": "clean" \| "corrupt", "donors": 10, "seed": 0}`, `{"kind": "attribution_patching", "direction": …, "method": "gradient", "steps": null}` (same directions as patching; or `"method": "integrated_gradients", "steps": 8`), `{"kind": "direct_logit_attribution", "prompts": "clean" \| "corrupt"}`, `{"kind": "path_patching", "direction": …, "receivers": [{"kind": "head", "layer": 9, "head": 9, "input": "q" \| "k" \| "v"}, {"kind": "logits"}], "freeze_mlps": false}`, or `{"kind": "steering", "apply_to": "clean" \| "corrupt", "direction": {"kind": "mean_difference"}, "coefficients": [-1, 1, 2], "train_fraction": 0.5, "seed": 0, "control": true, "continuations": null}` with a scope of one residual component per layer (`layer_components`) or residual `sites`, at one token. The direction can instead be one SAE feature's decoder direction, `{"kind": "sae_feature", "feature": 1234}`, and `continuations` can be `{"prompts": 3, "tokens": 20}` to record what the steered model goes on to say |
 | `scope` | `{"kind": "heads", "position": …}`, `{"kind": "layer_position", "site": "resid_pre", "positions": "each" \| "labels"}`, `{"kind": "layer_components", "components": ["attn_out", "mlp_out"], "position": …}` `{"kind": "sites", "sites": [{"kind": "head", "layer": 9, "head": 9, "position": {"kind": "label", "label": "end"}}]}` (feature sites are `{"kind": "sae_feature", "layer": 8, "feature": 1234, "position": …}`), for attribution patching, `{"kind": "features", "position": …, "top": 50, "choose_on": 0.5, "seed": 0}` (`choose_on` and `seed` both `null` to choose and report on every prompt), or `{"kind": "site_sets", "universe": ["head"], "sets": [{"label": "circuit", "sites": […], "complement": true}]}` |
 | `sae` | The SAE that feature sites belong to: `{"repo": "…", "path": "blocks.8.hook_resid_pre", "revision": "…"}`. The revision is pinned when a run starts. |
 | `metric` | `{"kind": "logit_diff" \| "logprob_diff" \| "logprob" \| "prob" \| "prob_diff", "normalization": …}` or `{"kind": "kl", "target": "clean" \| "corrupt", "normalization": …}` |

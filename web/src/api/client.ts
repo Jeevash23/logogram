@@ -13,6 +13,7 @@ import type {
   FolderListing,
   Job,
   MetricSpec,
+  ModelRef,
   TaskDatasetCreated,
   TaskInfo,
   ModelPreset,
@@ -43,6 +44,10 @@ import type {
   ResearchNote,
   PredictionReport,
   PredictionSettings,
+  HeadKindsReport,
+  LookAttention,
+  LookFeatures,
+  LookReport,
   QueueAdded,
   QueuedRun,
   RunMemory,
@@ -209,13 +214,7 @@ export const api = {
     post<EstimateResponse>("/api/models/estimate", body),
   /** What a run of this batch size would need on the loaded model, against the memory free. */
   runMemory: (body: { batch_size: number; seq_len: number; method: ExperimentKind }) => post<RunMemory>("/api/models/run-memory", body),
-  loadModel: (body: {
-    id: string;
-    revision?: string | null;
-    dtype: Dtype;
-    device: Device;
-    process_weights: boolean;
-  }) => post<Job>("/api/models/load", body),
+  loadModel: (body: ModelRef) => post<Job>("/api/models/load", body),
   unloadModel: () => post<ModelStatus>("/api/models/unload"),
 
   baseline: (dataset: string, options: AnalysisOptions, metric: MetricSpec) =>
@@ -228,6 +227,12 @@ export const api = {
     which: "clean" | "corrupt";
   } & AnalysisOptions) => post<AttentionData>("/api/attention", body),
   predictions: (body: { dataset: string; index: number; settings: PredictionSettings } & AnalysisOptions) => post<PredictionReport>("/api/predictions", body),
+  look: (body: { text: string; top_k: number; position: number | null } & AnalysisOptions) => post<LookReport>("/api/look", body),
+  lookAttention: (body: { text: string; layer: number; head: number } & AnalysisOptions) =>
+    post<LookAttention>("/api/look/attention", body),
+  lookFeatures: (body: { text: string; top_k: number } & AnalysisOptions) => post<LookFeatures>("/api/look/features", body),
+  headKinds: (body: { seed: number; sequences: number; length: number; bootstrap: number; ci: number } & AnalysisOptions) =>
+    post<HeadKindsReport>("/api/heads/kinds", body),
   research: () => get<{ logogram_research: 1; notes: ResearchNote[] }>("/api/research"),
   saveNote: (value: NoteInput, edit?: { id: string; revision: number }) => edit
     ? request<ResearchNote>("PUT", `/api/research/${encodeURIComponent(edit.id)}`, { ...value, revision: edit.revision })
@@ -236,7 +241,13 @@ export const api = {
 
   runs: () => get<RunListing[]>("/api/runs"),
   run: (id: string) => get<RunDetail>(`/api/runs/${encodeURIComponent(id)}`),
-  exportRun: (id: string) => request<Blob>("GET", `/api/runs/${encodeURIComponent(id)}/export.csv`, undefined, "blob"),
+  exportRun: (id: string, text = false) =>
+    request<Blob>("GET", `/api/runs/${encodeURIComponent(id)}/export.csv${text ? "?text=true" : ""}`, undefined, "blob"),
+  exportSites: (id: string) => request<Blob>("GET", `/api/runs/${encodeURIComponent(id)}/sites.csv`, undefined, "blob"),
+  runReport: (id: string) => request<Blob>("GET", `/api/runs/${encodeURIComponent(id)}/report.html`, undefined, "blob"),
+  runFigure: (id: string, value: "effect" | "delta", unit: boolean) =>
+    request<Blob>("GET", `/api/runs/${encodeURIComponent(id)}/figure.svg?value=${value}&unit=${unit}`, undefined, "blob"),
+  methods: (id: string) => get<{ text: string }>(`/api/runs/${encodeURIComponent(id)}/methods`),
   startRun: (spec: Spec, draftId: string | null = null) =>
     post<{ run_id: string; job: Job }>("/api/runs", { spec, draft_id: draftId }),
   /** Run the spec when the job in progress ends, or now if nothing is running. */

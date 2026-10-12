@@ -19,7 +19,7 @@ const model: ModelStatus = {
     process_weights: true, site_kinds: ["resid_pre", "resid_mid", "resid_post", "attn_out", "mlp_out", "head"],
     backend: "transformer_lens", backend_version: "test",
   },
-  ref: { id: "tiny-gpt2", revision: "test", dtype: "float32", device: "cpu", process_weights: true },
+  ref: { id: "tiny-gpt2", source: "hub", revision: "test", sha256: null, dtype: "float32", device: "cpu", process_weights: true },
 };
 const form = (patch: Partial<FormState> = {}): FormState => ({ ...DEFAULT_FORM, ...patch });
 const ctx = (extra: Partial<Parameters<typeof buildSpec>[1]> = {}) => ({ model, datasetPath: "datasets/ioi.jsonl", datasetSha: "abc", ...extra });
@@ -39,15 +39,15 @@ const dataset = (records: PromptRecord[], continuations?: number[]): DatasetDeta
   name: "ioi.jsonl", path: "datasets/ioi.jsonl", sha256: "abc", n: records.length, records, ...(continuations ? { continuations } : {}),
 });
 
-test("the default form builds a version 2 spec that states every choice", () => {
+test("the default form builds a version 3 spec that states every choice", () => {
   const spec = built(form());
   expect(spec).toEqual({
-    logogram_spec: 2,
+    logogram_spec: 3,
     name: "Patch clean→corrupt · layer × head",
     notes: "",
-    model: { id: "tiny-gpt2", revision: "test", dtype: "float32", device: "cpu", process_weights: true },
+    model: { id: "tiny-gpt2", source: "hub", revision: "test", sha256: null, dtype: "float32", device: "cpu", process_weights: true },
     dataset: { path: "datasets/ioi.jsonl", sha256: "abc", limit: null },
-    tokenization: { prepend_bos: true },
+    tokenization: { prepend_bos: true, chat_template: null },
     experiment: { kind: "activation_patching", direction: "clean_to_corrupt" },
     scope: { kind: "heads", position: { kind: "all" } },
     metric: { kind: "logit_diff", normalization: "dataset_gap" },

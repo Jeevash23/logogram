@@ -514,6 +514,25 @@ class TransformerLensBackend(ModelBackend):
             )
             return cache[name].detach().float()
 
+    def attention_patterns(
+        self, tokens: torch.Tensor, layers: list[int]
+    ) -> dict[int, torch.Tensor]:
+        names = {PATTERN_HOOK.format(layer=layer): layer for layer in layers}
+        kwargs: dict[str, Any] = {}
+        if max(layers) + 1 < self.info.n_layers:
+            kwargs["stop_at_layer"] = max(layers) + 1
+        with self.lock, torch.no_grad():
+            _, cache = self._bridge().run_with_cache(
+                tokens.to(self.device), names_filter=list(names), **kwargs
+            )
+            return {layer: cache[name].detach().float() for name, layer in names.items()}
+
+    def token_space(self) -> tuple[int, frozenset[int]]:
+        # The tokenizer can have fewer ids than the embedding has rows (padded vocabularies).
+        size = min(len(self.tokenizer), self.info.d_vocab)
+        special = frozenset(int(i) for i in self.tokenizer.all_special_ids if i is not None)
+        return size, special
+
     def _bridge(self) -> Any:
         if self.bridge is None:
             raise BackendError("The model was unloaded. Load it again to continue.")

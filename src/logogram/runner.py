@@ -44,7 +44,7 @@ from logogram.results import (
     write_results,
 )
 from logogram.schema import Manifest
-from logogram.spec import SINGLE_POSITION_METRICS, ModelRef, SAERef, Spec
+from logogram.spec import SINGLE_POSITION_METRICS, ModelRef, SAERef, Spec, Steering
 
 EventFn = Callable[[str, dict[str, Any]], None]
 ModelProvider = Callable[[ModelRef], ModelBackend]
@@ -234,6 +234,24 @@ def model_matches(backend: ModelBackend | None, ref: ModelRef) -> bool:
     )
 
 
+def not_built_yet(spec: Spec) -> str | None:
+    """What a version 3 spec asks for that this build can't run yet, if anything. (Scaffolding
+    while version 3 is built: each part leaves this list as it arrives.)"""
+    tokenization, model, experiment = spec.tokenization, spec.model, spec.experiment
+    if tokenization.chat_template is not None:
+        return "Chat templates can't be run yet: set tokenization.chat_template to null."
+    if model.source == "local":
+        return "Local models can't be run yet: use a model from Hugging Face."
+    if model.device.startswith("cuda:"):
+        return "Choosing one GPU of several isn't possible yet: set model.device to cuda or auto."
+    if isinstance(experiment, Steering):
+        if experiment.direction.kind != "mean_difference":
+            return "Steering along an SAE feature can't be run yet: use the mean difference."
+        if experiment.continuations is not None:
+            return "Steered continuations can't be recorded yet: set continuations to null."
+    return None
+
+
 def default_provider(on_event: EventFn | None = None) -> ModelProvider:
     def provide(ref: ModelRef) -> ModelBackend:
         from logogram.backends.transformer_lens import load_model
@@ -336,6 +354,9 @@ def run_spec(
     owner = claim_run(project, folder)
     try:
         write_manifest(folder / "manifest.json", manifest)
+        unbuilt = not_built_yet(spec)
+        if unbuilt:
+            raise RunError(unbuilt)
         dataset_path = project.resolve_dataset(spec.dataset.path)
         # Hash, parse and snapshot the same bytes, even if the source is subsequently edited.
         content = read_dataset_bytes(dataset_path)

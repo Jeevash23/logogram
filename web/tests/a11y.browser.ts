@@ -70,10 +70,23 @@ test("every view has no accessibility violations", async ({ page }) => {
   for (const view of ["Attention", "Head comparison", "Layer predictions", "Features"]) {
     await open(page, view);
     await expectAccessible(page, `Explore, ${view}`);
+    if (view === "Attention") {
+      const finder = page.getByRole("region", { name: "Find heads by what they attend to" });
+      await finder.getByLabel("Tokens in each copy").fill("8");
+      await finder.getByLabel("Sequences").fill("4");
+      await finder.getByRole("button", { name: "Find heads", exact: true }).click();
+      await expect(finder.getByRole("group", { name: "Induction scores of every head" })).toBeVisible();
+      await expectAccessible(page, "Explore, heads found by what they attend to");
+    }
   }
   await page.getByLabel("Features on each token").locator("button[aria-pressed]").first().click();
   await expect(page.getByText("Where it fires most")).toBeVisible();
   await expectAccessible(page, "Explore, a feature");
+  await open(page, "Your text");
+  await page.getByRole("button", { name: "Read", exact: true }).click();
+  await expect(page.getByRole("group", { name: /^Tokens of the text/ })).toBeVisible();
+  await expect(page.getByRole("group", { name: /^Attention of L0 H0 in your text/ })).toBeVisible();
+  await expectAccessible(page, "Explore, your text");
   await page.getByRole("button", { name: "Experiment", exact: true }).click();
   for (const view of ["Prompts", "Baseline", "Configure", "Spec"]) {
     await open(page, view);

@@ -365,6 +365,79 @@ class AttentionData(_Out):
     length: int
 
 
+class HeadKindScores(_Out):
+    description: str
+    # [layer][head]: the mean over sequences and its bootstrap interval.
+    mean: list[list[float]]
+    lo: list[list[float]]
+    hi: list[list[float]]
+    # [sequence][layer][head]: the values the statistics come from.
+    per_sequence: list[list[list[float]]]
+
+
+class TopHead(_Out):
+    layer: int
+    head: int
+    mean: float
+    lo: float
+    hi: float
+
+
+class HeadKinds(_Out):
+    settings: dict[str, Any]
+    n_layers: int
+    n_heads: int
+    kinds: dict[Literal["previous_token", "duplicate_token", "induction"], HeadKindScores]
+    top: dict[Literal["previous_token", "duplicate_token", "induction"], list[TopHead]]
+
+
+class MethodsText(_Out):
+    text: str
+
+
+class LookToken(_Out):
+    id: int
+    token: str
+    prob: float
+
+
+class LookLayer(_Out):
+    layer: int
+    top: list[LookToken]
+
+
+class LookReport(_Out):
+    tokens: list[str]
+    ids: list[int]
+    prepend_bos: bool
+    top_k: int
+    position: int
+    # After each token: the model's most likely next tokens.
+    predictions: list[list[LookToken]]
+    # At ``position``: what each layer's residual stream would predict, when the lens holds.
+    lens: list[LookLayer] | None
+    lens_note: str | None
+
+
+class LookAttention(_Out):
+    tokens: list[str]
+    layer: int
+    head: int
+    pattern: list[list[float]]
+
+
+class LookFeature(_Out):
+    feature: int
+    activation: float
+
+
+class LookFeatures(_Out):
+    tokens: list[str]
+    features: list[list[LookFeature]]
+    active: list[int]
+    first_real_token: int
+
+
 class PredictionLayer(_Out):
     layer: int
     top: list[TopToken]

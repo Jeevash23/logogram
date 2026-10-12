@@ -230,7 +230,7 @@ def project(tmp_path: Path) -> Any:
 
 
 def make_spec(**overrides: Any) -> Any:
-    """A complete version 2 spec. Overrides replace whole sections; the fields an override leaves
+    """A complete spec. Overrides replace whole sections; the fields an override leaves
     out take version 1's values (as a convenience for tests only: real specs state them)."""
     from logogram.spec import Spec, upgrade_v1
 
