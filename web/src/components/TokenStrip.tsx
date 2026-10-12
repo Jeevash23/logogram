@@ -3,6 +3,7 @@ import { Fragment, useEffect, useRef, useState, type KeyboardEvent } from "react
 import { api } from "../api/client";
 import type { Answer, AnswerTokens, TokenStripData } from "../api/types";
 import { answerText, capitalize, visibleToken } from "../lib/format";
+import { tokensKey } from "../lib/analysis";
 import { useAnalysisContext } from "../lib/hooks";
 import { useStore } from "../store/app";
 import { Button, Icon } from "./ui";
@@ -27,6 +28,7 @@ export function TokenStrip() {
   const index = useStore((st) => st.promptIndex);
   const setIndex = useStore((st) => st.setPromptIndex);
   const modelReady = useStore((st) => st.model.state === "ready");
+  const loaded = useStore((st) => st.model.info);
   const context = useAnalysisContext();
   const [data, setData] = useState<TokenStripData | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -43,20 +45,26 @@ export function TokenStrip() {
   const singleKeys = useStore((st) => st.singleKeys);
 
   const record = dataset?.records[index];
+  // Tokenized again only when what the tokens depend on changes, so a change elsewhere in the
+  // analysis context doesn't take the focus off the token in hand.
+  const { options, tokenMetric } = context;
+  const request = datasetPath && modelReady && loaded && record && !context.error
+    ? tokensKey(datasetPath, index, record, loaded, options, tokenMetric)
+    : null;
 
   useEffect(() => {
     setData(null);
     setError(null);
-    if (!datasetPath || !modelReady || !record || context.error) return;
+    if (request === null || !datasetPath) return;
     let cancelled = false;
-    api.tokenize({ dataset: datasetPath, index, metric: context.tokenMetric, ...context.options }).then(
+    api.tokenize({ dataset: datasetPath, index, metric: tokenMetric, ...options }).then(
       (d) => !cancelled && setData(d),
       (e: Error) => !cancelled && setError(e.message),
     );
     return () => {
       cancelled = true;
     };
-  }, [datasetPath, index, modelReady, context.key, context.tokenMetric.kind, record]);
+  }, [request]);
 
   if (!dataset || !record) {
     return (

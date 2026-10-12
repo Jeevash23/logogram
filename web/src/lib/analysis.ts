@@ -1,5 +1,5 @@
 import type { AnalysisOptions } from "../api/client";
-import type { DatasetDetail, MetricSpec, ModelInfo, ModelRef, ModelStatus, PredictionSettings, Spec } from "../api/types";
+import type { DatasetDetail, MetricSpec, ModelInfo, ModelRef, ModelStatus, PredictionSettings, PromptRecord, Spec } from "../api/types";
 import { metricOf } from "./buildSpec";
 import { formTokenization, type FormState } from "./formState";
 import { modelRefOf, sameDevice } from "./spec";
@@ -18,6 +18,21 @@ export function sameModel(model: ModelRef, info: ModelInfo): boolean {
 /** What changes how prompts are tokenized: when it changes, they are read again. */
 export function tokenizationKey(options: Pick<AnalysisOptions, "prepend_bos" | "chat_template">): string {
   return JSON.stringify([options.prepend_bos, options.chat_template ?? null]);
+}
+
+/** What one prompt pair's tokens depend on, and nothing else: the pair, the loaded model, the
+ * dataset's hash, how prompts are tokenized and the metric's kind (whether answers of several
+ * tokens can be read). A change elsewhere in the analysis context, such as the batch size or the
+ * prompt limit, or a reloaded copy of the same prompts, leaves the tokens as they are. */
+export function tokensKey(
+  datasetPath: string,
+  index: number,
+  record: PromptRecord,
+  loaded: ModelInfo,
+  options: AnalysisOptions,
+  metric: MetricSpec,
+): string {
+  return JSON.stringify([datasetPath, index, record, modelRefOf(loaded), options.dataset_sha256 ?? null, tokenizationKey(options), metric.kind]);
 }
 
 export function predictionSettingsKey(s: PredictionSettings): string {
