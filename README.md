@@ -677,7 +677,12 @@ run costs; a graph of more than 100,000 edges, more than 10 million per-prompt v
 that won't fit in memory is refused with what to change. **Verify top 20 by path patching**
 measures the strongest edges one at a time (each sender path-patched into its receiver alone,
 every other head and MLP held) and shows each edge's estimate beside its measurement, with their
-rank correlation.
+rank correlation. On the 32 IOI prompts with GPT-2 small, on two CPU threads, one gradient takes
+about a minute and 8 steps of integrated gradients three and a half; path patching the 50
+strongest edges takes four to six. Their rank correlation with the estimates is 0.89 (47 of 50
+with the same sign), and 0.93 with integrated gradients (49 of 50). One gradient misses the
+embeddings' edge into the first MLP (estimated −0.05, path patching 0.99), which integrated
+gradients find (0.67).
 
 The **faithfulness curve** keeps the k strongest edges as a circuit, for each k you choose: the
 receiver prompts run with only those edges carrying the source prompt's values (`"patch":
@@ -687,11 +692,15 @@ chosen edges close. Edge patching is exact: each receiver reads its own input pl
 patched edge into it, the sender's output on the source prompt minus its output in that run, so
 patching every edge reproduces the source run and patching none the receiver run (tests check
 both, and a run says how far its every-edge pass is from the source run). Each k costs one patched
-forward pass per batch, and one more per random draw. Edge attribution needs heads that each write
-into the residual stream and receivers that can each read their own copy of it; Logogram measures
-both when a run starts, and refuses models that normalize after combining heads (Gemma 2, OLMo 2)
-or whose heads share keys and values (grouped-query attention, as in Llama and Qwen), which it
-doesn't build edges for yet.
+forward pass per batch, and one more per random draw. In the IOI example, with every edge but the
+chosen carrying the corrupt prompts' values, the 1,000 strongest edges (3% of the graph) keep 0.80
+of the behavior [0.74, 0.86] and the 3,000 strongest 0.96, where as many edges chosen at random
+keep none of it.
+
+Edge attribution needs heads that each write into the residual stream and receivers that can each
+read their own copy of it. Logogram measures both when a run starts, and refuses models that
+normalize after combining heads (Gemma 2, OLMo 2) or whose heads share keys and values
+(grouped-query attention, as in Llama and Qwen), which it doesn't build edges for yet.
 
 **Steering** adds a direction to the residual stream and measures what it does. At each steered
 site (one residual stream state per layer, or chosen ones, at one token of each prompt) the
