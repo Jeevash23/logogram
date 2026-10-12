@@ -59,7 +59,8 @@ def test_every_spec_field_is_described(pages):
         for cls in vars(spec).values()
         if inspect.isclass(cls) and issubclass(cls, BaseModel) and cls.__module__ == spec.__name__
     ]
-    reachable = [cls for cls in models if cls is not spec._Strict]
+    # Private helpers (the base class, a chat template read on its own) aren't fields of a spec.
+    reachable = [cls for cls in models if not cls.__name__.startswith("_")]
     for cls in reachable:
         for name, info in cls.model_fields.items():
             assert f"| `{name}`" in page, f"{cls.__name__}.{name} is missing from the spec page"
