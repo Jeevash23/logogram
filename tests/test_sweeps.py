@@ -24,7 +24,7 @@ from logogram.backends.base import BackendError
 from logogram.backends.transformer_lens import TransformerLensBackend
 from logogram.cli import app as cli
 from logogram.compare import site_key, spec_differences
-from logogram.datasets import write_dataset
+from logogram.datasets import load_dataset, write_dataset
 from logogram.history import delete_run
 from logogram.ioi import generate_ioi
 from logogram.runner import run_spec
@@ -283,6 +283,13 @@ def test_verdicts_say_which_sites_keep_their_sign_and_size():
     assert alone["verdict"] == "unknown" and alone["spread"]["sd"] is None
 
 
+def _reversed(project: Any) -> None:
+    """datasets/reversed.jsonl: ioi.jsonl's prompts in reverse order. Another file, with the gap
+    ioi.jsonl has on the tiny model whatever its weights (which change with library versions)."""
+    records = load_dataset(project.datasets_dir / "ioi.jsonl")
+    write_dataset(project.dataset_file("reversed.jsonl"), records[::-1])
+
+
 def test_the_command_line_sweeps_seeds_and_datasets(
     tiny_backend, project, spec_factory, quiet, monkeypatch, tmp_path
 ):
@@ -326,13 +333,15 @@ def test_the_command_line_sweeps_seeds_and_datasets(
     assert {r["run"] for r in rows if r["value"] == "0"} == {original.run_id}
 
     # A spec file, swept over datasets: every value runs, and none stands in.
+    _reversed(project)
     spec_file = project.root / "datasets.json"
     spec_file.write_text(spec_factory(name="Prompts", **QUICK).to_json())
     result = CliRunner().invoke(
-        cli, ["sweep", str(spec_file), "--datasets", "ioi.jsonl,datasets/mixed.jsonl", "--top", "2"]
+        cli,
+        ["sweep", str(spec_file), "--datasets", "ioi.jsonl,datasets/reversed.jsonl", "--top", "2"],
     )
     assert result.exit_code == 0, result.output
-    assert "over datasets datasets/ioi.jsonl, datasets/mixed.jsonl" in result.output
+    assert "over datasets datasets/ioi.jsonl, datasets/reversed.jsonl" in result.output
     made = [
         r
         for r in project.list_runs()
@@ -340,7 +349,7 @@ def test_the_command_line_sweeps_seeds_and_datasets(
     ]
     assert sorted(r.derived_from.value for r in made) == [
         "datasets/ioi.jsonl",
-        "datasets/mixed.jsonl",
+        "datasets/reversed.jsonl",
     ]
     assert all(r.derived_from.run is None and r.derived_from.original is None for r in made)
 
@@ -421,13 +430,14 @@ def test_the_python_api_sweeps_and_its_table_reports_the_runs_own_numbers(
 
 def test_failed_and_missing_runs_are_missing_never_zero(tiny_backend, project, spec_factory, quiet):
     original = lg.run(spec_factory(name="Prompts", **QUICK), project, model=tiny_backend)
+    _reversed(project)
     write_dataset(project.dataset_file("third.jsonl"), generate_ioi(12, seed=5))
     write_dataset(project.dataset_file("fourth.jsonl"), generate_ioi(12, seed=6))
     plan = plan_sweep(
         project,
         original.spec,
         "dataset.path",
-        ["ioi.jsonl", "mixed.jsonl", "third.jsonl", "fourth.jsonl"],
+        ["ioi.jsonl", "reversed.jsonl", "third.jsonl", "fourth.jsonl"],
         original=project.run_listing(original.id),
     )
     # The third dataset changes after the sweep pinned it: its run fails, as a pinned spec should.

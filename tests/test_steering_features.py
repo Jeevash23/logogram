@@ -489,15 +489,19 @@ def test_a_steering_run_keeps_what_the_model_said_and_shows_it(
     from logogram.server.security import SecurityConfig
 
     sae = exact_sae(tmp_path / "exact", tiny_backend.info.d_model)
+    prompts = _prompts(tiny_backend, project)
+    train_at, _ = split_pairs(len(prompts), 0.5, 0)
+    # One that fires at the last token of the training pairs, whatever the tiny model's weights.
+    f = int(_training_activations(tiny_backend, sae, prompts, train_at).sum(0).argmax())
     spec = spec_factory(
         sae=SAE_REF,
-        experiment=_steering(3, continuations={"prompts": 2, "tokens": 4}),
+        experiment=_steering(f, continuations={"prompts": 2, "tokens": 4}),
         scope=_at("resid_pre", 1),
     )
     outcome = run_spec(spec, project, backend=tiny_backend, sae=sae)
     assert outcome.status == "finished", outcome.manifest.get("error")
     feature = outcome.summary["steering"]["feature"]
-    assert feature["feature"] == 3 and feature["sae"] == SAE_REF
+    assert feature["feature"] == f and feature["sae"] == SAE_REF
 
     monkeypatch.setattr("platformdirs.user_config_path", lambda *a, **k: tmp_path / "config")
     monkeypatch.setattr("logogram.project.config_dir", lambda: tmp_path / "config")
@@ -514,12 +518,12 @@ def test_a_steering_run_keeps_what_the_model_said_and_shows_it(
     assert said == lg.load_run(project, outcome.run_id).continuations()
 
     page = client.get(f"/api/runs/{outcome.run_id}/report.html", headers=headers).text
-    assert "What the steered model says" in page and "Strength 1: feature 3" in page
+    assert "What the steered model says" in page and f"Strength 1: feature {f}" in page
     first = said["prompts"][0]["unsteered"]["tokens"][0].replace(" ", "·")
     assert f'<span class="tok">{first}</span>' in page
     methods = client.get(f"/api/runs/{outcome.run_id}/methods", headers=headers).json()["text"]
     for words in (
-        "decoder direction W_dec[3] of feature 3 of the SAE local/exact at revision test",
+        f"decoder direction W_dec[{f}] of feature {f} of the SAE local/exact at revision test",
         "the residual stream entering layer 1",
         "strength 1 is the feature's typical activation",
         f"The typical activation was {feature['activations'][0]:.4g}",
@@ -527,7 +531,7 @@ def test_a_steering_run_keeps_what_the_model_said_and_shows_it(
         "the generated tokens weren't steered themselves",
     ):
         assert words in methods
-    assert "along SAE feature 3" in outcome.summary["description"]
+    assert f"along SAE feature {f}" in outcome.summary["description"]
 
 
 # -- continuing your text --------------------------------------------------------------------

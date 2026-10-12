@@ -101,17 +101,30 @@ def _titles(queue: list[dict[str, Any]]) -> list[str]:
 
 def _settled(client, timeout: float = 120) -> dict[str, dict[str, Any]]:
     """The runs, by name, once nothing is running or waiting: the queue is empty and the last job
-    has let go of the server (a run is listed as ended a moment before that)."""
+    has let go of the server and of the queue (a run is listed as ended a moment before that)."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         state = client.get("/api/state", headers=HEADERS).json()
         job = state["job"]
-        if not state["queue"] and (job is None or job["status"] != "running"):
+        idle = state["queue_status"]["state"] in ("idle", "paused")
+        if not state["queue"] and idle and (job is None or job["status"] != "running"):
             runs = client.get("/api/runs", headers=HEADERS).json()
             if all(r["status"] != "running" for r in runs):
                 return {r["name"]: r for r in runs}
         time.sleep(0.05)
     raise AssertionError("the queue did not settle")
+
+
+def _told(events: list[tuple[str, dict[str, Any]]], timeout: float = 30) -> list[dict[str, Any]]:
+    """The queue's events, once the last of them says it is idle: the tabs hear it a moment after
+    the server lets go of the queue."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        told = [data for kind, data in events if kind == "queue"]
+        if told and told[-1]["state"] == "idle":
+            return told
+        time.sleep(0.02)
+    raise AssertionError("the tabs were never told the queue is idle")
 
 
 def test_queueing_with_nothing_running_starts_the_run(client, ready, events, spec_factory):
@@ -145,7 +158,7 @@ def test_runs_queued_while_one_runs_start_in_order(client, ready, held, events, 
     assert [runs[name]["status"] for name in ("First", "Second", "Third")] == ["finished"] * 3
     # Each change was told with the whole queue and how it stood, for this project's tabs: its
     # runs waited for the first one, ran one at a time, and the queue went idle once empty.
-    told = [data for kind, data in events if kind == "queue"]
+    told = _told(events)
     expected = [
         (["Second"], "waiting"),
         (["Second", "Third"], "waiting"),
@@ -218,7 +231,7 @@ def test_a_queued_run_that_cant_start_is_skipped_with_the_reason(
             "error": "gone.jsonl isn't a regular file inside the project.",
         }
     ]
-    told = [_titles(data["runs"]) for kind, data in events if kind == "queue"]
+    told = [_titles(data["runs"]) for data in _told(events)]
     assert told[-3:] == [["Next"], [], []]  # Next leaves the queue as it starts, then it idles
 
 

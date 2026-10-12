@@ -78,8 +78,9 @@ test("a sweep over a seed: started from a run, read across its values, reached f
   const tab = (name: string) => page.getByRole("button", { name, exact: true });
   // The tab follows the project it was switched to.
   await expect(page.getByRole("button", { name: new RegExp(project.name) }).first()).toBeVisible();
-  await tab("Evidence").click();
-  await tab("Results").click();
+  // The run started and ended outside this tab, which may have opened the project before it
+  // existed: the run's link opens it.
+  await page.goto(`/?token=browser-test-token#/results/${encodeURIComponent(runId)}`);
   await expect(main.getByRole("heading", { level: 1, name: "Donors" })).toBeVisible();
 
   // The dialog: the run's own donor seed comes first, and stands in for itself.
