@@ -1532,13 +1532,13 @@ def queue_clear(
     typer.echo("Cleared the queue." if readable else "Cleared the saved queue.")
 
 
-def _queued_folder(project: Any, item: Any) -> str:
-    """The folder a queued run runs in: its draft's, or a new one. What the app checks before a
-    queued run starts is checked first, so a run that can't start leaves no folder behind."""
+def _queued_folder(project: Any, item: Any) -> str | None:
+    """The folder a queued run runs in: its draft's, or None for a new one, which the run makes
+    as it starts. What the app checks before a queued run starts is checked first, so a run that
+    can't start leaves no folder behind."""
     project.resolve_dataset(item.spec.dataset.path)
     if item.draft_id is None:
-        run_id, _ = project.new_run_dir(item.spec.name)
-        return run_id
+        return None
     folder = project.run_dir(item.draft_id)
     project.readable(folder / "spec.json")
     if (folder / "manifest.json").exists():
@@ -1559,6 +1559,7 @@ def queue_run(
     too. A run that fails doesn't stop the queue. Ctrl+C stops the run in progress (it keeps
     what finished) and leaves the rest queued. The app can't run the queue at the same time."""
     from logogram import runqueue
+    from logogram.runner import model_matches
     from logogram.spec import describe_experiment
 
     project = _open_project(project_dir)
@@ -1568,6 +1569,8 @@ def queue_run(
         raise _fail(str(exc)) from exc
     ended: dict[str, int] = {}
     backend = None
+    # A run taken out of the queue that hasn't started yet: Ctrl+C puts it back.
+    taken: runqueue.Queued | None = None
 
     def left() -> str:
         try:
@@ -1585,19 +1588,27 @@ def queue_run(
             if not queued:
                 break
             item = queued[0]
+            # It starts: out of the queue first, so a run taken out meanwhile (in the app, say)
+            # never starts.
+            if runqueue.remove_from_queue(project, item.id) is None:
+                continue
+            taken = item
             done = sum(ended.values())
             typer.echo(f"\n[{done + 1} of {done + len(queued)}] {item.title}")
             typer.echo(f"  {describe_experiment(item.spec)} · {item.spec.model.id}")
             try:
                 run_id = _queued_folder(project, item)
             except (ValueError, OSError) as exc:
-                runqueue.remove_from_queue(project, item.id)
+                taken = None
                 ended["skipped"] = ended.get("skipped", 0) + 1
                 why = exc.strerror if isinstance(exc, OSError) and exc.strerror else str(exc)
                 typer.echo(f"  It couldn't start and left the queue: {why}", err=True)
                 continue
-            # It has started: it isn't queued any more.
-            runqueue.remove_from_queue(project, item.id)
+            if backend is not None and not model_matches(backend, item.spec.model):
+                backend.close()  # another model: make room for it
+                backend = None
+            # From here Ctrl+C is the run's: it is recorded as cancelled, in its folder.
+            taken = None
             outcome = _run_spec(
                 project,
                 item.spec,
@@ -1611,8 +1622,11 @@ def queue_run(
             ended[outcome.status] = ended.get(outcome.status, 0) + 1
             if outcome.status == "finished":
                 seconds = outcome.manifest.get("wall_time_s")
-                typer.echo(f"  Finished in {seconds} s: experiments/{run_id}")
+                typer.echo(f"  Finished in {seconds} s: experiments/{outcome.run_id}")
     except KeyboardInterrupt:  # between two runs
+        if taken is not None:  # it hadn't started: back to the front of the queue
+            with contextlib.suppress(runqueue.QueueError, OSError):
+                runqueue.put_back(project, taken)
         typer.echo(f"\nStopped. {left()}: `logogram queue run` runs them.", err=True)
         raise typer.Exit(130) from None
     except typer.Exit as exc:

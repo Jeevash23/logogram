@@ -824,28 +824,28 @@ class AppState:
                     self._queue_hold = self._queue_job = None  # its project closed, or it was taken
                     return
                 try:
-                    items = runqueue.read_queue(project)
-                except QueueError:
-                    self._release_queue()  # the tabs hear why from the queue's error
-                    return
-                if not items:
-                    self._release_queue()
-                    return
-                item = items[0]
-                failure: Exception | None = None
-                try:
-                    self._queue_job = self.run_spec_job(
-                        item.spec, item.derived_from, item.draft_id
-                    ).id
-                except Exception as exc:  # noqa: BLE001 - reported, and the next run is tried
-                    failure = exc
-                # Only now, once the job has taken its place: the queue and the job never both
-                # look idle while a run starts.
-                try:
-                    runqueue.remove_from_queue(project, item.id)
+                    # Under the queue's lock: no other process changes the queue between reading
+                    # its first run, starting it and taking it out.
+                    with runqueue.locked(project):
+                        items = runqueue.read_queue(project)
+                        if not items:
+                            self._release_queue()
+                            return
+                        item = items[0]
+                        failure: Exception | None = None
+                        try:
+                            self._queue_job = self.run_spec_job(
+                                item.spec, item.derived_from, item.draft_id
+                            ).id
+                        except Exception as exc:  # noqa: BLE001 - reported, and the next is tried
+                            failure = exc
+                        # Only now, once the job has taken its place: the queue and the job never
+                        # both look idle while a run starts.
+                        runqueue.remove_from_queue(project, item.id)
                 except (QueueError, OSError) as exc:
-                    # It would start again and again: stop running the queue instead.
-                    log.warning("A queued run couldn't leave the queue: %s", _reason(exc))
+                    # Unreadable (the tabs hear why from the queue's error), or a run that would
+                    # start again and again: stop running the queue instead.
+                    log.warning("The queue stops: %s", _reason(exc))
                     self._release_queue()
                     return
                 if failure is not None:

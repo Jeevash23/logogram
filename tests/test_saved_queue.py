@@ -492,3 +492,25 @@ def test_ctrl_c_stops_the_queue_and_keeps_the_rest(
     statuses = {r.name: r for r in project.list_runs()}
     assert statuses["First"].status == "finished"
     assert statuses["Second"].status == "cancelled" and statuses["Second"].partial is not None
+
+
+def test_ctrl_c_before_a_queued_run_starts_puts_it_back(project, spec_factory, monkeypatch):
+    from logogram import cli as commands
+
+    made = commands._queued_folder
+
+    def interrupted_as_it_starts(project: Any, item: Any) -> str:
+        made(project, item)  # its folder is made, and then Ctrl+C comes before the run starts
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(commands, "_queued_folder", interrupted_as_it_starts)
+    for name in ("First", "Second"):
+        runqueue.add_to_queue(project, _spec(spec_factory, name))
+    before = runqueue.read_queue(project)
+    result = runner.invoke(cli, ["queue", "run", "--project", str(project.root)])
+    assert result.exit_code == 130, result.output
+    assert "Stopped. 2 runs are still queued: `logogram queue run` runs them." in result.output
+    # Back at the front of the queue, as it was, and no folder is left behind for it.
+    assert runqueue.read_queue(project) == before
+    assert project.list_runs() == []
+    assert runqueue.queue_runner(project) is None

@@ -295,6 +295,15 @@ def remove_from_queue(project: Project, queued_id: str) -> Queued | None:
         return item
 
 
+def put_back(project: Project, item: Queued) -> None:
+    """Put a run taken out of the queue to start back at its front, as it was: it didn't start
+    (Ctrl+C came first)."""
+    with locked(project) as folder:
+        runs = _read(project)
+        if all(q.id != item.id for q in runs):
+            _write(project, folder, [item, *runs])
+
+
 def clear_queue(project: Project) -> int:
     """Empty the queue, even one whose saved file can't be read. Returns how many runs it held
     (0 for an unreadable one)."""
