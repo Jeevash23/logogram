@@ -570,6 +570,81 @@ def test_neurons_without_a_sum_have_no_direct_effect(tiny_backend, project):
 # -- scopes, sites and what they say -----------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("site", "message"),
+    [
+        ({"kind": "q", "layer": 1}, "a q site needs a query head index"),
+        ({"kind": "k", "layer": 1}, "a k site needs a key/value head index"),
+        ({"kind": "neuron", "layer": 1}, "a neuron site needs a neuron index"),
+        ({"kind": "neuron", "layer": 1, "neuron": 3, "head": 0}, "a neuron site has no head index"),
+        ({"kind": "head", "layer": 1, "head": 0, "neuron": 3}, "a head site has no neuron index"),
+        ({"kind": "mlp_out", "layer": 1, "neuron": 3}, "a mlp_out site has no neuron index"),
+        ({"kind": "neuron", "layer": 1, "neuron": -1}, "greater than or equal to 0"),
+    ],
+)
+def test_each_new_site_kind_has_its_own_required_field(site, message):
+    from pydantic import ValidationError
+
+    from logogram.spec import Site
+
+    with pytest.raises(ValidationError, match=message):
+        Site.model_validate({**site, "position": LAST})
+
+
+def test_new_scopes_and_universes_are_checked_and_described(spec_factory):
+    from pydantic import ValidationError
+
+    from logogram.spec import describe_experiment
+
+    with pytest.raises(ValidationError, match="must not repeat"):
+        spec_factory(scope={"kind": "neurons", "layers": [1, 1], "position": LAST})
+    with pytest.raises(ValidationError, match="at least 1"):
+        spec_factory(scope={"kind": "neurons", "layers": [], "position": LAST})
+    with pytest.raises(ValidationError, match="input"):
+        spec_factory(scope={"kind": "head_inputs", "input": "z", "position": LAST})
+    for universe, message in (
+        (["neuron", "mlp_out"], "made from its neurons"),
+        (["head", "q"], "made from the heads' queries"),
+    ):
+        with pytest.raises(ValidationError, match=message):
+            spec_factory(
+                scope={
+                    "kind": "site_sets",
+                    "universe": universe,
+                    "sets": [{"label": "all", "sites": [], "complement": True}],
+                }
+            )
+    keys = spec_factory(scope={"kind": "head_inputs", "input": "k", "position": ALL})
+    assert describe_experiment(keys) == "Patch clean → corrupt · every key, all positions"
+    neurons = spec_factory(
+        experiment={**PATCH, "kind": "attribution_patching", "method": "gradient", "steps": None},
+        scope={"kind": "neurons", "layers": [0, 1], "position": LAST},
+    )
+    assert describe_experiment(neurons) == (
+        "Attribution patching, estimated (clean → corrupt) · every MLP neuron of layers 0, 1, "
+        "the last token"
+    )
+
+
+def test_older_specs_read_and_run_as_before(spec_factory):
+    """A version 3 spec written before these sites existed reads as it was: its sites have no
+    neuron, and it writes the same spec again (with the field, as null)."""
+    from logogram.spec import Spec
+
+    spec = spec_factory(
+        scope={
+            "kind": "sites",
+            "sites": [{"kind": "head", "layer": 1, "head": 2, "position": LAST}],
+        }
+    )
+    data = spec.model_dump(mode="json")
+    for site in data["scope"]["sites"]:
+        assert site.pop("neuron") is None  # as a spec saved before neurons existed has it
+    again = Spec.model_validate(data)
+    assert again == spec
+    assert again.scope.sites[0].neuron is None
+
+
 def test_scopes_lay_out_heads_key_value_heads_and_neurons(arch_backend, tiny_backend, project):
     backend = arch_backend("llama")
     prompts = _prompts(backend, project)
@@ -700,3 +775,131 @@ def test_path_patching_and_steering_name_what_they_take(tiny_backend, project, s
     )
     with pytest.raises(ScopeError, match="neurons can't be steered"):
         run_experiment(steering, tiny_backend, _prompts(tiny_backend, project))
+
+
+# -- reports, exports and the memory estimate --------------------------------------------------
+
+ATP = {**PATCH, "kind": "attribution_patching", "method": "gradient", "steps": None}
+
+
+def test_reports_and_exports_name_each_neuron(tiny_backend, project, spec_factory):
+    from logogram.exports import results_csv, sites_csv
+    from logogram.report import figure_svg, run_report, sites_table
+
+    spec = spec_factory(experiment=ATP, scope={"kind": "neurons", "layers": [1], "position": LAST})
+    outcome = run_spec(spec, project, backend=tiny_backend)
+    assert outcome.status == "finished"
+    summary = outcome.summary
+    d_mlp = tiny_backend.info.d_mlp
+    assert summary["layout"]["kind"] == "neurons"
+    assert summary["layout"]["rows"] == [{"key": "1", "label": "1", "neurons": d_mlp}]
+    assert [s["neuron"] for s in summary["sites"]] == list(range(d_mlp))
+    page = run_report(spec, summary, outcome.manifest, outcome.run_id)
+    assert "Every neuron, layer by layer" in page
+    assert "All neurons, by mean normalized effect" in page and "Layer 1" in page
+    figure = figure_svg(spec, summary)
+    assert figure.startswith("<svg") and f"of {d_mlp} neurons measured" in figure
+    rows = sites_table(summary)
+    assert [r["neuron"] for r in rows] == list(range(d_mlp))
+    assert sites_csv(rows).splitlines()[0].split(",")[6] == "neuron"
+    header = next(iter(results_csv(outcome.folder / "results.parquet"))).strip().split(",")
+    assert "neuron" in header
+
+
+def test_a_report_of_keys_names_the_query_heads_of_each_group(arch_backend, project, spec_factory):
+    from logogram.report import run_report
+
+    backend = arch_backend("llama")
+    spec = spec_factory(
+        model={"id": "tiny-llama", "revision": "test", "device": "cpu"},
+        scope={"kind": "head_inputs", "input": "k", "position": LAST},
+    )
+    outcome = run_spec(spec, project, backend=backend)
+    assert outcome.status == "finished", outcome.manifest.get("error")
+    assert outcome.summary["model"]["n_key_value_heads"] == 2
+    page = run_report(spec, outcome.summary, outcome.manifest, outcome.run_id)
+    assert "Layer × Key/value head" in page
+    assert "query heads by key/value head: 0: 0, 1; 1: 2, 3" in page
+
+
+def test_the_memory_estimate_counts_what_a_scopes_sites_hold(tiny_backend, app_client):
+    from logogram.spec import HeadsScope, NeuronsScope
+    from logogram.system import estimate_run_memory, scope_footprint, site_bytes
+
+    shape = {
+        "n_layers": 12,
+        "n_heads": 12,
+        "n_kv_heads": 12,
+        "d_model": 768,
+        "d_head": 64,
+        "d_mlp": 3072,
+        "seq_len": 20,
+    }
+    neurons = scope_footprint(NeuronsScope(layers=[3, 4], position=LAST), **shape)
+    assert (neurons.sites, neurons.width, neurons.neuron_layers) == (6144, 3072, 2)
+    heads = scope_footprint(HeadsScope(position=ALL), **shape)
+    assert (heads.sites, heads.width, heads.neuron_layers) == (144, 768, 0)
+    held = {"prompts": 200, "bootstrap": 1000, "batch_size": 64, "seq_len": 20, "dtype": "float32"}
+    # Each site's values per prompt and bootstrap resamples, and a layer of source activations
+    # cached for every prompt: 8 · 6,144 · (5 · 200 + 6 · 1,000) + 200 · 20 · 3,072 · 4 bytes.
+    assert site_bytes(neurons, method="activation_patching", **held) == 344_064_000 + 49_152_000
+    # Attribution patching keeps a float64 product per neuron, token and prompt of a batch, with
+    # the activations and gradients it multiplies: 2 layers · 64 · 20 · 3,072 · (8 + 3 · 4).
+    assert site_bytes(neurons, method="attribution_patching", **held) == 344_064_000 + 157_286_400
+    assert site_bytes(neurons, method="activation_patching", **held) > 10 * site_bytes(
+        heads, method="activation_patching", **held
+    )
+    memory = estimate_run_memory(
+        n_layers=12,
+        n_heads=12,
+        d_model=768,
+        d_mlp=3072,
+        d_vocab=50257,
+        dtype="float32",
+        device="cpu",
+        batch_size=64,
+        seq_len=20,
+        all_layers=True,
+        footprint=neurons,
+        method="attribution_patching",
+        prompts=200,
+        bootstrap=1000,
+    )
+    assert memory.sites == 6144 and memory.site_bytes > 0
+    assert memory.total > memory.activations + memory.site_bytes
+    assert "The 6,144 sites hold about" in memory.explanation
+    # Through the server, for the loaded model.
+    client, headers = app_client
+    body = {"batch_size": 8, "seq_len": 16, "method": "activation_patching", "prompts": 100}
+    plain = client.post("/api/models/run-memory", json=body, headers=headers).json()
+    scoped = client.post(
+        "/api/models/run-memory",
+        json={
+            **body,
+            "bootstrap": 1000,
+            "scope": {"kind": "neurons", "layers": [0, 1], "position": LAST},
+        },
+        headers=headers,
+    ).json()
+    assert plain["sites"] == 0 and scoped["sites"] == 2 * tiny_backend.info.d_mlp
+    assert scoped["total"] > plain["total"]
+    bad = {**body, "scope": {"kind": "neurons", "layers": [], "position": LAST}}
+    assert client.post("/api/models/run-memory", json=bad, headers=headers).status_code == 422
+
+
+@pytest.fixture
+def app_client(tiny_backend, tmp_path, monkeypatch):
+    """The app with the tiny model loaded, and the headers its requests need."""
+    from fastapi.testclient import TestClient
+
+    from logogram.server.app import create_app
+    from logogram.server.security import SecurityConfig
+
+    monkeypatch.setattr("platformdirs.user_config_path", lambda *a, **k: tmp_path / "config")
+    monkeypatch.setattr("logogram.project.config_dir", lambda: tmp_path / "config")
+    app = create_app(SecurityConfig(token="test-token", port=8765), serve_web=False)
+    app.state.logogram.backend = tiny_backend
+    app.state.logogram.model_status = {"state": "ready"}
+    client = TestClient(app, base_url="http://127.0.0.1:8765")
+    headers = {"authorization": "Bearer test-token", "origin": "http://127.0.0.1:8765"}
+    return client, headers

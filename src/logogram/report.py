@@ -445,6 +445,22 @@ def neurons_svg(summary: dict[str, Any], value: str = "effect", unit: bool = Fal
     bound = 1.0 if unit and value == "effect" else (max(finite) if finite else 1.0)
     bound = bound or 1.0
     what = "mean normalized effect" if value == "effect" else "mean change in the metric"
+
+    def strongest_of(sites: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return sorted(
+            (site for site in sites if mean(site) is not None),
+            key=lambda site: (-abs(mean(site) or 0.0), site["index"]),
+        )[:NEURONS_LISTED]
+
+    # The listed neurons' intervals share one track, wide enough for every one of them.
+    listed = [site for r in range(len(rows)) for site in strongest_of(by_row.get(r, []))]
+    reach = [
+        abs(x)
+        for site in listed
+        for x in (site[value]["lo"], site[value]["hi"], mean(site))
+        if x is not None and math.isfinite(x)
+    ]
+    track = max(reach) if reach else bound
     esc = html.escape
     left, hist_w, hist_h, gap = 72, 300, 64, 28
     list_x = left + hist_w + 36
@@ -499,13 +515,10 @@ def neurons_svg(summary: dict[str, Any], value: str = "effect", unit: bool = Fal
             f"{len(means):,} of {len(sites):,} neurons measured</text>"
         )
         # The strongest neurons, each with its interval on a shared track.
-        strongest = sorted(
-            (site for site in sites if mean(site) is not None),
-            key=lambda site: (-abs(mean(site) or 0.0), site["index"]),
-        )[:NEURONS_LISTED]
+        strongest = strongest_of(sites)
 
         def at(x: float) -> float:
-            return track_x + (max(-bound, min(bound, x)) + bound) / (2 * bound) * track_w
+            return track_x + (max(-track, min(track, x)) + track) / (2 * track) * track_w
 
         parts.append(
             f'<line x1="{at(0):.1f}" y1="{y0}" x2="{at(0):.1f}" '
@@ -531,6 +544,15 @@ def neurons_svg(summary: dict[str, Any], value: str = "effect", unit: bool = Fal
                 f'stroke="currentColor" stroke-width="0.75"><title>{esc(site["label"])}: '
                 f"{_fmt(m)} [{_fmt(lo)} to {_fmt(hi)}]</title></circle>"
             )
+    # The track's ends, under the last layer's list.
+    end_y = top + row_h * (len(rows) - 1) + NEURONS_LISTED * 13 + 12
+    parts.append(
+        f'<text x="{track_x}" y="{end_y}" fill="currentColor">{_fmt(-track, 2)}</text>'
+        f'<text x="{track_x + track_w / 2:.1f}" y="{end_y}" text-anchor="middle" '
+        'fill="currentColor">0</text>'
+        f'<text x="{track_x + track_w}" y="{end_y}" text-anchor="end" fill="currentColor">'
+        f"{_fmt(track, 2)}</text>"
+    )
     parts.append(_legend(left, top + row_h * len(rows) + 4, bound, what))
     parts.append("</svg>")
     return "".join(parts)

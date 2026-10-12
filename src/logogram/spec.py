@@ -1147,8 +1147,8 @@ def describe_experiment(spec: Spec) -> str:
         n = len(scope.sets)
         where = f"{n} set{'s' if n != 1 else ''} of sites, each at once"
     elif isinstance(scope, HeadInputsScope):
-        what = {"q": "every head's query", "k": "every key", "v": "every value"}[scope.input]
-        where = f"{what}, {describe_position(scope.position)}"
+        inputs = {"q": "every head's query", "k": "every key", "v": "every value"}[scope.input]
+        where = f"{inputs}, {describe_position(scope.position)}"
     elif isinstance(scope, NeuronsScope):
         layers = ", ".join(str(layer) for layer in scope.layers)
         named = "layer" if len(scope.layers) == 1 else "layers"
