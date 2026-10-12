@@ -1,7 +1,7 @@
 """Command line: ``logogram`` (start the app), ``open``, ``run``, ``doctor``, ``env``, ``serve``,
 commands that read and check runs without the app: ``list``, ``show``, ``compare``, ``diff``,
-``verify``, ``robustness``, ``export``, ``validate``, ``tasks`` and ``generate``, and commands
-that manage them: ``rename``, ``star``, ``archive`` and ``delete``."""
+``verify``, ``robustness``, ``sweep``, ``export``, ``validate``, ``tasks`` and ``generate``, and
+commands that manage them: ``rename``, ``star``, ``archive`` and ``delete``."""
 
 from __future__ import annotations
 
@@ -1101,6 +1101,210 @@ def robustness(
     )
     typer.echo("")
     _print_comparison(compare_runs(project, run_id, outcome.run_id))
+
+
+@app.command()
+def sweep(
+    source: Annotated[
+        str,
+        typer.Argument(
+            metavar="SPEC_OR_RUN",
+            help="A spec file, or a run (its id or folder). A finished run stands in for its own "
+            "value, which isn't run again.",
+        ),
+    ],
+    field: Annotated[
+        str | None,
+        typer.Option(
+            help="The field to vary, dotted as in the spec: statistics.seed, "
+            "experiment.baseline.seed (resample ablation's donors), experiment.seed (steering's "
+            "split) or scope.seed (the features' split). Give its values with --values."
+        ),
+    ] = None,
+    values: Annotated[
+        str | None,
+        typer.Option(help="The field's values, in order, separated by commas, such as 0,1,2,3."),
+    ] = None,
+    datasets: Annotated[
+        str | None,
+        typer.Option(
+            help="Sweep the dataset instead: dataset files of the project, in order, separated by "
+            "commas (a bare name is looked for in datasets/)."
+        ),
+    ] = None,
+    revisions: Annotated[
+        str | None,
+        typer.Option(
+            help="Sweep the model's revision instead: commits, tags or branches of its Hugging "
+            "Face repository, in order, separated by commas, such as step1000,step2000."
+        ),
+    ] = None,
+    top: Annotated[
+        int, typer.Option(min=0, max=500, help="How many of the strongest sites to show (0: all).")
+    ] = 10,
+    choose: Annotated[
+        str,
+        typer.Option(help="Choose the strongest sites on the first value (first) or on all (all)."),
+    ] = "first",
+    csv_path: Annotated[
+        Path | None,
+        typer.Option("--csv", help="Also write the table, one row per site and value, as CSV."),
+    ] = None,
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+    verbose: Annotated[
+        bool, typer.Option("--verbose", "-v", help="If a run fails, print its traceback.")
+    ] = False,
+) -> None:
+    """Run one spec across several values of one choice (seeds, datasets or revisions), one run
+    after another, and show which of its strongest sites keep their sign and size across them."""
+    from logogram.spec import Spec
+    from logogram.sweeps import SweepError, plan_sweep, run_sweep, value_name
+
+    given = [x for x in (field is not None or values is not None, datasets, revisions) if x]
+    if len(given) != 1:
+        raise _fail(
+            "choose what to sweep: --field FIELD --values A,B,..., --datasets A,B,... or "
+            "--revisions A,B,..."
+        )
+    if choose not in ("first", "all"):
+        raise _fail("--choose is first (the sites strongest at the first value) or all.")
+    path = Path(source)
+    project = _open_project(project_dir, path if path.exists() else None)
+    original = None
+    try:
+        if path.is_file():
+            spec = Spec.from_path(project.readable(path.absolute()))
+            # A run's own spec.json is that run.
+            folder = path.resolve().parent
+            if folder.parent == project.experiments_dir.resolve():
+                original = project.run_listing(folder.name)
+        else:
+            run_id = _run_id(project, source)
+            spec = Spec.from_path(project.readable(project.run_dir(run_id) / "spec.json"))
+            original = project.run_listing(run_id)
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
+    if datasets is not None:
+        name, items = "dataset.path", [_project_path(project, d) for d in _listed(datasets)]
+    elif revisions is not None:
+        name, items = "model.revision", _listed(revisions)
+    else:
+        if field is None or values is None:
+            raise _fail("give the field with --field and its values with --values.")
+        name, items = field, _listed(values)
+        if field.endswith("seed"):
+            try:
+                items = [int(v) for v in items]
+            except ValueError:
+                raise _fail(
+                    "--values for a seed are whole numbers separated by commas, such as 0,1,2,3."
+                ) from None
+    try:
+        plan = plan_sweep(project, spec, name, items, original=original)
+    except SweepError as exc:
+        raise _fail(str(exc)) from exc
+
+    words = plan.field
+    shown = ", ".join(str(v) for v in plan.values)
+    typer.echo(f"Sweep {plan.id}: {spec.name}, over {words.plural} {shown}")
+    if plan.stands_in is not None and plan.original is not None:
+        stood = value_name(words, plan.values[plan.stands_in])
+        typer.echo(f"  {plan.original} stands in for {stood}: it isn't run again.")
+    total = sum(1 for r in plan.runs if r.spec is not None)
+    done = [0]
+    printer = _ProgressPrinter()
+
+    def starting(item: Any) -> None:
+        done[0] += 1
+        printer.close()
+        typer.echo(f"Running {value_name(words, item.value)} ({done[0]} of {total})", err=True)
+
+    try:
+        outcomes, _ = run_sweep(plan, project, on_event=printer, on_run=starting)
+    except KeyboardInterrupt:
+        printer.close()
+        typer.echo(
+            "\nInterrupted. The run is recorded as cancelled; the values after it didn't run.",
+            err=True,
+        )
+        raise typer.Exit(130) from None
+    printer.close()
+    failed = [o for o in outcomes if o is not None and o.status != "finished"]
+    for outcome in failed:
+        typer.echo(f"{outcome.run_id} {outcome.status}: {outcome.manifest.get('error')}", err=True)
+        if outcome.traceback and verbose:
+            typer.echo(f"\n{outcome.traceback.rstrip()}", err=True)
+    _show_sweep(project, plan.id, choose, top, csv_path)
+    if failed:
+        raise typer.Exit(1)
+
+
+def _listed(text: str) -> list[str]:
+    return [part.strip() for part in text.split(",") if part.strip()]
+
+
+def _project_path(project: Any, value: str) -> str:
+    """A dataset named on the command line, as specs name it: relative to the project. A path
+    from the current folder that leads into the project is taken from the project's root."""
+    path = Path(value)
+    candidate = path if path.is_absolute() else Path.cwd() / path
+    if not (project.root / value).exists() and candidate.exists():
+        try:
+            return candidate.resolve().relative_to(project.root.resolve()).as_posix()
+        except ValueError:
+            raise _fail(f"{value} isn't inside the project {project.meta.name}.") from None
+    return value
+
+
+def _show_sweep(project: Any, sweep_id: str, choose: str, top: int, csv_path: Path | None) -> None:
+    """Print a sweep's table: its strongest sites' means at each value, and whether they hold."""
+    from logogram.exports import sweep_csv
+    from logogram.sweeps import sweep_table, table_rows
+
+    table = sweep_table(project, sweep_id, choose=choose, top=top)  # type: ignore[arg-type]
+    typer.echo(f"\n{table['headline']}.")
+    if table["problem"]:
+        typer.echo(table["problem"])
+    else:
+        typer.echo(table["chosen"])
+    values = table["values"]
+    for value in values:
+        run = value["run"] or "no run"
+        stands = ", the run it was made from" if value["original"] else ""
+        typer.echo(f"  {table['label']} {value['label']}: {run}{stands} · {value['status']}")
+    shown = values[:8]
+    if table["sites"]:
+        width = max(12, *(len(s["label"]) for s in table["sites"])) + 2
+        cell = max(9, *(min(14, len(v["label"])) for v in shown)) + 1
+        head = "".join(f"{v['label'][: cell - 1]:>{cell}}" for v in shown)
+        typer.echo(f"\n{'site':<{width}}{head}  across values")
+        for site in table["sites"]:
+            means = "".join(
+                f"{_fmt((site['points'][v['index']] or {}).get('mean')):>{cell}}" for v in shown
+            )
+            typer.echo(f"{site['label']:<{width}}{means}  {_VERDICTS[site['verdict']]}")
+        if len(values) > len(shown):
+            typer.echo(f"… and {len(values) - len(shown)} more values: --csv writes them all.")
+        elif csv_path is None:
+            typer.echo("Each site's interval at every value: --csv FILE writes them.")
+        typer.echo("")
+        for site in table["sites"]:
+            if site["verdict"] != "holds":
+                typer.echo(f"{site['label']}: {site['text']}")
+        typer.echo(table["spread"])
+    for note in table["notes"]:
+        typer.echo(f"Note: {note}")
+    if csv_path is not None:
+        csv_path.write_text(sweep_csv(table_rows(table)), encoding="utf-8")
+        typer.echo(f"Wrote {csv_path}", err=True)
+
+
+_VERDICTS = {
+    "holds": "keeps sign and size",
+    "size": "changes size",
+    "sign": "flips sign",
+    "unknown": "too few values",
+}
 
 
 @app.command()

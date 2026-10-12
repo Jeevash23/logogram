@@ -269,6 +269,7 @@ logogram compare RUN RUN      how two runs agree, with paired differences where 
 logogram diff A B             every choice that differs between two runs or spec files
 logogram verify RUN           patch the strongest sites of an attribution patching run, and compare
 logogram robustness RUN       rerun with one choice changed (--experiment JSON, or --dtype)
+logogram sweep SPEC_OR_RUN    the same spec across seeds, datasets or revisions, one run each (--csv FILE)
 logogram export RUN           a run's per-prompt values as CSV (-o FILE; --sites, --prompt-text)
 logogram report RUN           a run as one HTML page anyone can open (-o FILE, --hardware)
 logogram methods RUN          a run's methods paragraph
@@ -306,6 +307,25 @@ Face cache (`--tokenizer openai-community/gpt2`); it never downloads one. Withou
 assumed to be single tokens, so generate the dataset again in the app once the model is loaded,
 which keeps only words that are single tokens for it.
 
+`logogram sweep` runs one spec once for each of several values of one choice, one run after
+another, then prints which of its strongest sites keep their sign and size across the values:
+
+```text
+logogram sweep RUN --field statistics.seed --values 0,1,2,3           # the bootstrap's seed
+logogram sweep RUN --field experiment.baseline.seed --values 0,1,2,3  # resample ablation's donors
+logogram sweep SPEC.json --datasets ioi-seed1.jsonl,ioi-seed2.jsonl,ioi-seed3.jsonl
+logogram sweep RUN --revisions step1000,step8000,step64000,step143000  # Pythia's checkpoints
+```
+
+Each run is an ordinary spec that differs from the original in that one field (a dataset's hash
+follows its path), and its manifest records the sweep. A finished run stands in for its own value,
+which isn't run again. A revision runs as the commit it points to when its run starts, and the
+run's spec pins that commit. The seeds a sweep can vary are the ones a spec states:
+`statistics.seed`, `experiment.baseline.seed` (resample ablation), `experiment.seed` (steering's
+split) and `scope.seed` (the features' split). Sites are chosen on the first value unless
+`--choose all` chooses them on all values; `--top N` shows more of them, and `--csv FILE` writes
+each shown site at every value.
+
 ## Python
 
 The same runs from a notebook or a script. They go through the same code as the app and
@@ -333,6 +353,8 @@ estimate = lg.run(lg.load_spec({**spec.model_dump(), "experiment": {
 checked = lg.verify_run(estimate, top=10)     # patch the strongest estimates for real
 lg.compare_runs(estimate, checked)            # rank correlation, paired differences
 lg.check_robustness(run, experiment={"kind": "ablation", "baseline": {"kind": "zero"}})
+seeds = lg.sweep(run, field="statistics.seed", values=[0, 1, 2, 3])  # one run per value
+seeds.table()        # the strongest sites at every value, and whether they keep sign and size
 
 records = lg.generate("greater_than", 200, seed=0, model=model)
 lg.write_dataset(project, "greater-than", records)
@@ -348,7 +370,9 @@ fails raises `lg.api.LogogramError` with the reason, and `lg.load_run(project, r
 reads the traceback it kept. Interrupting the kernel records the run as cancelled.
 `run.rename("Name movers")`, `run.star()` and `run.archive()` change what the history shows
 (`run.title`, `run.starred`, `run.archived`), and `lg.delete_run(project, run)` deletes a run's
-folder for good.
+folder for good. `lg.sweep` returns a sweep's runs, one per value; a run that fails keeps its
+status there and the next value runs. `sweep.summary()` holds what the app's sweep view shows,
+and `lg.load_sweep(project, sweep.id)` reads a sweep back.
 
 ## Running on a remote GPU
 

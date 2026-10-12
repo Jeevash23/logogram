@@ -62,6 +62,7 @@ from logogram.spec import (
     PredictionSettings,
     Spec,
 )
+from logogram.sweeps import SweepNotFound
 from logogram.system import SystemReport
 
 log = logging.getLogger(__name__)
@@ -425,6 +426,24 @@ class VerifyRequest(BaseModel):
     top: int = Field(default=10, ge=1, le=200)
 
 
+class SweepRequest(BaseModel):
+    """A sweep: a run (or a spec) and the values of one of its fields to run it across, in the
+    order given. logogram.sweeps checks the field and the values."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run: str | None = None
+    spec: dict[str, Any] | None = None
+    field: str = Field(min_length=1, max_length=64)
+    values: list[int | str] = Field(max_length=256)
+
+    @model_validator(mode="after")
+    def _one_source(self) -> SweepRequest:
+        if (self.run is None) == (self.spec is None):
+            raise ValueError("Sweep either a run or a spec.")
+        return self
+
+
 class AnnotateRequest(BaseModel):
     """What to change in what is said about a run (its annotations.json: the spec never changes).
     Fields left out stay as they are; a title of null or "", or the spec's own name, clears it."""
@@ -490,6 +509,7 @@ def create_app(
 
     @app.exception_handler(Missing)
     @app.exception_handler(RunNotFound)
+    @app.exception_handler(SweepNotFound)
     async def _missing(_: Request, exc: Missing) -> JSONResponse:
         return JSONResponse({"error": str(exc)}, status_code=409)
 
@@ -927,6 +947,14 @@ def create_app(
             "support_note": support_note,
             "estimate": est.to_dict(),
         }
+
+    @app.get("/api/models/revisions", response_model=M.RevisionsOut)
+    def model_revisions(id: str) -> dict[str, Any]:
+        """A model's branches and tags on Hugging Face, to sweep over (one request, when asked)."""
+        from logogram.backends import hub
+
+        revisions = hub.list_revisions(id)
+        return {"id": id, "revisions": [r.__dict__ for r in revisions]}
 
     @app.post("/api/models/run-memory", response_model=M.RunMemoryOut)
     def run_memory(body: RunMemoryRequest) -> dict[str, Any]:
@@ -1380,6 +1408,104 @@ def create_app(
         )
         return {"run_id": job.run_id, "job": job.to_dict()}
 
+    # -- sweeps: one spec across several values of one field (logogram.sweeps) ------------------
+
+    def _swept_run(project: Project, run_id: str) -> tuple[Spec, RunListing]:
+        listing = project.run_listing(run_id)
+        if listing is None:
+            raise Missing(f"There is no run {run_id}. It may have been deleted.")
+        if listing.damaged:
+            raise ValueError(listing.error or "This run's spec can't be read.")
+        return Spec.from_path(project.readable(project.run_dir(run_id) / "spec.json")), listing
+
+    def _sweep_source(project: Project, body: SweepRequest) -> tuple[Spec, RunListing | None]:
+        if body.run is None:
+            return Spec.model_validate(body.spec), None
+        return _swept_run(project, body.run)
+
+    @app.get("/api/runs/{run_id}/sweep-fields", response_model=list[M.SweepFieldOut])
+    def sweep_fields(run_id: str) -> list[dict[str, Any]]:
+        """The fields this run's spec can be swept over, with its own value of each."""
+        from logogram.sweeps import suggested_values, sweepable_fields, value_label
+
+        project = state.require_project()
+        spec, listing = _swept_run(project, run_id)
+        out = []
+        for f, current in sweepable_fields(spec):
+            suggested = suggested_values(project, spec, f, listing)
+            # A run's dataset is a saved copy: name it by the file of the project it matches.
+            shown = suggested[0] if f.kind == "dataset" and suggested else current
+            out.append(
+                {
+                    "field": f.path,
+                    "kind": f.kind,
+                    "label": f.label,
+                    "plural": f.plural,
+                    "description": f.description,
+                    "current": current,
+                    "current_label": None if shown is None else value_label(f, shown),
+                    "suggested": suggested,
+                }
+            )
+        return out
+
+    @app.post("/api/sweeps/plan", response_model=M.SweepPlanOut)
+    def plan_sweep(body: SweepRequest) -> dict[str, Any]:
+        """The runs a sweep would make, without making them: what the app shows before Queue."""
+        from logogram.sweeps import plan_sweep as plan
+
+        project = state.require_project()
+        spec, original = _sweep_source(project, body)
+        return plan(project, spec, body.field, body.values, original=original).to_dict()
+
+    @app.post("/api/sweeps", response_model=M.SweepStarted)
+    def start_sweep(body: SweepRequest) -> dict[str, Any]:
+        """Queue a sweep's runs, in the order of its values: the first starts at once when nothing
+        is running. The run it is made from stands in for its own value."""
+        from logogram.sweeps import plan_sweep as plan
+
+        project = state.require_project()
+        spec, original = _sweep_source(project, body)
+        made = plan(project, spec, body.field, body.values, original=original)
+        started: Job | None = None
+        # One hold for all of them, so they line up together, in order.
+        with state._job_lock:
+            for item in made.runs:
+                if item.spec is not None:
+                    out = state.queue_run(item.spec, derived_from=item.derived_from)
+                    if isinstance(out, Job):
+                        started = out
+        return {
+            "sweep": made.id,
+            "plan": made.to_dict(),
+            "run_id": started.run_id if started else None,
+            "job": started.to_dict() if started else None,
+            "queue": state.queued_runs(),
+        }
+
+    @app.get("/api/sweeps/{sweep_id}", response_model=M.SweepTable)
+    def get_sweep(
+        sweep_id: str, choose: Literal["first", "all"] = "first", top: int = 10
+    ) -> dict[str, Any]:
+        from logogram.sweeps import sweep_table
+
+        return sweep_table(state.require_project(), sweep_id, choose=choose, top=top)
+
+    @app.get("/api/sweeps/{sweep_id}/table.csv")
+    def export_sweep(
+        sweep_id: str, choose: Literal["first", "all"] = "first", top: int = 10
+    ) -> Response:
+        """The sweep's table, one row per site and value."""
+        from logogram.exports import sweep_csv
+        from logogram.sweeps import sweep_table, table_rows
+
+        table = sweep_table(state.require_project(), sweep_id, choose=choose, top=top)
+        return Response(
+            sweep_csv(table_rows(table)),
+            media_type="text/csv",
+            headers={"content-disposition": f'attachment; filename="sweep-{table["sweep"]}.csv"'},
+        )
+
     @app.get("/api/runs/{run_id}/derived", response_model=list[RunListing])
     def derived(run_id: str) -> list[dict[str, Any]]:
         project = state.require_project()
@@ -1573,6 +1699,7 @@ PROJECT_SCOPED = (
     "/api/drafts",
     "/api/compare",
     "/api/queue",
+    "/api/sweeps",
 )
 
 

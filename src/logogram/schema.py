@@ -7,9 +7,9 @@ the web app always have these shapes.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class _Model(BaseModel):
@@ -314,6 +314,50 @@ class DerivedFrom(_Model):
     change: str | None = None
 
 
+SweepValue = Annotated[int, Field(strict=True)] | Annotated[str, Field(min_length=1)]
+
+
+class SweepMember(_Model):
+    """A run of a sweep: the same spec run once for each of several values of one field (see
+    logogram.sweeps). Every run of the sweep records it whole, so any of them tells the rest."""
+
+    kind: Literal["sweep"]
+    # The sweep's id, which every run of it shares.
+    sweep: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+    # The field the sweep varies, dotted as in the spec ("statistics.seed"), and this run's value.
+    field: str = Field(min_length=1, max_length=64)
+    value: SweepValue
+    # This run's place among the sweep's values, and every value in the order given.
+    index: int = Field(ge=0)
+    of: int = Field(ge=2)
+    values: list[SweepValue]
+    # The run the sweep was made from (None for a sweep of a spec), and the value it stands in
+    # for, when that value is one of the sweep's: it isn't run again.
+    run: str | None = None
+    original: int | None = Field(default=None, ge=0)
+    # This run's value in words, such as "bootstrap seed 2".
+    change: str | None = None
+
+    @model_validator(mode="after")
+    def _consistent(self) -> SweepMember:
+        if len(self.values) != self.of or self.index >= self.of:
+            raise ValueError("a sweep's values must number `of`, and its index be one of them")
+        if self.values[self.index] != self.value:
+            raise ValueError("a sweep run's value must be its sweep's value at its index")
+        if self.original is not None and (
+            self.run is None or self.original >= self.of or self.original == self.index
+        ):
+            raise ValueError(
+                "the value a sweep's original run stands in for is another value of the sweep, "
+                "and needs that run"
+            )
+        return self
+
+
+# Where a run came from: another run, or a sweep (told apart by ``kind``).
+Derivation = Annotated[DerivedFrom | SweepMember, Field(discriminator="kind")]
+
+
 class Manifest(_Model):
     logogram_manifest: Literal[1] = 1
     run_id: str
@@ -323,7 +367,7 @@ class Manifest(_Model):
     wall_time_s: float | None = None
     error: str | None = None
     versions: dict[str, str | None]
-    derived_from: DerivedFrom | None = None
+    derived_from: Derivation | None = None
     model: ModelProvenance | None = None
     device: DeviceInfo | None = None
     dtype: str | None = None
@@ -411,7 +455,7 @@ class QueuedRunInfo(_Model):
     title: str
     spec: dict[str, Any]
     draft_id: str | None
-    derived_from: DerivedFrom | None
+    derived_from: Derivation | None
     project_session: str
     # Seconds since the epoch, like a job's start.
     queued_at: float
@@ -480,7 +524,7 @@ class RunListing(_Model):
     dataset: str
     experiment: dict[str, Any]
     scope: dict[str, Any]
-    derived_from: DerivedFrom | None
+    derived_from: Derivation | None
     error: str | None
     # Per layer, the largest normalized effect (signed): what writes the run's logogram in the app.
     profile: list[float] | None = None

@@ -15,6 +15,8 @@ the app would make, and it lands in the project like any other::
     run                  # in a notebook: the method, the strongest sites and a heatmap
     run.rename("Name movers").star()   # as the history shows it; the spec never changes
     lg.delete_run(project, old_run)    # its folder and everything in it, for good
+    seeds = lg.sweep(run, field="statistics.seed", values=[0, 1, 2, 3])  # one run per value
+    seeds.table()        # the strongest sites at every value: do they keep their sign and size?
 
 Tables come back as pandas DataFrames when pandas is installed, and as pyarrow Tables otherwise.
 """
@@ -23,7 +25,7 @@ from __future__ import annotations
 
 import html
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -34,6 +36,7 @@ from logogram.spec import Spec
 
 __all__ = [
     "Run",
+    "Sweep",
     "check_robustness",
     "compare_runs",
     "create_project",
@@ -46,9 +49,11 @@ __all__ = [
     "load_run",
     "load_sae",
     "load_spec",
+    "load_sweep",
     "look",
     "open_project",
     "run",
+    "sweep",
     "verify_run",
     "write_dataset",
 ]
@@ -325,6 +330,69 @@ def check_robustness(
     return load_run(original.project, outcome.run_id, model=outcome.backend)
 
 
+def sweep(
+    experiment: Run | Spec | dict[str, Any] | str | Path,
+    project: Project | None = None,
+    *,
+    field: str,
+    values: Sequence[Any],
+    model: Any = None,
+    sae: Any = None,
+    on_event: Callable[[str, dict[str, Any]], None] | None = None,
+) -> Sweep:
+    """Run a run's spec (or a spec, into ``project``) across ``values`` of one ``field``, one run
+    after another, as ``logogram sweep`` does: a seed the spec states (``statistics.seed``,
+    ``experiment.baseline.seed``, ``experiment.seed`` or ``scope.seed``), the dataset
+    (``dataset.path``: dataset files of the project) or the model's revision (``model.revision``:
+    commits, tags or branches, each run pinning its commit). A finished run stands in for its own
+    value, which isn't run again. Returns the runs, one per value in the order given; a run that
+    doesn't finish is kept with its status, and the next value runs."""
+    from logogram.sweeps import SweepError, plan_sweep, run_sweep
+
+    original = None
+    if isinstance(experiment, Run):
+        if project is not None and project.root != experiment.project.root:
+            raise LogogramError(f"{experiment.id} belongs to another project.")
+        project = experiment.project
+        specification = experiment.spec
+        original = project.run_listing(experiment.id)
+        model = model or experiment.model
+    else:
+        if project is None:
+            raise LogogramError(
+                "Name the project the runs go in: lg.sweep(spec, project, field=..., values=...)."
+            )
+        specification = experiment if isinstance(experiment, Spec) else load_spec(experiment)
+    try:
+        plan = plan_sweep(project, specification, field, values, original=original)
+    except SweepError as exc:
+        raise LogogramError(str(exc)) from exc
+    outcomes, last = run_sweep(plan, project, backend=model, on_event=on_event, sae=sae)
+    runs = []
+    for outcome in outcomes:
+        if outcome is None:  # the run it was made from stands in for this value
+            assert isinstance(experiment, Run)
+            runs.append(experiment)
+            continue
+        # Only a model that is still loaded: one a revision sweep moved on from is closed.
+        kept = outcome.backend if outcome.backend is last or outcome.backend is model else None
+        runs.append(load_run(project, outcome.run_id, model=kept))
+    return Sweep(runs, project=project, id=plan.id, field=plan.field.path, values=plan.values)
+
+
+def load_sweep(project: Project, sweep_id: str, *, model: Any = None) -> Sweep:
+    """A sweep of ``project`` by its id, as its runs record it: its runs in the order of its values
+    (a value whose run is gone, or never ran, has none)."""
+    from logogram.sweeps import SweepNotFound, get_sweep
+
+    try:
+        found = get_sweep(project, sweep_id)
+    except SweepNotFound as exc:
+        raise LogogramError(str(exc)) from exc
+    runs = [load_run(project, found.runs[i].id, model=model) for i in sorted(found.runs)]
+    return Sweep(runs, project=project, id=found.id, field=found.field.path, values=found.values)
+
+
 def generate(
     task: str,
     n: int,
@@ -512,6 +580,62 @@ class Run:
             f"<p style='color:#555'>{html.escape(s['metric']['normalized_effect'])}</p>"
             f"{heatmap_svg(s)}<table><tr><th>site</th><th>effect</th>"
             f"<th>{round(s['statistics']['ci'] * 100)}% CI</th></tr>{rows}</table></div>"
+        )
+
+
+class Sweep(list[Run]):
+    """A sweep's runs, one per value in the order given (see :func:`sweep`): a list of
+    :class:`Run`, with the sweep's ``id``, ``field`` and ``values``."""
+
+    def __init__(
+        self, runs: list[Run], *, project: Project, id: str, field: str, values: list[Any]
+    ) -> None:
+        super().__init__(runs)
+        self.project = project
+        self.id = id
+        self.field = field
+        self.values = values
+
+    def summary(self, choose: str = "first", top: int = 10) -> dict[str, Any]:
+        """The sweep as the app's sweep view shows it: for the ``top`` strongest sites (0: all),
+        chosen on the ``"first"`` value or on ``"all"`` values, each site's effect and interval
+        at every value, the spread of its means across values, and whether it keeps its sign and
+        size (``verdict``: holds, size, sign or unknown)."""
+        from logogram.sweeps import SweepError, sweep_table
+
+        try:
+            return sweep_table(self.project, self.id, choose=choose, top=top)  # type: ignore[arg-type]
+        except SweepError as exc:
+            raise LogogramError(str(exc)) from exc
+
+    def table(self, choose: str = "first", top: int = 10) -> Any:
+        """:meth:`summary` as a table, one row per site and value (as the app exports it). A
+        value without results has no numbers, never zeros, and says why in ``status``."""
+        from logogram.sweeps import table_rows
+
+        return _table(table_rows(self.summary(choose, top)))
+
+    def __repr__(self) -> str:
+        return f"Sweep({self.id!r}, field={self.field!r}, values={self.values!r}, runs={len(self)})"
+
+    def _repr_html_(self) -> str:
+        table = self.summary()
+        head = "".join(f"<th>{html.escape(v['label'])}</th>" for v in table["values"])
+        rows = "".join(
+            f"<tr><td>{html.escape(s['label'])}</td>"
+            + "".join(
+                f"<td style='text-align:right'>{_num((s['points'][v['index']] or {}).get('mean'))}</td>"
+                for v in table["values"]
+            )
+            + f"<td>{html.escape(s['text'])}</td></tr>"
+            for s in table["sites"]
+        )
+        return (
+            f"<div style='font-family:sans-serif'><p><b>{html.escape(table['headline'])}</b><br>"
+            f"{html.escape(table['name'])}: {html.escape(table['plural'])} "
+            f"{html.escape(', '.join(v['label'] for v in table['values']))}</p>"
+            f"<p style='color:#555'>{html.escape(table['problem'] or table['chosen'])}</p>"
+            f"<table><tr><th>site</th>{head}<th>across values</th></tr>{rows}</table></div>"
         )
 
 

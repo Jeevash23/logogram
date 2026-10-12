@@ -646,3 +646,177 @@ class EnvironmentOut(_Out):
     torch_cuda: str | None
     devices: list[str]
     default_device: str
+
+
+# -- sweeps ------------------------------------------------------------------------------------
+
+# A swept value: a seed, or a dataset's path or a revision as given.
+SweepValueOut = int | str
+SweepKind = Literal["seed", "dataset", "revision"]
+
+
+class SweepFieldOut(_Out):
+    """A field a run's spec can be swept over, with the spec's own value and the values the app
+    offers at first."""
+
+    field: str
+    kind: SweepKind
+    label: str
+    plural: str
+    description: str
+    current: SweepValueOut | None
+    current_label: str | None
+    suggested: list[SweepValueOut]
+
+
+class SweepPlanRun(_Out):
+    index: int
+    value: SweepValueOut
+    label: str
+    # The run's spec name; None where the run the sweep is made from stands in for the value.
+    name: str | None
+    original: bool
+
+
+class SweepPlanOut(_Out):
+    """The runs a sweep makes, one per value in the order given (logogram.sweeps.plan_sweep)."""
+
+    sweep: str
+    field: str
+    kind: SweepKind
+    label: str
+    plural: str
+    values: list[SweepValueOut]
+    labels: list[str]
+    original: str | None
+    stands_in: int | None
+    runs: list[SweepPlanRun]
+
+
+class SweepStarted(_Out):
+    """A sweep sent to the queue: its first run started at once when nothing was running (``run_id``
+    and ``job``); the rest wait their turn in ``queue``."""
+
+    sweep: str
+    plan: SweepPlanOut
+    run_id: str | None
+    job: JobInfo | None
+    queue: list[QueuedRunInfo]
+
+
+class SweepValueRow(_Out):
+    index: int
+    value: SweepValueOut
+    label: str
+    run: str | None
+    # missing: no run (it never started, or was taken out of the queue); deleted: the run the
+    # sweep was made from, which stood in for this value, was deleted.
+    status: Literal["finished", "failed", "cancelled", "running", "draft", "missing", "deleted"]
+    original: bool
+    title: str | None
+    error: str | None
+    n_prompts: int | None
+    # What a revision or a dataset resolved to: the commit the run pinned, the prompts it read.
+    revision: str | None
+    dataset_sha256: str | None
+
+
+class SweepPoint(_Out):
+    """One site at one value: the run's mean effect, its interval and SD over prompts, and n."""
+
+    mean: float | None
+    lo: float | None
+    hi: float | None
+    sd: float | None
+    n: int | None
+
+
+class SweepSpread(_Out):
+    """The spread of a site's means across the values that measured it."""
+
+    mean: float
+    sd: float | None
+    min: float
+    max: float
+
+
+class SweepSite(_Out):
+    key: str
+    rank: int
+    label: str
+    kind: str
+    layer: int
+    head: int | None
+    feature: int | None
+    position: dict[str, Any] | None
+    position_key: str
+    variant: dict[str, Any] | None
+    variant_key: str | None
+    # One per value; None where the value has no results for this site (never zero).
+    points: list[SweepPoint | None]
+    measured: int
+    spread: SweepSpread | None
+    # The median half-width of the runs' own intervals.
+    half_width: float | None
+    # Values whose interval lies above zero, below it; a pair of values with confident opposite
+    # signs; a pair whose intervals exclude each other; values without results.
+    above: list[int]
+    below: list[int]
+    sign: list[int] | None
+    apart: list[int] | None
+    missing: list[int]
+    # Where its intervals exclude zero: at every value that measured it, at some, or at none.
+    excludes_zero: Literal["every", "some", "none"]
+    verdict: Literal["holds", "size", "sign", "unknown"]
+    text: str
+
+
+class SweepCounts(_Out):
+    holds: int
+    size: int
+    sign: int
+    unknown: int
+
+
+class SweepTable(_Out):
+    """A sweep read back (logogram.sweeps.sweep_table)."""
+
+    sweep: str
+    field: str
+    kind: SweepKind
+    label: str
+    plural: str
+    description: str
+    name: str
+    created: str | None
+    original: str | None
+    stands_in: int | None
+    values: list[SweepValueRow]
+    finished: int
+    choose: Literal["first", "all"]
+    top: int
+    chosen: str
+    problem: str | None
+    n_sites: int
+    sites: list[SweepSite]
+    counts: SweepCounts
+    headline: str
+    spread: str
+    notes: list[str]
+    ci: float | None
+    measure: str | None
+    metric: dict[str, Any] | None
+    experiment: dict[str, Any] | None
+
+
+class RevisionOut(_Out):
+    name: str
+    commit: str
+    kind: Literal["branch", "tag"]
+
+
+class RevisionsOut(_Out):
+    """A Hugging Face model's branches and tags, each with its commit."""
+
+    id: str
+    revisions: list[RevisionOut]
