@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 
 import { api, type AnalysisOptions } from "../api/client";
-import type { ChatTemplateSpec, LookAttention, LookContinuation, LookFeatureAlong, LookFeatures, LookReport } from "../api/types";
+import type { ChatTemplateSpec, LookAttention, LookContinuation, LookFeatureAlong, LookFeatures, LookReport, ModelRef, SAERef } from "../api/types";
 import { MOD } from "../components/Header";
 import { Heatmap, type Axis } from "../components/Heatmap/Heatmap";
 import { ScaleBar } from "../components/Heatmap/ScaleBar";
 import { Button, Callout, Checkbox, Empty, Field, Input, Segmented, Spinner, TextArea } from "../components/ui";
+import { withLoadedModel } from "../lib/analysis";
 import { CHAT_CHOICES, chatTemplateFor, hasChatTemplate, systemMessage, type ChatChoice } from "../lib/chat";
 import { inkScale } from "../lib/color";
 import { count, num, pct, visibleToken } from "../lib/format";
@@ -19,14 +20,27 @@ import t from "./TextView.module.css";
 const EXAMPLE = "When Mary and John went to the store, John gave a drink to";
 
 // What was typed and read, kept while the app is open so coming back shows it again. The chat
-// template starts as the experiment's (undefined until chosen here).
-const kept: { text: string; bos: boolean | null; template: ChatTemplateSpec | null | undefined; topK: number; report: LookReport | null } = {
+// template starts as the experiment's (undefined until chosen here). A reading belongs to the
+// model that made it and the SAE loaded then.
+const kept: {
+  text: string;
+  bos: boolean | null;
+  template: ChatTemplateSpec | null | undefined;
+  topK: number;
+  report: LookReport | null;
+  model: ModelRef | null;
+  sae: SAERef | null;
+} = {
   text: EXAMPLE,
   bos: null,
   template: undefined,
   topK: 5,
   report: null,
+  model: null,
+  sae: null,
 };
+
+const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 
 /** Any text, read without making a dataset: the model's predictions after each token, what each
  * layer would predict at one of them, where a head attends and which features fire. */
@@ -43,8 +57,10 @@ export function TextView() {
   const [report, setReport] = useState<LookReport | null>(kept.report);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  // A chat template writes the beginning of the text itself.
-  const options = { ...context.options, prepend_bos: template ? false : bos, chat_template: template };
+  // The text is the view's own: the loaded model reads it, whichever run or form the other views
+  // follow. A chat template writes the beginning of the text itself.
+  const options = { ...withLoadedModel(context.options, model.info), prepend_bos: template ? false : bos, chat_template: template };
+  const loadedSae: SAERef | null = sae.state === "ready" && sae.info ? { repo: sae.info.repo, path: sae.info.path, revision: sae.info.revision } : null;
   const offered = hasChatTemplate(model.info) || template !== null;
   // The start of a reply answers a message: the text can't be read before it is written.
   const unanswered = template?.kind === "assistant_prefix" && !template.user.trim();
@@ -60,6 +76,8 @@ export function TextView() {
       kept.template = template;
       kept.topK = topK;
       kept.report = out;
+      kept.model = options.model ?? null;
+      kept.sae = loadedSae;
       setReport(out);
     } catch (e) {
       setError((e as Error).message);
@@ -67,6 +85,16 @@ export function TextView() {
       setBusy(false);
     }
   };
+
+  // A reading belongs to the model that made it and to the SAE loaded then; read without one, to
+  // the first loaded since, as nothing of it came from an SAE before. Another model or SAE loaded
+  // since: the reading, and what was derived from it, are the other's, so they are hidden until
+  // the text is read again.
+  const readSae = kept.sae ?? loadedSae;
+  const changed = !report ? null : !same(kept.model, options.model) ? "model" : !same(readSae, loadedSae) ? "SAE" : null;
+  useEffect(() => {
+    if (report && !changed && !kept.sae && loadedSae) kept.sae = loadedSae;
+  }, [report, changed, loadedSae?.repo, loadedSae?.path, loadedSae?.revision]);
 
   if (model.state !== "ready") {
     return (
@@ -78,7 +106,7 @@ export function TextView() {
     );
   }
 
-  const stale = !!report && (kept.text !== text || kept.bos !== bos || JSON.stringify(kept.template ?? null) !== JSON.stringify(template) || kept.topK !== topK);
+  const stale = !!report && !changed && (kept.text !== text || kept.bos !== bos || !same(kept.template, template) || kept.topK !== topK);
   return (
     <div className={s.view}>
       <div className={s.head}>
@@ -131,9 +159,15 @@ export function TextView() {
         </div>
         {offered && <TextTemplate value={template} onChange={setTemplate} />}
         {stale && <p className={s.small}>The text or the choices changed since it was read: press Read to read it again.</p>}
+        {changed && (
+          <p className={s.small}>
+            {changed === "model" ? "The model changed" : loadedSae ? "The SAE changed" : "The SAE was unloaded"} since the text was read: press Read
+            to read it again.
+          </p>
+        )}
       </div>
       {error && <Callout tone="error">{error}</Callout>}
-      {report && (
+      {report && !changed && (
         <>
           <Tokens report={report} onChoose={(p) => void read(p)} busy={busy} />
           <NextTokens report={report} />
@@ -174,8 +208,9 @@ function TextTemplate({ value, onChange }: { value: ChatTemplateSpec | null; onC
 }
 
 /** The text's tokens, each with the model's most likely next token. One tab stop; the arrow keys
- * move between tokens and Enter reads that token layer by layer. Tokens a chat template wrote
- * around the text are faint. */
+ * move between tokens and Enter reads that token layer by layer. While a token is read, choosing
+ * another does nothing, but the keyboard stays where it was. Tokens a chat template wrote around
+ * the text are faint. */
 function Tokens({ report, onChoose, busy }: { report: LookReport; onChoose: (position: number) => void; busy: boolean }) {
   const [first, end] = report.text_tokens ?? [0, report.tokens.length];
   const [focus, setFocus] = useState(report.position);
@@ -209,9 +244,11 @@ function Tokens({ report, onChoose, busy }: { report: LookReport; onChoose: (pos
               data-position={i}
               tabIndex={i === focus ? 0 : -1}
               aria-pressed={i === report.position}
-              disabled={busy}
+              aria-disabled={busy || undefined}
               onFocus={() => setFocus(i)}
-              onClick={() => onChoose(i)}
+              onClick={() => {
+                if (!busy) onChoose(i);
+              }}
               aria-label={`Token ${i}, ${visibleToken(token)}${report.chat_template && (i < first || i >= end) ? ", the chat template's" : ""}: next most likely ${visibleToken(next.token)}, ${pct(next.prob)}`}
             >
               <span className={t.tokenText}>{visibleToken(token) || "∅"}</span>
@@ -263,7 +300,9 @@ const typedNumber = (text: string): number | null => (text.trim() === "" ? null 
 function Continue({ text, report, options }: { text: string; report: LookReport; options: AnalysisOptions }) {
   const sae = useStore((st) => st.sae);
   const info = sae.state === "ready" ? sae.info ?? null : null;
-  const first = report.prepend_bos ? 1 : 0;
+  // The first token of the text itself: after the beginning-of-sequence token, or after what a
+  // chat template wrote before it.
+  const first = report.text_tokens?.[0] ?? (report.prepend_bos ? 1 : 0);
   const [tokens, setTokens] = useState<number | null>(20);
   const [steer, setSteer] = useState(false);
   const [feature, setFeature] = useState<number | null>(null);
@@ -458,10 +497,12 @@ function Attention({
       cancelled = true;
     };
   }, [text, layer, head, valid, options.prepend_bos, JSON.stringify(options.chat_template ?? null), JSON.stringify(options.model)]);
-  const axis: Axis[] = useMemo(() => report.tokens.map((tok, i) => ({ key: String(i), label: visibleToken(tok) || "∅" })), [report]);
+  // The tokens the pattern was read on, from the same answer as the pattern.
+  const axis: Axis[] = useMemo(() => (data?.tokens ?? []).map((tok, i) => ({ key: String(i), label: visibleToken(tok) || "∅" })), [data]);
   const color = useMemo(() => inkScale(1, theme), [theme]);
   const value = useCallback((r: number, c: number) => (c > r || !data ? undefined : data.pattern[r]?.[c]), [data]);
-  const selected = useMemo(() => ({ r: report.position, c: report.position }), [report.position]);
+  const position = report.position < axis.length ? report.position : null;
+  const selected = useMemo(() => (position === null ? null : { r: position, c: position }), [position]);
   return (
     <section className={t.section} aria-labelledby="text-attention">
       <h2 id="text-attention" className={s.panelTitle}>

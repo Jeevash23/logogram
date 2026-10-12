@@ -5,6 +5,7 @@ import type { HeadKindName, HeadKindsReport } from "../api/types";
 import { Heatmap, type Axis } from "../components/Heatmap/Heatmap";
 import { ScaleBar } from "../components/Heatmap/ScaleBar";
 import { Button, Callout, Field, Input, Segmented, Spinner } from "../components/ui";
+import { withLoadedModel } from "../lib/analysis";
 import { inkScale } from "../lib/color";
 import { ci, count, num } from "../lib/format";
 import { useAnalysisContext } from "../lib/hooks";
@@ -62,7 +63,8 @@ export function HeadKinds() {
     chosen.seed = v;
     setSeedState(v);
   };
-  const request = { seed, sequences, length, bootstrap: BOOTSTRAP, ci: LEVEL, ...context.options };
+  // Random tokens, read by the loaded model as the run or the form shown would read prompts.
+  const request = { seed, sequences, length, bootstrap: BOOTSTRAP, ci: LEVEL, ...withLoadedModel(context.options, info) };
   const key = JSON.stringify([info?.id, info?.revision, info?.dtype, info?.process_weights, request]);
   const [found, setFound] = useState(last);
   const [error, setError] = useState<string | null>(null);

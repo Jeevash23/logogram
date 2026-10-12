@@ -60,6 +60,10 @@ test("your text can be read in the chat template too", async ({ page }) => {
   await expect(tokens.getByRole("button").first()).toHaveAccessibleName(/^Token 0, .*the chat template's/);
   await expect(tokens.getByRole("button").nth(2)).toHaveAccessibleName(/^Token 2, ·When: next/);
   await expect(page.getByRole("heading", { name: "What each layer would predict at token 11" })).toBeVisible();
+  // A feature is added from the text's own first token on, not from the template's.
+  const writes = page.getByRole("region", { name: "What the model writes next" });
+  await writes.getByRole("checkbox", { name: "Add an SAE feature while it continues" }).check();
+  await expect(writes.getByRole("spinbutton", { name: "From token" })).toHaveValue("2");
   // As it was: plain text.
   await page.getByRole("radiogroup", { name: "Chat template" }).getByRole("radio", { name: "None" }).click();
 });
