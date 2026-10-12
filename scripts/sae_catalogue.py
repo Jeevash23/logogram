@@ -603,8 +603,15 @@ def describe_format(ctx: Context, row: Row, sae: dict[str, Any]) -> None:
         row.hook = cfg.get("hook_name") or cfg.get("hook_point") or meta.get("hook_name")
         row.hook = row.hook or overrides.get("hook_name")
         row.width = cfg.get("d_sae") if isinstance(cfg.get("d_sae"), int) else None
+        # As SAELens reads it: configurations before its version 6 say a TopK SAE's architecture
+        # is "standard" and name TopK as its activation, which SAELens reads as topk.
         fn = cfg.get("activation_fn_str") or cfg.get("activation_fn")
-        architecture = cfg.get("architecture") or ("topk" if fn == "topk" else "standard")
+        architecture = cfg.get("architecture") or "standard"
+        if fn == "topk" or architecture == "topk":
+            kwargs = cfg.get("activation_fn_kwargs") or {}
+            k = kwargs.get("k") if isinstance(kwargs, dict) else None
+            k = k or cfg.get("k")
+            architecture = f"topk (k = {k})" if isinstance(k, int) else "topk"
         row.architecture = architecture if cfg else None
     elif conv == "gemma_3":
         cfg = json_file(ctx.config(f"{path}/config.json")) or {}
