@@ -21,8 +21,9 @@ it needs finished:
 * a steered site is kept with its random control, which runs with it.
 
 A run that kept every site over the prompts that finished is a run of those prompts: its numbers
-are what a finished run of just them gives. Methods that report nothing before they end (SAE
-features) keep nothing.
+are what a finished run of just them gives. A sweep stopped after its last site (a steering run
+records what the steered model says last) keeps every site, with everything the whole run gives
+it. Methods that report nothing before they end (SAE features) keep nothing.
 """
 
 from __future__ import annotations
@@ -103,8 +104,6 @@ def keep_finished(
     if progress.done and progress.result is not None:
         sweep = progress.result
         kept = sorted(progress.done)
-        if len(kept) == len(sweep.sites):
-            return None  # everything finished: what stopped the run came after the sweep
         values = sweep.delta if sweep.delta is not None else sweep.patched
         what = {"estimate": "estimates", "attribution": "terms"}.get(sweep.measure) or (
             "steered values" if "steering" in sweep.extra else "patched values"
@@ -115,8 +114,16 @@ def keep_finished(
             *check_values(values[kept], what, spec.model.dtype),
         ]
         result = dataclasses.replace(sweep, warnings=notes)
-        stats = compute_stats(spec, result, counts(result), kept)
-        partial = _by_sites(spec, result, kept, status)
+        if len(kept) == len(sweep.sites):
+            # Every site finished, but the sweep hadn't returned: what stopped the run came after
+            # its last site (a steering run's continuations, say). Every site is kept, with
+            # everything the whole run gives it, corrections for the number of sites included.
+            kept = None
+            stats = compute_stats(spec, result, counts(result))
+            partial = _all_sites(spec, result, status)
+        else:
+            stats = compute_stats(spec, result, counts(result), kept)
+            partial = _by_sites(spec, result, kept, status)
     elif progress.over is not None:
         # Every site, over the prompts that finished (this checks their gap as a run does).
         result = progress.over()
@@ -147,22 +154,49 @@ def _plural(n: int, word: str) -> str:
     return f"{n:,} {word}" if n != 1 else f"1 {word[:-1]}"
 
 
-def _by_sites(spec: Spec, result: EngineResult, kept: list[int], status: str) -> dict[str, Any]:
-    """What a sweep that finished some of its sites kept, and what it leaves out."""
+def _units(result: EngineResult, kept: list[int]) -> tuple[str, int, int]:
+    """What a sweep goes through (layers, sites or sets), how many of them the ``kept`` sites
+    finish, and how many there are."""
     sites = result.sites
     layout = result.layout
     chosen = [sites[i] for i in kept]
     if layout.get("kind") == "steering":
         # One row per steered site, its strengths and their random controls run together.
         unit = "layers" if layout.get("row_title") == "Layer" else "sites"
-        done, total = len({s.row for s in chosen}), len(layout.get("rows") or [])
-    elif layout.get("kind") == "site_sets":
-        unit, done, total = "sets", len(chosen), len(sites)
-    elif layout.get("kind") == "sites":
-        unit, done, total = "sites", len(chosen), len(sites)
-    else:
-        unit = "layers"
-        done, total = len({s.layer for s in chosen}), len({s.layer for s in sites})
+        return unit, len({s.row for s in chosen}), len(layout.get("rows") or [])
+    if layout.get("kind") == "site_sets":
+        return "sets", len(chosen), len(sites)
+    if layout.get("kind") == "sites":
+        return "sites", len(chosen), len(sites)
+    return "layers", len({s.layer for s in chosen}), len({s.layer for s in sites})
+
+
+def _all_sites(spec: Spec, result: EngineResult, status: str) -> dict[str, Any]:
+    """What a sweep kept that finished every site but stopped before it returned."""
+    unit, done, total = _units(result, list(range(len(result.sites))))
+    left_out: list[str] = []
+    exp = spec.experiment
+    if getattr(exp, "continuations", None) is not None:
+        left_out.append("What the steered model says wasn't recorded: it comes last.")
+    return {
+        "status": status,
+        "unit": unit,
+        "done": done,
+        "total": total,
+        "sites": len(result.sites),
+        "sites_total": len(result.sites),
+        "prompts": len(result.prompts),
+        "prompts_total": len(result.prompts),
+        "note": f"Stopped before the run ended, once its {_plural(total, unit)} had finished.",
+        "left_out": left_out,
+    }
+
+
+def _by_sites(spec: Spec, result: EngineResult, kept: list[int], status: str) -> dict[str, Any]:
+    """What a sweep that finished some of its sites kept, and what it leaves out."""
+    sites = result.sites
+    layout = result.layout
+    unit, done, total = _units(result, kept)
     left_out: list[str] = []
     if len(result.prompts) >= 2 and len(sites) > 1:
         left_out.append(

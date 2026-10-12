@@ -418,6 +418,47 @@ def test_steering_keeps_each_finished_site_with_its_random_control(
     assert any("random control covers" in item for item in kept["partial"]["left_out"])
 
 
+def test_steering_stopped_while_recording_what_the_model_says_keeps_every_site(
+    project, tiny_backend, spec_factory
+):
+    """Continuations come after the steered sites: a run stopped while it records them has
+    finished every site, and keeps them all, with everything the whole run gives them."""
+    spec = spec_factory(
+        experiment={
+            "kind": "steering",
+            "apply_to": "corrupt",
+            "coefficients": [0.0, 1.0],
+            "train_fraction": 0.5,
+            "seed": 0,
+            "control": True,
+            "continuations": {"prompts": 2, "tokens": 4},
+        },
+        scope={
+            "kind": "layer_components",
+            "components": ["resid_pre"],
+            "position": {"kind": "last"},
+        },
+    )
+    stop = _after_layers(2)
+    outcome = run_spec(spec, project, backend=tiny_backend, on_event=stop, cancel=stop.cancel)
+    assert outcome.status == "cancelled"
+    full = run_spec(spec, project, backend=tiny_backend)
+    assert full.status == "finished"
+    kept, whole = _summary(outcome.folder), _summary(full.folder)
+    partial = kept["partial"]
+    assert (partial["done"], partial["total"], partial["unit"]) == (2, 2, "layers")
+    assert partial["note"] == "Stopped before the run ended, once its 2 layers had finished."
+    assert partial["left_out"] == ["What the steered model says wasn't recorded: it comes last."]
+    # Every site, exactly as the whole run gives it, corrections for the number of sites included.
+    assert (
+        kept["sites"] == whole["sites"]
+        and kept["steering"]["control"] == whole["steering"]["control"]
+    )
+    assert kept["statistics"] == whole["statistics"]
+    assert not (outcome.folder / "continuations.json").exists()
+    assert (full.folder / "continuations.json").exists()
+
+
 def _sets_spec(spec_factory: Any, everything_first: bool) -> Any:
     head = {"kind": "head", "layer": 1, "head": 2, "position": {"kind": "all"}}
     everything = {"label": "everything", "sites": [], "complement": True}
