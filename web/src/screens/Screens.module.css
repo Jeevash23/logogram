@@ -113,6 +113,14 @@
   max-width: 520px;
 }
 
+.word {
+  text-decoration-line: underline;
+  text-decoration-color: var(--word);
+  text-decoration-thickness: 0.14em;
+  text-underline-offset: 0.12em;
+  text-decoration-skip-ink: none;
+}
+
 .paper {
   height: 100%;
   overflow: auto;

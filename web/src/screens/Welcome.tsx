@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 
 import { BRAND_SEED, Logogram } from "../components/Logogram";
 import { useStore } from "../store/app";
@@ -24,12 +24,17 @@ export function Welcome({ children }: { children: ReactNode }) {
           <Logogram seed={BRAND_SEED} size={280} detail={1} weight={1.05} haze={false} className={s.heroGlyph} />
         </div>
         <p className={s.tagline}>
-          <span style={{ color: "var(--explore)" }}>Explore</span> what a model computes.{" "}
-          <span style={{ color: "var(--experiment)" }}>Experiment</span> on it, one component at a time.{" "}
-          <span style={{ color: "var(--evidence)" }}>Read the evidence</span>, prompt by prompt.
+          <span className={s.word} style={word("--explore")}>Explore</span> what a model computes.{" "}
+          <span className={s.word} style={word("--experiment")}>Experiment</span> on it, one component at a time.{" "}
+          <span className={s.word} style={word("--evidence")}>Read the evidence</span>, prompt by prompt.
         </p>
       </aside>
-      <div className={s.paper}>{children}</div>
+      <main className={s.paper}>{children}</main>
     </div>
   );
+}
+
+/** A workspace's word, underlined in its color: text on the workspace colors is ink. */
+function word(color: string): CSSProperties {
+  return { "--word": `var(${color})` } as CSSProperties;
 }

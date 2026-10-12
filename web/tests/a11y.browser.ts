@@ -123,14 +123,13 @@ test("every view has no accessibility violations", async ({ page }) => {
   await expect(page.getByRole("dialog", { name: "About Logogram" }).getByRole("heading", { name: "Updates" })).toBeVisible();
   await expectAccessible(page, "About Logogram");
   await page.keyboard.press("Escape");
-  // The examples, where the screens before a project offer them.
-  const examples = 'section[aria-labelledby="examples-title"]';
+  // The screens before a project, with the examples they offer.
   await page.getByRole("button", { name: "All projects" }).click();
   await expect(page.getByRole("list", { name: "Examples" })).toBeVisible();
-  await expectAccessible(page, "Projects, the examples", examples);
+  await expectAccessible(page, "Projects");
   await page.getByRole("button", { name: "System check" }).click();
   await expect(page.getByRole("list", { name: "Examples" })).toBeVisible();
-  await expectAccessible(page, "System check, the examples", examples);
+  await expectAccessible(page, "System check");
 });
 
 test("runs that failed, run elsewhere or ran with other versions have no accessibility violations", async ({ page }) => {
