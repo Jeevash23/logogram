@@ -177,14 +177,42 @@ class ControlComparison(_Model):
     beats_control: bool
 
 
+class SAESource(_Model):
+    repo: str
+    path: str
+    revision: str
+
+
+class SteeringFeature(_Model):
+    """Steering along an SAE feature: the feature, its SAE, where the SAE writes (the site its
+    decoder direction is added to: ``site`` of ``layer``, the heads' outputs z for "head"), and
+    what strength 1 is at each row of the layout: the feature's typical activation, the mean of
+    its positive activations at the row's token of the training pairs' prompts, clean and
+    corrupt (``fired`` of the ``measured`` activations were positive)."""
+
+    feature: int
+    sae: SAESource
+    site: str
+    layer: int
+    transcoder: bool
+    # Whether the SAE standardizes its inputs, so each prompt's vector is also scaled by the
+    # standard deviation of its own input at the token.
+    standardized: bool
+    activations: list[float]
+    fired: list[int]
+    measured: list[int]
+
+
 class SteeringInfo(_Model):
     """Which prompts trained the steering directions and which measured them, and how long each
-    site's direction is (one per row of the layout)."""
+    site's vector is at strength 1 (one per row of the layout)."""
 
     train: list[int]
     test: list[int]
     norms: list[float]
     control: list[ControlComparison] | None = None
+    # Along an SAE feature; None for the mean difference.
+    feature: SteeringFeature | None = None
 
 
 class FeatureRun(_Model):
@@ -355,6 +383,60 @@ class Manifest(_Model):
     sae: dict[str, Any] | None = None
     # The chat template the prompts were wrapped in: how, and its SHA-256.
     chat_template: ChatTemplateProvenance | None = None
+
+
+# -- continuations.json ------------------------------------------------------------------------
+
+CONTINUATIONS_FILE = "continuations.json"
+
+
+class GeneratedTokens(_Model):
+    """Tokens a model generated: their ids, and each as its tokenizer writes it."""
+
+    ids: list[int]
+    tokens: list[str]
+
+
+class SteeredContinuation(GeneratedTokens):
+    """A continuation with one row's vector (a steered site of the layout) at one strength, or
+    along its random control. ``key`` names the variant as the results do, such as "×2"."""
+
+    row: int
+    coefficient: float
+    control: bool
+    key: str
+
+
+class PromptContinuations(_Model):
+    """One held-out prompt continued: the prompt steered (the receiver) as written and as the
+    model read it, its continuation without steering, and one per row and variant."""
+
+    index: int  # the prompt's index in the dataset
+    text: str
+    prompt: list[str]
+    unsteered: GeneratedTokens
+    steered: list[SteeredContinuation]
+
+
+class ContinuationRow(_Model):
+    row: int
+    label: str
+
+
+class ContinuationsFile(_Model):
+    """continuations.json: what a steered model goes on to say. Greedy decoding (the most likely
+    token each time, ties to the lowest token id) of ``tokens`` new tokens after the first
+    held-out prompts, in split order: without steering, and with each row's vector at each
+    strength (and its random control). Each forward pass adds the vector at the steered site and
+    token of the prompt, as when it was measured; the generated tokens aren't steered."""
+
+    logogram_continuations: Literal[1] = 1
+    run_id: str
+    receiver: Literal["clean", "corrupt"]
+    tokens: int = Field(ge=1)
+    decoding: Literal["greedy"]
+    rows: list[ContinuationRow]
+    prompts: list[PromptContinuations]
 
 
 # -- owner.json --------------------------------------------------------------------------------

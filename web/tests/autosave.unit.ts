@@ -137,6 +137,25 @@ test("a form stored before the metric, clusters, integrated gradients, local mod
   expect(parseStoredForm(JSON.stringify(half))).toBeNull();
 });
 
+test("a form stored before steering had a direction steers along the mean difference, without continuations", () => {
+  const steering: FormState = { ...DETAILED, kind: "steering", steerApplyTo: "clean", scope: { kind: "layer_components", components: ["resid_pre"], position: { kind: "last" } } };
+  const data = JSON.parse(serializeForm(steering, 7));
+  for (const key of ["steerDirection", "steerFeature", "steerContinue", "steerContinuePrompts", "steerContinueTokens"]) delete data.form[key];
+  expect(parseStoredForm(JSON.stringify(data))?.form).toEqual({
+    ...steering,
+    steerDirection: "mean_difference",
+    steerFeature: null,
+    steerContinue: false,
+    steerContinuePrompts: DEFAULT_FORM.steerContinuePrompts,
+    steerContinueTokens: DEFAULT_FORM.steerContinueTokens,
+  });
+  // A feature to steer along, and what the steered model says, read back exactly.
+  const feature: FormState = { ...steering, steerDirection: "sae_feature", steerFeature: 12, steerContinue: true, steerContinuePrompts: 2, steerContinueTokens: 30 };
+  expect(parseStoredForm(serializeForm(feature, 1))?.form).toEqual(feature);
+  expect(parseStoredForm(serializeForm({ ...feature, steerDirection: "telepathy" } as unknown as FormState, 1))).toBeNull();
+  expect(parseStoredForm(serializeForm({ ...feature, steerFeature: "12" } as unknown as FormState, 1))).toBeNull();
+});
+
 test("an older stored form comes back when its project opens", withStorage(async (storage) => {
   const restore = stubApi();
   try {

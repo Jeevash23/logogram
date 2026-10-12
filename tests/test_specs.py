@@ -231,29 +231,6 @@ def test_upgrading_never_changes_the_input():
 # -- runs that go wrong --------------------------------------------------------------------------
 
 
-def test_what_version_3_adds_is_refused_until_it_is_built(tiny_backend, project, spec_factory):
-    steering = {
-        "kind": "steering",
-        "apply_to": "corrupt",
-        "direction": {"kind": "mean_difference"},
-        "coefficients": [1.0],
-        "train_fraction": 0.5,
-        "seed": 0,
-        "control": False,
-        "continuations": {"prompts": 1, "tokens": 2},
-    }
-    spec = spec_factory(
-        experiment=steering,
-        scope={
-            "kind": "layer_components",
-            "components": ["resid_pre"],
-            "position": {"kind": "last"},
-        },
-    )
-    outcome = run_spec(spec, project, backend=tiny_backend)
-    assert outcome.status == "failed" and "continuations" in outcome.manifest["error"]
-
-
 def test_values_that_are_not_finite_are_refused(tiny_backend, project, spec_factory, monkeypatch):
     original = tiny_backend.logits
 

@@ -8,6 +8,7 @@ import { inkScale, textOn } from "../lib/color";
 import { bytes, count, num, pct, signed, visibleToken } from "../lib/format";
 import { modelName, useAnalysisContext } from "../lib/hooks";
 import { KIND_NAMES } from "../lib/sites";
+import { steerSiteOf } from "../lib/spec";
 import { POOR_FIT } from "../lib/thresholds";
 import { useStore } from "../store/app";
 import s from "./views.module.css";
@@ -345,6 +346,22 @@ function FeaturePanel({ info, feature }: { info: SAEInfo; feature: number }) {
     st.setView("experiment");
     st.replaceForm({ ...st.form, kind: "attribution_patching", atpMethod: "gradient", saeRef: ref, scope: { kind: "features", position: { kind: "last" }, top: 50, choose_on: null, seed: null }, nameEdited: false, draftId: null });
   };
+  // Steering adds the feature's decoder direction where the SAE writes, at the chosen token.
+  const steer = () => {
+    const st = useStore.getState();
+    const where = steerSiteOf(info);
+    st.setView("experiment");
+    st.replaceForm({
+      ...st.form,
+      kind: "steering",
+      steerDirection: "sae_feature",
+      steerFeature: feature,
+      saeRef: ref,
+      scope: { kind: "sites", sites: [{ ...where, head: null, position: token === null ? { kind: "last" } : { kind: "index", index: token } }] },
+      nameEdited: false,
+      draftId: null,
+    });
+  };
 
   return (
     <section className={f.panel} aria-label={`Feature ${feature}`}>
@@ -353,6 +370,13 @@ function FeaturePanel({ info, feature }: { info: SAEInfo; feature: number }) {
         <div className={s.headActions}>
           <Button size="small" onClick={patch}>
             {token === null ? "Patch this feature at the last token" : `Patch this feature at token ${token}`}
+          </Button>
+          <Button
+            size="small"
+            onClick={steer}
+            tip={`Fill the experiment form: add its decoder direction where the SAE writes, at ${token === null ? "the last token" : `token ${token}`}`}
+          >
+            Steer along this feature
           </Button>
           <Button size="small" variant="ghost" onClick={estimate}>
             Estimate every feature

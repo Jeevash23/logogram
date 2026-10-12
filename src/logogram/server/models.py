@@ -6,7 +6,13 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from logogram.schema import QueuedRunInfo, RunListing, SiteSummary
+from logogram.schema import (
+    ContinuationsFile,
+    GeneratedTokens,
+    QueuedRunInfo,
+    RunListing,
+    SiteSummary,
+)
 from logogram.spec import ModelRef, PredictionSettings
 
 
@@ -474,6 +480,44 @@ class LookFeatures(_Out):
     first_real_token: int
 
 
+class LookFeatureAlong(_Out):
+    """One SAE feature along the text: its activation at each token, and its largest from the
+    first real token on."""
+
+    tokens: list[str]
+    feature: int
+    activations: list[float]
+    largest: float
+    position: int
+    first_real_token: int
+
+
+class LookSteerOut(_Out):
+    """The feature added while the text continued: how much of it, from which token, where the
+    SAE writes, and its largest activation on the text for reference."""
+
+    feature: int
+    activation: float
+    start: int
+    site: str
+    layer: int
+    where: str
+    largest: float
+    largest_at: int
+
+
+class LookContinuation(_Out):
+    """What the model writes after the text: greedily, and with a feature added if asked."""
+
+    tokens: list[str]
+    ids: list[int]
+    prepend_bos: bool
+    new: int
+    plain: GeneratedTokens
+    steer: LookSteerOut | None
+    steered: GeneratedTokens | None
+
+
 class PredictionLayer(_Out):
     layer: int
     top: list[TopToken]
@@ -566,6 +610,8 @@ class RunDetail(_Out):
     summary: dict[str, Any] | None
     manifest: dict[str, Any] | None
     predictions: PredictionReport | None = None
+    # A steering run's continuations.json: what the steered model went on to say.
+    continuations: ContinuationsFile | None = None
     listing: RunListing | None
     folder: str
     # A failed run's traceback, as kept in its folder (with the machine's paths scrubbed).

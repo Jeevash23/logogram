@@ -138,15 +138,21 @@ export function RobustnessDialog() {
     });
     options.push({ value: "pathdirection", title: "Opposite direction", detail: "The same paths, patched the other way." });
   } else if (exp.kind === "steering") {
+    // Along an SAE feature, the split decides what strength 1 is: its typical activation.
+    const feature = exp.direction?.kind === "sae_feature";
     options.push({
       value: "split",
       title: "Another split of the pairs",
-      detail: `Seed ${exp.seed + 1}: other pairs compute the directions, and others are measured.`,
+      detail: feature
+        ? `Seed ${exp.seed + 1}: other pairs measure the feature's typical activation, and others are measured.`
+        : `Seed ${exp.seed + 1}: other pairs compute the directions, and others are measured.`,
     });
     options.push({
       value: "other",
-      title: exp.apply_to === "clean" ? "Steer corrupt prompts toward clean" : "Steer clean prompts toward corrupt",
-      detail: "The same sites and strengths in the other direction.",
+      title: feature
+        ? exp.apply_to === "clean" ? "Steer corrupt prompts" : "Steer clean prompts"
+        : exp.apply_to === "clean" ? "Steer corrupt prompts toward clean" : "Steer clean prompts toward corrupt",
+      detail: feature ? "The same feature, sites and strengths, added to the other prompts." : "The same sites and strengths in the other direction.",
     });
   } else if (exp.kind === "attribution_patching") {
     options.push({

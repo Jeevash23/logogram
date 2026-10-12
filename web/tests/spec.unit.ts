@@ -8,7 +8,7 @@ import { analysisContext, sameModel, tokenizationKey } from "../src/lib/analysis
 import { buildSpec, datasetFacts, metricOf, savedDifferences } from "../src/lib/buildSpec";
 import { DEFAULT_FORM, formFromSpec, type FormState } from "../src/lib/formState";
 import { gapCheck, METRIC_KINDS, metricWords } from "../src/lib/metrics";
-import { measureWords, sameDevice, splitCount, workload, workloadText } from "../src/lib/spec";
+import { measureWords, saeWritesText, sameDevice, scopeFor, splitCount, steerSiteOf, workload, workloadText } from "../src/lib/spec";
 import { useStore } from "../src/store/app";
 
 const model: ModelStatus = {
@@ -156,6 +156,59 @@ test("SAE features, splits of the prompts and donors are refused before a run as
   expect(refused(form({ kind: "steering", steerApplyTo: "corrupt", scope: { kind: "layer_components", components: ["resid_pre"], position: { kind: "last" } } }), { facts: datasetFacts(dataset([record(), record()]), null) }))
     .toContain("leaves 1 and 1");
   expect(refused(form({ kind: "ablation", baseline: { kind: "resample", pool: "corrupt", donors: 3, seed: 0 } }), { facts: three })).toContain("draws 3 donors from the other prompts, but there are only 2");
+});
+
+test("steering along an SAE feature is written where the SAE writes, with continuations when asked", () => {
+  const info = { repo: "owner/sae", path: "layer_1", revision: "abc", site: "resid_pre" as const, layer: 1, d_in: 32, d_sae: 64, activation: "relu", k: null, normalize: "none", format: "test", note: "", fit: null };
+  const sae = { state: "ready" as const, info };
+  const at = (kind: "resid_pre" | "attn_out", layer: number) => ({ kind: "sites" as const, sites: [{ kind, layer, head: null, position: { kind: "last" as const } }] });
+  const steer = form({ kind: "steering", steerApplyTo: "corrupt", steerDirection: "sae_feature", steerFeature: 3, scope: at("resid_pre", 1) });
+  const spec = built(steer, { sae });
+  expect(spec.experiment).toEqual({
+    kind: "steering",
+    apply_to: "corrupt",
+    direction: { kind: "sae_feature", feature: 3 },
+    coefficients: [-2, -1, 1, 2, 4],
+    train_fraction: 0.5,
+    seed: 0,
+    control: true,
+    continuations: null,
+  });
+  expect(spec.sae).toEqual({ repo: "owner/sae", path: "layer_1", revision: "abc" });
+  expect(spec.name).toBe("Steer corrupt along F3 · L1 resid pre @ last");
+  // A saved spec fills the form, and the form builds the same spec again.
+  expect(built(formFromSpec(spec), { sae })).toEqual(spec);
+  // A saved spec's SAE stands in for a loaded one (the server checks where it writes).
+  expect(built({ ...steer, saeRef: spec.sae ?? null }).sae).toEqual(spec.sae);
+
+  // What the steered model says: the first held-out prompts, continued greedily.
+  const continued = built({ ...steer, steerContinue: true, steerContinuePrompts: 2, steerContinueTokens: 12 }, { sae });
+  expect(continued.experiment).toMatchObject({ continuations: { prompts: 2, tokens: 12 } });
+  expect(formFromSpec(continued)).toMatchObject({ steerContinue: true, steerContinuePrompts: 2, steerContinueTokens: 12 });
+  expect(workloadText(continued, 100)).toContain("Continuing the first 2 held-out prompts by 12 tokens");
+  expect(refused({ ...steer, steerContinue: true, steerContinueTokens: 65 }, { sae })).toContain("by 1 to 64 tokens");
+  expect(refused({ ...steer, steerContinue: true, steerContinuePrompts: 9 }, { sae })).toContain("from 1 to 8");
+
+  // Refused before a run, as the server refuses it.
+  expect(refused({ ...steer, steerFeature: null }, { sae })).toContain("number of the SAE feature to steer along");
+  expect(refused({ ...steer, steerFeature: 64 }, { sae })).toContain("so there is no feature 64");
+  expect(refused(steer)).toContain("Load the SAE this feature belongs to");
+  const every = { kind: "layer_components" as const, components: ["resid_pre" as const], position: { kind: "last" as const } };
+  expect(refused({ ...steer, scope: every }, { sae })).toContain("where the SAE writes: the residual stream entering layer 1. Choose that site alone (L1 resid pre)");
+  expect(refused({ ...steer, scope: at("resid_pre", 0) }, { sae })).toContain("Choose that site alone (L1 resid pre)");
+  // The mean difference adds to the residual stream only.
+  expect(built({ ...steer, steerDirection: "mean_difference" }, { sae }).experiment).toMatchObject({ direction: { kind: "mean_difference" } });
+  expect(refused({ ...steer, steerDirection: "mean_difference", scope: at("attn_out", 1) })).toContain("adds it to the residual stream");
+
+  // Where each kind of SAE writes, as the scope names it: the heads' outputs make the attention output.
+  expect(steerSiteOf({ site: "head", layer: 2 })).toEqual({ kind: "attn_out", layer: 2 });
+  expect(saeWritesText({ site: "mlp_out", layer: 0, transcoder: true })).toBe("layer 0's MLP output, which the transcoder writes");
+  expect(scopeFor("steering", { kind: "heads", position: { kind: "index", index: 4 } }, { kind: "mlp_out", layer: 0 })).toEqual({
+    kind: "sites",
+    sites: [{ kind: "mlp_out", layer: 0, head: null, position: { kind: "index", index: 4 } }],
+  });
+  // Back to the mean difference: the residual stream again.
+  expect(scopeFor("steering", at("attn_out", 1))).toEqual(every);
 });
 
 test("the metric's own words name a run's values; direct attribution stays with the logit difference", () => {

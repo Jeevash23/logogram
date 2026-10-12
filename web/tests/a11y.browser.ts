@@ -204,6 +204,8 @@ test("the history's states have no accessibility violations", async ({ page }) =
   writeFileSync(join(broken, "spec.json"), "{");
   try {
     await page.reload();
+    // Opening the project settles on a view, which closes any drawer: open the history after it.
+    await expect(page.getByRole("main").getByRole("heading", { name: "tiny-gpt2", exact: true })).toBeVisible();
     await page.getByRole("button", { name: /^History/ }).click();
     const history = page.getByRole("dialog", { name: "Experiment history" });
     await expect(history.getByText("unreadable", { exact: true })).toBeVisible();

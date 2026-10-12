@@ -37,6 +37,7 @@ __all__ = [
     "add_local_model",
     "check_robustness",
     "compare_runs",
+    "continue_text",
     "create_project",
     "delete_run",
     "feature_writes",
@@ -298,6 +299,39 @@ def look(
         )
 
 
+def continue_text(
+    model: Any,
+    text: str,
+    *,
+    tokens: int,
+    prepend_bos: bool = True,
+    sae: Any = None,
+    feature: int | None = None,
+    activation: float | None = None,
+    start: int | None = None,
+) -> dict[str, Any]:
+    """What ``model`` writes after ``text``: ``tokens`` new tokens (1 to 64), each the most likely
+    one (ties to the lowest token id), as the app's Your text view continues it (``plain``). With
+    ``sae`` (from :func:`load_sae`) and ``feature``, also a continuation with that feature added
+    where the SAE writes (``steered``): ``activation`` units of it, in the feature's own units (its
+    decoder row times ``activation``), at every position from token ``start`` on (the first real
+    token by default), the new tokens included. ``steer`` says what was added, with the feature's
+    largest activation on the text for reference."""
+    from logogram.inside import continue_text as go
+
+    with model.lock:
+        return go(
+            model,
+            text,
+            prepend_bos=prepend_bos,
+            tokens=tokens,
+            sae=sae,
+            feature=feature,
+            activation=activation,
+            start=start,
+        )
+
+
 def _ended(outcome: Any, what: str) -> str:
     """Why a run didn't finish, and where its traceback is."""
     message = f"{what} {outcome.status}: {outcome.manifest.get('error')}"
@@ -546,10 +580,25 @@ class Run:
         hardware model names are left out unless ``hardware`` is true."""
         from logogram.report import run_report
 
-        page = run_report(self.spec, self._summary(), self.manifest, self.id, hardware=hardware)
+        page = run_report(
+            self.spec,
+            self._summary(),
+            self.manifest,
+            self.id,
+            hardware=hardware,
+            continuations=self.continuations(),
+        )
         if path is not None:
             Path(path).expanduser().write_text(page, encoding="utf-8")
         return page
+
+    def continuations(self) -> dict[str, Any] | None:
+        """What a steering run's model went on to say (its continuations.json): for each of the
+        first held-out prompts, the continuation without steering and one per steered site and
+        strength (and random control). None for a run that recorded none."""
+        from logogram.runs import load_continuations
+
+        return load_continuations(self.project, self.id)
 
     def results(self) -> Any:
         """results.parquet as a pyarrow Table: one row per site and prompt."""

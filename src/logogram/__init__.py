@@ -17,6 +17,7 @@ _API = (
     "add_local_model",
     "check_robustness",
     "compare_runs",
+    "continue_text",
     "create_project",
     "delete_run",
     "feature_writes",

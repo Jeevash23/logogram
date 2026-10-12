@@ -44,8 +44,8 @@ from logogram.results import (
     site_payload,
     write_results,
 )
-from logogram.schema import Manifest
-from logogram.spec import SINGLE_POSITION_METRICS, ModelRef, SAERef, Spec, Steering
+from logogram.schema import CONTINUATIONS_FILE, ContinuationsFile, Manifest
+from logogram.spec import SINGLE_POSITION_METRICS, ModelRef, SAERef, Spec
 
 EventFn = Callable[[str, dict[str, Any]], None]
 ModelProvider = Callable[[ModelRef], ModelBackend]
@@ -267,18 +267,6 @@ def device_provenance(info: Any) -> dict[str, Any]:
     }
 
 
-def not_built_yet(spec: Spec) -> str | None:
-    """What a version 3 spec asks for that this build can't run yet, if anything. (Scaffolding
-    while version 3 is built: each part leaves this list as it arrives.)"""
-    experiment = spec.experiment
-    if isinstance(experiment, Steering):
-        if experiment.direction.kind != "mean_difference":
-            return "Steering along an SAE feature can't be run yet: use the mean difference."
-        if experiment.continuations is not None:
-            return "Steered continuations can't be recorded yet: set continuations to null."
-    return None
-
-
 def _model_places(spec: Spec) -> tuple[tuple[str, str], ...]:
     """The folder of the spec's local model, for scrubbing it from errors."""
     if spec.model.source != "local":
@@ -379,7 +367,7 @@ def run_spec(
                 "wall_time_s": round(time.perf_counter() - t0, 3),
             }
         )
-        for name in ("results.parquet", "summary.json", "predictions.json"):
+        for name in ("results.parquet", "summary.json", "predictions.json", CONTINUATIONS_FILE):
             (folder / name).unlink(missing_ok=True)
         if detail is not None:
             # Before the manifest says the run failed, so whoever reads that finds why.
@@ -393,9 +381,6 @@ def run_spec(
     owner = claim_run(project, folder)
     try:
         write_manifest(folder / "manifest.json", manifest)
-        unbuilt = not_built_yet(spec)
-        if unbuilt:
-            raise RunError(unbuilt)
         dataset_path = project.resolve_dataset(spec.dataset.path)
         # Hash, parse and snapshot the same bytes, even if the source is subsequently edited.
         content = read_dataset_bytes(dataset_path)
@@ -603,6 +588,8 @@ def run_spec(
                 "This spec is version 1, which left some choices out; they took version 1's "
                 f"values: {'; '.join(upgraded)}. The saved spec states every value.",
             )
+        # What a steered model went on to say: kept beside the results, not in the summary.
+        continuations = result.extra.pop("continuations", None)
         stats = compute_stats(spec, result, counts_for(result))
         summary = build_summary(
             spec,
@@ -613,6 +600,9 @@ def run_spec(
             chat_template=chat.to_dict() if chat is not None else None,
         )
         write_results(folder / "results.parquet", results_table(result, stats))
+        if continuations is not None:
+            record = ContinuationsFile.model_validate({"run_id": run_id, **continuations})
+            write_json(folder / CONTINUATIONS_FILE, record.model_dump(mode="json"))
         write_json(folder / "summary.json", summary)
         manifest.update(
             {

@@ -383,3 +383,16 @@ def app_client(tmp_path, monkeypatch):
     client = TestClient(app, base_url="http://127.0.0.1:8765")
     headers = {"authorization": "Bearer chat-token", "origin": "http://127.0.0.1:8765"}
     return app, client, headers
+
+
+def test_continuing_your_text_reads_it_in_the_template(chat_backend):
+    """Continuing the text goes on after the wrapped text, as the model's reply does."""
+    from logogram.inside import continue_text
+
+    plain = continue_text(chat_backend, "When Mary and John went", prepend_bos=False, tokens=2)
+    wrapped = continue_text(
+        chat_backend, "When Mary and John went", prepend_bos=False, tokens=2, chat_template=USER
+    )
+    assert wrapped["tokens"][:2] == ["<|endoftext|>", " Hello"]
+    assert wrapped["tokens"][-2:] == [".", " world"]
+    assert len(wrapped["tokens"]) == len(plain["tokens"]) + 4

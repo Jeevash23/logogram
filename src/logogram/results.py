@@ -187,8 +187,11 @@ def build_summary(
     if "steering" in result.extra:
         from logogram.steering import control_comparison, control_warnings
 
-        result.extra["steering"]["control"] = control_comparison(result, stats, spec.statistics.ci)
-        warnings += control_warnings(result.extra["steering"]["control"], spec.statistics.ci)
+        steering = result.extra["steering"]
+        steering["control"] = control_comparison(result, stats, spec.statistics.ci)
+        warnings += control_warnings(
+            steering["control"], spec.statistics.ci, feature=steering.get("feature") is not None
+        )
     if "circuit" in result.extra:
         from logogram.circuits import circuit_summary
 

@@ -22,6 +22,7 @@ from logogram.spec import (
     ActivationPatching,
     AttributionPatching,
     DirectLogitAttribution,
+    FeatureDirection,
     MeanBaseline,
     PathPatching,
     Spec,
@@ -29,6 +30,7 @@ from logogram.spec import (
     ZeroBaseline,
     describe_experiment,
     describe_metric,
+    describe_sae_site,
     receiver_text,
 )
 
@@ -90,27 +92,7 @@ def _method(spec: Spec, summary: dict[str, Any] | None) -> str:
             "receivers' recorded inputs were then patched into an unchanged run."
         )
     if isinstance(e, Steering):
-        other = "corrupt" if e.apply_to == "clean" else "clean"
-        strengths = ", ".join(f"{c:g}" for c in e.coefficients)
-        control = (
-            "A random direction of the same length was run as a control."
-            if e.control
-            else "No random control was run."
-        )
-        text = (
-            f"Steering: a direction was added to the {e.apply_to} prompts, the mean of ({other} − "
-            f"{e.apply_to}) activations at each site over a training split of "
-            f"{round(e.train_fraction * 100)}% of the pairs (split seed {e.seed}), at strengths "
-            f"{strengths}. {control}"
-        )
-        steering = (summary or {}).get("steering")
-        if steering:
-            train = ", ".join(str(i) for i in steering.get("train", []))
-            text += (
-                f" The directions came from dataset prompts {train}; effects were measured on the "
-                f"{len(steering.get('test', []))} held-out prompts."
-            )
-        return text
+        return _steering_method(spec, e, summary)
     assert isinstance(e, AttributionPatching)
     how = (
         f"the gradient of the metric averaged over {e.steps} runs whose input embeddings lie "
@@ -122,6 +104,89 @@ def _method(spec: Spec, summary: dict[str, Any] | None) -> str:
         f"Attribution patching {_arrow(e.direction)}: a first-order estimate of each site's "
         f"patching effect, (source − receiver activation) · {how}, not a patched forward pass."
     )
+
+
+def _steering_method(spec: Spec, e: Steering, summary: dict[str, Any] | None) -> str:
+    other = "corrupt" if e.apply_to == "clean" else "clean"
+    strengths = ", ".join(f"{c:g}" for c in e.coefficients)
+    steering = (summary or {}).get("steering") or {}
+    split = (
+        f"a training split of {round(e.train_fraction * 100)}% of the pairs (split seed {e.seed})"
+    )
+    if isinstance(e.direction, FeatureDirection):
+        f = e.direction.feature
+        sae = spec.sae
+        named = (
+            f" of the SAE {sae.repo}{'/' + sae.path if sae.path else ''}"
+            f"{f' at revision {sae.revision}' if sae.revision else ''}"
+            if sae
+            else ""
+        )
+        feature = steering.get("feature") or {}
+        where = (
+            f", {describe_sae_site(feature['site'], feature['layer'], feature['transcoder'])}"
+            if feature
+            else ""
+        )
+        text = (
+            f"Steering along an SAE feature: the decoder direction W_dec[{f}] of feature {f}"
+            f"{named} was added to the {e.apply_to} prompts where the SAE writes{where}, at "
+            f"strengths {strengths}. Adding W_dec[{f}] times a is what the feature writes when "
+            "its activation is a, so strength 1 is the feature's typical activation: the mean of "
+            "its positive activations at the steered token of the clean and corrupt prompts of "
+            f"{split}."
+        )
+        if feature.get("standardized"):
+            text += (
+                " The SAE standardizes its inputs, so each prompt's vector was also multiplied by "
+                "the standard deviation of its own activation at that token, as the SAE's "
+                "decoding does."
+            )
+        values = feature.get("activations") or []
+        if values:
+            rows = (summary or {}).get("layout", {}).get("rows") or []
+            parts = []
+            for i, value in enumerate(values):
+                fired = (feature.get("fired") or [None])[i]
+                measured = (feature.get("measured") or [None])[i]
+                at = f" at {rows[i]['label']}" if len(values) > 1 and i < len(rows) else ""
+                parts.append(
+                    f"{value:.4g}{at} (positive in {fired} of the {measured} training activations)"
+                )
+            text += f" The typical activation was {'; '.join(parts)}."
+    else:
+        text = (
+            f"Steering: a direction was added to the {e.apply_to} prompts, the mean of ({other} − "
+            f"{e.apply_to}) activations at each site over {split}, at strengths {strengths}."
+        )
+    text += (
+        " A random direction of the same length as the steering vector at strength 1 was run as a "
+        "control."
+        if e.control
+        else " No random control was run."
+    )
+    if steering:
+        train = ", ".join(str(i) for i in steering.get("train", []))
+        what = (
+            "The typical activation"
+            if isinstance(e.direction, FeatureDirection)
+            else "The directions"
+        )
+        text += (
+            f" {what} came from dataset prompts {train}; effects were measured on the "
+            f"{len(steering.get('test', []))} held-out prompts."
+        )
+    if e.continuations is not None:
+        c = e.continuations
+        text += (
+            f" Greedy continuations of {c.tokens} new token{'s' if c.tokens != 1 else ''} (the "
+            "most likely token each time, ties to the lowest token id) were recorded for the "
+            f"first {c.prompts} held-out prompt{'s' if c.prompts != 1 else ''}: without steering, "
+            f"at each strength{' and with the control' if e.control else ''}. Each forward pass "
+            "added the vector at the steered site and token of the prompt, as when it was "
+            "measured; the generated tokens weren't steered themselves."
+        )
+    return text
 
 
 def _statistics(spec: Spec, summary: dict[str, Any] | None) -> str:
@@ -397,6 +462,13 @@ dl.provenance { display: grid; grid-template-columns: max-content 1fr; gap: 4px 
 dl.provenance dt { color: var(--muted); }
 dl.provenance dd { margin: 0; overflow-wrap: anywhere; }
 footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
+h3 { font-size: 13px; margin: 18px 0 4px; }
+table.continuations { margin: 6px 0 4px; }
+table.continuations caption { text-align: left; color: var(--muted); font-size: 12px; padding: 4px 0; }
+table.continuations th { width: 9em; white-space: nowrap; }
+table.continuations tr.control th, table.continuations tr.control td { color: var(--muted); }
+.tok { display: inline-block; margin: 0 2px 2px 0; padding: 0 5px; border: 1px solid var(--line);
+  border-radius: 3px; white-space: pre; font-size: 13px; }
 """
 
 
@@ -425,6 +497,55 @@ def _site_rows(sites: list[dict[str, Any]], ci_level: int) -> str:
     )
 
 
+def visible_token(token: str) -> str:
+    """A token as the app's token strip writes it: spaces as ·, line breaks as ⏎, tabs as ⇥."""
+    return token.replace("\n", "⏎").replace("\t", "⇥").replace(" ", "·")
+
+
+def _tokens_html(tokens: list[str]) -> str:
+    return "".join(
+        f'<span class="tok">{html.escape(visible_token(t)) or "∅"}</span>' for t in tokens
+    )
+
+
+def _continuations_html(continuations: dict[str, Any] | None) -> str:
+    """Each continued prompt as written, then what the model says without steering and at each
+    strength (the random control's lines marked), one table per steered site."""
+    if not continuations or not continuations.get("prompts"):
+        return ""
+    esc = html.escape
+    rows = continuations.get("rows") or []
+    several = len(rows) > 1
+    n = continuations.get("tokens")
+    parts = [
+        "<section><h2>What the steered model says</h2>"
+        f"<p class='muted'>Greedy continuations of {n} new tokens (the most likely token each "
+        "time, ties to the lowest token id) of the first held-out prompts. Each forward pass adds "
+        "the vector at the steered site and token of the prompt, as when it was measured; the "
+        "generated tokens aren't steered themselves. Tokens are shown as the model splits them: "
+        "· is a space, ⏎ a line break.</p>"
+    ]
+    for prompt in continuations["prompts"]:
+        parts.append(f"<h3>Prompt {prompt['index']}</h3><p class='lede'>{esc(prompt['text'])}</p>")
+        for row in rows:
+            # The random control's lines are named as its columns are ("random ×1"), and muted.
+            lines = [("Without steering", prompt["unsteered"]["tokens"], False)] + [
+                (s["key"], s["tokens"], s["control"])
+                for s in prompt["steered"]
+                if s["row"] == row["row"]
+            ]
+            caption = f"<caption>At {esc(row['label'])}</caption>" if several else ""
+            body = "".join(
+                f"<tr class='{'control' if control else 'steered'}'>"
+                f"<th scope='row'>{esc(label)}</th>"
+                f"<td class='said'>{_tokens_html(tokens)}</td></tr>"
+                for label, tokens, control in lines
+            )
+            parts.append(f"<table class='continuations'>{caption}<tbody>{body}</tbody></table>")
+    parts.append("</section>")
+    return "".join(parts)
+
+
 def run_report(
     spec: Spec,
     summary: dict[str, Any],
@@ -432,8 +553,10 @@ def run_report(
     run_id: str,
     *,
     hardware: bool = False,
+    continuations: dict[str, Any] | None = None,
 ) -> str:
-    """One finished run as a self-contained HTML page."""
+    """One finished run as a self-contained HTML page. ``continuations`` is the run's
+    continuations.json, for a steering run that recorded what the model says."""
     manifest = manifest or {}
     esc = html.escape
     sites = [s for s in summary["sites"] if s["effect"]["mean"] is not None]
@@ -462,6 +585,11 @@ def run_report(
         figures.append(
             ("Strongest effect", f"{esc(top['label'])} {_fmt(top['effect']['mean'], 2)}")
         )
+    feature = (summary.get("steering") or {}).get("feature")
+    if feature and feature.get("activations"):
+        # What strength 1 is along an SAE feature: its typical activation where it is steered.
+        typical = ", ".join(f"{a:.3g}" for a in feature["activations"])
+        figures.append((f"Strength 1: feature {feature['feature']}'s typical activation", typical))
     figure_html = "".join(f"<div><dt>{esc(k)}</dt><dd>{v}</dd></div>" for k, v in figures)
 
     layout = summary.get("layout") or {}
@@ -535,6 +663,7 @@ def run_report(
         f"<p class='muted'>Effects are normalized: 1 is as far as switching to the other prompt, "
         f"0 is no change. The band holds for every site of the sweep at once; the q-value is the "
         f"share of false findings expected among sites this strong.</p></section>"
+        f"{_continuations_html(continuations)}"
         f"<section class='methods'><h2>Methods</h2>{methods}</section>"
         + (f"<section><h2>Notes from the run</h2><ul>{warnings}</ul></section>" if warnings else "")
         + f"<section><h2>Every site</h2><details><summary>All {len(summary['sites'])} sites"

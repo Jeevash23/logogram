@@ -16,6 +16,13 @@
   width: 110px;
 }
 
+/* What keeps a continuation from starting, said where it is set. */
+.problem {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 540;
+}
+
 .section {
   display: flex;
   flex-direction: column;
