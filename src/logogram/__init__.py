@@ -32,6 +32,7 @@ _API = (
     "load_spec",
     "load_sweep",
     "look",
+    "open_example",
     "open_project",
     "remove_local_model",
     "run",

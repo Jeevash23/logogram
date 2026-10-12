@@ -6,7 +6,9 @@ import { count } from "../lib/format";
 import { modelName } from "../lib/hooks";
 import { metricWords } from "../lib/metrics";
 import { experimentText, scopeText } from "../lib/spec";
+import { TOUR_EXAMPLE } from "../lib/walkthrough";
 import { useStore } from "../store/app";
+import { startTour } from "../store/help";
 import s from "./ExampleGallery.module.css";
 import { Logogram } from "./Logogram";
 import { Button, Callout, Spinner } from "./ui";
@@ -32,13 +34,18 @@ export function ExampleGallery({ onOpen, disabled }: { onOpen?: () => void; disa
     };
   }, []);
 
-  const open = async (example: ExampleInfo) => {
+  // Until the walkthrough has been finished or skipped, its example offers it.
+  const offerWalkthrough = useStore((st) => st.walkthrough === null);
+
+  const open = async (example: ExampleInfo, walkThrough = false) => {
     setOpening(example.id);
     onOpen?.();
     const st = useStore.getState();
     const project = await st.guard(() => api.openExample(example.id));
     setOpening(null);
-    if (project) await st.enterProject(project);
+    if (!project) return;
+    await st.enterProject(project);
+    if (walkThrough) startTour();
   };
 
   const lead = (
@@ -84,10 +91,22 @@ export function ExampleGallery({ onOpen, disabled }: { onOpen?: () => void; disa
                   <span className={s.pathText}>{"\u200e" + example.path}</span>
                 </p>
               </div>
-              <Button className={s.open} onClick={() => void open(example)} disabled={disabled || opening !== null}>
-                {opening === example.id ? "Opening…" : action}
-                <span className="visually-hidden">{example.copied ? ` of ${example.name}` : ` ${example.name}`}</span>
-              </Button>
+              <div className={s.actions}>
+                <Button onClick={() => void open(example)} disabled={disabled || opening !== null}>
+                  {opening === example.id ? "Opening…" : action}
+                  <span className="visually-hidden">{example.copied ? ` of ${example.name}` : ` ${example.name}`}</span>
+                </Button>
+                {offerWalkthrough && example.id === TOUR_EXAMPLE && (
+                  <Button
+                    variant="ghost"
+                    onClick={() => void open(example, true)}
+                    disabled={disabled || opening !== null}
+                    tip="Open the example, and show its prompts, baseline, experiment and results step by step"
+                  >
+                    Walk me through it
+                  </Button>
+                )}
+              </div>
             </li>
           );
         })}

@@ -4,27 +4,21 @@ import { fileURLToPath } from "node:url";
 
 import { CHANGELOG_URL, ERROR_SENT, errorForReport, GUIDE, guideUrl, LICENSE, LICENSE_URL, NEW_ISSUE_URL, REPOSITORY } from "../src/lib/help";
 import { useStore } from "../src/store/app";
+import { anchorsOf } from "./docs";
 
 const read = (path: string) => readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf8");
 
-/** The anchor GitHub gives a heading: lower case, punctuation dropped, spaces as hyphens. */
-function slug(heading: string): string {
-  return heading
-    .trim()
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\- _]/gu, "")
-    .replace(/ /g, "-");
-}
-
-test("the Help menu's guide links name sections the README has", () => {
-  const anchors = [...read("../../README.md").matchAll(/^#{1,6} (.+)$/gm)].map((m) => slug(m[1]));
+test("the Help menu's documentation links name files and sections the repository has", () => {
   expect(GUIDE.length).toBeGreaterThan(0);
-  for (const section of GUIDE) {
-    expect(anchors, `README has no section #${section.anchor}`).toContain(section.anchor);
-    expect(slug(section.title)).toBe(section.anchor);
-    expect(guideUrl(section.anchor)).toBe(`${REPOSITORY}#${section.anchor}`);
+  for (const link of GUIDE) {
+    const anchors = anchorsOf(link.path);
+    if (link.anchor) expect(anchors, `${link.path} has no section #${link.anchor}`).toContain(link.anchor);
+    const hash = link.anchor ? `#${link.anchor}` : "";
+    expect(guideUrl(link)).toBe(link.path === "README.md" ? `${REPOSITORY}${hash}` : `${REPOSITORY}/blob/main/${link.path}${hash}`);
   }
-  expect(GUIDE.map((g) => g.anchor)).toEqual(expect.arrayContaining(["running-on-a-remote-gpu", "troubleshooting"]));
+  // The guide 0.4 added for remote GPUs, and troubleshooting, stay in the README.
+  expect(GUIDE.filter((g) => g.path === "README.md").map((g) => g.anchor)).toEqual(["running-on-a-remote-gpu", "troubleshooting"]);
+  expect(GUIDE.map((g) => g.path)).toContain("docs/getting-started.md");
 });
 
 test("the repository, license, changelog and issue form are the ones the repository has", () => {
@@ -38,7 +32,7 @@ test("the repository, license, changelog and issue form are the ones the reposit
   expect(NEW_ISSUE_URL).toBe(`${REPOSITORY}/issues/new?template=bug_report.yml`);
   expect(read("../../.github/ISSUE_TEMPLATE/bug_report.yml")).toContain("id: report");
   // Every link leaves for the repository's own pages, over HTTPS.
-  for (const url of [REPOSITORY, LICENSE_URL, CHANGELOG_URL, NEW_ISSUE_URL, ...GUIDE.map((g) => guideUrl(g.anchor))]) {
+  for (const url of [REPOSITORY, LICENSE_URL, CHANGELOG_URL, NEW_ISSUE_URL, ...GUIDE.map((g) => guideUrl(g))]) {
     expect(url.startsWith(`${REPOSITORY}`) && url.startsWith("https://github.com/")).toBe(true);
   }
 });

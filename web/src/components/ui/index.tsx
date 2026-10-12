@@ -402,6 +402,7 @@ export function Dialog({
   footer,
   wide,
   onEscapeKeyDown,
+  onCloseAutoFocus,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -412,12 +413,19 @@ export function Dialog({
   wide?: boolean;
   /** Called before Escape closes the dialog; preventing its default keeps it open. */
   onEscapeKeyDown?: (event: globalThis.KeyboardEvent) => void;
+  /** Called as the dialog closes, before the keyboard goes back where it was; preventing its
+   * default sends it elsewhere. */
+  onCloseAutoFocus?: (event: Event) => void;
 }) {
   return (
     <RadixDialog.Root open={open} onOpenChange={onOpenChange}>
       <RadixDialog.Portal>
         <RadixDialog.Overlay className={s.overlay} />
-        <RadixDialog.Content className={cx(s.dialog, wide && s.dialogWide)} onEscapeKeyDown={onEscapeKeyDown}>
+        <RadixDialog.Content
+          className={cx(s.dialog, wide && s.dialogWide)}
+          onEscapeKeyDown={onEscapeKeyDown}
+          onCloseAutoFocus={onCloseAutoFocus}
+        >
           <div className={s.dialogHeader}>
             <div>
               <RadixDialog.Title className={s.dialogTitle}>{title}</RadixDialog.Title>

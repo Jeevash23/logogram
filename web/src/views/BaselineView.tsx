@@ -57,7 +57,7 @@ export function BaselineView() {
           </p>
         </div>
         <div className={s.headActions}>
-          <Button variant={report ? "secondary" : "primary"} icon="play" disabled={!ready || busy} onClick={check}>
+          <Button variant={report ? "secondary" : "primary"} icon="play" disabled={!ready || busy} onClick={check} data-tour="baseline">
             {busy ? "Running…" : report ? "Run again" : "Check the baseline"}
           </Button>
         </div>
