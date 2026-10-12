@@ -35,6 +35,11 @@ def main() -> None:
     assert specs and Spec.from_path(specs[0]).dataset.path == "datasets/ioi.jsonl"
     assert not list(example_source().rglob("manifest.json"))
     assert not list(example_source().rglob("results.parquet"))
+    # Every example of the gallery is installed: its project, spec and dataset read (listing them
+    # writes nothing).
+    from logogram.gallery import EXAMPLES, list_examples
+
+    assert [e["id"] for e in list_examples()] == [e.id for e in EXAMPLES]
 
     sock = _bind(0)
     port = sock.getsockname()[1]
