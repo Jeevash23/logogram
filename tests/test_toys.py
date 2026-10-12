@@ -211,6 +211,28 @@ def test_loading_checks_a_toy_and_leaves_other_models_alone(toy_backend, tiny_ba
     assert toys.check_loaded_toy(tiny_backend) is None
 
 
+@pytest.mark.parametrize("name", list(toys.TOYS))
+def test_the_logit_lens_reads_the_answer_only_after_the_head_that_writes_it(name, toy_backend):
+    """Only the head that copies the answer writes what the logits read: through the final
+    normalization, the residual stream predicts nothing (every logit equal) before that head's
+    layer, and the answer, 10 above every other token, from its layer on."""
+    from logogram.prompts import prepare_prompts
+
+    backend = toy_backend(name)
+    toy = toys.get_toy(name)
+    (prompt,) = prepare_prompts(backend, toys.dataset(name, 1), True)
+    ids = prompt.clean.ids
+    lens = backend.layer_logits(torch.tensor([ids]), position=len(ids) - 1, row=0)
+    writer = max(h.layer for h in toy.heads)
+    for layer in range(toy.n_layers):
+        if layer < writer:
+            assert float(lens[layer].max() - lens[layer].min()) < 1e-4, layer
+        else:
+            top = lens[layer].topk(2)
+            assert int(top.indices[0]) == prompt.answer_id
+            assert float(top.values[0] - top.values[1]) == pytest.approx(10.0, abs=1e-4)
+
+
 # -- the head finder -----------------------------------------------------------------------------
 
 
