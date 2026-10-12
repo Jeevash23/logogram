@@ -32,6 +32,8 @@ export interface ModelInfo {
     prediction_method?: string | null;
     model_type?: string;
     n_key_value_heads?: number;
+    /** Why a site the model doesn't offer is missing (q, k, v or neuron), as measured on loading. */
+    site_notes?: Partial<Record<HeadInputKind | "neuron", string>>;
     /** Whether the tokenizer has a beginning-of-sequence token to prepend. */
     bos?: boolean;
     checks?: ModelChecks;
@@ -52,6 +54,17 @@ export interface ModelChecks {
   structure: string;
   residual: number | null;
   lens: number | null;
+  heads?: number | null;
+  /** Every query, key and value together reproduce the attention output; each one alone changes
+   * only the heads that read it; heads' outputs are their patterns times their values. */
+  qkv?: number | null;
+  q_alone?: number | null;
+  k_alone?: number | null;
+  v_alone?: number | null;
+  values?: number | null;
+  /** Every neuron together reproduces the MLP output; the MLP output is what they write. */
+  neurons?: number | null;
+  neuron_writes?: number | null;
 }
 
 export interface ModelPreset {
@@ -266,7 +279,10 @@ export type RobustnessChange = { experiment: ExperimentSpec } | { dtype: Dtype }
 /** Where the model runs: `cuda:N` is one GPU of several. */
 export type Device = "auto" | "cpu" | "cuda" | "mps" | `cuda:${number}`;
 export type StreamKind = "resid_pre" | "resid_mid" | "resid_post" | "attn_out" | "mlp_out";
-export type SiteKind = StreamKind | "head" | "sae_feature";
+/** A head's query, key or value. With grouped-query attention a key or value belongs to a
+ * key/value head, which every query head of its group reads. */
+export type HeadInputKind = "q" | "k" | "v";
+export type SiteKind = StreamKind | "head" | "sae_feature" | HeadInputKind | "neuron";
 
 export type PositionSpec =
   | { kind: "all" }
@@ -277,9 +293,12 @@ export type PositionSpec =
 export interface SiteSpec {
   kind: SiteKind;
   layer: number;
+  /** A head's output (head), a query head (q), or a key/value head (k and v). */
   head?: number | null;
   /** A feature of the spec's SAE (kind sae_feature). */
   feature?: number | null;
+  /** An MLP neuron (kind neuron): its activation, the input to the MLP's output projection. */
+  neuron?: number | null;
   position: PositionSpec;
 }
 
@@ -427,8 +446,9 @@ export interface FeatureReport {
   n: number;
 }
 
-/** What "the rest of the model" is made of, for a set that keeps its sites and replaces the rest. */
-export type UniverseKind = "head" | "attn_out" | "mlp_out";
+/** What "the rest of the model" is made of, for a set that keeps its sites and replaces the rest:
+ * components, or the queries, keys, values or neurons they are made of. */
+export type UniverseKind = "head" | "attn_out" | "mlp_out" | HeadInputKind | "neuron";
 
 /** Sites intervened on together, in one forward pass. With `complement`, the intervention covers
  * every component of the scope's universe except these sites ("keep the circuit, replace the
@@ -448,7 +468,11 @@ export type ScopeSpec =
    * seeded share of the prompts chooses them and the rest report them (both null: every prompt). */
   | { kind: "features"; position: PositionSpec; top: number; choose_on: number | null; seed: number | null }
   /** Sets of sites, each intervened on at once: one result per set (1 to 64 sets). */
-  | { kind: "site_sets"; universe: UniverseKind[] | null; sets: SiteSetSpec[] };
+  | { kind: "site_sets"; universe: UniverseKind[] | null; sets: SiteSetSpec[] }
+  /** Every head's query, or every key/value head's key or value, at one position. */
+  | { kind: "head_inputs"; input: HeadInputKind; position: PositionSpec }
+  /** Every neuron of the MLPs of the chosen layers, at one position. */
+  | { kind: "neurons"; layers: number[]; position: PositionSpec };
 
 export type BaselineSpec =
   | { kind: "zero" }
@@ -599,6 +623,8 @@ export interface SiteBase {
   layer: number;
   head: number | null;
   feature?: number | null;
+  /** The MLP neuron of a neuron site. */
+  neuron?: number | null;
   position: PositionSpec;
   position_key: string;
   row: number;
@@ -643,11 +669,17 @@ export interface LayoutAxis {
   /** Sets of sites: whether the row's set keeps its sites, and how many it holds. */
   complement?: boolean;
   size?: number;
+  /** A key/value head's column: the query heads that read it. */
+  query_heads?: number[];
+  /** A layer's row of a neurons run: how many neurons it has (its columns). */
+  neurons?: number;
 }
 
 export interface Layout {
-  kind: "heads" | "layer_position" | "layer_components" | "sites" | "steering" | "site_sets";
-  site?: StreamKind;
+  /** head_inputs: every head's query or key/value head's key or value (`site`); neurons: every
+   * neuron of the chosen layers, a row per layer with no columns listed. */
+  kind: "heads" | "layer_position" | "layer_components" | "sites" | "steering" | "site_sets" | "head_inputs" | "neurons";
+  site?: StreamKind | HeadInputKind | "neuron";
   row_title: string;
   col_title: string;
   rows: LayoutAxis[];
@@ -665,6 +697,8 @@ export interface ModelShape {
   id: string;
   n_layers: number;
   n_heads: number;
+  /** Fewer than n_heads with grouped-query attention. */
+  n_key_value_heads?: number | null;
   d_model?: number;
   d_head?: number;
   d_mlp?: number | null;
@@ -1007,6 +1041,7 @@ export interface SweepSite {
   layer: number;
   head: number | null;
   feature: number | null;
+  neuron?: number | null;
   position: PositionSpec | null;
   position_key: string;
   variant: SiteBase["variant"];
@@ -1428,6 +1463,7 @@ export interface ComparisonChange {
   layer: number;
   head: number | null;
   feature?: number | null;
+  neuron?: number | null;
   position_key: string;
   variant_key?: string | null;
   index_a: number;
@@ -1507,6 +1543,9 @@ export interface RunMemory {
   available: number;
   verdict: "fits" | "tight" | "wont_fit";
   explanation: string;
+  /** The scope's sites, and what they hold (in total). */
+  sites?: number;
+  site_bytes?: number;
 }
 
 export interface MemoryEstimate {

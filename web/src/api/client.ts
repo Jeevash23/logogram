@@ -59,6 +59,7 @@ import type {
   QueuedRun,
   QueueStatus,
   RunMemory,
+  ScopeSpec,
   ExperimentKind,
   Revisions,
   SweepField,
@@ -244,7 +245,8 @@ export const api = {
   /** A prompt as the loaded model reads it in its own chat template. */
   chatWrap: (body: { chat_template: ChatTemplateSpec; text: string; model?: ModelRef }) => post<ChatWrapped>("/api/chat/wrap", body),
   /** What a run of this batch size would need on the loaded model, against the memory free. */
-  runMemory: (body: { batch_size: number; seq_len: number; method: ExperimentKind }) => post<RunMemory>("/api/models/run-memory", body),
+  runMemory: (body: { batch_size: number; seq_len: number; method: ExperimentKind; scope?: ScopeSpec; prompts?: number; bootstrap?: number }) =>
+    post<RunMemory>("/api/models/run-memory", body),
   loadModel: (body: ModelRef) => post<Job>("/api/models/load", body),
   unloadModel: () => post<ModelStatus>("/api/models/unload"),
 

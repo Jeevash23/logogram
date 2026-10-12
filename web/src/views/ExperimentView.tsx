@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 
-import type { BaselineSpec, ExperimentKind, PathReceiverSpec, PositionSpec, SAEInfo, ScopeSpec, StreamKind } from "../api/types";
+import type { BaselineSpec, ExperimentKind, HeadInputKind, ModelInfo, PathReceiverSpec, PositionSpec, SAEInfo, ScopeSpec, StreamKind } from "../api/types";
 import { Button, Checkbox, Choices, Field, Input, Segmented, Select, TextArea } from "../components/ui";
 import { MOD } from "../components/Header";
 import { count, plural, shortRevision } from "../lib/format";
 import { modelName } from "../lib/hooks";
 import { EVERYTHING, SET_SITE_KINDS } from "../lib/circuits";
-import { KIND_SHORT, parseHeadQuery } from "../lib/sites";
+import { KIND_SHORT, parseHeadQuery, queryHeadsOf, queryHeadsText } from "../lib/sites";
 import { buildSpec, carriedBy, datasetFacts, lastInstead, parseStrengths, savedDifferences, unlinedReason, unevenPairsText, usesFeatures } from "../lib/buildSpec";
-import { receiverLabel, saeWritesText, scopeFor, scopeShort, siteText, steerSiteOf, suggestName, workload } from "../lib/spec";
+import { parseLayers, receiverLabel, saeWritesText, scopeFor, scopeShort, siteText, steerSiteOf, suggestName, workload } from "../lib/spec";
 import { useStore, type FormState } from "../store/app";
 import { ChatTemplateSettings } from "./ChatTemplateSettings";
 import { MetricSettings } from "./MetricSettings";
@@ -94,7 +94,16 @@ export function ExperimentView() {
   const noBos = model.info?.extra?.bos === false;
   const rows =
     spec && arch
-      ? workload(spec, n, arch.n_layers, arch.n_heads, uniformLength && lengths ? lengths[0] : null, labels.length)
+      ? workload(
+          spec,
+          n,
+          arch.n_layers,
+          arch.n_heads,
+          uniformLength && lengths ? lengths[0] : null,
+          labels.length,
+          arch.extra?.n_key_value_heads ?? arch.n_heads,
+          arch.d_mlp ?? 0,
+        )
       : null;
 
   return (
@@ -220,6 +229,7 @@ export function ExperimentView() {
           <h2 className={e.sectionTitle}>What to sweep</h2>
           <ScopeEditor
             method={form.kind}
+            model={arch}
             saeLoaded={saeInfo}
             steersFeature={form.kind === "steering" && steersFeature}
             scope={form.scope}
@@ -329,6 +339,8 @@ export function ExperimentView() {
         spec={spec}
         error={"error" in built ? built.error : null}
         method={form.kind}
+        scope={form.scope}
+        bootstrap={form.bootstrap}
         batchSize={form.batchSize}
         n={n}
         rows={rows}
@@ -785,8 +797,64 @@ function HeldOutChoice({ scope, onChange }: { scope: FeaturesScope; onChange: (s
   );
 }
 
+/** Why a head input or a neuron can't be a site of the loaded model, as it was measured when it
+ * loaded; null when it can (or no model is loaded to say). */
+function missingNote(model: ModelInfo | null, kind: HeadInputKind | "neuron"): string | null {
+  if (!model || model.site_kinds.includes(kind)) return null;
+  return model.extra?.site_notes?.[kind] ?? `${model.id} has no ${kind} sites.`;
+}
+
+/** What a key or value site is in the loaded model: with grouped-query attention, a key/value head
+ * that every query head of its group reads. */
+function groupText(model: ModelInfo | null): string {
+  if (!model) {
+    return "With grouped-query attention (Llama, Qwen, Gemma), a model has fewer key and value heads than query heads: a key or value site is a key/value head, and every query head of its group reads it.";
+  }
+  const kv = model.extra?.n_key_value_heads ?? model.n_heads;
+  if (kv === model.n_heads) return `Each of the ${count(model.n_heads)} heads of a layer has its own query, key and value.`;
+  const group = model.n_heads / kv;
+  return `This model has ${count(kv)} key/value heads for its ${count(model.n_heads)} query heads: a key or value site is a key/value head, and every query head of its group reads it (${count(group)} each; key/value head 0 is read by ${queryHeadsText(queryHeadsOf(0, model.n_heads, kv))}). Patching one changes all of them.`;
+}
+
+/** The layers whose neurons a sweep covers, typed as a list ("3, 4" or "0-5"). The text is kept as
+ * typed; the scope changes once it reads as layers. */
+function LayersInput({
+  value,
+  onChange,
+  nLayers,
+}: {
+  value: number[];
+  onChange: (layers: number[]) => void;
+  nLayers: number | null;
+}) {
+  const [text, setText] = useState(value.join(", "));
+  const parsed = parseLayers(text);
+  // Undo, or another change of the scope, shows its layers.
+  useEffect(() => {
+    if (JSON.stringify(parseLayers(text) ?? []) !== JSON.stringify(value)) setText(value.join(", "));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only the scope's layers move the text
+  }, [value]);
+  const invalid = text.trim() !== "" && parsed === null;
+  return (
+    <Input
+      value={text}
+      placeholder={nLayers ? `such as ${Math.max(0, nLayers - 2)}, ${nLayers - 1}` : "such as 3, 4"}
+      aria-label="Layers whose neurons to sweep"
+      aria-invalid={invalid}
+      spellCheck={false}
+      onChange={(ev) => {
+        setText(ev.target.value);
+        const layers = parseLayers(ev.target.value);
+        if (layers) onChange([...new Set(layers)]);
+        else if (ev.target.value.trim() === "") onChange([]);
+      }}
+    />
+  );
+}
+
 function ScopeEditor({
   method,
+  model,
   saeLoaded,
   steersFeature,
   scope,
@@ -797,6 +865,8 @@ function ScopeEditor({
   unlined,
 }: {
   method: ExperimentKind;
+  /** The loaded model: its key/value heads and neurons, and the sites it offers. */
+  model: ModelInfo | null;
   /** The loaded SAE: attribution patching can then estimate every one of its features. */
   saeLoaded: SAEInfo | null;
   /** Steering along an SAE feature: added where its SAE writes, at one site. */
@@ -824,12 +894,15 @@ function ScopeEditor({
   const unavailable = steersFeature
     ? "Steering along an SAE feature adds it where the SAE writes, at one token: one site of one layer."
     : steering
-    ? "Steering adds a direction to the residual stream at one token, so it sweeps no heads, positions or sets of sites."
+    ? "Steering adds a direction to the residual stream at one token, so it sweeps no heads, positions, queries, keys, values, neurons or sets of sites."
     : direct
       ? "Direct effects are read at the last token only, and sets of sites need activation patching or ablation."
       : paths
-        ? "Paths start at heads, attention outputs or MLP outputs, and sets of sites need activation patching or ablation."
+        ? "Paths start at heads' outputs, attention outputs or MLP outputs, not at queries, keys, values or neurons, and sets of sites need activation patching or ablation."
         : "Sets of sites need activation patching or ablation.";
+  // Queries, keys and values (the loaded model may offer only some), and neurons.
+  const inputsMissing = missingNote(model, "q") && missingNote(model, "k") && missingNote(model, "v");
+  const neuronsMissing = missingNote(model, "neuron");
   // New sweeps start where they can run: at the last token, for direct effects and for prompts of
   // different lengths.
   const position = (p: PositionSpec) => (direct || (unlined && (p.kind === "all" || p.kind === "index")) ? ({ kind: "last" } as PositionSpec) : p);
@@ -846,11 +919,23 @@ function ScopeEditor({
             onChange({ kind: "layer_position", site: "resid_pre", positions: (uniformLength === false || unlined) && labels.length ? "labels" : "each" });
           else if (k === "layer_components") onChange({ kind: "layer_components", components: ["attn_out", "mlp_out"], position: position({ kind: "all" }) });
           else if (k === "site_sets") onChange(firstSets(scope, !unlined));
+          else if (k === "head_inputs") {
+            const input: HeadInputKind = direct || missingNote(model, "q") ? "v" : "q";
+            // A value's direct effect reads every position; prompts of different lengths can't.
+            onChange({ kind: "head_inputs", input, position: unlined ? { kind: "last" } : { kind: "all" } });
+          } else if (k === "neurons") onChange({ kind: "neurons", layers: [], position: position({ kind: "all" }) });
         }}
         options={[
           { value: "heads", label: "Layer × head", disabled: steering, reason: unavailable },
           { value: "layer_position", label: "Layer × position", disabled: direct || steering || paths, reason: unavailable },
           { value: "layer_components", label: steering ? "One site in every layer" : "Attention and MLP per layer", disabled: steersFeature, reason: unavailable },
+          {
+            value: "head_inputs" as const,
+            label: "Queries, keys, values",
+            disabled: steering || paths || !!inputsMissing,
+            reason: inputsMissing || unavailable,
+          },
+          { value: "neurons" as const, label: "Neurons", disabled: steering || paths || !!neuronsMissing, reason: neuronsMissing || unavailable },
           ...(method === "attribution_patching" && (saeLoaded || kind === "features")
             ? [{ value: "features" as const, label: "Every SAE feature" }]
             : []),
@@ -899,6 +984,65 @@ function ScopeEditor({
             <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} unlined={unlined} />
           </Field>
         ))}
+      {scope.kind === "head_inputs" && (
+        <div className={e.stack}>
+          <Field label="Each head's">
+            <Segmented
+              label="Each head's query, key or value"
+              value={scope.input}
+              onChange={(input) => onChange({ ...scope, input })}
+              options={(["q", "k", "v"] as const).map((k) => {
+                const missing = missingNote(model, k);
+                const noDirect = direct && k !== "v";
+                return {
+                  value: k,
+                  label: { q: "Query", k: "Key", v: "Value" }[k],
+                  disabled: noDirect || !!missing,
+                  reason: noDirect
+                    ? "Queries and keys have no direct effect: they act on the logits only through the softmax of their head's attention. A value's direct effect is what it adds through the heads that read it."
+                    : missing ?? undefined,
+                };
+              })}
+            />
+          </Field>
+          <p className={s.small}>{scope.input === "q" ? "A query site is one head's query, as its projection computes it, before any rotary embedding." : groupText(model)}</p>
+          <Field label={`${direct ? "Read" : verb} each ${scope.input === "q" ? "query" : scope.input === "k" ? "key" : "value"} at`}>
+            <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} />
+          </Field>
+          {direct && (
+            <p className={s.small}>
+              A value at any position reaches the last token through the attention of the heads that read it, with their
+              attention patterns as they are in the run (the patterns don't depend on the values). All positions together are
+              the direct effect of the heads that read the value.
+            </p>
+          )}
+        </div>
+      )}
+      {scope.kind === "neurons" && (
+        <div className={s.grid2}>
+          <Field
+            label="Layers"
+            help={
+              model?.d_mlp
+                ? `Every neuron of each layer: ${count(model.d_mlp)} per layer, layers 0 to ${model.n_layers - 1}.`
+                : "Every neuron of each layer listed, such as 3, 4 or 0-5."
+            }
+          >
+            <LayersInput value={scope.layers} onChange={(layers) => onChange({ ...scope, layers })} nLayers={model?.n_layers ?? null} />
+          </Field>
+          <Field label={direct ? "Read each neuron at" : `${verb} each neuron at`}>
+            {direct ? (
+              <p className={s.small}>{LAST_TOKEN_NOTE} A neuron writes its activation times its row of the MLP's output projection.</p>
+            ) : (
+              <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} />
+            )}
+          </Field>
+          <p className={`${s.small} ${e.wide}`}>
+            A neuron's activation is the MLP's hidden activation after its nonlinearity (for a gated MLP, the gate's activation times
+            the up projection): the input to the MLP's output projection.
+          </p>
+        </div>
+      )}
       {scope.kind === "layer_components" && steering && (
         <div className={s.grid2}>
           <Field label="Residual stream site">

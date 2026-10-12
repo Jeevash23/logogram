@@ -11,8 +11,8 @@ import math
 import re
 import threading
 import warnings
-from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from collections.abc import Callable, Sequence
+from dataclasses import asdict, dataclass, replace
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any
@@ -42,6 +42,14 @@ HOOKS: dict[str, str] = {
     "attn_out": "blocks.{layer}.hook_attn_out",
     "mlp_out": "blocks.{layer}.hook_mlp_out",
     "head": "blocks.{layer}.attn.hook_z",
+    # Each head's query, key and value as its projections compute them (before any rotary
+    # embedding): [B, pos, heads, d_head], with key/value heads for k and v.
+    "q": "blocks.{layer}.attn.hook_q",
+    "k": "blocks.{layer}.attn.hook_k",
+    "v": "blocks.{layer}.attn.hook_v",
+    # The MLP's hidden activation after its nonlinearity (for a gated MLP, the gate's activation
+    # times the up projection): the input to its output projection, [B, pos, d_mlp].
+    "neuron": "blocks.{layer}.mlp.hook_post",
     # The MLP's input, normalized as the MLP reads it: what transcoders read. Not a site to patch.
     "mlp_in": "blocks.{layer}.mlp.hook_in",
 }
@@ -98,17 +106,22 @@ def _patch_hook(patch: Patch) -> Callable[..., torch.Tensor]:
         act = act.clone()
         values = patch.values.to(dtype=act.dtype, device=act.device)
         rows = torch.arange(act.shape[0], device=act.device)
+        units = patch.units()
         if patch.mask is not None:
             n = values.shape[1]  # the prompt's positions; appended tokens are never patched
-            mask = patch.mask.to(act.device)[..., None]
+            mask = patch.mask.to(act.device)
+            if mask.dim() < act.dim():  # one choice per vector (a position, or a head's)
+                mask = mask[..., None]
             act[:, :n] = torch.where(mask, values, act[:, :n])
-        elif patch.kind == "head":
-            heads = patch.heads.to(act.device)  # type: ignore[union-attr]
+        elif units is not None:
+            # A head's output, query, key or value ([B, pos, d_head] or [B, d_head]), or a
+            # neuron's activation ([B, pos] or [B]).
+            units = units.to(act.device)
             if patch.positions is None:
                 n = values.shape[1]
-                act[rows, :n, heads] = values  # [B, pos, d_head]
+                act[rows, :n, units] = values
             else:
-                act[rows, patch.positions.to(act.device), heads] = values  # [B, d_head]
+                act[rows, patch.positions.to(act.device), units] = values
         elif patch.positions is None:
             n = values.shape[1]
             act[:, :n] = values  # [B, pos, d_model]
@@ -171,6 +184,26 @@ class ModelChecks:
     # output: small when heads add up to what attention writes, large when the model normalizes
     # after combining them (Gemma 2, OLMo 2). None if it couldn't be measured.
     heads: float | None = None
+    # The heads' queries, keys and values (see check_units). Error of each layer's attention
+    # output with every query, key and value taken from another input, against that input's:
+    # small when they are all the attention reads.
+    qkv: float | None = None
+    # Largest change in the output z of a head that doesn't read a query (a key, a value) when
+    # only that one is replaced: zero when each head reads its own query and each key/value head
+    # is read by its group of query heads alone.
+    q_alone: float | None = None
+    k_alone: float | None = None
+    v_alone: float | None = None
+    # Error of each head's output recomputed as its attention pattern times the values it reads:
+    # small when the output is linear in the values, so a value has a direct effect.
+    values: float | None = None
+    # Error of each layer's MLP output with every neuron's activation taken from another input:
+    # small when the neurons are all the MLP's output projection reads.
+    neurons: float | None = None
+    # Error of each MLP output recomputed as every neuron's activation times its row of the output
+    # projection, plus its bias: small when the MLP output is the sum of what its neurons write,
+    # large when the model normalizes after the MLP (Gemma 2, OLMo 2).
+    neuron_writes: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         # JSON has no infinity: a comparison that failed on values that aren't finite numbers
@@ -309,6 +342,270 @@ def check_model(
     )
 
 
+def kv_group(n_heads: int, n_kv: int) -> int:
+    """How many query heads read each key/value head: 1 without grouped-query attention. Query
+    head h reads key/value head h // kv_group (the order Hugging Face's models repeat them in,
+    which check_units measures)."""
+    return n_heads // n_kv if n_kv > 0 and n_heads % n_kv == 0 else 0
+
+
+UNIT_CHECKS = ("qkv", "q_alone", "k_alone", "v_alone", "values", "neurons", "neuron_writes")
+
+
+def check_units(
+    bridge: Any, probe: torch.Tensor, n_layers: int, n_heads: int, n_kv: int, d_mlp: int | None
+) -> dict[str, float | None]:
+    """Measure, on a short input, what patching a single query, key, value or neuron assumes.
+
+    The probe's two rows are two different inputs. Each measurement is an error relative to the
+    largest value compared (see :class:`ModelChecks`), None where a hook or weight is missing or
+    an activation doesn't have the shape the model's configuration gives it:
+
+    * ``qkv`` and ``neurons``: with every query, key and value (every neuron's activation) of
+      every layer taken from the second row, the first row's attention (MLP) outputs must be the
+      second row's. Then they are all the attention (the MLP's output projection) reads, and the
+      hooks that hold them are live.
+    * ``q_alone``, ``k_alone`` and ``v_alone``: with the queries, keys and values of every layer
+      held at the first row's, replacing a single one may change the output z only of the heads
+      that read it: a query's own head, or the query heads of a key/value head's group. Holding
+      every layer's makes each layer's z depend on its own alone, so one pass measures them all.
+    * ``values``: each head's output z is its attention pattern times the values it reads.
+    * ``neuron_writes``: each MLP output is the neurons' activations times the rows of its output
+      projection, plus its bias.
+    """
+    out: dict[str, float | None] = dict.fromkeys(UNIT_CHECKS)
+    hooks = bridge.hook_dict
+    layers = range(n_layers)
+
+    def present(kind: str) -> bool:
+        return all(hook_name(kind, layer) in hooks for layer in layers)
+
+    group = kv_group(n_heads, n_kv)
+    has_qkv = group > 0 and all(present(k) for k in ("q", "k", "v", "head", "attn_out"))
+    has_neurons = d_mlp is not None and present("neuron") and present("mlp_out")
+    if not (has_qkv or has_neurons):
+        return out
+    kinds = (["q", "k", "v", "head", "attn_out"] if has_qkv else []) + (
+        ["neuron", "mlp_out"] if has_neurons else []
+    )
+    names = [hook_name(k, layer) for layer in layers for k in kinds]
+    if has_qkv:
+        names += [PATTERN_HOOK.format(layer=layer) for layer in layers]
+    with torch.no_grad():
+        _, cache = bridge.run_with_cache(probe, names_filter=names)
+
+    def act(kind: str, layer: int) -> torch.Tensor:
+        return cache[hook_name(kind, layer)]
+
+    def fired(kinds: list[str]) -> bool:  # a hook that exists but never runs holds nothing
+        return all(hook_name(k, layer) in cache for k in kinds for layer in layers)
+
+    has_qkv = has_qkv and fired(["q", "k", "v", "head", "attn_out"])
+    has_neurons = has_neurons and fired(["neuron", "mlp_out"])
+    B, P = probe.shape
+    d_head = int(act("head", 0).shape[-1]) if has_qkv else 0
+    expected = {"q": n_heads, "k": n_kv, "v": n_kv}
+    has_qkv = has_qkv and all(
+        tuple(act(k, layer).shape) == (B, P, expected[k], d_head)
+        for k in ("q", "k", "v")
+        for layer in layers
+    )
+    has_neurons = has_neurons and all(
+        tuple(act("neuron", layer).shape) == (B, P, d_mlp) for layer in layers
+    )
+    seen: dict[str, torch.Tensor] = {}
+
+    def keep(name: str) -> Callable[..., torch.Tensor]:
+        def fn(a: torch.Tensor, hook: Any = None) -> torch.Tensor:
+            seen[name] = a.detach()
+            return a
+
+        return fn
+
+    def from_second(kind: str, layer: int) -> Callable[..., torch.Tensor]:
+        own = act(kind, layer)
+
+        def fn(a: torch.Tensor, hook: Any = None) -> torch.Tensor:
+            a = a.clone()
+            a[0] = own[1].to(a.dtype)
+            return a
+
+        return fn
+
+    # Every query, key and value (every neuron) from the second row, in one pass.
+    swapped = (["q", "k", "v"] if has_qkv else []) + (["neuron"] if has_neurons else [])
+    outputs = (["attn_out"] if has_qkv else []) + (["mlp_out"] if has_neurons else [])
+    if swapped:
+        fwd = [(hook_name(k, layer), from_second(k, layer)) for layer in layers for k in swapped]
+        fwd += [
+            (hook_name(k, layer), keep(hook_name(k, layer))) for layer in layers for k in outputs
+        ]
+        with torch.no_grad():
+            bridge.run_with_hooks(probe, fwd_hooks=fwd, return_type=None)
+        for kind, name in (("attn_out", "qkv"), ("mlp_out", "neurons")):
+            if kind in outputs:
+                out[name] = max(
+                    _relative(seen[hook_name(kind, layer)][0], seen[hook_name(kind, layer)][1])
+                    for layer in layers
+                )
+
+    if has_qkv:
+        for part in ("q", "k", "v"):
+            out[f"{part}_alone"] = _check_alone(
+                bridge, probe, act, n_layers, part, expected[part], n_heads, group
+            )
+        patterns = [PATTERN_HOOK.format(layer=layer) for layer in layers]
+        if all(name in cache for name in patterns):
+            with torch.no_grad():
+                errors = []
+                for layer in layers:
+                    pattern = cache[patterns[layer]].float()  # [B, H, query, key]
+                    values = act("v", layer).float().repeat_interleave(group, dim=2)
+                    z = torch.einsum("bhqk,bkhd->bqhd", pattern, values)  # [B, query, H, d]
+                    errors.append(_relative(z, act("head", layer)))
+                out["values"] = max(errors)
+
+    if has_neurons:
+        try:
+            errors = []
+            with torch.no_grad():
+                for layer in layers:
+                    mlp = bridge.blocks[layer].mlp
+                    written = act("neuron", layer).float() @ mlp.W_out.float()
+                    bias = getattr(mlp, "b_out", None)
+                    if bias is not None:
+                        written = written + bias.float()
+                    errors.append(_relative(written, act("mlp_out", layer)))
+            out["neuron_writes"] = max(errors)
+        except Exception:  # noqa: BLE001 - no output projection to check with
+            out["neuron_writes"] = None
+    return out
+
+
+def _check_alone(
+    bridge: Any,
+    probe: torch.Tensor,
+    act: Callable[[str, int], torch.Tensor],
+    n_layers: int,
+    part: str,
+    count: int,
+    n_heads: int,
+    group: int,
+) -> float:
+    """The largest change, relative to the layer's largest output, in the output z of a head that
+    doesn't read the one query (key, value) replaced, over every one of them and every layer.
+
+    Row 0 of the batch is the probe's first row with every query, key and value held at its own;
+    row u + 1 also takes unit u of ``part`` from the probe's second row."""
+    rows = count + 1
+    tokens = probe[:1].expand(rows, -1)
+    units = torch.arange(count, device=probe.device)
+    seen: dict[int, torch.Tensor] = {}
+
+    def hold(kind: str, layer: int) -> Callable[..., torch.Tensor]:
+        own = act(kind, layer)
+
+        def fn(a: torch.Tensor, hook: Any = None) -> torch.Tensor:
+            held = own[0].to(device=a.device, dtype=a.dtype)
+            held = held.unsqueeze(0).repeat(rows, *([1] * held.dim()))
+            if kind == part:
+                other = own[1].to(device=a.device, dtype=a.dtype)  # [pos, units, d_head]
+                held[units + 1, :, units] = other[:, units].transpose(0, 1)
+            return held
+
+        return fn
+
+    def keep(layer: int) -> Callable[..., torch.Tensor]:
+        def fn(a: torch.Tensor, hook: Any = None) -> torch.Tensor:
+            seen[layer] = a.detach().float()
+            return a
+
+        return fn
+
+    fwd = [(hook_name(k, layer), hold(k, layer)) for layer in range(n_layers) for k in "qkv"]
+    fwd += [(hook_name("head", layer), keep(layer)) for layer in range(n_layers)]
+    with torch.no_grad():
+        bridge.run_with_hooks(tokens, fwd_hooks=fwd, return_type=None)
+    # Which heads read each unit: a query its own head; a key or value its group's query heads.
+    heads = torch.arange(n_heads, device=probe.device)
+    reads = (heads if part == "q" else heads // group)[None, :] == units[:, None]
+    worst = 0.0
+    for layer in range(n_layers):
+        z = seen[layer]  # [rows, pos, H, d_head]
+        scale = float(z[0].abs().max().clamp_min(1e-6))
+        change = (z[1:] - z[:1]).abs().amax(dim=(1, 3))  # [units, H]
+        error = float(change.masked_fill(reads.to(change.device), 0.0).max()) / scale
+        if not math.isfinite(error):
+            return math.inf
+        worst = max(worst, error)
+    return worst
+
+
+def _share(error: float | None) -> str:
+    return (
+        "values that aren't finite numbers"
+        if error is None or not math.isfinite(error)
+        else (f"{error:.1%} of its range")
+    )
+
+
+def unit_sites(checks: ModelChecks) -> tuple[tuple[str, ...], dict[str, str]]:
+    """Which of q, k, v and neuron are sites of this model, by what check_units measured, and why
+    each one that isn't is missing, in words."""
+    tolerance = checks.tolerance
+
+    def holds(error: float | None) -> bool:
+        return error is not None and error <= tolerance
+
+    kinds: list[str] = []
+    notes: dict[str, str] = {}
+    if checks.qkv is None:
+        text = (
+            "TransformerLens doesn't expose this model's queries, keys and values head by head, "
+            "so they can't be patched."
+        )
+        notes.update(dict.fromkeys(("q", "k", "v"), text))
+    elif not holds(checks.qkv):
+        text = (
+            "When this model loaded, taking every head's query, key and value from another input "
+            "didn't reproduce that input's attention output (it was off by up to "
+            f"{_share(checks.qkv)}): they aren't all its attention reads, so patching them would "
+            "miss the rest."
+        )
+        notes.update(dict.fromkeys(("q", "k", "v"), text))
+    else:
+        for part, error, what, these in (
+            ("q", checks.q_alone, "query", "queries"),
+            ("k", checks.k_alone, "key", "keys"),
+            ("v", checks.v_alone, "value", "values"),
+        ):
+            if holds(error):
+                kinds.append(part)
+                continue
+            reader = "its own head" if part == "q" else "the query heads of its group"
+            notes[part] = (
+                f"When this model loaded, replacing one head's {what} also changed the output of "
+                f"heads other than {reader} (by up to {_share(error)}): its {these} aren't "
+                f"separate per head (OLMo 2, for one, normalizes every head's {these} together), "
+                f"so a single head's {what} can't be patched alone."
+            )
+    if checks.neurons is None:
+        notes["neuron"] = (
+            "TransformerLens doesn't expose this model's MLP neurons (a mixture of experts, for "
+            "one, has no single set of them), so they can't be patched."
+        )
+    elif not holds(checks.neurons):
+        notes["neuron"] = (
+            "When this model loaded, taking every neuron's activation from another input didn't "
+            f"reproduce that input's MLP output (it was off by up to {_share(checks.neurons)}): "
+            "they aren't all its MLP's output projection reads, so patching them would miss the "
+            "rest."
+        )
+    else:
+        kinds.append("neuron")
+    return tuple(kinds), notes
+
+
 class TransformerLensBackend(ModelBackend):
     def __init__(self, bridge: Any, info: ModelInfo) -> None:
         super().__init__()
@@ -387,6 +684,14 @@ class TransformerLensBackend(ModelBackend):
             # resid_mid is patched as resid_pre + attn_out (see _resid_mid_hooks), which is only
             # the residual stream between attention and MLP when the layer adds them in turn.
             kinds = tuple(k for k in kinds if k != "resid_mid")
+        # Queries, keys, values and neurons are sites only where they were measured to be what
+        # the attention and the MLP read (see check_units); the notes say why one isn't.
+        n_kv = int(getattr(cfg, "n_key_value_heads", None) or cfg.n_heads)
+        d_mlp = int(cfg.d_mlp) if getattr(cfg, "d_mlp", None) else None
+        measured = check_units(bridge, probe, int(cfg.n_layers), int(cfg.n_heads), n_kv, d_mlp)
+        checks = replace(checks, **measured)
+        unit_kinds, site_notes = unit_sites(checks)
+        kinds = (*kinds, *unit_kinds)
         if n_params is None:
             try:
                 n_params = int(bridge.n_params_total)
@@ -432,7 +737,9 @@ class TransformerLensBackend(ModelBackend):
                 if checks.lens is not None and checks.lens <= checks.tolerance
                 else None,
                 "model_type": str(model_type or "unknown"),
-                "n_key_value_heads": int(getattr(cfg, "n_key_value_heads", None) or cfg.n_heads),
+                "n_key_value_heads": n_kv,
+                # Why a site this model doesn't offer is missing (q, k, v or neuron), in words.
+                "site_notes": site_notes,
                 "bos": own_bos_token_id(bridge) is not None,
                 # Whether it is made for chat: prompts run as plain text, without its template.
                 "chat": chat_format(model_id, template, ends),
@@ -802,13 +1109,24 @@ class TransformerLensBackend(ModelBackend):
         answers: torch.Tensor,
         distractors: torch.Tensor,
         heads: bool,
+        *,
+        neurons: Sequence[int] = (),
+        values: Sequence[int] = (),
     ) -> dict[str, torch.Tensor]:
         n = self.info.n_layers
         kept: dict[str, torch.Tensor] = {}
 
-        def keep(name: str) -> Callable[..., torch.Tensor]:
+        def keep(name: str, last: bool = True) -> Callable[..., torch.Tensor]:
             def fn(act: torch.Tensor, hook: Any = None) -> torch.Tensor:
-                kept[name] = act[:, -1].detach()  # only the last position is read out
+                # Only the last position is read out; a value is read at every position.
+                kept[name] = (act[:, -1] if last else act).detach()
+                return act
+
+            return fn
+
+        def keep_last_query(name: str) -> Callable[..., torch.Tensor]:
+            def fn(act: torch.Tensor, hook: Any = None) -> torch.Tensor:
+                kept[name] = act[:, :, -1].detach()  # [B, H, key]: the last token's attention
                 return act
 
             return fn
@@ -817,14 +1135,19 @@ class TransformerLensBackend(ModelBackend):
         names += [hook_name(k, layer) for layer in range(n) for k in ("attn_out", "mlp_out")]
         if heads:
             names += [hook_name("head", layer) for layer in range(n)]
+        names += [hook_name("neuron", layer) for layer in neurons]
+        fwd = [(name, keep(name)) for name in dict.fromkeys(names)]
+        fwd += [
+            (hook_name("v", layer), keep(hook_name("v", layer), last=False)) for layer in values
+        ]
+        fwd += [
+            (PATTERN_HOOK.format(layer=layer), keep_last_query(PATTERN_HOOK.format(layer=layer)))
+            for layer in values
+        ]
         with self.lock:
             bridge = self._bridge()
             with torch.no_grad():
-                bridge.run_with_hooks(
-                    tokens.to(self.device),
-                    fwd_hooks=[(name, keep(name)) for name in names],
-                    return_type=None,
-                )
+                bridge.run_with_hooks(tokens.to(self.device), fwd_hooks=fwd, return_type=None)
 
             # The direction in the residual stream that the logit difference reads, with the final
             # normalization's scale held at its value for each prompt: the logit difference is then
@@ -875,6 +1198,30 @@ class TransformerLensBackend(ModelBackend):
                     written = torch.einsum("bhd,hdm->bhm", z, w_o)
                     per_layer.append((written * g[:, None, :]).sum(-1))
                 out["head"] = torch.stack(per_layer, dim=1)
+            if neurons:
+                # A neuron writes its activation times its row of the output projection.
+                per_layer = []
+                for layer in neurons:
+                    post = float64(kept[hook_name("neuron", layer)])  # [B, d_mlp]
+                    w_out = float64(bridge.blocks[layer].mlp.W_out.detach())  # [d_mlp, d_model]
+                    per_layer.append(post * (g @ w_out.T))
+                out["neuron"] = torch.stack(per_layer, dim=1)
+            if values:
+                # A value at each position reaches the last token through every query head that
+                # reads it: that head's attention to the position, times the value through the
+                # head's share of the output projection (which g reads back as u).
+                group = kv_group(self.info.n_heads, int(self.info.extra["n_key_value_heads"]))
+                per_layer = []
+                for layer in values:
+                    value = float64(kept[hook_name("v", layer)])  # [B, pos, H_kv, d_head]
+                    pattern = float64(kept[PATTERN_HOOK.format(layer=layer)])  # [B, H, pos]
+                    w_o = float64(bridge.blocks[layer].attn.W_O.detach())  # [H, d_head, d_model]
+                    u = torch.einsum("hdm,bm->bhd", w_o, g)
+                    read = value.repeat_interleave(group, dim=2)  # [B, pos, H, d_head]
+                    each = pattern * torch.einsum("bphd,bhd->bhp", read, u)  # [B, H, pos]
+                    B, H, P = each.shape
+                    per_layer.append(each.reshape(B, H // group, group, P).sum(2))
+                out["value"] = torch.stack(per_layer, dim=1)
         total = out["embed"] + out["attn_out"].sum(1) + out["mlp_out"].sum(1)
         out["remainder"] = out["logit_diff"] - total
         return {k: v.cpu() for k, v in out.items()}

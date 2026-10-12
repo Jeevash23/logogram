@@ -25,6 +25,7 @@ def verification_spec(spec: Spec, summary: dict[str, Any], top: int) -> Spec:
             layer=s["layer"],
             head=s["head"],
             feature=s.get("feature"),
+            neuron=s.get("neuron"),
             position=s["position"],
         )
         for s in ranked

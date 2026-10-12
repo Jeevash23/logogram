@@ -362,6 +362,16 @@ def results_table(
             [-1 if sites[i].site.feature is None else sites[i].site.feature for i in position],
             dtype=np.int32,
         ),
+        "neuron": np.array(
+            [
+                -1
+                if sites[i].site_set is not None or sites[i].site.neuron is None
+                # A neuron site's neuron; -1 for every other site.
+                else sites[i].site.neuron
+                for i in position
+            ],
+            dtype=np.int32,
+        ),
         "position": pa.array(
             [sites[i].position_key() for i in position], type=pa.dictionary(pa.int16(), pa.string())
         ),

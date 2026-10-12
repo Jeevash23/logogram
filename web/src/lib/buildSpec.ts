@@ -144,6 +144,8 @@ export function lastInstead(scope: ScopeSpec): ScopeSpec {
     case "heads":
     case "layer_components":
     case "features":
+    case "head_inputs":
+    case "neurons":
       return { ...scope, position: fix(scope.position) };
     case "sites":
       return { ...scope, sites: scope.sites.map((x) => ({ ...x, position: fix(x.position) })) };
@@ -235,7 +237,9 @@ export function usesFeatures(scope: ScopeSpec): boolean {
 
 /** Whether the scope intervenes on every position of a component somewhere. */
 function everyPosition(scope: ScopeSpec): boolean {
-  if (scope.kind === "heads" || scope.kind === "layer_components" || scope.kind === "features") return scope.position.kind === "all";
+  if (scope.kind === "heads" || scope.kind === "layer_components" || scope.kind === "features" || scope.kind === "head_inputs" || scope.kind === "neurons") {
+    return scope.position.kind === "all";
+  }
   if (scope.kind === "sites") return scope.sites.some((x) => x.position.kind === "all");
   if (scope.kind === "site_sets") return true;
   return false;
@@ -309,9 +313,48 @@ export function buildSpec(
   const scope = form.scope;
   const positionError = (p: PositionSpec) =>
     p.kind === "label" && !p.label ? "Choose which named position to use." : null;
-  if (scope.kind === "heads" || scope.kind === "layer_components" || scope.kind === "features") {
+  if (scope.kind === "heads" || scope.kind === "layer_components" || scope.kind === "features" || scope.kind === "head_inputs" || scope.kind === "neurons") {
     const err = positionError(scope.position);
     if (err) return { error: err };
+  }
+  // Queries, keys, values and neurons (src/logogram/sites.py, direct.py): the loaded model offers
+  // them where it measured, on loading, that they are what its attention and MLPs read.
+  const loadedModel = ctx.model.info;
+  const finer: SiteKind[] =
+    scope.kind === "head_inputs"
+      ? [scope.input]
+      : scope.kind === "neurons"
+        ? ["neuron"]
+        : scope.kind === "sites"
+          ? scope.sites.map((x) => x.kind).filter((k) => k === "q" || k === "k" || k === "v" || k === "neuron")
+          : [];
+  if (loadedModel) {
+    const missing = finer.find((k) => !loadedModel.site_kinds.includes(k));
+    if (missing) return { error: loadedModel.extra?.site_notes?.[missing as "q"] ?? `${loadedModel.id} has no ${missing} sites. Choose another sweep.` };
+  }
+  if (scope.kind === "neurons") {
+    if (scope.layers.length === 0) return { error: "Choose the layers whose neurons to sweep, such as 3, 4 (What to sweep → Layers)." };
+    if (new Set(scope.layers).size !== scope.layers.length) return { error: "List each layer once." };
+    if (loadedModel) {
+      const beyond = scope.layers.find((layer) => layer >= loadedModel.n_layers);
+      if (beyond !== undefined) return { error: `Layer ${beyond} doesn't exist; ${loadedModel.id} has layers 0 to ${loadedModel.n_layers - 1}.` };
+    }
+  }
+  if (experiment.kind === "direct_logit_attribution") {
+    const noEffect = scope.kind === "head_inputs" ? (scope.input === "v" ? null : scope.input) : null;
+    const listed = scope.kind === "sites" ? scope.sites.find((x) => x.kind === "q" || x.kind === "k") : undefined;
+    if (noEffect || listed) {
+      return { error: "Queries and keys have no direct effect: they act on the logits only through the softmax of their head's attention. Choose values, heads' outputs or neurons, or patch the queries and keys." };
+    }
+    if (scope.kind === "neurons" && scope.position.kind !== "last") return { error: "Direct effects of neurons are read at the last token. Set the position to the last token." };
+  }
+  if ((experiment.kind === "steering" || experiment.kind === "path_patching") && finer.length > 0) {
+    return {
+      error:
+        experiment.kind === "steering"
+          ? "Steering adds a direction to the residual stream, not to a head's query, key or value or a neuron. Choose residual sites."
+          : "Paths start at heads' outputs, attention outputs or MLP outputs, not at queries, keys, values or neurons. Choose those.",
+    };
   }
   if (scope.kind === "layer_components" && scope.components.length === 0) {
     return { error: "Choose at least one component." };

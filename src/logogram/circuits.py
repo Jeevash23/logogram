@@ -48,7 +48,17 @@ from logogram.engine import (
     make_scorer,
 )
 from logogram.prompts import LengthGroup, PreparedPrompt, group_by_length, uneven_text
-from logogram.sites import ResolvedSite, ScopeError, check_lined_up, resolve_position, site_label
+from logogram.sites import (
+    ResolvedSite,
+    ScopeError,
+    activation_shape,
+    check_lined_up,
+    missing_kind,
+    resolve_position,
+    site_label,
+    site_unit,
+    unit_count,
+)
 from logogram.spec import (
     ALL_POSITIONS,
     Ablation,
@@ -65,11 +75,24 @@ from logogram.spec import (
 Key = tuple[str, int]
 
 
+# What a component is made of: a set can't hold both, in the same layer.
+_PARTS = {"attn_out": ("head", "q", "k", "v"), "head": ("q", "k", "v"), "mlp_out": ("neuron",)}
+_PART_WORDS = {
+    "head": "heads",
+    "q": "queries",
+    "k": "keys",
+    "v": "values",
+    "neuron": "neurons",
+    "attn_out": "the attention output",
+    "mlp_out": "the MLP output",
+}
+
+
 def check_sets(scope: SiteSetsScope, info: ModelInfo) -> None:
     """Refuse sites and universes the loaded model doesn't have."""
     for kind in scope.universe or []:
         if kind not in info.site_kinds:
-            raise ScopeError(f"This model has no {kind} site in TransformerLens.")
+            raise missing_kind(kind, info)
     for s in scope.sets:
         for site in s.sites:
             if site.layer >= info.n_layers:
@@ -78,11 +101,14 @@ def check_sets(scope: SiteSetsScope, info: ModelInfo) -> None:
                     f"{info.n_layers} layers."
                 )
             if site.kind not in info.site_kinds:
-                raise ScopeError(f"This model has no {site.kind} site in TransformerLens.")
-            if site.kind == "head" and site.head is not None and site.head >= info.n_heads:
+                raise missing_kind(site.kind, info)
+            units = unit_count(site.kind, info)
+            unit = site_unit(site)
+            if units is not None and unit is not None and unit >= units:
+                what = {"neuron": "neurons", "k": "key/value heads", "v": "key/value heads"}
                 raise ScopeError(
-                    f"The set {s.label!r} has head {site.head}; this model has {info.n_heads} "
-                    "heads."
+                    f"The set {s.label!r} has {site_label(site)}; this model has {units} "
+                    f"{what.get(site.kind, 'heads')}."
                 )
         kinds = {(site.kind, site.layer) for site in s.sites}
         for site in s.sites:
@@ -92,6 +118,13 @@ def check_sets(scope: SiteSetsScope, info: ModelInfo) -> None:
                     f"{site.layer}; the attention output is the sum of the heads. Use one or the "
                     "other."
                 )
+            for whole, parts in _PARTS.items():
+                if site.kind in parts and (whole, site.layer) in kinds:
+                    raise ScopeError(
+                        f"The set {s.label!r} has both {_PART_WORDS[site.kind]} and "
+                        f"{_PART_WORDS[whole]} of layer {site.layer}, which is made from them. "
+                        "Use one or the other."
+                    )
 
 
 def set_rows(scope: SiteSetsScope) -> tuple[list[ResolvedSite], dict[str, Any]]:
@@ -140,12 +173,13 @@ def replaced(
     side: str = "clean",
 ) -> dict[Key, torch.Tensor]:
     """For one prompt (its ``side``, the receiver run), which entries of each activation the set
-    replaces: per (kind, layer), a boolean mask over positions ([L]) or positions and heads
-    ([L, H])."""
-    L, H = prompt.length_of(side), info.n_heads
+    replaces: per (kind, layer), a boolean mask over positions ([L]), or positions and units
+    ([L, H] for heads, queries, keys and values, [L, d_mlp] for neurons)."""
+    L = prompt.length_of(side)
 
     def blank(kind: str, value: bool) -> torch.Tensor:
-        shape = (L, H) if kind == "head" else (L,)
+        units = unit_count(kind, info)
+        shape = (L,) if units is None else (L, units)
         return torch.full(shape, value, dtype=torch.bool)
 
     masks: dict[Key, torch.Tensor] = {}
@@ -161,8 +195,9 @@ def replaced(
         pos = resolve_position(site.position, prompt, side)
         where: Any = slice(None) if pos is None else pos
         value = not s.complement  # complement sets keep their sites
-        if site.kind == "head":
-            mask[where, site.head] = value
+        unit = site_unit(site)
+        if unit is not None:
+            mask[where, unit] = value
         else:
             mask[where] = value
     return {k: m for k, m in masks.items() if bool(m.any())}
@@ -172,13 +207,14 @@ def tail_masks(
     s: SiteSet, universe: Sequence[str] | None, info: ModelInfo
 ) -> dict[Key, torch.Tensor]:
     """What the set replaces at the positions of tokens appended to read a continuation, per
-    (kind, layer): a component (or head) at every position covers them too; a site at one prompt
-    position doesn't. ``[H]`` for heads, a single value otherwise."""
-    H = info.n_heads
+    (kind, layer): a component (or head, or neuron) at every position covers them too; a site at
+    one prompt position doesn't. ``[units]`` for heads, queries, keys, values and neurons, a
+    single value otherwise."""
     masks: dict[Key, torch.Tensor] = {}
 
     def blank(kind: str, value: bool) -> torch.Tensor:
-        return torch.full((H,) if kind == "head" else (), value, dtype=torch.bool)
+        units = unit_count(kind, info)
+        return torch.full(() if units is None else (units,), value, dtype=torch.bool)
 
     if s.complement:
         for kind in universe or []:
@@ -191,8 +227,9 @@ def tail_masks(
         if key not in masks:
             masks[key] = blank(site.kind, False)
         value = not s.complement
-        if site.kind == "head":
-            masks[key][site.head] = value
+        unit = site_unit(site)
+        if unit is not None:
+            masks[key][unit] = value
         else:
             masks[key] = torch.tensor(value)
     return masks
@@ -500,21 +537,22 @@ def _values_at_labels(
     dtype: torch.dtype,
     device: torch.device,
 ) -> dict[Key, torch.Tensor]:
-    """The replacement activations for a batch of receivers, shaped like theirs (``[B, L, d]`` or
-    ``[B, L, H, d_head]``): each site's token takes the source prompt's value at that site's
+    """The replacement activations for a batch of receivers, shaped like theirs (``[B, L, ...]``,
+    as activation_shape says): each site's token takes the source prompt's value at that site's
     position (resolved in the source, by ``tables``). Only the masked entries are read."""
     B, L = len(chunk), group.length
     out: dict[Key, torch.Tensor] = {}
     for key in keys:
-        shape = (B, L, info.n_heads, info.d_head) if key[0] == "head" else (B, L, info.d_model)
+        shape = (B, L, *activation_shape(key[0], info))
         out[key] = torch.zeros(shape, dtype=dtype, device=device)
     for b, (p, _) in enumerate(chunk):
         for site in s.sites:
             key = (site.kind, site.layer)
             at = resolve_position(site.position, prompts[p], receiver)
             value = tables[(key, site.position.model_dump_json())][p]
-            if site.kind == "head":
-                out[key][b, at, site.head] = value[site.head].to(device=device, dtype=dtype)
+            unit = site_unit(site)
+            if unit is not None:  # one head (key/value head) or neuron of the activation
+                out[key][b, at, unit] = value[unit].to(device=device, dtype=dtype)
             else:
                 out[key][b, at] = value.to(device=device, dtype=dtype)
     return out
@@ -569,7 +607,8 @@ def _continued(
 
 
 def _blank(key: Key, length: int, info: ModelInfo) -> torch.Tensor:
-    shape = (length, info.n_heads) if key[0] == "head" else (length,)
+    units = unit_count(key[0], info)
+    shape = (length,) if units is None else (length, units)
     return torch.zeros(shape, dtype=torch.bool)
 
 
@@ -587,16 +626,13 @@ def _values(
     info: ModelInfo,
     dtype: torch.dtype,
 ) -> dict[Key, torch.Tensor]:
-    """The replacement activations for a batch of rows, whole: [B, L, d] or [B, L, H, d_head]."""
+    """The replacement activations for a batch of rows, whole: [B, L, d], [B, L, H, d_head] (or
+    key/value heads), or [B, L, d_mlp]."""
     B = len(chunk)
     if kind == "zero":
         out = {}
         for key in keys:
-            shape = (
-                (B, group.length, info.n_heads, info.d_head)
-                if key[0] == "head"
-                else (B, group.length, info.d_model)
-            )
+            shape = (B, group.length, *activation_shape(key[0], info))
             out[key] = torch.zeros(shape, dtype=dtype, device=backend.device)
         return out
     if kind == "mean":

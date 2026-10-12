@@ -6,6 +6,7 @@ import {
   freeLabel,
   MAX_LABEL,
   MAX_SETS,
+  overlaps,
   parseSiteQuery,
   SET_SITE_KINDS,
   siteOf,
@@ -22,8 +23,9 @@ import c from "./SiteSets.module.css";
 
 /**
  * What a set that keeps its sites replaces: every head, attention output or MLP output of the
- * model except those sites. A layer's attention output is the sum of its heads, so the rest of
- * the model holds one or the other.
+ * model except those sites, or every query, key, value or neuron. A component and what it is made
+ * of (a layer's attention output and its heads, a head's output and its query, key and value, an
+ * MLP output and its neurons) can't both be in the rest of the model.
  */
 export function UniverseChooser({
   value,
@@ -36,7 +38,7 @@ export function UniverseChooser({
   return (
     <div className={c.universe} role="group" aria-label="The rest of the model">
       {UNIVERSE_KINDS.map((kind) => {
-        const conflict = (kind === "head" && chosen.includes("attn_out")) || (kind === "attn_out" && chosen.includes("head"));
+        const conflict = chosen.some((other) => overlaps(kind, other));
         return (
           <Checkbox
             key={kind}
@@ -95,7 +97,7 @@ export function SiteSetsEditor({
         label="The rest of the model"
         help={
           keeps
-            ? `A set that keeps its sites replaces ${universeText(scope.universe)} except them, at every position. A layer's attention output is the sum of its heads, so choose one or the other.`
+            ? `A set that keeps its sites replaces ${universeText(scope.universe)} except them, at every position. A component and what it is made of can't both be chosen: a layer's attention output is the sum of its heads, a head's output is made from its query, key and value, and an MLP output from its neurons.`
             : "What a set that keeps its sites replaces. No set keeps its sites yet, so this can stay empty."
         }
       >
@@ -220,8 +222,8 @@ function SetEditor({
               add();
             }
           }}
-          placeholder="L9 H6 or L3 mlp"
-          aria-label={`Site to add to ${name}, like L9 H6, L3 attn or L3 mlp`}
+          placeholder="L9 H6, L3 mlp, L9 H6 q, L9 KV2 v or L3 N1201"
+          aria-label={`Site to add to ${name}, like L9 H6, L3 attn, L3 mlp, a head's query L9 H6 q, a key/value head's key L9 KV2 k or value L9 KV2 v, or a neuron L3 N1201`}
           aria-invalid={query.trim() !== "" && !parsed}
           spellCheck={false}
         />

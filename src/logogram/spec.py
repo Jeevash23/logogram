@@ -37,8 +37,23 @@ SEED_MAX = 2**32
 
 StreamSiteKind = Literal["resid_pre", "resid_mid", "resid_post", "attn_out", "mlp_out"]
 SiteKind = Literal[
-    "resid_pre", "resid_mid", "resid_post", "attn_out", "mlp_out", "head", "sae_feature"
+    "resid_pre",
+    "resid_mid",
+    "resid_post",
+    "attn_out",
+    "mlp_out",
+    "head",
+    "sae_feature",
+    "q",
+    "k",
+    "v",
+    "neuron",
 ]
+# A head's query, key or value. With grouped-query attention (Llama, Qwen, Gemma) a model has
+# fewer key and value heads than query heads, and a k or v site names a key/value head: every
+# query head of its group reads it.
+HeadInput = Literal["q", "k", "v"]
+HEAD_INPUTS = ("q", "k", "v")
 
 SITE_KIND_LABELS: dict[str, str] = {
     "resid_pre": "residual stream before the layer",
@@ -48,6 +63,10 @@ SITE_KIND_LABELS: dict[str, str] = {
     "mlp_out": "MLP output",
     "head": "attention head output (z)",
     "sae_feature": "SAE feature",
+    "q": "attention head query",
+    "k": "attention key (of a key/value head)",
+    "v": "attention value (of a key/value head)",
+    "neuron": "MLP neuron (its activation, the input to the MLP's output projection)",
 }
 
 
@@ -127,23 +146,36 @@ def describe_sae_site(site: str, layer: int, transcoder: bool) -> str:
 
 
 class Site(_Strict):
+    """One site of the model at a position. ``head`` is the head of a head site (its output z),
+    the query head of a q site, and the key/value head of a k or v site; ``neuron`` is the
+    neuron of a neuron site: its activation after the nonlinearity (for a gated MLP, the gate's
+    activation times the up projection), the input to the MLP's output projection."""
+
     kind: SiteKind
     layer: int = Field(ge=0)
     head: int | None = Field(default=None, ge=0)
     # A feature of the spec's SAE (kind sae_feature): its index among the SAE's features.
     feature: int | None = Field(default=None, ge=0)
+    # A neuron of the layer's MLP (kind neuron): its index among the MLP's neurons.
+    neuron: int | None = Field(default=None, ge=0)
     position: Position
 
     @model_validator(mode="after")
     def _head_matches_kind(self) -> Site:
-        if self.kind == "head" and self.head is None:
-            raise ValueError("a head site needs a head index")
-        if self.kind != "head" and self.head is not None:
+        headed = self.kind == "head" or self.kind in HEAD_INPUTS
+        if headed and self.head is None:
+            what = {"q": "a query head", "k": "a key/value head", "v": "a key/value head"}
+            raise ValueError(f"a {self.kind} site needs {what.get(self.kind, 'a head')} index")
+        if not headed and self.head is not None:
             raise ValueError(f"a {self.kind} site has no head index")
         if self.kind == "sae_feature" and self.feature is None:
             raise ValueError("an SAE feature site needs a feature index")
         if self.kind != "sae_feature" and self.feature is not None:
             raise ValueError(f"a {self.kind} site has no feature index")
+        if self.kind == "neuron" and self.neuron is None:
+            raise ValueError("a neuron site needs a neuron index")
+        if self.kind != "neuron" and self.neuron is not None:
+            raise ValueError(f"a {self.kind} site has no neuron index")
         return self
 
 
@@ -152,6 +184,38 @@ class HeadsScope(_Strict):
 
     kind: Literal["heads"] = "heads"
     position: Position
+
+
+class HeadInputsScope(_Strict):
+    """Every head's query, key or value in every layer, at one position: a layer x head grid.
+
+    Keys and values belong to key/value heads: with grouped-query attention a model has fewer of
+    them than query heads, and each is read by every query head of its group, so the grid of
+    ``input="k"`` or ``"v"`` has a column per key/value head."""
+
+    kind: Literal["head_inputs"] = "head_inputs"
+    input: HeadInput
+    position: Position
+
+
+# Layers a neurons scope can list: more than any model has, few enough to check quickly.
+NEURON_LAYERS_MAX = 512
+
+
+class NeuronsScope(_Strict):
+    """Every neuron of the MLPs of the chosen layers, at one position. A neuron's activation is
+    the MLP's hidden activation after its nonlinearity (for a gated MLP, the gate's activation
+    times the up projection): the input to the MLP's output projection."""
+
+    kind: Literal["neurons"] = "neurons"
+    layers: list[Annotated[int, Field(ge=0)]] = Field(min_length=1, max_length=NEURON_LAYERS_MAX)
+    position: Position
+
+    @model_validator(mode="after")
+    def _distinct(self) -> NeuronsScope:
+        if len(set(self.layers)) != len(self.layers):
+            raise ValueError("the layers of a neurons scope must not repeat")
+        return self
 
 
 class LayerPositionScope(_Strict):
@@ -218,11 +282,27 @@ class FeaturesScope(_Strict):
         return self
 
 
-# What "the rest of the model" is made of, for sets that intervene on everything but their sites.
-UniverseKind = Literal["head", "attn_out", "mlp_out"]
-# Sites a set can hold: components that write into the residual stream, and the stream itself
-# before or after a layer (between attention and MLP it isn't a single hook, so not in a set).
-SET_SITE_KINDS = ("head", "attn_out", "mlp_out", "resid_pre", "resid_post")
+# What "the rest of the model" is made of, for sets that intervene on everything but their sites:
+# components that write into the residual stream (heads' outputs, attention and MLP outputs), or
+# finer parts of them (every head's query, key or value, every MLP neuron).
+UniverseKind = Literal["head", "attn_out", "mlp_out", "q", "k", "v", "neuron"]
+# Sites a set can hold: components that write into the residual stream and their parts, and the
+# stream itself before or after a layer (between attention and MLP it isn't a single hook, so not
+# in a set).
+SET_SITE_KINDS = ("head", "attn_out", "mlp_out", "resid_pre", "resid_post", "q", "k", "v", "neuron")
+# A component and what it is made of can't both be in a universe: the attention output is the sum
+# of its heads' outputs, each head's output is made from its query, key and value, and the MLP
+# output from its neurons.
+_MADE_OF = {"attn_out": ("head", "q", "k", "v"), "head": ("q", "k", "v"), "mlp_out": ("neuron",)}
+UNIVERSE_WORDS = {
+    "attn_out": "a layer's attention output",
+    "head": "a head's output",
+    "mlp_out": "a layer's MLP output",
+    "q": "the heads' queries",
+    "k": "the heads' keys",
+    "v": "the heads' values",
+    "neuron": "its neurons",
+}
 
 
 class SiteSet(_Strict):
@@ -245,8 +325,9 @@ class SiteSet(_Strict):
         for site in self.sites:
             if site.kind not in SET_SITE_KINDS:
                 raise ValueError(
-                    f"a set can't hold {site.kind} sites; use heads, attention or MLP outputs, "
-                    "or the residual stream before or after a layer"
+                    f"a set can't hold {site.kind} sites; use heads (their outputs, queries, keys "
+                    "or values), attention or MLP outputs, MLP neurons, or the residual stream "
+                    "before or after a layer"
                 )
         return self
 
@@ -282,6 +363,13 @@ class SiteSetsScope(_Strict):
                     "the universe can't hold both heads and attention outputs: a layer's "
                     "attention output is the sum of its heads"
                 )
+            for whole, parts in _MADE_OF.items():
+                inside = [p for p in parts if p in self.universe]
+                if whole in self.universe and inside:
+                    raise ValueError(
+                        f"the universe can't hold both {whole} and {', '.join(inside)}: "
+                        f"{UNIVERSE_WORDS[whole]} is made from {UNIVERSE_WORDS[inside[0]]}"
+                    )
         for s in complements:
             for site in s.sites:
                 if site.kind not in (self.universe or []):
@@ -298,7 +386,9 @@ Scope = Annotated[
     | LayerComponentsScope
     | SitesScope
     | FeaturesScope
-    | SiteSetsScope,
+    | SiteSetsScope
+    | HeadInputsScope
+    | NeuronsScope,
     Field(discriminator="kind"),
 ]
 
@@ -1068,6 +1158,13 @@ def describe_experiment(spec: Spec) -> str:
     elif isinstance(scope, SiteSetsScope):
         n = len(scope.sets)
         where = f"{n} set{'s' if n != 1 else ''} of sites, each at once"
+    elif isinstance(scope, HeadInputsScope):
+        inputs = {"q": "every head's query", "k": "every key", "v": "every value"}[scope.input]
+        where = f"{inputs}, {describe_position(scope.position)}"
+    elif isinstance(scope, NeuronsScope):
+        layers = ", ".join(str(layer) for layer in scope.layers)
+        named = "layer" if len(scope.layers) == 1 else "layers"
+        where = f"every MLP neuron of {named} {layers}, {describe_position(scope.position)}"
     else:
         where = f"{len(scope.sites)} chosen site{'s' if len(scope.sites) != 1 else ''}"
     metric = "" if spec.metric.kind == "logit_diff" else f" · {METRIC_LABELS[spec.metric.kind]}"

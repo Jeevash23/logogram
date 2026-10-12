@@ -74,9 +74,15 @@ def path_sites(
     sites, layout = expand_scope(spec, info, prompts)
     for rs in sites:
         if rs.kind not in SENDER_KINDS:
+            what = (
+                "a residual stream state"
+                if rs.kind.startswith("resid")
+                else "a part of a head or an MLP, not a component that writes into the residual "
+                "stream"
+            )
             raise ScopeError(
-                f"{rs.label} is a residual stream state. Path patching sends from heads, "
-                "attention outputs or MLP outputs; choose those."
+                f"{rs.label} is {what}. Path patching sends from heads' outputs, attention "
+                "outputs or MLP outputs; choose those."
             )
     heads = [r.layer for r in exp.receivers if isinstance(r, HeadReceiver)]
     limit = info.n_layers if len(heads) < len(exp.receivers) else max(heads)

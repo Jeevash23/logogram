@@ -267,6 +267,35 @@ def test_patching_corrupt_into_corrupt_gives_zero(tiny_backend, uneven, spec_fac
         assert int(stats.sign_flips.sum()) == 0
 
 
+@pytest.mark.parametrize("position", [{"kind": "label", "label": "S2"}, {"kind": "last"}])
+def test_neurons_queries_keys_and_values_line_up_at_their_tokens(
+    tiny_backend, uneven, spec_factory, position
+):
+    """Neurons, queries, keys and values are matched from one prompt to the other at a label or
+    the last token, as whole activations are: every neuron of a layer patched there is the MLP
+    output patched there, and a prompt patched into itself changes nothing."""
+    from test_finer_sites import neuron_sites, sets_scope
+
+    spec = spec_factory(
+        scope=sets_scope(
+            neurons=neuron_sites(tiny_backend, 0, position),
+            mlp=[{"kind": "mlp_out", "layer": 0, "position": position}],
+        )
+    )
+    result = run_experiment(spec, tiny_backend, uneven)
+    np.testing.assert_allclose(result.patched[0], result.patched[1], atol=TOL)
+    assert np.abs(result.patched[0] - result.receiver_metric).max() > 1e-3
+    for scope in (
+        *({"kind": "head_inputs", "input": i, "position": position} for i in ("q", "k", "v")),
+        {"kind": "neurons", "layers": [1], "position": position},
+    ):
+        spec = spec_factory(scope=scope)
+        result = run_engine(
+            spec, tiny_backend, uneven, receiver_override="corrupt", source_override="corrupt"
+        )
+        np.testing.assert_allclose(compute_stats(spec, result).delta, 0.0, atol=TOL)
+
+
 def test_a_label_is_patched_from_the_source_token_into_the_receiver_token(
     tiny_backend, uneven, spec_factory
 ):
@@ -572,16 +601,22 @@ def test_estimates_at_labels_match_the_estimates_of_aligned_pairs(
 
     prompts = prepare_prompts(tiny_backend, generate_ioi(12, seed=0), True)
     for position in ({"kind": "label", "label": "S2"}, {"kind": "last"}):
-        spec = spec_factory(
-            experiment={"kind": "attribution_patching", "direction": "corrupt_to_clean"},
-            scope={"kind": "heads", "position": position},
-            metric={"kind": "logprob_diff", "normalization": "dataset_gap"},
-        )
-        aligned = run_experiment(spec, tiny_backend, prompts)
-        with monkeypatch.context() as m:
-            m.setattr(PreparedPrompt, "even", property(lambda self: False))
-            at_tokens = run_experiment(spec, tiny_backend, prompts)
-        np.testing.assert_allclose(at_tokens.delta, aligned.delta, rtol=1e-4, atol=1e-6)
+        # Heads' outputs, keys (one key/value head each) and neurons (one number each).
+        for scope in (
+            {"kind": "heads", "position": position},
+            {"kind": "head_inputs", "input": "k", "position": position},
+            {"kind": "neurons", "layers": [0, 1], "position": position},
+        ):
+            spec = spec_factory(
+                experiment={"kind": "attribution_patching", "direction": "corrupt_to_clean"},
+                scope=scope,
+                metric={"kind": "logprob_diff", "normalization": "dataset_gap"},
+            )
+            aligned = run_experiment(spec, tiny_backend, prompts)
+            with monkeypatch.context() as m:
+                m.setattr(PreparedPrompt, "even", property(lambda self: False))
+                at_tokens = run_experiment(spec, tiny_backend, prompts)
+            np.testing.assert_allclose(at_tokens.delta, aligned.delta, rtol=1e-4, atol=1e-6)
 
 
 def test_steering_compares_each_prompt_at_its_own_token(tiny_backend, uneven, spec_factory):

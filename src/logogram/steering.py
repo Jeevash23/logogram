@@ -168,9 +168,10 @@ def steered_sites(
         sites = list(scope.sites)
         if any(s.kind not in RESIDUAL for s in sites):
             raise ScopeError(
-                "Steering by the mean difference adds it to the residual stream; heads, attention "
-                "outputs and MLP outputs can't be steered by it. Choose residual sites, or steer "
-                "along an SAE feature where its SAE writes."
+                "Steering by the mean difference adds it to the residual stream; heads, their "
+                "queries, keys and values, attention outputs, MLP outputs and neurons can't be "
+                "steered by it. Choose residual sites, or steer along an SAE feature where its SAE "
+                "writes."
             )
     else:
         raise ScopeError(

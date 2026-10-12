@@ -602,6 +602,9 @@ class RunMemoryOut(_Out):
     available: int
     verdict: Literal["fits", "tight", "wont_fit"]
     explanation: str
+    # The sites the scope has, and what they hold (included in total).
+    sites: int = 0
+    site_bytes: int = 0
 
 
 class EstimateOut(_Out):
@@ -728,6 +731,7 @@ class ComparisonChange(_Out):
     layer: int
     head: int | None
     feature: int | None = None
+    neuron: int | None = None
     position_key: str
     variant_key: str | None = None
     index_a: int
@@ -905,6 +909,7 @@ class SweepSite(_Out):
     layer: int
     head: int | None
     feature: int | None
+    neuron: int | None = None
     position: dict[str, Any] | None
     position_key: str
     variant: dict[str, Any] | None
