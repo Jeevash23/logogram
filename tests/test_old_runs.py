@@ -18,7 +18,6 @@ exports them through the server, the Python API and the command line.
 from __future__ import annotations
 
 import csv
-import hashlib
 import io
 import json
 import shutil
@@ -38,21 +37,20 @@ from logogram.server.security import SecurityConfig
 from logogram.spec import Spec
 
 FIXTURE = Path(__file__).parent / "fixtures" / "old-runs"
-# The weights of the tiny test model the fixture's runs were made on. The model is built from a
-# seed, and other versions of PyTorch or Transformers can build other weights from the same seed
-# (the lowest declared versions do): no number can match then.
-FIXTURE_WEIGHTS = "24f50e231d835536efaf21ad52f19da8248a18728d03b6e4e5fe0c5e90b88476"
+# The tiny test model the fixture's runs were made on, by the sum of its weights and of their
+# sizes. The model is built from a seed, and other versions of PyTorch or Transformers can build
+# other weights from the same seed (the lowest declared versions do): no number can match then.
+# Other platforms build the same weights to the last digits, which the comparison allows for.
+FIXTURE_WEIGHTS = (174.96260210211085, 7916.290018921845)
 
 
-def weights_fingerprint(folder: Path) -> str:
+def weights_totals(folder: Path) -> tuple[float, float]:
     from safetensors.torch import load_file
 
     tensors = load_file(folder / "model.safetensors")
-    digest = hashlib.sha256()
-    for name in sorted(tensors):
-        digest.update(name.encode())
-        digest.update(tensors[name].contiguous().numpy().tobytes())
-    return digest.hexdigest()
+    total = sum(float(t.double().sum()) for _, t in sorted(tensors.items()))
+    size = sum(float(t.double().abs().sum()) for _, t in sorted(tensors.items()))
+    return total, size
 
 
 V1, V2, DRAFT = "made-by-0.1.0", "made-by-0.2.0", "written-for-0.1.0"
@@ -199,7 +197,7 @@ def test_old_specs_still_run(old, tiny_backend, tiny_model_dir):
     assert written.status == "finished", written.manifest.get("error")
     assert written.summary is not None and "version 1" in written.summary["warnings"][0]
 
-    if weights_fingerprint(tiny_model_dir) != FIXTURE_WEIGHTS:
+    if weights_totals(tiny_model_dir) != pytest.approx(FIXTURE_WEIGHTS, rel=1e-6):
         pytest.skip(
             "These versions of PyTorch and Transformers build another tiny model from the same "
             "seed, so the numbers can't be compared with runs made on the fixture's model."

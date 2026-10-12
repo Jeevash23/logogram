@@ -73,6 +73,13 @@ def _wait(client, run_id, timeout=120):
     raise AssertionError("run did not finish")
 
 
+def _why(client, run_id):
+    """How the run's listing ended, and why, for a failed assertion's message."""
+    runs = client.get("/api/runs", headers=HEADERS).json()
+    run = next((r for r in runs if r["id"] == run_id), None)
+    return run and {key: run.get(key) for key in ("status", "error", "damaged")}
+
+
 # -- the session token -------------------------------------------------------------------------
 
 
@@ -544,14 +551,39 @@ def test_a_run_can_be_checked_in_float32(
     model = {"id": "tiny-gpt2", "revision": "test", "device": "cpu", "dtype": "bfloat16"}
     spec = spec_factory(model=model).model_dump(mode="json")
     run_id = client.post("/api/runs", json={"spec": spec}, headers=HEADERS).json()["run_id"]
-    assert _wait(client, run_id) == "finished"
+    assert _wait(client, run_id) == "finished", _why(client, run_id)
     url = f"/api/runs/{run_id}/robustness"
     assert client.post(url, json={"dtype": "bfloat16"}, headers=HEADERS).status_code == 400
     assert client.post(url, json={}, headers=HEADERS).status_code in (400, 422)
     r = client.post(url, json={"dtype": "float32"}, headers=HEADERS)
     assert r.status_code == 200, r.text
-    assert _wait(client, r.json()["run_id"]) == "finished"
+    assert _wait(client, r.json()["run_id"]) == "finished", _why(client, r.json()["run_id"])
     assert loaded == ["float32"]
     run = client.get(f"/api/runs/{r.json()['run_id']}", headers=HEADERS).json()
     assert run["spec"]["model"]["dtype"] == "float32"
     assert run["spec"]["experiment"] == spec["experiment"]
+
+
+def test_a_file_being_replaced_is_read_once_it_can_be(tmp_path, monkeypatch):
+    """On Windows a file can't be opened for a moment while another thread replaces it: reading
+    tries again briefly there, and nowhere else."""
+    from logogram import fileio
+
+    path = tmp_path / "spec.json"
+    path.write_text("{}", encoding="utf-8")
+    real_open = os.open
+    refusals = []
+
+    def busy_open(target, flags, *args):
+        if len(refusals) < 3:
+            refusals.append(target)
+            raise PermissionError(13, "Access is denied", str(target))
+        return real_open(target, flags, *args)
+
+    monkeypatch.setattr(fileio.os, "open", busy_open)
+    monkeypatch.setattr(fileio.sys, "platform", "win32")
+    assert fileio.read_limited(path, 1024, "") == b"{}" and len(refusals) == 3
+    refusals.clear()
+    monkeypatch.setattr(fileio.sys, "platform", "linux")
+    with pytest.raises(PermissionError):
+        fileio.read_limited(path, 1024, "")
