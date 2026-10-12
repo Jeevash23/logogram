@@ -104,6 +104,24 @@ def describe_position(position: AllPositions | LastPosition | IndexPosition | La
     return f"position {position.label}"
 
 
+def describe_sae_site(site: str, layer: int, transcoder: bool) -> str:
+    """Where an SAE's output is read into the model, in words: the site it writes, where steering
+    adds one of its features."""
+    if site == "head":
+        return (
+            f"the outputs (z) of layer {layer}'s attention heads, side by side, before the "
+            "output projection"
+        )
+    if transcoder:
+        return f"layer {layer}'s MLP output, which the transcoder writes"
+    return {
+        "resid_pre": f"the residual stream entering layer {layer}",
+        "resid_post": f"the residual stream leaving layer {layer}",
+        "attn_out": f"layer {layer}'s attention output",
+        "mlp_out": f"layer {layer}'s MLP output",
+    }.get(site, f"the {site} of layer {layer}")
+
+
 # ---------------------------------------------------------------------------------------------
 # Sites and sweep scopes
 
@@ -1000,7 +1018,8 @@ def describe_intervention(
         if isinstance(exp.direction, FeatureDirection):
             return (
                 f"Steer {exp.apply_to} prompts along SAE feature {exp.direction.feature} "
-                f"({strengths}{control})"
+                f"({strengths}; strength 1 is its typical activation on {exp.train_fraction:.0%} "
+                f"of the pairs, seed {exp.seed}{control})"
             )
         return (
             f"Steer {exp.apply_to} prompts toward {toward} ({strengths}; "

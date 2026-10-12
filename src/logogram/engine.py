@@ -499,7 +499,8 @@ def run_experiment(
     if isinstance(spec.experiment, Steering):
         from logogram.steering import run_steering
 
-        return run_steering(spec, backend, prompts, **kwargs)
+        # Steering along an SAE feature adds its decoder direction where the SAE writes.
+        return run_steering(spec, backend, prompts, sae=sae, **kwargs)
     if isinstance(spec.experiment, PathPatching):
         from logogram.paths import run_path_patching
 

@@ -16,6 +16,7 @@ _API = (
     "Run",
     "check_robustness",
     "compare_runs",
+    "continue_text",
     "create_project",
     "delete_run",
     "feature_writes",

@@ -10,6 +10,7 @@ from logogram.analysis import answer_text
 from logogram.datasets import DatasetError, file_sha256, load_dataset
 from logogram.project import Project
 from logogram.results import read_site_rows
+from logogram.schema import CONTINUATIONS_FILE, ContinuationsFile
 from logogram.spec import Spec
 
 
@@ -22,6 +23,15 @@ def load_summary(project: Project, run_id: str) -> dict[str, Any]:
     if not path.is_file():
         raise RunNotReady("This run has no results yet.")
     return project.read_json(path) or {}
+
+
+def load_continuations(project: Project, run_id: str) -> dict[str, Any] | None:
+    """What a steering run's model went on to say (its continuations.json), checked against its
+    schema; None for a run that recorded none."""
+    data = project.read_json(project.run_dir(run_id) / CONTINUATIONS_FILE, optional=True)
+    if data is None:
+        return None
+    return ContinuationsFile.model_validate(data).model_dump(mode="json")
 
 
 def run_records(project: Project, spec: Spec) -> list[Any] | None:

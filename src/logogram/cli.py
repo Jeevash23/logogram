@@ -507,6 +507,7 @@ def run(
     typer.echo(f"  model {spec.model.id} · dataset {spec.dataset.path}")
     outcome = _run_spec(project, spec, verbose=verbose)
     _print_summary(outcome.summary or {}, top)
+    _print_continuations(project, outcome.run_id)
     rel = outcome.folder.relative_to(project.root)
     typer.echo(f"\nSaved to {rel} ({outcome.manifest.get('wall_time_s')} s)")
     if compare_to is not None:
@@ -598,6 +599,25 @@ def _interval(stat: dict[str, Any]) -> str:
     return f"{_fmt(stat['mean'])} [{_fmt(stat['lo'])}, {_fmt(stat['hi'])}]"
 
 
+def _print_continuations(project: Any, run_id: str) -> None:
+    """What a steering run's model said after its first continued prompt, at the first steered
+    site: without steering and at each strength."""
+    from logogram.runs import load_continuations
+
+    data = load_continuations(project, run_id)
+    if not data or not data["prompts"]:
+        return
+    first = data["prompts"][0]
+    typer.echo(
+        f"\nWhat the model says after prompt {first['index']} ({len(data['prompts'])} prompts in "
+        f"experiments/{run_id}/continuations.json):"
+    )
+    lines = [("without steering", first["unsteered"]["tokens"])]
+    lines += [(s["key"], s["tokens"]) for s in first["steered"] if s["row"] == 0]
+    for label, tokens in lines:
+        typer.echo(f"  {label:<18} {''.join(tokens)!r}")
+
+
 def _print_summary(summary: dict, top: int) -> None:  # type: ignore[type-arg]
     base = summary["baseline"]
     clean = base["clean"]["logit_diff"]["mean"]
@@ -650,10 +670,20 @@ def _print_summary(summary: dict, top: int) -> None:  # type: ignore[type-arg]
         )
     if summary.get("steering"):
         st = summary["steering"]
-        typer.echo(
-            f"\nDirections from {len(st['train'])} training pairs; measured on the "
-            f"{len(st['test'])} held-out pairs."
-        )
+        feature = st.get("feature")
+        if feature:
+            typical = ", ".join(f"{a:.4g}" for a in feature["activations"])
+            typer.echo(
+                f"\nStrength 1 is SAE feature {feature['feature']}'s typical activation, {typical}: "
+                "the mean of its positive activations at the steered token of the "
+                f"{len(st['train'])} training pairs; measured on the {len(st['test'])} held-out "
+                "pairs."
+            )
+        else:
+            typer.echo(
+                f"\nDirections from {len(st['train'])} training pairs; measured on the "
+                f"{len(st['test'])} held-out pairs."
+            )
     if summary.get("features"):
         f = summary["features"]
         fit = f.get("fit") or {}
@@ -1168,7 +1198,7 @@ def report(
     """Write a finished run as one HTML page anyone can open: its map, strongest sites, every
     site's numbers, the methods and where it came from."""
     from logogram.report import run_report
-    from logogram.runs import load_summary
+    from logogram.runs import load_continuations, load_summary
     from logogram.spec import Spec
 
     project = _open_project(project_dir, Path(run) if Path(run).exists() else None)
@@ -1178,7 +1208,14 @@ def report(
         raise _fail(f"{run_id} has no results to report.")
     spec = Spec.from_path(project.readable(folder / "spec.json"))
     manifest = project.read_json(folder / "manifest.json", optional=True) or {}
-    page = run_report(spec, load_summary(project, run_id), manifest, run_id, hardware=hardware)
+    page = run_report(
+        spec,
+        load_summary(project, run_id),
+        manifest,
+        run_id,
+        hardware=hardware,
+        continuations=load_continuations(project, run_id),
+    )
     target = output or Path(f"{run_id}.html")
     target.write_text(page, encoding="utf-8")
     typer.echo(f"Wrote {target}", err=True)

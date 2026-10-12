@@ -43,8 +43,8 @@ from logogram.results import (
     site_payload,
     write_results,
 )
-from logogram.schema import Manifest
-from logogram.spec import SINGLE_POSITION_METRICS, ModelRef, SAERef, Spec, Steering
+from logogram.schema import CONTINUATIONS_FILE, ContinuationsFile, Manifest
+from logogram.spec import SINGLE_POSITION_METRICS, ModelRef, SAERef, Spec
 
 EventFn = Callable[[str, dict[str, Any]], None]
 ModelProvider = Callable[[ModelRef], ModelBackend]
@@ -237,18 +237,13 @@ def model_matches(backend: ModelBackend | None, ref: ModelRef) -> bool:
 def not_built_yet(spec: Spec) -> str | None:
     """What a version 3 spec asks for that this build can't run yet, if anything. (Scaffolding
     while version 3 is built: each part leaves this list as it arrives.)"""
-    tokenization, model, experiment = spec.tokenization, spec.model, spec.experiment
+    tokenization, model = spec.tokenization, spec.model
     if tokenization.chat_template is not None:
         return "Chat templates can't be run yet: set tokenization.chat_template to null."
     if model.source == "local":
         return "Local models can't be run yet: use a model from Hugging Face."
     if model.device.startswith("cuda:"):
         return "Choosing one GPU of several isn't possible yet: set model.device to cuda or auto."
-    if isinstance(experiment, Steering):
-        if experiment.direction.kind != "mean_difference":
-            return "Steering along an SAE feature can't be run yet: use the mean difference."
-        if experiment.continuations is not None:
-            return "Steered continuations can't be recorded yet: set continuations to null."
     return None
 
 
@@ -340,7 +335,7 @@ def run_spec(
                 "wall_time_s": round(time.perf_counter() - t0, 3),
             }
         )
-        for name in ("results.parquet", "summary.json", "predictions.json"):
+        for name in ("results.parquet", "summary.json", "predictions.json", CONTINUATIONS_FILE):
             (folder / name).unlink(missing_ok=True)
         if detail is not None:
             # Before the manifest says the run failed, so whoever reads that finds why.
@@ -558,9 +553,14 @@ def run_spec(
                 "This spec is version 1, which left some choices out; they took version 1's "
                 f"values: {'; '.join(upgraded)}. The saved spec states every value.",
             )
+        # What a steered model went on to say: kept beside the results, not in the summary.
+        continuations = result.extra.pop("continuations", None)
         stats = compute_stats(spec, result, counts_for(result))
         summary = build_summary(spec, result, stats, run_id, model_shape)
         write_results(folder / "results.parquet", results_table(result, stats))
+        if continuations is not None:
+            record = ContinuationsFile.model_validate({"run_id": run_id, **continuations})
+            write_json(folder / CONTINUATIONS_FILE, record.model_dump(mode="json"))
         write_json(folder / "summary.json", summary)
         manifest.update(
             {

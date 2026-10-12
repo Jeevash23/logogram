@@ -50,7 +50,7 @@ from logogram.research import (
     read_notebook,
     save_note,
 )
-from logogram.schema import Manifest, QueuedRunInfo, RunListing, Summary
+from logogram.schema import ContinuationsFile, Manifest, QueuedRunInfo, RunListing, Summary
 from logogram.server import models as M
 from logogram.server.security import SecurityConfig, SecurityMiddleware
 from logogram.server.state import AppState, Conflict, EventHub, Job, Missing, request_project
@@ -363,6 +363,26 @@ class LookAttentionRequest(LookRequest):
 
 class LookFeaturesRequest(LookRequest):
     top_k: int = Field(ge=1, le=20)
+
+
+class LookFeatureRequest(LookRequest):
+    """One feature of the loaded SAE, along the text."""
+
+    feature: int = Field(ge=0)
+
+
+class LookSteer(BaseModel):
+    """A feature of the loaded SAE to add while the text continues: ``activation`` units of it
+    (in the feature's own units), at every position from token ``start`` on."""
+
+    feature: int = Field(ge=0)
+    activation: float = Field(allow_inf_nan=False)
+    start: int = Field(ge=0)
+
+
+class LookContinueRequest(LookRequest):
+    tokens: int = Field(ge=1, le=64)
+    steer: LookSteer | None = None
 
 
 class PredictionRequest(AnalysisRequest):
@@ -1053,6 +1073,38 @@ def create_app(
         with backend.lock:
             return features(backend, sae, body.text, prepend_bos=body.prepend_bos, top_k=body.top_k)
 
+    @app.post("/api/look/feature", response_model=M.LookFeatureAlong)
+    def look_feature(body: LookFeatureRequest) -> dict[str, Any]:
+        """One feature's activation at each token of the text, and its largest."""
+        from logogram.inside import look_feature as along
+
+        backend, sae = _analysis_backend(body), _sae()
+        with backend.lock:
+            return along(
+                backend, sae, body.text, prepend_bos=body.prepend_bos, feature=body.feature
+            )
+
+    @app.post("/api/look/continue", response_model=M.LookContinuation)
+    def look_continue(body: LookContinueRequest) -> dict[str, Any]:
+        """What the model writes after the text, greedily; with ``steer``, also with a feature of
+        the loaded SAE added where the SAE writes."""
+        from logogram.inside import continue_text
+
+        backend = _analysis_backend(body)
+        steer = body.steer
+        sae = _sae() if steer is not None else None
+        with backend.lock:
+            return continue_text(
+                backend,
+                body.text,
+                prepend_bos=body.prepend_bos,
+                tokens=body.tokens,
+                sae=sae,
+                feature=None if steer is None else steer.feature,
+                activation=None if steer is None else steer.activation,
+                start=None if steer is None else steer.start,
+            )
+
     @app.post("/api/predictions", response_model=M.PredictionReport)
     def predictions(body: PredictionRequest) -> dict[str, Any]:
         from logogram.analysis import prediction_report
@@ -1181,7 +1233,7 @@ def create_app(
         if not (folder / "spec.json").is_file():
             raise Missing(f"There is no run {run_id}.")
         out: dict[str, Any] = {"id": run_id}
-        for name in ("spec", "summary", "manifest", "predictions"):
+        for name in ("spec", "summary", "manifest", "predictions", "continuations"):
             path = folder / f"{name}.json"
             try:
                 data = project.read_json(path, optional=name != "spec")
@@ -1190,6 +1242,7 @@ def create_app(
                     "summary": Summary,
                     "manifest": Manifest,
                     "predictions": M.PredictionReport,
+                    "continuations": ContinuationsFile,
                 }[name]
                 out[name] = (
                     schema.model_validate(data).model_dump(mode="json")
@@ -1278,14 +1331,21 @@ def create_app(
     def report_run(run_id: str, hardware: bool = False) -> Response:
         """The run as one self-contained HTML page, to download and pass on."""
         from logogram.report import run_report
-        from logogram.runs import load_summary
+        from logogram.runs import load_continuations, load_summary
 
         project = state.require_project()
         _finished(project, run_id)
         folder = project.run_dir(run_id)
         spec = Spec.from_path(project.readable(folder / "spec.json"))
         manifest = project.read_json(folder / "manifest.json", optional=True) or {}
-        page = run_report(spec, load_summary(project, run_id), manifest, run_id, hardware=hardware)
+        page = run_report(
+            spec,
+            load_summary(project, run_id),
+            manifest,
+            run_id,
+            hardware=hardware,
+            continuations=load_continuations(project, run_id),
+        )
         return Response(
             page,
             media_type="text/html; charset=utf-8",
