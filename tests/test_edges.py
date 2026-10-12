@@ -772,6 +772,7 @@ def test_the_command_line_runs_and_verifies_edges(
     monkeypatch.setattr(
         "logogram.runner.default_provider", lambda on_event=None: lambda ref: tiny_backend
     )
+    monkeypatch.setattr("logogram.edges.SUMMARY_EDGES", 20)
     path = project.root / "edge-spec.json"
     path.write_text(edge_spec(spec_factory, curve=CURVE).to_json(), encoding="utf-8")
     result = CliRunner().invoke(cli, ["run", str(path), "--project", str(project.root)])
@@ -779,11 +780,25 @@ def test_the_command_line_runs_and_verifies_edges(
     assert "110 edges (11 senders, 27 receivers)" in result.output
     assert "Faithfulness, the chosen edges patched" in result.output
     run_id = next(r.id for r in project.list_runs() if r.status == "finished")
+    # One row per edge of the graph, though the summary lists only the strongest 20.
+    out = tmp_path / "edges.csv"
+    result = CliRunner().invoke(
+        cli, ["export", run_id, "--sites", "-o", str(out), "--project", str(project.root)]
+    )
+    assert result.exit_code == 0, result.output
+    assert len(out.read_text(encoding="utf-8").splitlines()) == 1 + 110
     result = CliRunner().invoke(
         cli, ["verify", run_id, "--top", "4", "--project", str(project.root)]
     )
     assert result.exit_code == 0, result.output
     assert "Estimate against path patching, 4 edges" in result.output
+    monkeypatch.setattr("logogram.edges.VERIFY_MAX", 3)
+    result = CliRunner().invoke(
+        cli, ["verify", run_id, "--top", "4", "--project", str(project.root)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "at most the strongest 3 are verified" in result.output
+    assert "Estimate against path patching, 3 edges" in result.output
 
 
 def test_the_app_runs_edges_and_shows_their_verification(

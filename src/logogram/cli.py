@@ -1155,13 +1155,20 @@ def _run_and_report(project: Any, spec: Any, derived: dict[str, Any], top: int) 
 @app.command()
 def verify(
     run: Annotated[str, typer.Argument(help="An attribution or edge attribution run.")],
-    top: Annotated[int, typer.Option(help="How many of the strongest estimates to patch.")] = 10,
+    top: Annotated[
+        int,
+        typer.Option(
+            help="How many of the strongest estimates to patch (of an edge attribution run's, at "
+            "most 50)."
+        ),
+    ] = 10,
     project_dir: Annotated[Path | None, ProjectOption] = None,
 ) -> None:
     """Patch, for real, the sites an attribution patching run estimated to matter most (or path
     patch, one at a time, the edges an edge attribution run estimated), and compare the
     measurement with the estimate."""
     from logogram.compare import compare_runs
+    from logogram.edges import VERIFY_MAX
     from logogram.robustness import require_finished
     from logogram.spec import Spec
     from logogram.verify import verification_change, verification_spec
@@ -1180,6 +1187,12 @@ def verify(
         spec = verification_spec(Spec.from_path(folder / "spec.json"), summary, top)
     except ValueError as exc:
         raise _fail(str(exc)) from exc
+    if summary.get("edges") and top > VERIFY_MAX:
+        typer.echo(
+            f"Edges are path patched one at a time, so at most the strongest {VERIFY_MAX} are "
+            "verified.",
+            err=True,
+        )
     derived = {"run": run_id, "kind": "verification", "change": verification_change(spec)}
     outcome = _run_and_report(project, spec, derived, top)
     typer.echo("")
@@ -1485,7 +1498,12 @@ def export(
         typer.Option("--output", "-o", help="Where to write the CSV (default: stdout)."),
     ] = None,
     sites: Annotated[
-        bool, typer.Option("--sites", help="One row per site instead of per site and prompt.")
+        bool,
+        typer.Option(
+            "--sites",
+            help="One row per site instead of per site and prompt (for an edge attribution run, "
+            "every edge of its graph).",
+        ),
     ] = False,
     prompt_text: Annotated[
         bool, typer.Option("--prompt-text", help="Add each prompt's text to its rows.")
@@ -1496,6 +1514,7 @@ def export(
     from logogram.exports import results_csv, sites_csv
     from logogram.report import sites_table
     from logogram.runs import load_summary, run_records
+    from logogram.schema import EDGES_FILE
     from logogram.spec import Spec
 
     project = _open_project(project_dir, Path(run) if Path(run).exists() else None)
@@ -1504,8 +1523,12 @@ def export(
     path = folder / "results.parquet"
     if not path.is_file():
         raise _fail(f"{run_id} has no results to export.")
-    if sites:
-        chunks: Any = iter([sites_csv(sites_table(load_summary(project, run_id)))])
+    edges = folder / EDGES_FILE
+    if sites and edges.is_file():
+        # The summary lists the strongest edges; edges.parquet holds every one.
+        chunks: Any = results_csv(project.readable(edges))
+    elif sites:
+        chunks = iter([sites_csv(sites_table(load_summary(project, run_id)))])
     else:
         records = None
         if prompt_text:

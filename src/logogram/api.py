@@ -548,8 +548,8 @@ def compare_runs(a: Run, b: Run) -> dict[str, Any]:
 
 def verify_run(estimated: Run, top: int = 10, *, model: Any = None) -> Run:
     """Patch, for real, the ``top`` sites an attribution patching run estimated to matter most;
-    for an edge attribution run, path patch its ``top`` strongest edges one at a time (compare the
-    two with :func:`edge_verification`)."""
+    for an edge attribution run, path patch its ``top`` strongest edges one at a time, at most 50
+    (compare the two with :func:`edge_verification`)."""
     from logogram.robustness import require_finished
     from logogram.runner import run_spec
     from logogram.verify import verification_change, verification_spec
@@ -820,7 +820,8 @@ class Run:
 
     def sites(self) -> Any:
         """One row per site: what it is, its mean effect and interval, the simultaneous band and
-        q-value, sign flips and the metric patched."""
+        q-value, sign flips and the metric patched. An edge attribution run's summary lists its
+        strongest edges only: :meth:`edges` has every one."""
         from logogram.report import sites_table
 
         return _table(sites_table(self._summary()))

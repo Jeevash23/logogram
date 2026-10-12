@@ -61,7 +61,7 @@ Every public name of `import logogram as lg`, from the docstrings in [`src/logog
 | [`lg.run`](#lgrun) | Run a spec and write its experiment folder into `project`, as the app does. |
 | [`lg.sweep`](#lgsweep) | Run a run's spec (or a spec, into `project`) across `values` of one `field`, one run after another, as `logogram sweep` does: a seed the spec states (`statistics.seed`, `experiment.baseline.seed`, `experiment.seed` or `scope.seed`), the dataset (`dataset.path`: dataset files of the project) or the model's revision (`model.revision`: commits, tags or branches, each run pinning its commit). |
 | [`lg.toy_model`](#lgtoy_model) | A model whose circuit is known, to learn the methods on and to check them against: `"induction"` (a previous-token head and an induction head) or `"ioi"` (GPT-2 small's indirect-object circuit, one head per step), with weights set by hand (see `logogram.toys`). |
-| [`lg.verify_run`](#lgverify_run) | Patch, for real, the `top` sites an attribution patching run estimated to matter most; for an edge attribution run, path patch its `top` strongest edges one at a time (compare the two with [`edge_verification()`](#lgedge_verification)). |
+| [`lg.verify_run`](#lgverify_run) | Patch, for real, the `top` sites an attribution patching run estimated to matter most; for an edge attribution run, path patch its `top` strongest edges one at a time, at most 50 (compare the two with [`edge_verification()`](#lgedge_verification)). |
 | [`lg.write_dataset`](#lgwrite_dataset) | Write prompt pairs into the project's datasets/ folder; returns its path in the project. |
 
 ### lg.add_local_model
@@ -444,8 +444,8 @@ lg.verify_run(estimated: Run, top: int = 10, *, model: Any = None) -> Run
 ```
 
 Patch, for real, the `top` sites an attribution patching run estimated to matter most;
-for an edge attribution run, path patch its `top` strongest edges one at a time (compare the
-two with [`edge_verification()`](#lgedge_verification)).
+for an edge attribution run, path patch its `top` strongest edges one at a time, at most 50
+(compare the two with [`edge_verification()`](#lgedge_verification)).
 
 ### lg.write_dataset
 
@@ -565,7 +565,8 @@ run.sites() -> Any
 ```
 
 One row per site: what it is, its mean effect and interval, the simultaneous band and
-q-value, sign flips and the metric patched.
+q-value, sign flips and the metric patched. An edge attribution run's summary lists its
+strongest edges only: `edges()` has every one.
 
 #### Run.methods
 

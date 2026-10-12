@@ -178,7 +178,7 @@ logogram export [OPTIONS] RUN
 | Option | Takes | Default | Description |
 |---|---|---|---|
 | `--output` / `-o` | path | — | Where to write the CSV (default: stdout). |
-| `--sites` | nothing | off | One row per site instead of per site and prompt. |
+| `--sites` | nothing | off | One row per site instead of per site and prompt (for an edge attribution run, every edge of its graph). |
 | `--prompt-text` | nothing | off | Add each prompt's text to its rows. |
 | `--project` | path | — | Project folder (default: the one containing the current folder). |
 
@@ -568,5 +568,5 @@ logogram verify [OPTIONS] RUN
 
 | Option | Takes | Default | Description |
 |---|---|---|---|
-| `--top` | integer | `10` | How many of the strongest estimates to patch. |
+| `--top` | integer | `10` | How many of the strongest estimates to patch (of an edge attribution run's, at most 50). |
 | `--project` | path | — | Project folder (default: the one containing the current folder). |

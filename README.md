@@ -485,9 +485,10 @@ A dataset is a JSONL file in the project's `datasets/` folder, one prompt pair p
   patching with one gradient, path patching, mean and resample ablation, steering by the mean
   difference) refuses them on such pairs, naming the pairs; zero ablation, direct logit
   attribution and steering along an SAE feature read one prompt at a time and take any position
-  they otherwise take. Integrated gradients, sets that keep their sites and patch the rest, and
-  mean or resample ablation of sets need pairs of equal length. Pairs of equal length may give
-  `corrupt_positions` too.
+  they otherwise take. Integrated gradients, edge attribution and path patching of edges (an edge
+  carries its sender's output at every position), sets that keep their sites and patch the rest,
+  and mean or resample ablation of sets need pairs of equal length. Pairs of equal length may
+  give `corrupt_positions` too.
 * `meta` is optional: anything about the prompt, such as `{"template": "went"}`. The bootstrap can
   resample prompts by one of its fields (see Statistics).
 
@@ -620,7 +621,8 @@ Faithfulness is the share of the gap from no edge chosen (0) to every edge chose
 chosen edges close. Edge patching is exact: each receiver reads its own input plus, for every
 patched edge into it, the sender's output on the source prompt minus its output in that run, so
 patching every edge reproduces the source run and patching none the receiver run (tests check
-both, and a run says how far its every-edge pass is from the source run). Each k costs one patched
+both, and a run whose graph is the whole model says how far its every-edge pass is from the source
+run). Each k costs one patched
 forward pass per batch, and one more per random draw. In the IOI example, with every edge but the
 chosen carrying the corrupt prompts' values, the 1,000 strongest edges (3% of the graph) keep 0.80
 of the behavior [0.74, 0.86] and the 3,000 strongest 0.96, where as many edges chosen at random
