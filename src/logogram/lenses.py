@@ -674,3 +674,101 @@ def _fits(name: str, model: dict[str, Any], width: Any, info: Any) -> tuple[bool
     except TrainingError as exc:
         return False, str(exc)
     return True, None
+
+
+# -- what training would take -------------------------------------------------------------------
+
+
+def plan_lens(
+    spec: LensTrainingSpec, project: Project, backend: ModelBackend, measure: bool = True
+) -> dict[str, Any]:
+    """What training ``spec`` on the loaded model would take: the corpus's texts and tokens, the
+    memory it holds (the translators with their gradients and Adam's averages, a step's
+    activations at every layer it reads, the distributions over the vocabulary of a chunk of
+    tokens), and with ``measure`` how long, from one forward pass of the model and one chunk of a
+    step timed here. ``refusal`` says why it can't train, from the same checks training makes."""
+    from logogram.system import _verdict, available_memory
+
+    info = backend.info
+    try:
+        layers = trained_layers(spec, info)
+        texts = read_texts(
+            project, backend, spec.corpus, spec.tokenization, spec.held_out, spec.seed
+        )
+    except (TrainingError, ValueError) as exc:
+        return {"refusal": first_line(exc)}
+    train, held = texts.tokens(texts.train), texts.tokens(texts.held_out)
+    refusal = None
+    if train < spec.batch_tokens:
+        refusal = (
+            f"The training texts hold {train:,} tokens, fewer than one batch of "
+            f"{spec.batch_tokens:,}. Use a smaller batch, or a larger corpus."
+        )
+    d, n = info.d_model, len(layers)
+    longest = spec.model_batch * spec.tokenization.max_tokens
+    memory: dict[str, Any] = {
+        "translators": n * (d * d + d) * 4 * 4,
+        "activations": (spec.batch_tokens + longest) * (n + 1) * d * 4,
+        "distributions": CHUNK * info.d_vocab * 4 * 4,
+        "evaluation": longest * info.n_layers * d * 4,
+    }
+    memory["total"] = sum(memory.values())
+    memory["available"] = available_memory(info.device)
+    memory["verdict"] = _verdict(memory["total"], memory["available"])
+    seconds = None
+    if measure and refusal is None:
+        seconds = _timing(backend, spec, texts.train, texts.first, layers, held)
+    return {
+        "refusal": refusal,
+        "layers": layers,
+        "texts": {
+            "corpus": texts.corpus,
+            "sha256": texts.sha256,
+            "total": texts.n_texts,
+            "train": len(texts.train),
+            "held_out": len(texts.held_out),
+        },
+        "tokens": {
+            "train": train,
+            "used": spec.steps * spec.batch_tokens,
+            "held_out": held,
+            "per_step": spec.batch_tokens,
+            "epochs": spec.steps * spec.batch_tokens / train if train else None,
+        },
+        "memory": memory,
+        "seconds": seconds,
+    }
+
+
+def _timing(
+    backend: ModelBackend,
+    spec: LensTrainingSpec,
+    train: list[list[int]],
+    first: int,
+    layers: list[int],
+    held: int,
+) -> dict[str, float]:
+    """Seconds each part would take, from one forward pass over the first batch of texts and one
+    chunk of tokens through every translator, timed here and scaled."""
+    last = backend.info.n_layers - 1
+    group = train[: spec.model_batch]
+    began = time.perf_counter()
+    rows = next(_rows(backend, group, layers, last, first, spec.model_batch))
+    per_token = (time.perf_counter() - began) / max(1, int(rows.shape[0]))
+    chunk = rows[:CHUNK].to(backend.device)
+    d = backend.info.d_model
+    A = torch.zeros(len(layers), d, d, device=backend.device, requires_grad=True)
+    began = time.perf_counter()
+    with torch.no_grad():
+        target = torch.log_softmax(backend.read_out(chunk[:, -1]), dim=-1)
+    for j in range(len(layers)):
+        h = chunk[:, j]
+        _kl(target, backend.read_out(h + h @ A[j])).sum().backward()
+    per_chunk_token = (time.perf_counter() - began) / max(1, int(chunk.shape[0]))
+    out = {
+        "train": spec.steps * spec.batch_tokens * (per_token + per_chunk_token),
+        # Every layer read through the logit lens, and the trained ones through the tuned lens.
+        "evaluate": held * (per_token + 2 * per_chunk_token * last / max(1, len(layers))),
+    }
+    out["total"] = sum(out.values())
+    return out

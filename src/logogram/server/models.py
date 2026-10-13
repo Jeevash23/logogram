@@ -68,7 +68,7 @@ class ModelStatus(_Out):
 
 class JobInfo(_Out):
     id: str
-    kind: Literal["load_model", "load_sae", "run", "add_model"]
+    kind: Literal["load_model", "load_sae", "run", "add_model", "train_sae", "train_lens"]
     title: str
     status: Literal["running", "finished", "failed", "cancelled"]
     run_id: str | None
@@ -154,6 +154,58 @@ class CorpusListing(_Out):
     labels: list[str] | None = None
     source: dict[str, Any] | None = None
     created: str | None = None
+
+
+class TrainedSAEListing(_Out):
+    """An SAE trained in the project (logogram.sae_training), as its training recorded it, or why
+    it can't be read."""
+
+    name: str
+    path: str
+    error: str | None
+    sha256: str | None = None
+    site: str | None = None
+    layer: int | None = None
+    d_in: int | None = None
+    d_sae: int | None = None
+    k: int | None = None
+    model: dict[str, Any] | None = None
+    corpus: dict[str, Any] | None = None
+    steps: int | None = None
+    created: str | None = None
+    held_out: dict[str, Any] | None = None
+    spec: dict[str, Any] | None = None
+
+
+class LensListing(_Out):
+    """A tuned lens trained in the project (logogram.lenses), as its training recorded it, whether
+    it reads the loaded model (and if not why), or why it can't be read."""
+
+    name: str
+    path: str
+    error: str | None
+    sha256: str | None = None
+    layers: list[int] | None = None
+    width: int | None = None
+    model: dict[str, Any] | None = None
+    corpus: dict[str, Any] | None = None
+    steps: int | None = None
+    created: str | None = None
+    held_out: dict[str, Any] | None = None
+    spec: dict[str, Any] | None = None
+    fits: bool | None = None
+    reason: str | None = None
+
+
+class TrainingPlan(_Out):
+    """What training an SAE or a lens would take, or why it can't train (``refusal``)."""
+
+    refusal: str | None
+    layers: list[int] | None = None
+    texts: dict[str, Any] | None = None
+    tokens: dict[str, Any] | None = None
+    memory: dict[str, Any] | None = None
+    seconds: dict[str, float] | None = None
 
 
 class RecentProject(_Out):

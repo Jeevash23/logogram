@@ -11,7 +11,8 @@ silently. Version 3 (Logogram 0.5) added chat templates, local models, a steerin
 steered continuations; a version 2 spec reads as version 3 with each of them off, which is what
 version 2 did. Version 4 (Logogram 0.7) added methods that find and use directions in the model
 (probes, learned subspaces, directional ablation, readouts), automated circuit discovery, and SAEs
-and lenses trained in the project; a version 3 spec reads as version 4 unchanged.
+and lenses trained in the project; a version 3 spec reads as version 4 with those off (the SAE it
+names is a published one, its layer predictions read the logit lens).
 
 Specs refer to abstract sites (``resid_pre``, ``attn_out``, ``head``, ...). Backend-specific hook
 names never appear in a spec.

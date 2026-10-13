@@ -114,7 +114,8 @@ class TopK(_Strict):
     """A TopK SAE (Gao et al. 2024): each token keeps its ``k`` largest pre-activations, each
     through a ReLU, and every other feature is zero."""
 
-    kind: Literal["topk"] = "topk"
+    kind: Literal["topk"]
+    """The architecture: TopK is the one Logogram trains."""
     k: int = Field(ge=1)
     """How many features each token keeps."""
 

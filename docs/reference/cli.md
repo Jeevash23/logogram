@@ -18,6 +18,9 @@ Commands that read runs use the project in the current folder or above it, or `-
 | [`logogram env`](#logogram-env) | Print what results depend on beyond the spec, as JSON: Logogram's, Python's and the libraries' versions, the operating system's family and the devices PyTorch can use. |
 | [`logogram export`](#logogram-export) | Write a finished run's values as CSV: one row per site and prompt, or per site. |
 | [`logogram generate`](#logogram-generate) | Write a seeded dataset of prompt pairs for a task into the project's datasets folder. |
+| [`logogram lens`](#logogram-lens) | Tuned lenses trained in the project: train one, deterministically, from a training spec or from options that state every choice, or list them. |
+| [`logogram lens list`](#logogram-lens-list) | List the tuned lenses trained in the project, with what their training measured. |
+| [`logogram lens train`](#logogram-lens-train) | Train a tuned lens (an affine translator per layer, read through the model's final normalization and unembedding) on a corpus of the project, and save it as lenses/NAME. |
 | [`logogram list`](#logogram-list) | List the project's runs and drafts, newest first, by their titles (★ starred). |
 | [`logogram methods`](#logogram-methods) | Print a run's methods paragraph: every choice that can change a number, in sentences. |
 | [`logogram models`](#logogram-models) | Model folders on this machine: add one under a name, list them, remove one. |
@@ -34,6 +37,9 @@ Commands that read runs use the project in the current folder or above it, or `-
 | [`logogram report`](#logogram-report) | Write a finished run as one HTML page anyone can open: its map, strongest sites, every site's numbers, the methods and where it came from. |
 | [`logogram robustness`](#logogram-robustness) | Rerun with one methodological choice changed, then compare the two runs. |
 | [`logogram run`](#logogram-run) | Run an experiment headlessly and print a summary. |
+| [`logogram sae`](#logogram-sae) | SAEs trained in the project: train one, deterministically, from a training spec or from options that state every choice, or list them. |
+| [`logogram sae list`](#logogram-sae-list) | List the SAEs trained in the project, with what their training measured. |
+| [`logogram sae train`](#logogram-sae-train) | Train a TopK SAE on one site of one layer, on a corpus of the project, and save it as saes/NAME (in SAELens's format, with training.json and metrics.json). |
 | [`logogram saes`](#logogram-saes) | List the published SAEs trained on MODEL, from SAELens's registry as the catalogue that ships with Logogram records it (nothing is fetched), and whether Logogram reads each exactly or why not. |
 | [`logogram serve`](#logogram-serve) | Run the server (use --dev with `npm run dev` when working on the web app). |
 | [`logogram show`](#logogram-show) | Print a finished run's method, baseline and strongest sites, or why a run failed, with the traceback it kept. |
@@ -202,6 +208,60 @@ logogram generate [OPTIONS] TASK
 | `--option` / `-O` | text; repeat it for more | — | A task option as NAME=VALUE (lists comma-separated). |
 | `--tokenizer` | text | — | A model already in the Hugging Face cache whose tokenizer the prompts are made for (words it splits are left out). Nothing is downloaded. |
 | `--overwrite` / `--no-overwrite` | nothing | off | Replace a dataset of the same name. |
+| `--project` | path | — | Project folder (default: the one containing the current folder). |
+
+## logogram lens
+
+Tuned lenses trained in the project: train one, deterministically, from a training spec or from options that state every choice, or list them. Each is saved as lenses/NAME; the layer predictions of a spec read it by name and the hash of its file.
+
+Its commands: [`logogram lens list`](#logogram-lens-list) and [`logogram lens train`](#logogram-lens-train).
+
+## logogram lens list
+
+List the tuned lenses trained in the project, with what their training measured.
+
+```text
+logogram lens list [OPTIONS]
+```
+
+| Option | Takes | Default | Description |
+|---|---|---|---|
+| `--project` | path | — | Project folder (default: the one containing the current folder). |
+
+## logogram lens train
+
+Train a tuned lens (an affine translator per layer, read through the model's final normalization and unembedding) on a corpus of the project, and save it as lenses/NAME. The same spec on the same machine gives the same translators, bit for bit.
+
+```text
+logogram lens train [OPTIONS] [[SPEC.json]]
+```
+
+| Argument | Takes | Description |
+|---|---|---|
+| `[SPEC.json]` | path | A training spec. Leave it out to state every choice with the options instead. |
+
+| Option | Takes | Default | Description |
+|---|---|---|---|
+| `--name` | text | — | Its name: it is saved as lenses/NAME. |
+| `--model` | text | — | A Hugging Face id, or the name of a local model. |
+| `--revision` | text | — | The model's commit, tag or branch, or none (the current main). |
+| `--dtype` | text | — | float32, float16 or bfloat16. |
+| `--device` | text | — | auto, cpu, cuda, cuda:N or mps. |
+| `--process-weights` / `--no-process-weights` | nothing | — | Load the model with TransformerLens's weight processing, or without. |
+| `--corpus` | text | — | The corpus's name, in corpora/. |
+| `--layers` | text | — | The layers that get a translator, such as 0,1,2, or all-but-last. |
+| `--steps` | integer | — | Steps of the optimizer. |
+| `--batch-tokens` | integer | — | Tokens per step. |
+| `--lr` | number | — | The learning rate. |
+| `--betas` | text | — | Adam's betas, such as 0.9,0.999. |
+| `--eps` | number | — | Adam's epsilon, such as 1e-8. |
+| `--weight-decay` | text | — | AdamW's weight decay, such as 0.001, or none. |
+| `--seed` | integer | — | The seed of everything random. |
+| `--held-out` | number | — | The share of texts held out and measured on. |
+| `--log-every` | integer | — | Steps per point of the loss curve. |
+| `--prepend-bos` / `--no-prepend-bos` | nothing | — | Begin each text with BOS, or not. |
+| `--max-tokens` | integer | — | The most tokens read of a text. |
+| `--model-batch` | integer | — | Texts per forward pass. |
 | `--project` | path | — | Project folder (default: the one containing the current folder). |
 
 ## logogram list
@@ -426,6 +486,63 @@ logogram run [OPTIONS] SPEC.json
 | `--project` | path | — | Project folder (default: the one containing the spec). |
 | `--top` | integer | `10` | How many sites to list. |
 | `--verbose` / `-v` | nothing | off | If the run fails, print its traceback. |
+
+## logogram sae
+
+SAEs trained in the project: train one, deterministically, from a training spec or from options that state every choice, or list them. Each is saved as saes/NAME in SAELens's format, and specs name it by that folder and the hash of its files.
+
+Its commands: [`logogram sae list`](#logogram-sae-list) and [`logogram sae train`](#logogram-sae-train).
+
+## logogram sae list
+
+List the SAEs trained in the project, with what their training measured.
+
+```text
+logogram sae list [OPTIONS]
+```
+
+| Option | Takes | Default | Description |
+|---|---|---|---|
+| `--project` | path | — | Project folder (default: the one containing the current folder). |
+
+## logogram sae train
+
+Train a TopK SAE on one site of one layer, on a corpus of the project, and save it as saes/NAME (in SAELens's format, with training.json and metrics.json). The same spec on the same machine gives the same weights, bit for bit.
+
+```text
+logogram sae train [OPTIONS] [[SPEC.json]]
+```
+
+| Argument | Takes | Description |
+|---|---|---|
+| `[SPEC.json]` | path | A training spec. Leave it out to state every choice with the options instead. |
+
+| Option | Takes | Default | Description |
+|---|---|---|---|
+| `--name` | text | — | Its name: it is saved as saes/NAME. |
+| `--model` | text | — | A Hugging Face id, or the name of a local model. |
+| `--revision` | text | — | The model's commit, tag or branch, or none (the current main). |
+| `--dtype` | text | — | float32, float16 or bfloat16. |
+| `--device` | text | — | auto, cpu, cuda, cuda:N or mps. |
+| `--process-weights` / `--no-process-weights` | nothing | — | Load the model with TransformerLens's weight processing, or without. |
+| `--corpus` | text | — | The corpus's name, in corpora/. |
+| `--site` | text | — | SITE:LAYER, such as resid_post:6 (resid_pre, resid_post, attn_out, mlp_out). |
+| `--d-sae` | integer | — | How many features. |
+| `--k` | integer | — | How many features each token keeps. |
+| `--steps` | integer | — | Steps of the optimizer. |
+| `--batch-tokens` | integer | — | Tokens per step. |
+| `--lr` | number | — | Adam's learning rate. |
+| `--betas` | text | — | Adam's betas, such as 0.9,0.999. |
+| `--eps` | number | — | Adam's epsilon, such as 1e-8. |
+| `--seed` | integer | — | The seed of everything random. |
+| `--held-out` | number | — | The share of texts held out and measured on. |
+| `--normalize` | text | — | mean_squared_norm (scaled to a mean squared norm of the width) or none. |
+| `--auxk` | text | — | The AuxK loss as K,COEFFICIENT,DEAD_AFTER (tokens), or none. |
+| `--log-every` | integer | — | Steps per point of the loss curve. |
+| `--prepend-bos` / `--no-prepend-bos` | nothing | — | Begin each text with BOS, or not. |
+| `--max-tokens` | integer | — | The most tokens read of a text. |
+| `--model-batch` | integer | — | Texts per forward pass. |
+| `--project` | path | — | Project folder (default: the one containing the current folder). |
 
 ## logogram saes
 

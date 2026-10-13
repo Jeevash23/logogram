@@ -40,6 +40,8 @@ _API = (
     "run",
     "sweep",
     "toy_model",
+    "train_lens",
+    "train_sae",
     "verify_run",
     "write_dataset",
 )
