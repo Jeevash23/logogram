@@ -18,6 +18,7 @@ from typing import Any
 
 from logogram import runqueue
 from logogram.backends.base import Cancelled, ModelBackend
+from logogram.fileio import write_text_atomic
 from logogram.project import Project, config_dir, remember_recent
 from logogram.runqueue import Queued, QueueError
 from logogram.schema import QueueRunner, RunListing, validate_event
@@ -270,16 +271,21 @@ class AppState:
         return config_dir() / "settings.json"
 
     def settings(self) -> dict[str, Any]:
+        """The settings file's object; {} when there is none, or it holds anything else (null, a
+        list, text that isn't JSON), as if nothing had been set."""
         try:
-            return json.loads(self.settings_path().read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            data = json.loads(self.settings_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError, RecursionError):
             return {}
+        return data if isinstance(data, dict) else {}
 
     def update_settings(self, **values: Any) -> None:
+        """Change some settings, keeping the others. The file is replaced whole, never left half
+        written."""
         data = self.settings()
         data.update(values)
         self.settings_path().parent.mkdir(parents=True, exist_ok=True)
-        self.settings_path().write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        write_text_atomic(self.settings_path(), json.dumps(data, indent=2) + "\n")
 
     # -- project -----------------------------------------------------------------------------
 

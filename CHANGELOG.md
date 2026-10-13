@@ -33,6 +33,9 @@ What changed in each version of Logogram.
   to load the spec's own. `lg.verify_run`, `lg.check_robustness` and `lg.sweep` refuse a model
   passed to them that their runs don't name, and a toy's experiments run on the toy as it was
   loaded.
+- A settings file holding `null`, a list or anything else that isn't an object stopped the app
+  from starting (an internal server error). It now reads as no settings, and settings are written
+  whole, through a temporary file, so an interrupted write never leaves half a file.
 
 ## 0.6.0 (2026-10-12)
 

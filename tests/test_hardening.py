@@ -328,6 +328,25 @@ def test_folder_listing_skips_what_it_cant_enter(client, tmp_path):
         locked.chmod(0o755)
 
 
+@pytest.mark.parametrize(
+    "content",
+    ["null", "[1, 2]", '"dark"', "{not json", "[" * 5000],
+    ids=["null", "a list", "a string", "not json", "too deep"],
+)
+def test_a_settings_file_that_isnt_an_object_reads_as_no_settings(client, tmp_path, content):
+    path = tmp_path / "config" / "settings.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    state = client.get("/api/state", headers=HEADERS)
+    assert state.status_code == 200, state.text
+    assert state.json()["theme"] == "system" and state.json()["first_run"] is True
+    # Changing one replaces the file with an object holding it, written whole.
+    saved = client.post("/api/settings", json={"theme": "dark"}, headers=HEADERS)
+    assert saved.status_code == 200 and saved.json()["theme"] == "dark"
+    assert json.loads(path.read_text(encoding="utf-8")) == {"theme": "dark"}
+    assert sorted(p.name for p in path.parent.iterdir()) == ["settings.json"]
+
+
 def test_creating_a_project_where_you_cant_write_says_so(client, tmp_path):
     blocker = tmp_path / "a-file"
     blocker.write_text("", encoding="utf-8")
