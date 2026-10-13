@@ -405,6 +405,31 @@ def test_a_run_in_progress_or_in_the_queue_is_never_deleted(
     assert client.delete(f"/api/runs/{draft}", headers=HEADERS).status_code == 200
 
 
+def test_a_queued_draft_is_never_deleted_from_the_command_line_or_python(project, spec_factory):
+    from logogram.runner import write_json
+
+    run_id, folder = project.new_run_dir("Waiting")
+    write_json(folder / "spec.json", _quick(spec_factory, "Waiting").model_dump(mode="json"))
+    runqueue.add_to_queue(project, _quick(spec_factory, "Waiting"), draft_id=run_id)
+    where = ["--project", str(project.root)]
+    refused = CliRunner().invoke(cli, ["delete", run_id, *where], input="y\n")
+    assert refused.exit_code == 1
+    assert "“Waiting” is waiting in the queue to run. Take it out of the queue first" in (
+        refused.output
+    )
+    assert "Delete it?" not in refused.output  # refused before asking
+    with pytest.raises(LogogramError, match="waiting in the queue"):
+        lg.delete_run(project, run_id)
+    with pytest.raises(ProjectError, match="waiting in the queue"):
+        delete_run(project, run_id)
+    assert (folder / "spec.json").is_file()
+    # Out of the queue, it can go.
+    runqueue.clear_queue(project)
+    deleted = CliRunner().invoke(cli, ["delete", run_id, "--yes", *where])
+    assert deleted.exit_code == 0, deleted.output
+    assert not folder.exists()
+
+
 @posix_only
 def test_deleting_never_follows_a_link_or_leaves_the_experiments_folder(
     client, ready, project, tiny_backend, spec_factory, tmp_path

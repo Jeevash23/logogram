@@ -46,6 +46,9 @@ What changed in each version of Logogram.
   recent list couldn't be written (Logogram's settings folder read-only, say) or held entries
   that aren't objects. The recent list never stops a project opening now, and entries it can't
   read are left out.
+- `logogram delete` and `lg.delete_run` deleted a draft waiting in the queue, which the app
+  refuses; the queue then failed when its turn came. Every front end now refuses it, saying to take
+  it out of the queue first, and `logogram delete` says so before asking.
 - A settings file holding `null`, a list or anything else that isn't an object stopped the app
   from starting (an internal server error). It now reads as no settings, and settings are written
   whole, through a temporary file, so an interrupted write never leaves half a file.

@@ -944,7 +944,8 @@ class AppState:
 
     def delete_run(self, run_id: str) -> None:
         """Delete a finished, failed or cancelled run, or a draft. Not one that is running or
-        queued: under the job lock, so none can start in its folder meanwhile."""
+        queued (logogram.history refuses a queued draft): under the job lock, so none can start
+        in its folder meanwhile."""
         from logogram.history import RunInUse, delete_run, display_name
 
         project = self.require_project()
@@ -956,11 +957,6 @@ class AppState:
             if job is not None and job.status == "running" and job.run_id == run_id:
                 raise RunInUse(
                     f"{name} is running. Wait for it to end, or cancel it, then delete it."
-                )
-            if self._queued_draft(project, run_id):
-                raise RunInUse(
-                    f"{name} is waiting in the queue to run. Take it out of the queue first, then "
-                    "delete it."
                 )
             delete_run(project, run_id)
         self._runs_changed(project, run_id, deleted=True)

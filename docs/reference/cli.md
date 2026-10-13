@@ -105,7 +105,7 @@ logogram compare [OPTIONS] RUN_A RUN_B
 
 ## logogram delete
 
-Delete a finished, failed or cancelled run, or a draft: its folder and everything in it. There is no undo; `logogram archive` keeps a run out of the way instead.
+Delete a finished, failed or cancelled run, or a draft: its folder and everything in it. A run in progress, or a draft waiting in the queue, can't be deleted. There is no undo; `logogram archive` keeps a run out of the way instead.
 
 ```text
 logogram delete [OPTIONS] RUN

@@ -144,7 +144,8 @@ lg.delete_run(project: Project, run: Run | str) -> None
 
 Delete a finished, failed or cancelled run, or a draft (a [`Run`](#lgrun-1) or a run id): its
 folder and everything in it, for good. Archive a run to keep it out of the way instead. A run
-in progress can't be deleted. Runs derived from it stay, and keep its id in their manifest.
+in progress, or a draft waiting in the queue, can't be deleted. Runs derived from it stay,
+and keep its id in their manifest.
 
 ### lg.edge_verification
 

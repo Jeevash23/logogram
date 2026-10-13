@@ -979,12 +979,16 @@ def delete(
     project_dir: Annotated[Path | None, ProjectOption] = None,
 ) -> None:
     """Delete a finished, failed or cancelled run, or a draft: its folder and everything in it.
-    There is no undo; `logogram archive` keeps a run out of the way instead."""
-    from logogram.history import delete_run, display_name, reason
+    A run in progress, or a draft waiting in the queue, can't be deleted. There is no undo;
+    `logogram archive` keeps a run out of the way instead."""
+    from logogram.history import check_deletable, delete_run, display_name, reason
 
     project = _open_project(project_dir, Path(run) if Path(run).exists() else None)
     run_id = _named_run(project, run)
-    listing = project.run_listing(run_id)
+    try:
+        listing = check_deletable(project, run_id)  # before asking
+    except ValueError as exc:
+        raise _fail(reason(exc)) from exc
     name = display_name(listing) if listing else run_id
     if not yes:
         derived = [
