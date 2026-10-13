@@ -92,6 +92,8 @@ const ADDED = new Set<keyof FormState>([
   "edgePatch",
   "edgeSeed",
   "edgeDraws",
+  "acdcThreshold",
+  "acdcRule",
 ]);
 
 /** A sweep stored before it had every field: an every-feature sweep chose and reported its
@@ -244,7 +246,7 @@ const FIELDS: { [K in keyof FormState]-?: Check } = {
   predictions: orNull(isPredictions),
   name: isString,
   nameEdited: isBoolean,
-  kind: oneOf("activation_patching", "ablation", "attribution_patching", "direct_logit_attribution", "path_patching", "steering", "edge_attribution"),
+  kind: oneOf("activation_patching", "ablation", "attribution_patching", "direct_logit_attribution", "path_patching", "steering", "edge_attribution", "acdc"),
   direction: oneOf("clean_to_corrupt", "corrupt_to_clean"),
   baseline: orNull(isBaseline),
   dlaPrompts: orNull(SIDES),
@@ -267,6 +269,8 @@ const FIELDS: { [K in keyof FormState]-?: Check } = {
   edgePatch: orNull(oneOf("chosen", "rest")),
   edgeSeed: isNumber,
   edgeDraws: isNumber,
+  acdcThreshold: isString,
+  acdcRule: orNull(oneOf("toward_source", "either_way")),
   saeRef: orNull(isSaeRef),
   scope: isScope,
   metric: oneOf("logit_diff", "logprob_diff", "logprob", "prob", "prob_diff", "kl"),

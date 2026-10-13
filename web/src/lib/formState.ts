@@ -2,6 +2,7 @@
 // the store so that the form's draft storage and the spec builder can use it without a cycle.
 
 import type {
+  AcdcRule,
   AttributionMethod,
   BaselineSpec,
   ChatTemplateSpec,
@@ -66,6 +67,10 @@ export interface FormState {
   edgePatch: "chosen" | "rest" | null;
   edgeSeed: number;
   edgeDraws: number;
+  /** ACDC: the threshold as typed, in the metric's units, and which change in the metric it is
+   * compared with. Neither has a default: they decide which edges stay. */
+  acdcThreshold: string;
+  acdcRule: AcdcRule | null;
   /** The SAE a saved spec's features belong to; used when no SAE is loaded. */
   saeRef: SAERef | null;
   scope: ScopeSpec;
@@ -123,6 +128,8 @@ export const DEFAULT_FORM: FormState = {
   edgePatch: null,
   edgeSeed: 0,
   edgeDraws: 1,
+  acdcThreshold: "",
+  acdcRule: null,
   saeRef: null,
   scope: { kind: "heads", position: { kind: "all" } },
   metric: "logit_diff",
@@ -153,7 +160,11 @@ export function formFromSpec(spec: Spec): FormState {
     nameEdited: true,
     kind: e.kind,
     direction:
-      e.kind === "activation_patching" || e.kind === "attribution_patching" || e.kind === "path_patching" || e.kind === "edge_attribution"
+      e.kind === "activation_patching" ||
+      e.kind === "attribution_patching" ||
+      e.kind === "path_patching" ||
+      e.kind === "edge_attribution" ||
+      e.kind === "acdc"
         ? e.direction
         : "clean_to_corrupt",
     baseline: e.kind === "ablation" ? e.baseline : null,
@@ -178,6 +189,8 @@ export function formFromSpec(spec: Spec): FormState {
     edgePatch: e.kind === "edge_attribution" && e.curve ? e.curve.patch : null,
     edgeSeed: e.kind === "edge_attribution" && e.curve ? e.curve.control.seed : DEFAULT_FORM.edgeSeed,
     edgeDraws: e.kind === "edge_attribution" && e.curve ? e.curve.control.draws : DEFAULT_FORM.edgeDraws,
+    acdcThreshold: e.kind === "acdc" ? String(e.threshold) : DEFAULT_FORM.acdcThreshold,
+    acdcRule: e.kind === "acdc" ? e.rule : null,
     saeRef: spec.sae ?? null,
     scope: spec.scope.kind === "features"
       ? { ...spec.scope, choose_on: spec.scope.choose_on ?? null, seed: spec.scope.seed ?? null }

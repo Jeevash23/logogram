@@ -24,7 +24,7 @@ function describeValue(v: unknown): string {
   if (v === null || v === undefined) return "none";
   if (Array.isArray(v) && v.length > 0 && v.every((x) => x && typeof x === "object" && "sender" in x && "receiver" in x)) {
     // A list of edges: name them, as the results do.
-    const names = (v as EdgeSpec[]).map(edgeLabel);
+    const names = (v as EdgeSpec[]).map((e) => edgeLabel(e));
     return `${names.length} edge${names.length === 1 ? "" : "s"}: ${names.slice(0, 6).join(", ")}${names.length > 6 ? ", …" : ""}`;
   }
   if (v && typeof v === "object" && "counts" in v && "patch" in v && "control" in v) {
@@ -34,7 +34,7 @@ function describeValue(v: unknown): string {
   }
   if (Array.isArray(v) && v.length > 0 && v.every((x) => x && typeof x === "object" && "kind" in x && ["head", "mlp", "logits"].includes(String(x.kind)) && !("position" in x))) {
     // Path patching's receivers.
-    const names = (v as PathReceiverSpec[]).map(receiverLabel);
+    const names = (v as PathReceiverSpec[]).map((r) => receiverLabel(r));
     return `${names.slice(0, 6).join(", ")}${names.length > 6 ? `, and ${names.length - 6} more` : ""}`;
   }
   if (Array.isArray(v) && v.length > 0 && v.every((x) => x && typeof x === "object" && "kind" in x && "layer" in x)) {

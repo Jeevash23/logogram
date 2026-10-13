@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 
 import { api } from "../api/client";
-import type { EdgeCurve as CurveData, EdgeRun, EdgeVerification, SiteBase, SiteResult, Stat } from "../api/types";
+import type { AcdcRun, EdgeCurve as CurveData, EdgeRun, EdgeVerification, SiteBase, SiteResult, Stat } from "../api/types";
 import { ScaleBar } from "../components/Heatmap/ScaleBar";
 import { Button, Segmented } from "../components/ui";
 import { font, inkRing, prepareCanvas, useChromeColors, useElementSize } from "../lib/canvas";
@@ -32,16 +32,19 @@ const LIST_STEP = 25;
  * An edge attribution run's results: the strongest edges drawn between the model's components
  * (layers left to right, in the effect colors), the faithfulness curve, the estimates against
  * their verification by path patching, and every listed edge ranked. Also a verification run's
- * edges (path patching, one edge at a time), which have no curve.
+ * edges (path patching, one edge at a time), which have no curve, and an ACDC run's circuit: the
+ * edges it kept, drawn, with how faithful the circuit is.
  */
 export function EdgeResults({
   runId,
   finished,
   edges,
+  acdc = null,
   sites,
   results,
   nLayers,
   nHeads,
+  nKvHeads = nHeads,
   theme,
   effectLabel,
   ciLevel,
@@ -52,12 +55,16 @@ export function EdgeResults({
 }: {
   runId: string;
   finished: boolean;
-  /** The summary's account of the run (null for a verification run). */
+  /** The summary's account of the run (null for a verification run and for ACDC). */
   edges: EdgeRun | null;
+  /** An ACDC run's circuit and how it was found. */
+  acdc?: AcdcRun | null;
   sites: SiteBase[];
   results: Record<number, SiteResult>;
   nLayers: number;
   nHeads: number;
+  /** Key/value heads a layer: fewer than nHeads with grouped-query attention. */
+  nKvHeads?: number;
   theme: ResolvedTheme;
   effectLabel: string;
   ciLevel: number;
@@ -71,12 +78,15 @@ export function EdgeResults({
     [sites, results],
   );
   const [drawn, setDrawn] = useState<(typeof DRAWN)[number]>(50);
+  // An ACDC run draws its circuit: the edges it kept.
+  const circuit = useMemo(() => (acdc ? new Set(acdc.kept) : null), [acdc]);
+  const pool = useMemo(() => (circuit ? ranked.filter((e) => circuit.has(e.index)) : ranked), [ranked, circuit]);
   // The drawing shows the strongest, and the selected edge wherever it ranks.
   const shown = useMemo(() => {
-    const top = ranked.slice(0, drawn);
+    const top = pool.slice(0, drawn);
     const selected = ranked.find((e) => e.index === selectedIndex);
     return selected && !top.includes(selected) ? [...top, selected] : top;
-  }, [ranked, drawn, selectedIndex]);
+  }, [pool, ranked, drawn, selectedIndex]);
   const bound = useMemo(() => niceBound(shown.map((e) => e.effect.mean), SCALE_FLOOR.effect), [shown]);
   const color = useMemo(() => divergingScale(bound, theme), [bound, theme]);
   const verification = useVerification(runId, finished && !!edges);
@@ -86,23 +96,34 @@ export function EdgeResults({
   return (
     <div className={x.results}>
       {edges && <EdgeOverview edges={edges} listed={ranked.length} />}
+      {acdc && <AcdcOverview acdc={acdc} listed={ranked.length} ciLevel={ciLevel} receiver={receiver} source={source} />}
       <section className={x.figure} aria-labelledby={`${runId}-graph`}>
         <div className={x.figureHead}>
           <h2 id={`${runId}-graph`} className={s.panelTitle}>
-            The strongest edges, layers left to right
+            {acdc ? "The circuit, layers left to right" : "The strongest edges, layers left to right"}
           </h2>
-          <Segmented
-            label="Edges drawn"
-            value={String(drawn)}
-            onChange={(v) => setDrawn(Number(v) as (typeof DRAWN)[number])}
-            options={DRAWN.map((n) => ({ value: String(n), label: count(n), disabled: n > ranked.length && n !== DRAWN[0] }))}
-          />
+          {/* A circuit no larger than the fewest drawn is drawn whole. */}
+          {!(acdc && pool.length <= DRAWN[0]) && (
+            <Segmented
+              label="Edges drawn"
+              value={String(drawn)}
+              onChange={(v) => setDrawn(Number(v) as (typeof DRAWN)[number])}
+              options={DRAWN.map((n) => ({ value: String(n), label: count(n), disabled: n > pool.length && n !== DRAWN[0] }))}
+            />
+          )}
           <ScaleBar bound={bound} theme={theme} label={effectLabel} />
         </div>
+        {acdc && pool.length === 0 && (
+          <p className={s.small}>
+            ACDC kept no edge: removing each one, in turn, moved the metric by less than the threshold. A lower threshold keeps
+            more.
+          </p>
+        )}
         <EdgeGraph
           edges={shown}
           nLayers={nLayers}
           nHeads={nHeads}
+          group={nKvHeads > 0 && nHeads % nKvHeads === 0 ? nHeads / nKvHeads : 1}
           color={color}
           selectedIndex={selectedIndex}
           onSelect={onSelect}
@@ -124,7 +145,58 @@ export function EdgeResults({
           }} />}
         </div>
       )}
-      <EdgeList ranked={ranked} measured={measured} effectLabel={effectLabel} ciLevel={ciLevel} selectedIndex={selectedIndex} onSelect={onSelect} total={edges?.n_edges ?? ranked.length} />
+      <EdgeList
+        ranked={ranked}
+        measured={measured}
+        circuit={circuit}
+        effectLabel={effectLabel}
+        ciLevel={ciLevel}
+        selectedIndex={selectedIndex}
+        onSelect={onSelect}
+        total={edges?.n_edges ?? acdc?.n_edges ?? ranked.length}
+      />
+    </div>
+  );
+}
+
+/** What ACDC kept, by which rule, and how faithful the circuit is; how the edges were tested. */
+function AcdcOverview({
+  acdc,
+  listed,
+  ciLevel,
+  receiver,
+  source,
+}: {
+  acdc: AcdcRun;
+  listed: number;
+  ciLevel: number;
+  receiver: string;
+  source: string;
+}) {
+  const f = acdc.faithfulness;
+  const moved =
+    acdc.rule === "toward_source" ? `moved the metric toward the ${source} prompts' by less than` : "moved the metric either way by less than";
+  return (
+    <div className={x.overview}>
+      <p className={x.overviewText}>
+        ACDC kept {count(acdc.n_kept)} of {count(acdc.n_edges)} edges. The {receiver} prompts ran with every edge in the circuit,
+        and ACDC removed the edges one at a time: an edge stayed removed when removing it {moved} {acdc.threshold}. The
+        circuit&rsquo;s faithfulness is {num(f.mean, 3)} ({ciLevel}% CI {ci(f.lo, f.hi, 3)}): the share of the gap from the{" "}
+        {source} run (0) to the {receiver} run with every edge (1) that it keeps. Each edge&rsquo;s value is the change its removal
+        made when it was tested.{" "}
+        {listed < acdc.n_edges
+          ? `The circuit's edges and the strongest removed, ${count(listed)} in all, are listed here; Export has every edge as a CSV, with whether it was kept.`
+          : "Every edge is listed here."}
+      </p>
+      <details className={x.more}>
+        <summary>How the edges were tested</summary>
+        <p className={s.small}>
+          In {acdc.order}. A removed edge carries its sender&rsquo;s output on the {source} prompt into its receiver&rsquo;s own
+          copy of the residual stream; the edges of the circuit carry what their senders output in that run. Which edges stay
+          can depend on the threshold and on this order: rerun with another threshold (Check robustness) to see how much the
+          circuit changes.
+        </p>
+      </details>
     </div>
   );
 }
@@ -213,6 +285,7 @@ function EdgeGraph({
   edges,
   nLayers,
   nHeads,
+  group,
   color,
   selectedIndex,
   onSelect,
@@ -222,6 +295,8 @@ function EdgeGraph({
   edges: SiteResult[];
   nLayers: number;
   nHeads: number;
+  /** Query heads a key/value head (1 without grouped-query attention). */
+  group: number;
   color: ReturnType<typeof divergingScale>;
   selectedIndex: number | null;
   onSelect: (site: SiteResult) => void;
@@ -255,11 +330,11 @@ function EdgeGraph({
     const curves: EdgeCurve[] = edges.map((site) => {
       const e = site.edge!;
       const a = senderPlace(e.sender);
-      const b = receiverPlace(e.receiver, nLayers);
+      const b = receiverPlace(e.receiver, nLayers, group);
       return { x1: xAt(a.column), y1: yAt(a.head), x2: xAt(b.column), y2: yAt(b.head) + inputOffset(e.receiver) * offset };
     });
     return { w, h: top + rowsH + bottom, top, rowsH, step, xAt, yAt, curves, columns };
-  }, [width, nLayers, nHeads, edges]);
+  }, [width, nLayers, nHeads, group, edges]);
 
   const widthOf = (v: number | null) => 1 + 3 * Math.min(1, Math.abs(v ?? 0) / color.max);
 
@@ -289,9 +364,11 @@ function EdgeGraph({
     for (const site of edges) {
       const e = site.edge!;
       const a = senderPlace(e.sender);
-      const b = receiverPlace(e.receiver, nLayers);
+      const b = receiverPlace(e.receiver, nLayers, group);
       touched.add(`${a.column}:${a.head}`);
-      touched.add(`${b.column}:${b.head}`);
+      if (b.head === null || Number.isInteger(b.head)) touched.add(`${b.column}:${b.head}`);
+      // A key/value head's input reaches every query head of its group.
+      else for (let h = Math.ceil(b.head - group / 2); h < b.head + group / 2; h++) touched.add(`${b.column}:${h}`);
     }
     const dot = (column: number, head: number | null, r: number) => {
       ctx.beginPath();
@@ -322,7 +399,7 @@ function EdgeGraph({
     ctx.fillText("emb", Math.max(0, geometry.xAt(0) - 10), y);
     ctx.textAlign = "right";
     ctx.fillText("logits", geometry.w - 2, y);
-  }, [geometry, edges, color, colors, nLayers, nHeads]);
+  }, [geometry, edges, color, colors, nLayers, nHeads, group]);
 
   // Hover and selection, above: the edge cased in ink, and the selected one circled.
   useEffect(() => {
@@ -658,6 +735,7 @@ function VerificationTable({
 function EdgeList({
   ranked,
   measured,
+  circuit = null,
   effectLabel,
   ciLevel,
   selectedIndex,
@@ -666,6 +744,8 @@ function EdgeList({
 }: {
   ranked: SiteResult[];
   measured: Map<number, EdgeVerification["rows"][number]>;
+  /** An ACDC run's circuit: whether each edge was kept. */
+  circuit?: Set<number> | null;
   effectLabel: string;
   ciLevel: number;
   selectedIndex: number | null;
@@ -700,6 +780,7 @@ function EdgeList({
                 {effectLabel} · {ciLevel}% CI
               </th>
               <th scope="col" className={s.num}>q</th>
+              {circuit && <th scope="col">Circuit</th>}
               {measured.size > 0 && (
                 <th scope="col" className={s.num}>
                   Path patching
@@ -731,6 +812,7 @@ function EdgeList({
                     </span>
                   </td>
                   <td className={s.num}>{site.q !== null && site.q !== undefined ? qText(site.q) : "—"}</td>
+                  {circuit && <td>{circuit.has(site.index) ? "kept" : "removed"}</td>}
                   {measured.size > 0 && <td className={s.num}>{m ? signed(m.measured.mean, 3) : ""}</td>}
                 </tr>
               );

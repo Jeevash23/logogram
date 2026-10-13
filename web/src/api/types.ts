@@ -550,6 +550,10 @@ export interface FaithfulnessCurveSpec {
  * averaged over `steps` runs between the two prompts (2 to 64; null for one gradient). */
 export type AttributionMethod = "gradient" | "integrated_gradients";
 
+/** Which change in the metric ACDC compares with its threshold: how far removing an edge moves it
+ * toward the source prompt's (the paper's rule), or how far in either direction. */
+export type AcdcRule = "toward_source" | "either_way";
+
 /** What steering adds: the mean difference of the training pairs, or one SAE feature's decoder
  * direction where the SAE reads. */
 export type SteeringDirection = { kind: "mean_difference" } | { kind: "sae_feature"; feature: number };
@@ -567,6 +571,9 @@ export type ExperimentSpec =
   | { kind: "attribution_patching"; direction: Direction; method: AttributionMethod; steps: number | null }
   | { kind: "path_patching"; direction: Direction; receivers: PathReceiverSpec[]; freeze_mlps: boolean }
   | { kind: "edge_attribution"; direction: Direction; method: AttributionMethod; steps: number | null; curve: FaithfulnessCurveSpec | null }
+  /** ACDC: the graph's edges removed one at a time, each kept out when removing it changes the
+   * metric's mean by less than `threshold` (in the metric's units), counted as `rule` says. */
+  | { kind: "acdc"; direction: Direction; threshold: number; rule: AcdcRule }
   | {
       kind: "steering";
       apply_to: "clean" | "corrupt";
@@ -847,6 +854,8 @@ export interface Summary {
   partial?: PartialRun | null;
   /** Edge attribution: the graph, how the estimates were taken, what it cost, and the curve. */
   edges?: EdgeRun | null;
+  /** ACDC: the circuit it found, the rule it kept edges by, and how faithful the circuit is. */
+  acdc?: AcdcRun | null;
 }
 
 /** One point of a faithfulness curve: k edges and how much of the behavior they carry. */
@@ -887,6 +896,12 @@ export interface EdgeCost {
   memory_per_batch: number;
   values: number;
   text?: string;
+  /** ACDC: the memory the source prompts' senders take, kept for every pass. */
+  cache?: number;
+  /** ACDC, before a run: how long one edge-patched pass of the largest batch took here, and the
+   * whole run at that pace. */
+  seconds_per_pass?: number;
+  seconds?: number | null;
 }
 
 /** An edge attribution run: the graph, how its estimates were taken, the model's measured
@@ -909,7 +924,33 @@ export interface EdgeRun {
   corrections?: { edges: number; single: number; banded: number; discoveries: number } | null;
 }
 
-/** An edge attribution spec on the loaded model, before it runs (POST /api/edges/plan). */
+/** An ACDC run: the graph, the rule and threshold its edges were kept by, the circuit (`kept`,
+ * the indices of its edges) and how faithful it is (0 is the source run, 1 the receiver run with
+ * every edge). Each listed edge's values are the change its removal made when it was tested. */
+export interface AcdcRun {
+  threshold: number;
+  rule: AcdcRule;
+  /** The sign of a change toward the source run's metric. */
+  source_sign: 1 | -1;
+  order: string;
+  n_edges: number;
+  n_kept: number;
+  kept: number[];
+  n_senders: number;
+  n_receivers: number;
+  reported: number;
+  structure: "sequential" | "parallel";
+  checks: Record<string, number>;
+  cost: EdgeCost;
+  /** The mean metric with every edge kept, and of the circuit. */
+  full: number | null;
+  circuit: number | null;
+  faithfulness: Stat;
+  per_prompt: Record<string, (number | null)[]>;
+  corrections?: { edges: number; single: number; banded: number; discoveries: number } | null;
+}
+
+/** An edge attribution or ACDC spec on the loaded model, before it runs (POST /api/edges/plan). */
 export interface EdgePlan {
   n_edges: number | null;
   n_senders: number | null;

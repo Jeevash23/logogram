@@ -11,7 +11,7 @@ import { ago, capitalize, ci, count, duration, num, pct, plural, qText, shortRev
 import { modelName, siteValue, useActiveRun, useArchitecture, useRunProfile } from "../lib/hooks";
 import { findSite, gridKey, layoutTitle, queryHeadsText, selectionOfSite, siteGrid, type Selection } from "../lib/sites";
 import { metricWords } from "../lib/metrics";
-import { baselineText, chatTemplateText, experimentText, graphText, layersText, measureOf, measureWords, positionText, receiverLabel, saeWritesText } from "../lib/spec";
+import { baselineText, chatTemplateText, experimentText, graphText, layersText, measureOf, measureWords, positionText, receiverLabel, saeWritesText, sharesKeys } from "../lib/spec";
 import { useStore } from "../store/app";
 import { Distribution } from "../components/Distribution";
 import { api } from "../api/client";
@@ -127,7 +127,7 @@ export function ResultsView() {
           <span className="eyebrow">{provenance}</span>
           <h1 className={r.title}>{title || spec?.name || run.id}</h1>
           {title && spec && title !== spec.name && <p className={r.specName}>Spec name: {spec.name}</p>}
-          {spec && <MethodsLine spec={spec} n={summary?.n_prompts ?? run.live?.nPrompts} clusters={summary?.statistics.clusters} />}
+          {spec && <MethodsLine spec={spec} n={summary?.n_prompts ?? run.live?.nPrompts} clusters={summary?.statistics.clusters} grouped={sharesKeys(summary?.model)} />}
           {spec?.notes?.trim() && <RunNotes text={spec.notes.trim()} />}
           <SweepNote runId={run.id} />
           {environmentText && (
@@ -244,7 +244,28 @@ export function ResultsView() {
 
       {summary && (
         <dl className={r.figures} aria-label="The run at a glance">
-          {summary.features ? (
+          {summary.acdc ? (
+            <>
+              <div>
+                <dt>Edges ACDC kept</dt>
+                <dd className="figure">
+                  {count(summary.acdc.n_kept)}
+                  <span className={r.figureOf}> of {count(summary.acdc.n_edges)}</span>
+                </dd>
+              </div>
+              <div>
+                <dt>Faithfulness of the circuit</dt>
+                <dd className="figure" title={`${run.ciLevel}% CI ${ci(summary.acdc.faithfulness.lo, summary.acdc.faithfulness.hi, 3)}`}>
+                  {num(summary.acdc.faithfulness.mean, 2)}
+                  <span className={r.figureOf}> {ci(summary.acdc.faithfulness.lo, summary.acdc.faithfulness.hi, 2)}</span>
+                </dd>
+              </div>
+              <div>
+                <dt>Threshold, in the {measured.short}</dt>
+                <dd className="figure">{summary.acdc.threshold}</dd>
+              </div>
+            </>
+          ) : summary.features ? (
             <>
               <div>
                 <dt>SAE variance explained</dt>
@@ -360,7 +381,7 @@ export function ResultsView() {
           )}
           {strongest && (
             <div className={r.wide}>
-              <dt>{attribution ? "Largest direct effect" : "Strongest effect"}</dt>
+              <dt>{attribution ? "Largest direct effect" : summary.acdc ? "Largest change when removed" : "Strongest effect"}</dt>
               <dd className="figure">
                 <button type="button" className={r.figureLink} onClick={() => select(selectionOfSite(strongest))}>
                   <span className={r.swatch} style={{ background: color(siteValue(strongest, metric) ?? 0) }} aria-hidden="true" />
@@ -424,10 +445,12 @@ export function ResultsView() {
           runId={run.id}
           finished={status === "finished"}
           edges={summary?.edges ?? null}
+          acdc={summary?.acdc ?? null}
           sites={run.sites}
           results={run.results}
           nLayers={summary?.model?.n_layers ?? arch?.nLayers ?? 1}
           nHeads={summary?.model?.n_heads ?? arch?.nHeads ?? 1}
+          nKvHeads={summary?.model?.n_key_value_heads ?? summary?.model?.n_heads ?? arch?.nHeads ?? 1}
           theme={theme}
           effectLabel={words.effect}
           ciLevel={run.ciLevel}
@@ -527,7 +550,7 @@ function Corrections({ summary }: { summary: Summary }) {
   // server computes them and the command line counts them. An edge attribution run lists only its
   // strongest edges, so the server counts them over every edge.
   const sites = summary.sites;
-  const edges = summary.edges?.corrections;
+  const edges = summary.edges?.corrections ?? summary.acdc?.corrections;
   const banded = edges ? edges.banded : sites.filter((x) => x.band && (x.band.lo > 0 || x.band.hi < 0)).length;
   const discoveries = edges ? edges.discoveries : sites.filter((x) => x.q !== null && x.q !== undefined && x.q < alpha).length;
   const single = edges ? edges.single : sites.filter((x) => x.effect.lo !== null && x.effect.hi !== null && (x.effect.lo > 0 || x.effect.hi < 0)).length;
@@ -668,7 +691,7 @@ function ResultsHeatmap({
 }
 
 /** The method as one quiet line: every choice that can change a number, in reading order. */
-function MethodsLine({ spec, n, clusters }: { spec: Spec; n: number | undefined; clusters?: number | null }) {
+function MethodsLine({ spec, n, clusters, grouped = false }: { spec: Spec; n: number | undefined; clusters?: number | null; grouped?: boolean }) {
   const e = spec.experiment;
   const scope = spec.scope;
   const site =
@@ -713,14 +736,16 @@ function MethodsLine({ spec, n, clusters }: { spec: Spec; n: number | undefined;
             : e.kind === "attribution_patching"
               ? `${experimentText(e)} (attribution patching)`
               : e.kind === "path_patching"
-                ? `Path patching ${e.direction === "clean_to_corrupt" ? "clean → corrupt" : "corrupt → clean"} into ${e.receivers.map(receiverLabel).join(", ")}${e.freeze_mlps ? ", MLPs held" : ""}`
+                ? `Path patching ${e.direction === "clean_to_corrupt" ? "clean → corrupt" : "corrupt → clean"} into ${e.receivers.map((x) => receiverLabel(x, grouped)).join(", ")}${e.freeze_mlps ? ", MLPs held" : ""}`
                 : e.kind === "steering"
                 ? `Steer ${e.apply_to} ${e.direction?.kind === "sae_feature" ? `along SAE feature ${e.direction.feature}` : `→ ${e.apply_to === "clean" ? "corrupt" : "clean"}`} (${e.coefficients.map((c) => `×${c}`.replace("-", "−")).join(", ")}${e.control ? ", random control" : ""})`
                 : e.kind === "edge_attribution"
                   ? `${experimentText(e)} (edge attribution)`
-                  : `Ablate (${baselineText(e.baseline)})`}
+                  : e.kind === "acdc"
+                    ? experimentText(e)
+                    : `Ablate (${baselineText(e.baseline)})`}
       </strong>
-      {" "}{site}{scope.kind === "site_sets" ? ", each intervened on at once" : scope.kind === "graph" ? ", summed over every position" : ` at ${position}`}
+      {" "}{site}{scope.kind === "site_sets" ? ", each intervened on at once" : scope.kind === "graph" ? (e.kind === "acdc" ? ", removed one at a time" : ", summed over every position") : ` at ${position}`}
       <span className={r.sep}>·</span>
       {e.kind === "direct_logit_attribution"
         ? `logit difference, as a share of ${spec.metric.normalization === "dataset_gap" ? "the mean" : "each prompt's"}`
@@ -789,7 +814,7 @@ function RunNotes({ text }: { text: string }) {
 function ExportMenu({ runId, detail }: { runId: string; detail: NonNullable<ReturnType<typeof useActiveRun>["detail"]> }) {
   const kind = detail.summary?.layout.kind;
   const hasMap = !!kind && kind !== "sites" && kind !== "site_sets" && kind !== "edges";
-  const everyEdge = !!detail.summary?.edges;
+  const everyEdge = !!detail.summary?.edges || !!detail.summary?.acdc;
   const metric = useStore((st) => st.mapMetric);
   const scaleMode = useStore((st) => st.scaleMode);
   const guard = useStore((st) => st.guard);
@@ -862,12 +887,15 @@ function RunningBanner() {
   const run = useActiveRun();
   const p = run.live?.progress;
   const model = useStore((st) => st.model);
-  const edges = run.detail?.spec?.experiment.kind === "edge_attribution";
+  const kind = run.detail?.spec?.experiment.kind;
+  const edges = kind === "edge_attribution";
   return (
     <div className={r.running}>
       <div className={r.runningText}>
         {p && edges
           ? `Estimating every edge, then the curve · ${count(p.done)} of ${count(p.total)} steps · ${pct(p.done / p.total)}`
+          : p && kind === "acdc"
+          ? `Testing the edges one at a time, from the logits back · layer ${p.layer} · ${count(p.done)} of ${count(p.total)} passes · ${pct(p.done / p.total)}`
           : p
           ? `Layer ${p.layer} · ${count(p.done)} of ${count(p.total)} rows · ${pct(p.done / p.total)}`
           : model.state === "loading"
