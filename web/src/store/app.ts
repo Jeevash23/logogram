@@ -10,6 +10,7 @@ import type {
   DatasetDetail,
   Environment,
   Job,
+  LensRef,
   SAEStatus,
   Layout,
   ModelShape,
@@ -261,6 +262,12 @@ interface Store {
   robustnessDialogOpen: boolean;
   /** The run whose spec the sweep dialog sweeps, while it is open. */
   sweepDialogRun: string | null;
+  /** Training an SAE or a tuned lens in the project, while its dialog is open. */
+  trainDialog: "sae" | "lens" | null;
+  /** Counts the trainings that have finished, so lists of what the project trained read again. */
+  trainedVersion: number;
+  /** A tuned lens just trained, for the layer predictions to read next. */
+  chosenLens: LensRef | null;
   /** Asking whether to cancel the running job (it keeps what finished). */
   cancelConfirmOpen: boolean;
   /** The sheet of keyboard shortcuts (? or the command palette). */
@@ -476,6 +483,9 @@ export const useStore = create<Store>((set, get) => ({
   modelDialogOpen: false,
   robustnessDialogOpen: false,
   sweepDialogRun: null,
+  trainDialog: null,
+  trainedVersion: 0,
+  chosenLens: null,
   cancelConfirmOpen: false,
   shortcutsOpen: false,
   helpDialog: null,
@@ -629,6 +639,7 @@ export const useStore = create<Store>((set, get) => ({
       inspectorFocus: null,
       robustnessDialogOpen: false,
       sweepDialogRun: null,
+      trainDialog: null,
       cancelConfirmOpen: false,
       notices: [],
       screen: "workbench",
@@ -710,7 +721,7 @@ export const useStore = create<Store>((set, get) => ({
       runs: [], runDetails: {}, activeRunId: null, pendingRunId: null, live: {}, selection: null,
       compareIds: [null, null], sweepId: null, entering: false, flags: {}, form: DEFAULT_FORM, formHistory: EMPTY_HISTORY, baselines: {}, specSource: "run",
       analysisSource: "form", view: "prompts", inspectorFocus: null, robustnessDialogOpen: false, sweepDialogRun: null,
-      cancelConfirmOpen: false, notices: [],
+      trainDialog: null, cancelConfirmOpen: false, notices: [],
     });
   },
 
@@ -1212,6 +1223,18 @@ export const useStore = create<Store>((set, get) => ({
           if (job.kind === "load_model" && job.status === "finished") get().notify("Model loaded.");
           if (job.kind === "add_model" && job.status === "finished") get().notify(`${job.title.replace(/^Add /, "Added ")}. Choose it in Load a model.`);
           if (job.kind === "load_sae" && job.status === "finished") get().notify("SAE loaded. Measure its fit on these prompts before trusting its features.", "info", { persist: true });
+          if (job.kind === "train_sae" || job.kind === "train_lens") {
+            // However it ended, what the project has trained is read again.
+            set((st) => ({ trainedVersion: st.trainedVersion + 1 }));
+            const name = String(job.progress.name ?? "");
+            if (job.status === "finished") {
+              get().notify(
+                job.kind === "train_sae"
+                  ? `Trained the SAE ${name}. Load it in Features, under Trained in this project.`
+                  : `Trained the tuned lens ${name}. Choose it in Layer predictions.`,
+              );
+            }
+          }
         }
         break;
       }

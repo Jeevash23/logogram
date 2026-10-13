@@ -93,7 +93,7 @@ export interface ModelStatus {
 export interface Job {
   project_session?: string | null;
   id: string;
-  kind: "load_model" | "load_sae" | "run" | "add_model";
+  kind: "load_model" | "load_sae" | "run" | "add_model" | "train_sae" | "train_lens";
   title: string;
   status: "running" | "finished" | "failed" | "cancelled";
   run_id: string | null;
@@ -334,11 +334,15 @@ export interface SiteSpec {
   position: PositionSpec;
 }
 
-/** A published sparse autoencoder: repository, folder and exact commit. */
+/** A sparse autoencoder: one published on Hugging Face (repository, folder and exact commit), or
+ * one trained in the project (`source` "project": its name as `repo`, its folder saes/NAME as
+ * `path`, and the hash of its files). */
 export interface SAERef {
   repo: string;
   path: string;
   revision: string | null;
+  source: "hub" | "project";
+  sha256: string | null;
 }
 
 export interface SAEFit {
@@ -368,6 +372,11 @@ export interface SAEInfo extends SAERef {
   transcoder?: boolean;
   /** A transcoder that also adds its input times a skip matrix to what it writes. */
   skip?: boolean;
+  /** An SAE trained in the project: the model it was trained on, its corpus and what its training
+   * measured on the held-out texts. */
+  trained?: { model: TrainedModel | null; corpus: string | null; held_out: SAEHeldOut | null } | null;
+  /** What to know before trusting it here, such as that it was trained on another model. */
+  warnings?: string[];
 }
 
 /** One SAE of SAELens's registry, as the catalogue that ships with Logogram describes it: where
@@ -630,8 +639,16 @@ export interface Spec {
   sae?: SAERef | null;
 }
 
+/** A tuned lens trained in the project, pinned by the hash of its file. */
+export interface LensRef {
+  name: string;
+  sha256: string | null;
+}
+
 export interface PredictionSettings {
-  method: "final_norm_logit_lens";
+  method: "final_norm_logit_lens" | "tuned_lens";
+  /** The tuned lens, for the tuned_lens method; null for the logit lens. */
+  lens: LensRef | null;
   prompt_index: number;
   which: "clean" | "corrupt";
   position: { kind: "last" } | { kind: "index"; index: number };
@@ -643,7 +660,17 @@ export interface PredictionReport {
   position: number;
   tokens: string[];
   settings: PredictionSettings;
-  layers: { layer: number; top: { id: number; token: string; prob: number }[]; answer_prob: number; distractor_prob: number; logit_diff: number }[];
+  /** The tuned lens read; null (or absent, in older reports) for the logit lens. */
+  lens?: { name: string; sha256: string; layers: number[]; width: number; model: TrainedModel } | null;
+  layers: {
+    layer: number;
+    top: { id: number; token: string; prob: number }[];
+    answer_prob: number;
+    distractor_prob: number;
+    logit_diff: number;
+    /** Read through a tuned lens's translator, or as the logit lens reads it. */
+    readout?: "logit_lens" | "tuned_lens";
+  }[];
   batch_members: number[];
   answer: string;
   distractor: string;
@@ -1821,4 +1848,150 @@ export interface LocalModel {
   added: string;
   size: number;
   files: number;
+}
+
+// -- SAEs and lenses trained in the project -----------------------------------------------------
+
+/** The model something was trained on: a Hugging Face model by id and revision, a local model by
+ * the hash of its files, and whether TransformerLens processed its weights. */
+export interface TrainedModel {
+  id: string;
+  source: "hub" | "local";
+  revision: string | null;
+  sha256: string | null;
+  process_weights: boolean;
+}
+
+/** What an SAE's training measured on its held-out texts. */
+export interface SAEHeldOut {
+  tokens: number;
+  fvu: number | null;
+  variance_explained: number | null;
+  l0: number;
+  dead_share: number;
+  loss: { clean: number; spliced: number; zero: number; recovered: number | null; tokens: number } | null;
+}
+
+/** How each text of a corpus becomes tokens, for training. */
+export interface TextTokenization {
+  prepend_bos: boolean;
+  max_tokens: number;
+}
+
+/** An SAE's training spec (src/logogram/sae_training.py): every choice that can change its
+ * weights. */
+export interface SAETrainingSpec {
+  logogram_sae_training: 1;
+  name: string;
+  notes?: string;
+  model: ModelRef;
+  corpus: { name: string; sha256: string | null };
+  tokenization: TextTokenization;
+  site: "resid_pre" | "resid_post" | "attn_out" | "mlp_out";
+  layer: number;
+  architecture: { kind: "topk"; k: number };
+  d_sae: number;
+  steps: number;
+  batch_tokens: number;
+  lr: number;
+  betas: [number, number];
+  eps: number;
+  seed: number;
+  held_out: number;
+  normalize: "mean_squared_norm" | "none";
+  auxk: { k: number; coefficient: number; dead_after: number } | null;
+  log_every: number;
+  model_batch: number;
+}
+
+/** A tuned lens's training spec (src/logogram/lenses.py). */
+export interface LensTrainingSpec {
+  logogram_lens_training: 1;
+  name: string;
+  notes?: string;
+  model: ModelRef;
+  corpus: { name: string; sha256: string | null };
+  tokenization: TextTokenization;
+  layers: number[] | null;
+  steps: number;
+  batch_tokens: number;
+  lr: number;
+  betas: [number, number];
+  eps: number;
+  weight_decay: number | null;
+  seed: number;
+  held_out: number;
+  log_every: number;
+  model_batch: number;
+}
+
+/** An SAE trained in the project, as its training recorded it, or why it can't be read. */
+export interface TrainedSAE {
+  name: string;
+  path: string;
+  error: string | null;
+  sha256?: string | null;
+  site?: string | null;
+  layer?: number | null;
+  d_in?: number | null;
+  d_sae?: number | null;
+  k?: number | null;
+  model?: TrainedModel | null;
+  corpus?: { name: string; sha256: string | null } | null;
+  steps?: number | null;
+  created?: string | null;
+  held_out?: SAEHeldOut | null;
+  spec?: SAETrainingSpec | null;
+}
+
+/** A tuned lens trained in the project, whether it reads the loaded model and if not why, or why
+ * it can't be read. */
+export interface TrainedLens {
+  name: string;
+  path: string;
+  error: string | null;
+  sha256?: string | null;
+  layers?: number[] | null;
+  width?: number | null;
+  model?: TrainedModel | null;
+  corpus?: { name: string; sha256: string | null } | null;
+  steps?: number | null;
+  created?: string | null;
+  held_out?: { tokens: number; layers: { layer: number; logit_lens: number; tuned_lens: number | null }[] } | null;
+  spec?: LensTrainingSpec | null;
+  fits?: boolean | null;
+  reason?: string | null;
+}
+
+/** What a training would take, or why it can't train. */
+export interface TrainingPlan {
+  refusal: string | null;
+  layers?: number[] | null;
+  texts?: { corpus: string; sha256: string; total: number; train: number; held_out: number; read?: number } | null;
+  tokens?: { train: number; used: number; held_out: number; per_step: number; epochs: number | null } | null;
+  memory?: { total: number; available: number; verdict: "fits" | "tight" | "wont_fit" } | null;
+  seconds?: { total: number; collect?: number; train?: number; evaluate?: number } | null;
+}
+
+/** A point of a training's loss curve: an SAE's fraction of variance unexplained and features per
+ * token, or a lens's KL divergence (the mean over its layers, and each layer's). */
+export interface CurvePoint {
+  step: number;
+  tokens: number;
+  fvu?: number;
+  l0?: number;
+  aux?: number | null;
+  dead?: number | null;
+  kl?: number;
+  layers?: number[];
+}
+
+/** A training job's progress: its stage, how far along, and the loss curve so far. */
+export interface TrainingProgress {
+  stage?: "loading" | "reading" | "collecting" | "training" | "evaluating" | "writing" | "finished";
+  done?: number;
+  total?: number;
+  curve?: CurvePoint[];
+  name?: string;
+  sha256?: string;
 }

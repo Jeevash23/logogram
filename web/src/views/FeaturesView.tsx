@@ -1,17 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 
 import { api } from "../api/client";
-import type { CatalogueSAE, FeatureReport, SAEInfo, TokenFeatures } from "../api/types";
+import type { CatalogueSAE, FeatureReport, SAEInfo, TokenFeatures, TrainedSAE } from "../api/types";
 import { FeatureWrites } from "../components/FeatureWrites";
 import { Button, Callout, Empty, Field, Input, Progress, Segmented, Select, Spinner, useRadioGroup } from "../components/ui";
 import { inkScale, textOn } from "../lib/color";
 import { bytes, count, num, pct, signed, visibleToken } from "../lib/format";
 import { modelName, useAnalysisContext } from "../lib/hooks";
 import { KIND_NAMES } from "../lib/sites";
-import { steerSiteOf } from "../lib/spec";
+import { saeName, saeRefOf, steerSiteOf } from "../lib/spec";
 import { POOR_FIT } from "../lib/thresholds";
 import { useStore } from "../store/app";
-import { SAEPicker } from "./SAEPicker";
+import { ProjectSAEs, SAEPicker } from "./SAEPicker";
 import s from "./views.module.css";
 import f from "./FeaturesView.module.css";
 
@@ -43,7 +43,7 @@ export function FeaturesView() {
   const sae = useStore((st) => st.sae);
   // Choosing another SAE while one is loaded: it stays loaded until loading another begins.
   const [choosing, setChoosing] = useState(false);
-  const loadedKey = sae.info ? `${sae.info.repo}/${sae.info.path}@${sae.info.revision}` : null;
+  const loadedKey = sae.info ? `${sae.info.source ?? "hub"}:${sae.info.repo}/${sae.info.path}@${sae.info.revision ?? sae.info.sha256}` : null;
   useEffect(() => setChoosing(false), [loadedKey]);
   if (model.state !== "ready" || !model.info) {
     return (
@@ -118,13 +118,18 @@ function Loader({ onKeep }: { onKeep?: () => void }) {
   };
   const load = async () => {
     if (!folders) return;
-    const out = await guard(() => api.loadSae({ repo: folders.repo, path: folder, revision: folders.revision }));
+    const out = await guard(() => api.loadSae({ repo: folders.repo, path: folder, revision: folders.revision, source: "hub", sha256: null }));
     if (out) useStore.getState().applyJob(out);
   };
   // A published SAE by its release and id: its repository and folder, at the repository's current
   // commit, which loading pins and specs record.
   const loadPublished = async (x: CatalogueSAE) => {
-    const out = await guard(() => api.loadSae({ repo: x.repo, path: x.folder, revision: null }));
+    const out = await guard(() => api.loadSae({ repo: x.repo, path: x.folder, revision: null, source: "hub", sha256: null }));
+    if (out) useStore.getState().applyJob(out);
+  };
+  // An SAE trained in this project, by its name and the hash of its files when it was trained.
+  const loadTrained = async (x: TrainedSAE) => {
+    const out = await guard(() => api.loadSae({ repo: x.name, path: x.path, revision: null, source: "project", sha256: x.sha256 ?? null }));
     if (out) useStore.getState().applyJob(out);
   };
   const loading = sae.state === "loading";
@@ -134,15 +139,13 @@ function Loader({ onKeep }: { onKeep?: () => void }) {
     <section className={f.loader} aria-label="Load an SAE">
       {onKeep && (
         <div className={f.keep}>
-          <span className={s.small}>
-            Loading another SAE replaces {sae.info?.repo}
-            {sae.info?.path ? `/${sae.info.path}` : ""}.
-          </span>
+          <span className={s.small}>Loading another SAE replaces {sae.info ? saeName(sae.info) : "the loaded one"}.</span>
           <Button size="small" variant="ghost" onClick={onKeep}>
             Keep the loaded SAE
           </Button>
         </div>
       )}
+      <ProjectSAEs busy={busy} onLoad={(x) => void loadTrained(x)} />
       <SAEPicker modelId={id} busy={busy} onLoad={(x) => void loadPublished(x)} />
       <h2 className={s.panelTitle}>Or name a repository and folder</h2>
       {suggestions.length > 0 && (
@@ -214,8 +217,8 @@ function Loaded({ info, onChoose }: { info: SAEInfo; onChoose: () => void }) {
       <section className={f.card} aria-label="The loaded SAE">
         <div className={f.cardHead}>
           <div>
-            <p className={s.eyebrow}>{info.repo}</p>
-            <h2 className={f.cardTitle}>{info.path || "(top level)"}</h2>
+            <p className={s.eyebrow}>{info.source === "project" ? "Trained in this project" : info.repo}</p>
+            <h2 className={f.cardTitle}>{info.source === "project" ? info.repo : info.path || "(top level)"}</h2>
             <p className={s.small}>
               Reads {siteOf(info)} · {count(info.d_sae)} features ·{" "}
               {info.activation === "topk" ? `the top ${info.k} per token` : info.activation === "jumprelu" ? "JumpReLU" : "ReLU"}
@@ -234,6 +237,16 @@ function Loaded({ info, onChoose }: { info: SAEInfo; onChoose: () => void }) {
             </Button>
           </div>
         </div>
+        {(info.warnings ?? []).map((warning) => (
+          <Callout key={warning}>{warning}</Callout>
+        ))}
+        {info.source === "project" && info.trained?.held_out && (
+          <p className={s.small}>
+            Trained on the corpus {info.trained.corpus ?? "of this project"}: on its held-out text it explains{" "}
+            {pct(info.trained.held_out.variance_explained)} of the variance and recovers {pct(info.trained.held_out.loss?.recovered)} of the
+            next-token loss. Its files hash to {(info.sha256 ?? "").slice(0, 12)}, which specs pin.
+          </p>
+        )}
         {fit ? (
           <dl className={f.fit}>
             <div>
@@ -292,7 +305,7 @@ function TokenPanel({ info, selected, onFeature }: { info: SAEInfo; selected: nu
       (d) => mine === seq.current && setData(d),
       (e: Error) => mine === seq.current && setError(e.message),
     );
-  }, [dataset, index, which, context.key, info.repo, info.path, info.revision]);
+  }, [dataset, index, which, context.key, info.repo, info.path, info.revision, info.sha256]);
 
   return (
     <section className={f.panel} aria-label="Features on each token">
@@ -352,12 +365,12 @@ function FeaturePanel({ info, feature }: { info: SAEInfo; feature: number }) {
       (d) => mine === seq.current && setData(d),
       (e: Error) => mine === seq.current && setError(e.message),
     );
-  }, [dataset, index, feature, context.key, info.repo, info.path, info.revision]);
+  }, [dataset, index, feature, context.key, info.repo, info.path, info.revision, info.sha256]);
 
   const peak = data ? Math.max(1e-9, ...data.activations) : 1;
   // Feature activations are never negative: the single-hue ink ramp, as for attention.
   const ink = inkScale(peak, theme);
-  const ref = { repo: info.repo, path: info.path, revision: info.revision };
+  const ref = saeRefOf(info);
   const patch = () => {
     const st = useStore.getState();
     st.setView("experiment");
@@ -440,7 +453,7 @@ function FeaturePanel({ info, feature }: { info: SAEInfo; feature: number }) {
               position={token === null ? null : { kind: "index", index: token }}
               options={context.options}
               optionsKey={context.key}
-              sae={`${info.repo}/${info.path}@${info.revision}`}
+              sae={`${info.source ?? "hub"}:${info.repo}/${info.path}@${info.revision ?? info.sha256}`}
               standardized={info.normalize === "layer_norm"}
             />
           )}

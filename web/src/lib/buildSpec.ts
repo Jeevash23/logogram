@@ -21,7 +21,7 @@ import type {
 import { siteSetsError } from "./circuits";
 import { count, plural, shortRevision, visibleToken } from "./format";
 import { formTokenization, type FormState } from "./formState";
-import { modelRefOf, saeWritesText, sameDevice, siteText, splitCount, steerSiteOf, suggestName } from "./spec";
+import { modelRefOf, saeName, saeRefOf, saeWritesText, sameDevice, siteText, splitCount, steerSiteOf, suggestName } from "./spec";
 
 /** The residual stream sites the mean difference is added to (src/logogram/steering.py). */
 const RESIDUAL: SiteKind[] = ["resid_pre", "resid_mid", "resid_post"];
@@ -554,7 +554,7 @@ export function buildSpec(
   const features = usesFeatures(scope);
   const steersFeature = experiment.kind === "steering" && experiment.direction.kind === "sae_feature";
   const loadedInfo = ctx.sae?.state === "ready" && ctx.sae.info ? ctx.sae.info : null;
-  const loaded = loadedInfo ? { repo: loadedInfo.repo, path: loadedInfo.path, revision: loadedInfo.revision } : null;
+  const loaded = loadedInfo ? saeRefOf(loadedInfo) : null;
   const sae = features || steersFeature ? (loaded ?? form.saeRef) : null;
   if (features && !sae) return { error: "Load the SAE these features belong to (Explore → Features)." };
   if (experiment.kind === "steering") {
@@ -636,9 +636,14 @@ export function savedDifferences(
   const loaded = sae?.state === "ready" ? sae.info : undefined;
   const steersFeature = form.kind === "steering" && form.steerDirection === "sae_feature";
   if (written && loaded && (usesFeatures(form.scope) || steersFeature)) {
-    const folder = (ref: SAERef) => `${ref.repo}${trimPath(ref.path) ? `/${trimPath(ref.path)}` : ""}`;
-    if (written.repo !== loaded.repo || trimPath(written.path) !== trimPath(loaded.path)) {
+    const folder = (ref: SAERef) => saeName(ref);
+    const source = (ref: SAERef) => ref.source ?? "hub";
+    if (source(written) !== source(loaded) || written.repo !== loaded.repo || trimPath(written.path) !== trimPath(loaded.path)) {
       out.push(`It was written for the SAE ${folder(written)}; the loaded SAE is ${folder(loaded)}, where the same feature numbers are other features.`);
+    } else if (source(written) === "project") {
+      if (written.sha256 && written.sha256 !== loaded.sha256) {
+        out.push(`It was written for the SAE ${folder(written)} as it was then; its files have changed since.`);
+      }
     } else if (written.revision && written.revision !== loaded.revision) {
       const now = loaded.revision ? `revision ${shortRevision(loaded.revision)}` : "unpinned";
       out.push(`It was written for revision ${shortRevision(written.revision)} of the SAE ${folder(written)}; the loaded one is ${now}.`);

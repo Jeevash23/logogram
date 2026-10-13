@@ -1,10 +1,12 @@
 import { type RefObject, useEffect, useRef, useState } from "react";
 
 import { api } from "../api/client";
-import type { CatalogueSAE, SAECatalogue } from "../api/types";
+import type { CatalogueSAE, SAECatalogue, TrainedSAE } from "../api/types";
 import { Button, Callout, Field, Input, Spinner } from "../components/ui";
 import { count, pct, shortRevision } from "../lib/format";
 import { KIND_NAMES } from "../lib/sites";
+import { share, trainedOnLoaded, trainedOnText, trainedSiteText } from "../lib/training";
+import { useStore } from "../store/app";
 import s from "./views.module.css";
 import p from "./SAEPicker.module.css";
 
@@ -40,6 +42,76 @@ const STATUS: Record<CatalogueSAE["reads"], string> = {
 
 function optionId(x: CatalogueSAE): string {
   return `sae-option-${x.release}-${x.id}`.replace(/[^\w-]/g, "_");
+}
+
+/**
+ * The SAEs trained in this project (saes/NAME), each with where it reads, the model it was trained
+ * on and what its training measured on held-out text; and Train an SAE…, which opens the training
+ * dialog. One trained on another model can still be loaded: its fit says how much that matters.
+ */
+export function ProjectSAEs({ busy, onLoad }: { busy: boolean; onLoad: (sae: TrainedSAE) => void }) {
+  const info = useStore((st) => st.model.info);
+  const version = useStore((st) => st.trainedVersion);
+  const [saes, setSaes] = useState<TrainedSAE[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    api.projectSaes().then(
+      (list) => {
+        if (cancelled) return;
+        setSaes(list);
+        setError(null);
+      },
+      (e: Error) => !cancelled && setError(e.message),
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [version]);
+  return (
+    <section className={p.trained} aria-labelledby="trained-saes-title">
+      <div className={p.trainedHead}>
+        <div>
+          <h2 id="trained-saes-title" className={s.panelTitle}>
+            Trained in this project
+          </h2>
+          <p className={s.small}>TopK SAEs trained on a corpus of this project, deterministically, and saved in its saes folder.</p>
+        </div>
+        <Button size="small" disabled={busy} onClick={() => useStore.setState({ trainDialog: "sae" })}>
+          Train an SAE…
+        </Button>
+      </div>
+      {error && <Callout tone="error">{error}</Callout>}
+      {saes && saes.length === 0 && <p className={s.small}>None yet.</p>}
+      {saes && saes.length > 0 && (
+        <ul className={p.trainedList} aria-label="SAEs trained in this project">
+          {saes.map((x) => {
+            const held = x.held_out;
+            const other = !x.error && !trainedOnLoaded(x.model, info);
+            return (
+              <li key={x.name} className={p.trainedItem}>
+                <span className={p.name}>
+                  <span className={p.id}>{x.name}</span>
+                  {x.error ? (
+                    <span className={p.release}>Can&rsquo;t be read: {x.error}</span>
+                  ) : (
+                    <span className={p.release}>
+                      {trainedSiteText(x.site, x.layer)} · {count(x.d_sae ?? 0)} features, the top {x.k} per token ·
+                      variance explained {share(held?.variance_explained)} · loss recovered {share(held?.loss?.recovered)} on held-out text
+                      {other ? ` · trained on ${trainedOnText(x.model)}` : ""}
+                    </span>
+                  )}
+                </span>
+                <Button size="small" variant={other ? "secondary" : "primary"} disabled={busy || !!x.error} onClick={() => onLoad(x)}>
+                  Load
+                </Button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
 }
 
 /**

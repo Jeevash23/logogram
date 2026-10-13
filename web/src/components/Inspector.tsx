@@ -19,7 +19,7 @@ import {
 import { setWhat, universeText } from "../lib/circuits";
 import { metricWords } from "../lib/metrics";
 import { runTitle } from "../lib/runs";
-import { siteText } from "../lib/spec";
+import { saeName, sameSae, siteText } from "../lib/spec";
 import { baselineText, experimentText, measureOf, measureWords, positionText, receiverInputWords, senderWords } from "../lib/spec";
 import { prefersReducedMotion } from "../lib/motion";
 import { useStore } from "../store/app";
@@ -408,11 +408,9 @@ function WhatItWrites({
   const guard = useStore((st) => st.guard);
   const context = useAnalysisContext();
   const info = sae.state === "ready" ? sae.info : undefined;
-  const trim = (path: string) => path.replace(/^\/+|\/+$/g, "");
-  const loaded =
-    !!info && info.repo === saeRef.repo && trim(info.path) === trim(saeRef.path) && (!saeRef.revision || saeRef.revision === info.revision);
+  const loaded = !!info && sameSae(saeRef, info);
   const load = async () => {
-    const out = await guard(() => api.loadSae({ repo: saeRef.repo, path: saeRef.path, revision: saeRef.revision }));
+    const out = await guard(() => api.loadSae(saeRef));
     if (out) useStore.getState().applyJob(out);
   };
   return (
@@ -425,8 +423,7 @@ function WhatItWrites({
       ) : !loaded ? (
         <>
           <p className={s.note}>
-            Load this run's SAE ({saeRef.repo}
-            {saeRef.path ? ` · ${saeRef.path}` : ""}) to read what this feature writes.
+            Load this run's SAE ({saeName(saeRef)}) to read what this feature writes.
           </p>
           <div>
             <Button size="small" disabled={sae.state === "loading" || jobRunning} onClick={() => void load()}>

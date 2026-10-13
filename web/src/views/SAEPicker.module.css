@@ -157,3 +157,36 @@
     grid-row: 1;
   }
 }
+
+/* The SAEs trained in this project: a short list, each with its Load button. */
+.trained {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.trainedHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.trainedList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--line-soft);
+}
+
+.trainedItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 8px;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: var(--text-sm);
+}

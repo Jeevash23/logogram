@@ -10,6 +10,7 @@ import { RobustnessDialog } from "../components/RobustnessDialog";
 import { Splitter } from "../components/Splitter";
 import { StatusLine } from "../components/StatusLine";
 import { SweepDialog } from "../components/SweepDialog";
+import { TrainDialog } from "../components/TrainDialog";
 import { TokenStrip } from "../components/TokenStrip";
 import { TopBar } from "../components/TopBar";
 import { Button, Dialog, escapeStaysInFields, Icon, Tip } from "../components/ui";
@@ -106,6 +107,7 @@ export function Workbench() {
     <ModelDialog />
     <RobustnessDialog />
     <SweepDialog />
+    <TrainDialog />
     <NoteEditorDialog />
     <Dialog open={drawer !== null} onOpenChange={open => { if (!open) setDrawer(null); }} title={drawer === "history" ? "Experiment history" : "Inspector"} wide onEscapeKeyDown={escapeStaysInFields}><div className={s.drawer}>{drawer === "history" ? <ErrorBoundary name="The history"><History onOpen={() => setDrawer(null)} /></ErrorBoundary> : <SafeInspector />}</div></Dialog>
   </div>;

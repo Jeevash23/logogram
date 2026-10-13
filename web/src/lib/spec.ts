@@ -13,6 +13,7 @@ import type {
   ModelRef,
   PositionSpec,
   SAEInfo,
+  SAERef,
   ScopeSpec,
   Side,
   SiteSpec,
@@ -504,6 +505,28 @@ export function workloadText(spec: Spec, rows: number): string {
 /** Where steering along a feature of this SAE adds its decoder direction, as a scope names it: the
  * site the SAE writes. An SAE on the heads' outputs (z) writes them before the output projection,
  * which turns them into the layer's attention output, so its scope names that. */
+/** The loaded SAE as a spec names it: a published one by its repository, folder and revision, one
+ * trained in the project by its name and the hash of its files. */
+export function saeRefOf(info: Pick<SAEInfo, "repo" | "path" | "revision" | "source" | "sha256">): SAERef {
+  return { repo: info.repo, path: info.path, revision: info.revision, source: info.source ?? "hub", sha256: info.sha256 ?? null };
+}
+
+/** Whether the loaded SAE is the one `ref` names: from the same place, and the same files where
+ * `ref` pins them (a published SAE's revision, a trained one's hash). */
+export function sameSae(ref: SAERef, info: Pick<SAERef, "repo" | "path" | "revision" | "source" | "sha256">): boolean {
+  const trim = (path: string) => path.replace(/^\/+|\/+$/g, "");
+  if ((ref.source ?? "hub") !== (info.source ?? "hub")) return false;
+  if (ref.source === "project") return ref.repo === info.repo && (!ref.sha256 || ref.sha256 === info.sha256);
+  return ref.repo === info.repo && trim(ref.path) === trim(info.path) && (!ref.revision || ref.revision === info.revision);
+}
+
+/** An SAE in words: a published one by its repository and folder, a trained one by its name. */
+export function saeName(ref: Pick<SAERef, "repo" | "path" | "source">): string {
+  if (ref.source === "project") return `${ref.repo}, trained in this project`;
+  const path = ref.path.replace(/^\/+|\/+$/g, "");
+  return `${ref.repo}${path ? `/${path}` : ""}`;
+}
+
 export function steerSiteOf(info: Pick<SAEInfo, "site" | "layer">): { kind: StreamKind; layer: number } {
   return { kind: info.site === "head" ? "attn_out" : info.site, layer: info.layer };
 }
