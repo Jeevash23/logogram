@@ -28,7 +28,6 @@ What changed in each version of Logogram.
 - **Readouts** (`"metric": {"kind": "readout", ...}`): patching and ablation can read a neuron's
   activation, an activation's component along a saved direction or an SAE feature's activation
   instead of the model's output, to ask what drives it.
-- **Corpora**: plain texts kept in the project's `corpora/` folder, with an optional label each.
 - **ACDC** (`acdc`, with the `graph` scope): automated circuit discovery (Conmy et al. 2023) over
   edge attribution's graph.
   - The receiver prompt runs with every edge in the circuit. Then the candidate edges are removed
@@ -60,6 +59,36 @@ What changed in each version of Logogram.
     reproduces the source run.
   - Models whose heads don't add up to their attention output (Gemma 2, OLMo 2) are still
     refused.
+- **Corpora**: plain texts in the project's `corpora/` folder, each with an optional label, for
+  the analyses that read text rather than prompt pairs. **Explore → Corpus**, `logogram corpora
+  import` and `lg.import_corpus` import them from a text, JSON Lines, JSON, CSV, TSV or Parquet
+  file (the text field and the label field named), from one file of a Hugging Face dataset
+  (downloaded once at the exact commit its revision resolves to, as a job with progress and
+  Cancel in the app; offline, from the cache), or from a dataset's clean or corrupt prompts,
+  labelled by side or by a field of their meta. A corpus records where its texts came from and
+  the hash of its file. The app pages and searches its texts, and renames and deletes it
+  (`logogram corpora rename`, `logogram corpora delete`).
+- **Where a unit is most active** (**Explore → Corpus**, `lg.top_examples`): over a corpus's
+  texts, the tokens where an MLP neuron, a feature of the loaded SAE, a saved direction (its
+  projection, signed) or an attention head (the length of what it writes) is largest, each with a
+  window of context shaded on the ink ramp, the most negative ones for a signed unit, a histogram
+  of its values and the share of tokens where it is above zero. The beginning-of-sequence token is
+  read but never counted; ties go to the earlier text, then token; every choice comes back with
+  the answer. An example opens in **Your text**, read at its token.
+- **Representations** (**Explore → Representations**, `lg.principal_components`,
+  `lg.mean_difference`): the activation at a site and token (the last, an index, a labelled
+  position or the mean over tokens) of each of a dataset's prompts or a corpus's texts, on its
+  principal components, centered and computed in float64, each signed so its largest loading is
+  positive. The app draws them on canvas, each class an ink shape, and saves a component or the
+  difference between two classes' means as a direction.
+- **Directions in the app**: the Representations view lists the project's directions with what
+  made each, where and on which model, marks one found on another model than the one loaded, and
+  renames and deletes them (`logogram directions`, `lg.list_directions`, `lg.read_direction`,
+  `lg.save_direction`).
+- **Exported activations**: `activations/NAME.safetensors` (one float32 tensor per site) with
+  `activations/NAME.json` saying what each row is and how it was read, from the Representations
+  view, `logogram activations` or `lg.export_activations`; `lg.activations` returns them as NumPy
+  arrays without writing anything.
 
 ### Fixed
 

@@ -35,6 +35,7 @@ method comes from.
 | [Distributed alignment search](concepts/das.md) | Learning the subspace that carries an effect, against the whole site and a random subspace |
 | [SAE features and transcoders](concepts/sae-features.md) | Finding a published SAE by name, sparse autoencoders, transcoders, patching features, what a feature writes |
 | [Circuits](concepts/circuits.md) | Sets of sites intervened on at once: faithfulness, completeness, minimality, interactions |
+| [Corpora and representations](concepts/corpora-and-representations.md) | Plain texts in the project, where a neuron, an SAE feature, a direction or a head is most active in them, principal components and mean differences of activations, directions, and exported activations |
 | [The logit lens and the model checks](concepts/logit-lens-and-model-checks.md) | Reading each layer's prediction, and what Logogram measures about a model when it loads |
 | [Runs and projects](concepts/runs-and-projects.md) | What a run keeps, a run that stops early, reproducibility, the files of a project |
 
@@ -47,6 +48,7 @@ method comes from.
 | [Check a method on a toy model](guides/toy-models.md) | Two models whose circuits are known, and what each method should find on them |
 | [Find a direction and test it](guides/find-and-test-a-direction.md) | Probe GPT-2 small for a subject's gender, save the probe's direction, and test where the model uses it by patching along it and removing it |
 | [Work with an SAE](guides/work-with-an-sae.md) | Find a published SAE by name and load it, check its fit, read and patch its features, steer along one |
+| [Find what a neuron reads](guides/find-what-a-neuron-reads.md) | Import a corpus, find the tokens where a neuron is most active, place prompts on their principal components, save a direction and export activations |
 | [Check a finding's robustness](guides/check-robustness.md) | Rerun with one choice changed, and read what moved |
 | [Compare two runs](guides/compare-runs.md) | Paired differences, rank correlation and changed conclusions |
 | [Sweep seeds, datasets or checkpoints](guides/sweeps.md) | Run one spec across several values, and read which sites hold |

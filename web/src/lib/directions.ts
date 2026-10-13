@@ -10,34 +10,29 @@ import { useStore } from "../store/app";
 import { plural } from "./format";
 import { KIND_SHORT } from "./sites";
 
-const CHANGED = "logogram:directions";
-
-/** Tell every list of directions to read them again: one was saved, renamed or deleted. */
+/** Tell every list of directions in this tab to read them again: one was saved, renamed or
+ * deleted. (The server tells the other tabs, with a directions.changed event.) */
 export function directionsChanged(): void {
-  window.dispatchEvent(new Event(CHANGED));
+  useStore.setState((st) => ({ directionsVersion: st.directionsVersion + 1 }));
 }
 
 /** The open project's saved directions, read again when they change or another project opens;
  * null until read. */
-export function useDirections(): { directions: DirectionListing[] | null; error: string | null } {
+export function useSavedDirections(): { directions: DirectionListing[] | null; error: string | null } {
   const project = useStore((st) => st.project?.session_id);
+  const version = useStore((st) => st.directionsVersion);
   const [state, setState] = useState<{ directions: DirectionListing[] | null; error: string | null }>({ directions: null, error: null });
   useEffect(() => {
     if (!project) return;
     let live = true;
-    const load = () => {
-      api
-        .directions()
-        .then((directions) => live && setState({ directions, error: null }))
-        .catch((err: unknown) => live && setState({ directions: null, error: err instanceof Error ? err.message : String(err) }));
-    };
-    load();
-    window.addEventListener(CHANGED, load);
+    api
+      .directions()
+      .then((directions) => live && setState({ directions, error: null }))
+      .catch((err: unknown) => live && setState({ directions: null, error: err instanceof Error ? err.message : String(err) }));
     return () => {
       live = false;
-      window.removeEventListener(CHANGED, load);
     };
-  }, [project]);
+  }, [project, version]);
   return state;
 }
 

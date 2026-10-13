@@ -43,6 +43,16 @@ a diverging cobalt to amber scale, always with its legend, and nothing else does
   writes next: 1 to 64 new tokens, each the most likely one (a tie goes to the lowest token id),
   the whole text read again for each, and, with an SAE loaded, a second continuation with one of
   its features added (see [steering](concepts/steering.md)). Nothing is saved.
+* **Corpus** keeps plain texts in the project, from a file, a Hugging Face dataset's file or a
+  dataset's prompts, pages and searches them, and finds where a unit is most active in them: an MLP
+  neuron, a feature of the loaded SAE, a saved direction or an attention head, with a histogram of
+  its values and the tokens around each example shaded by its value (see
+  [corpora and representations](concepts/corpora-and-representations.md)). An example opens in
+  **Your text**.
+* **Representations** reads the activation at one site and token of each prompt or text, draws
+  them on two of their principal components, saves a component or the difference between two
+  classes' means as a direction, and exports the activations. It lists the project's directions,
+  with what made each, where and on which model, and renames and deletes them.
 
 ## Experiment: set up what runs
 

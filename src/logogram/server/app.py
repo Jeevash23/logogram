@@ -8,10 +8,11 @@ import hashlib
 import logging
 import os
 import threading
+import time
 from collections.abc import Callable
 from importlib import resources
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import anyio
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -41,6 +42,7 @@ from logogram.project import (
     load_recent,
     open_example,
 )
+from logogram.representations import ReadPosition, ReadSite, Rows
 from logogram.research import (
     Notebook,
     NoteConflict,
@@ -76,6 +78,7 @@ from logogram.spec import (
 )
 from logogram.sweeps import SweepNotFound
 from logogram.system import SystemReport
+from logogram.top_activations import CONTEXT_MAX, TOP_MAX, Unit
 
 log = logging.getLogger(__name__)
 
@@ -510,7 +513,7 @@ class SweepRequest(BaseModel):
         return self
 
 
-class SaveDirectionRequest(BaseModel):
+class SaveRunDirectionRequest(BaseModel):
     """Save what a probe or a learned subspace run found at one of its sites as a direction."""
 
     site: int = Field(ge=0)
@@ -555,6 +558,128 @@ class ReportRequest(BaseModel):
 
     include_hardware: bool = False
     last_error: str | None = Field(default=None, max_length=20_000)
+
+
+# -- corpora, representations and directions ---------------------------------------------------
+
+
+class CorpusFileRequest(BaseModel):
+    """A file's text, uploaded in the app, read as a corpus laid out as ``format`` says
+    (logogram.corpus_import). Only the file's name is kept, never its folder."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=200)
+    text: str
+    filename: str = Field(default="", max_length=500)
+    format: Literal["lines", "paragraphs", "jsonl", "json", "csv", "tsv"]
+    text_field: str = Field(default="text", min_length=1, max_length=200)
+    label_field: str | None = Field(default=None, min_length=1, max_length=200)
+    limit: int | None = Field(default=None, ge=1)
+    overwrite: bool = False
+
+
+class CorpusHubRequest(BaseModel):
+    """One file of a Hugging Face dataset, downloaded at the exact commit ``revision`` resolves
+    to (its main branch when null) and read as a corpus."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=200)
+    repo: str = Field(min_length=1, max_length=200)
+    path: str = Field(min_length=1, max_length=500)
+    revision: str | None = Field(default=None, max_length=200)
+    split: Literal["lines", "paragraphs"] = "lines"
+    text_field: str = Field(default="text", min_length=1, max_length=200)
+    label_field: str | None = Field(default=None, min_length=1, max_length=200)
+    limit: int | None = Field(default=None, ge=1)
+    overwrite: bool = False
+
+
+class CorpusPromptsRequest(BaseModel):
+    """A dataset's prompts as texts: clean, corrupt or both, labelled by side ("side"), by a
+    field of their meta ("meta:FIELD"), or not (null)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=200)
+    dataset: str = Field(min_length=1, max_length=500)
+    sides: Literal["clean", "corrupt", "both"]
+    label: str | None = Field(default=None, max_length=210)
+    limit: int | None = Field(default=None, ge=1)
+    overwrite: bool = False
+
+
+class RenameRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
+class ReadRequest(BaseModel):
+    """What every reading of activations states: the model it expects, whether texts begin with
+    the beginning-of-sequence token, and the batch size (batch shape can change the last digits)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model: ModelRef | None = None
+    prepend_bos: bool
+    batch_size: int = Field(ge=1, le=4096)
+
+
+class CorpusTopRequest(ReadRequest):
+    """Where a unit is most active in a corpus (logogram.top_activations). ``texts`` reads the
+    first n texts, or every text when null."""
+
+    corpus: str = Field(min_length=1, max_length=200)
+    corpus_sha256: str | None = Field(default=None, pattern=SHA256.pattern)
+    unit: Unit
+    texts: int | None = Field(ge=1)
+    max_tokens: int = Field(ge=1, le=100_000)
+    top_k: int = Field(ge=1, le=TOP_MAX)
+    context: int = Field(ge=0, le=CONTEXT_MAX)
+
+
+class RepresentationsRequest(ReadRequest):
+    """The activations at a site and a position over a dataset's prompts or a corpus's texts
+    (logogram.representations)."""
+
+    source: Rows
+    site: ReadSite
+    position: ReadPosition
+
+
+class SaveComponent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["component"] = "component"
+    component: int = Field(ge=1, le=10)
+
+
+class SaveClasses(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["mean_difference"] = "mean_difference"
+    positive: str = Field(min_length=1)
+    negative: str = Field(min_length=1)
+
+
+class SaveDirectionRequest(RepresentationsRequest):
+    """A principal component, or the mean difference between two classes, saved as a
+    direction."""
+
+    name: str = Field(min_length=1, max_length=200)
+    save: Annotated[SaveComponent | SaveClasses, Field(discriminator="kind")]
+    overwrite: bool = False
+
+
+class ExportRequest(ReadRequest):
+    """The activations at some sites and a position, written to the project's activations
+    folder."""
+
+    source: Rows
+    sites: list[ReadSite] = Field(min_length=1, max_length=64)
+    position: ReadPosition
+    name: str = Field(min_length=1, max_length=200)
+    overwrite: bool = False
 
 
 # -- app factory -------------------------------------------------------------------------------
@@ -808,12 +933,172 @@ def create_app(
 
         return list_directions(state.require_project())
 
+    def _changed(what: str, project: Project) -> None:
+        """Tell every tab the project's corpora or directions changed, so lists are read again."""
+        state.hub.publish(f"{what}.changed", {"project_session": project.session_id})
+
+    @app.post("/api/directions/{name}/rename", response_model=M.DirectionListing)
+    def rename_direction(name: str, body: RenameRequest) -> dict[str, Any]:
+        """Give a direction another name. Runs that used it keep their own copy."""
+        from logogram.directions import rename_direction as rename
+
+        project = state.require_project()
+        renamed = rename(project, name, body.name)
+        _changed("directions", project)
+        return {**renamed.to_dict(), "error": None}
+
+    @app.delete("/api/directions/{name}", response_model=M.OkOut)
+    def delete_direction(name: str) -> dict[str, bool]:
+        """Delete a direction. Runs that used it keep their own copy."""
+        from logogram.directions import delete_direction as delete
+
+        project = state.require_project()
+        delete(project, name)
+        _changed("directions", project)
+        return {"ok": True}
+
+    def _direction(project: Project, name: str, sha256: str | None) -> Any:
+        """A saved direction, refused when it has changed since ``sha256`` was taken."""
+        from logogram.directions import DirectionError, read_direction
+
+        direction = read_direction(project, name)
+        if sha256 is not None and direction.sha256 != sha256:
+            raise DirectionError(
+                f"The direction {name} has changed since it was chosen (its hash no longer "
+                "matches). Choose it again."
+            )
+        return direction
+
     @app.get("/api/corpora", response_model=list[M.CorpusListing])
     def corpora() -> list[dict[str, Any]]:
         """The corpora in the project (logogram.corpora), by name."""
         from logogram.corpora import list_corpora
 
         return list_corpora(state.require_project())
+
+    @app.get("/api/corpora/{name}", response_model=M.CorpusPage)
+    def corpus_texts(name: str, q: str = "", page: int = 0) -> dict[str, Any]:
+        """A page of a corpus's texts: those containing ``q`` (ignoring case), a hundred at a
+        time."""
+        from logogram.corpora import corpus_page, read_corpus
+
+        return corpus_page(read_corpus(state.require_project(), name), query=q, page=page)
+
+    @app.post("/api/corpora/import", response_model=M.CorpusImported)
+    def import_corpus_file(body: CorpusFileRequest) -> dict[str, Any]:
+        """A corpus from a file uploaded in the app (its text)."""
+        from logogram.corpus_import import import_text
+
+        project = state.require_project()
+        imported = import_text(
+            project,
+            body.name,
+            body.text,
+            filename=body.filename,
+            fmt=body.format,
+            text_field=body.text_field,
+            label_field=body.label_field,
+            limit=body.limit,
+            overwrite=body.overwrite,
+        )
+        _changed("corpora", project)
+        return imported.to_dict()
+
+    @app.post("/api/corpora/import/dataset", response_model=M.CorpusImported)
+    def import_corpus_prompts(body: CorpusPromptsRequest) -> dict[str, Any]:
+        """A corpus from a project dataset's prompts."""
+        from logogram.corpus_import import import_prompts
+
+        project = state.require_project()
+        imported = import_prompts(
+            project,
+            body.name,
+            dataset=body.dataset,
+            sides=body.sides,
+            label=body.label,
+            limit=body.limit,
+            overwrite=body.overwrite,
+        )
+        _changed("corpora", project)
+        return imported.to_dict()
+
+    @app.get("/api/hub/dataset-files", response_model=M.HubDatasetFiles)
+    def hub_dataset_files(repo: str, revision: str | None = None) -> dict[str, Any]:
+        """A Hugging Face dataset's files at the exact commit ``revision`` resolves to: one
+        request to Hugging Face, when the person asks."""
+        from logogram.backends.hub import dataset_files
+        from logogram.corpus_import import readable
+
+        sha, files = dataset_files(repo.strip(), revision or None)
+        return {
+            "repo": repo.strip(),
+            "revision": sha,
+            "files": [{"path": f, "size": size, "readable": readable(f)} for f, size in files],
+        }
+
+    @app.post("/api/corpora/import/hub", response_model=M.JobInfo)
+    def import_corpus_hub(body: CorpusHubRequest) -> dict[str, Any]:
+        """A corpus from one file of a Hugging Face dataset, downloaded as a job with progress in
+        bytes, which Cancel stops."""
+        from logogram.corpora import CorpusError, check_corpus_name, corpora_dir
+        from logogram.corpus_import import check_hub_file, import_hub
+
+        project = state.require_project()
+        name = check_corpus_name(body.name)
+        check_hub_file(body.repo, body.path, body.split)  # refused before anything downloads
+        if not body.overwrite and os.path.lexists(corpora_dir(project) / f"{name}.jsonl"):
+            raise CorpusError(f"A corpus called {name} already exists. Choose another name.")
+
+        def work(job: Job) -> None:
+            last = {"time": 0.0}
+
+            def progress(done: int, total: int, file: str) -> None:
+                now = time.monotonic()
+                if done == total or now - last["time"] >= 0.1:
+                    last["time"] = now
+                    job.update(progress={"done": done, "total": total, "file": file})
+                    state.hub.publish("job", job.to_dict())
+
+            imported = import_hub(
+                project,
+                name,
+                repo=body.repo,
+                path=body.path,
+                revision=body.revision,
+                text_field=body.text_field,
+                label_field=body.label_field,
+                limit=body.limit,
+                split=body.split,
+                progress=progress,
+                cancel=job.cancel,
+                overwrite=body.overwrite,
+            )
+            job.update(progress={**job.progress, "corpus": imported.corpus.name})
+            _changed("corpora", project)
+
+        title = f"Import {body.path.rsplit('/', 1)[-1]} of {body.repo.strip()} as {name}"
+        return state.start_job("import_corpus", title, work).to_dict()
+
+    @app.post("/api/corpora/{name}/rename", response_model=M.CorpusListing)
+    def rename_corpus(name: str, body: RenameRequest) -> dict[str, Any]:
+        """Give a corpus another name."""
+        from logogram.corpora import list_corpora
+        from logogram.corpora import rename_corpus as rename
+
+        project = state.require_project()
+        renamed = rename(project, name, body.name)
+        _changed("corpora", project)
+        return next(c for c in list_corpora(project) if c["name"] == renamed.name)
+
+    @app.delete("/api/corpora/{name}", response_model=M.OkOut)
+    def delete_corpus(name: str) -> dict[str, bool]:
+        """Delete a corpus: its texts and their description."""
+        from logogram.corpora import delete_corpus as delete
+
+        project = state.require_project()
+        delete(project, name)
+        _changed("corpora", project)
+        return {"ok": True}
 
     # -- datasets ----------------------------------------------------------------------------
 
@@ -1255,7 +1540,7 @@ def create_app(
 
     # -- analyses ----------------------------------------------------------------------------
 
-    def _analysis_backend(body: AnalysisRequest | ChatWrapRequest):  # type: ignore[no-untyped-def]
+    def _analysis_backend(body: AnalysisRequest | ChatWrapRequest | ReadRequest):  # type: ignore[no-untyped-def]
         from logogram.runner import model_matches
 
         backend = state.require_backend()
@@ -1418,6 +1703,141 @@ def create_app(
                 prepend_bos=body.prepend_bos,
                 batch_size=body.batch_size,
                 chat_template=body.chat_template,
+            )
+
+    # -- top activations and representations (logogram.top_activations, .representations) -----
+
+    def _progress(what: str, project: Project) -> Callable[[int, int], None]:
+        """Progress of a long analysis, to every tab, about five times a second."""
+        last = {"time": 0.0}
+
+        def report(done: int, total: int) -> None:
+            now = time.monotonic()
+            if done == total or now - last["time"] >= 0.2:
+                last["time"] = now
+                state.hub.publish(
+                    "analysis.progress",
+                    {
+                        "what": what,
+                        "done": done,
+                        "total": total,
+                        "project_session": project.session_id,
+                    },
+                )
+
+        return report
+
+    @app.post("/api/corpus/top", response_model=M.CorpusTop)
+    def corpus_top(body: CorpusTopRequest) -> dict[str, Any]:
+        """Where a neuron, an SAE feature, a direction or a head is most active in a corpus."""
+        from logogram.corpora import read_corpus
+        from logogram.top_activations import DirectionUnit, FeatureUnit, top_examples
+
+        backend = _analysis_backend(body)
+        project = state.require_project()
+        corpus = read_corpus(project, body.corpus, body.corpus_sha256)
+        unit = body.unit
+        direction = None
+        if isinstance(unit, DirectionUnit):
+            direction = _direction(project, unit.name, unit.sha256)
+        sae = _sae() if isinstance(unit, FeatureUnit) else None
+        with backend.lock:
+            return top_examples(
+                backend,
+                corpus,
+                unit,
+                sae=sae,
+                direction=direction,
+                texts=body.texts,
+                max_tokens=body.max_tokens,
+                prepend_bos=body.prepend_bos,
+                batch_size=body.batch_size,
+                top_k=body.top_k,
+                context=body.context,
+                progress=_progress("corpus.top", project),
+            )
+
+    @app.post("/api/representations/pca", response_model=M.Representations)
+    def representations(body: RepresentationsRequest) -> dict[str, Any]:
+        """The principal components of the activations at a site over prompts or texts."""
+        from logogram.representations import load_rows, pca_report
+
+        backend = _analysis_backend(body)
+        project = state.require_project()
+        with backend.lock:
+            loaded = load_rows(backend, project, body.source, body.prepend_bos)
+            return pca_report(
+                backend,
+                loaded,
+                body.site,
+                body.position,
+                prepend_bos=body.prepend_bos,
+                batch_size=body.batch_size,
+                progress=_progress("representations", project),
+            )
+
+    @app.post("/api/representations/direction", response_model=M.DirectionListing)
+    def save_representation(body: SaveDirectionRequest) -> dict[str, Any]:
+        """Save a principal component, or the mean difference between two classes, as a
+        direction: read again with the same settings, which give the same numbers."""
+        from logogram.representations import load_rows, save_component, save_mean_difference
+
+        backend = _analysis_backend(body)
+        project = state.require_project()
+        with backend.lock:
+            loaded = load_rows(backend, project, body.source, body.prepend_bos)
+            if isinstance(body.save, SaveComponent):
+                saved = save_component(
+                    project,
+                    backend,
+                    loaded,
+                    body.site,
+                    body.position,
+                    body.save.component,
+                    body.name,
+                    prepend_bos=body.prepend_bos,
+                    batch_size=body.batch_size,
+                    replace=body.overwrite,
+                )
+            else:
+                saved = save_mean_difference(
+                    project,
+                    backend,
+                    loaded,
+                    body.site,
+                    body.position,
+                    body.save.positive,
+                    body.save.negative,
+                    body.name,
+                    prepend_bos=body.prepend_bos,
+                    batch_size=body.batch_size,
+                    replace=body.overwrite,
+                )
+        _changed("directions", project)
+        return {**saved.to_dict(), "error": None}
+
+    @app.post("/api/activations/export", response_model=M.ActivationsExported)
+    def export_activations(body: ExportRequest) -> dict[str, Any]:
+        """Write the activations at some sites and a position to activations/NAME.safetensors,
+        with activations/NAME.json saying what they are."""
+        from logogram.representations import export_activations as export
+        from logogram.representations import load_rows
+
+        backend = _analysis_backend(body)
+        project = state.require_project()
+        with backend.lock:
+            loaded = load_rows(backend, project, body.source, body.prepend_bos)
+            return export(
+                project,
+                body.name,
+                backend,
+                loaded,
+                body.sites,
+                body.position,
+                prepend_bos=body.prepend_bos,
+                batch_size=body.batch_size,
+                overwrite=body.overwrite,
+                progress=_progress("export", project),
             )
 
     # -- sparse autoencoders -----------------------------------------------------------------
@@ -1902,13 +2322,14 @@ def create_app(
         )
 
     @app.post("/api/runs/{run_id}/directions", response_model=M.DirectionListing)
-    def save_run_direction(run_id: str, body: SaveDirectionRequest) -> dict[str, Any]:
+    def save_run_direction(run_id: str, body: SaveRunDirectionRequest) -> dict[str, Any]:
         """Save what a probe or a learned subspace run found at a site as a project direction."""
         from logogram.directions import save_run_direction as save
 
         with state._job_lock:
             project = state.require_project()
             saved = save(project, run_id, body.site, body.name, row=body.row)
+        _changed("directions", project)
         return {**saved.to_dict(), "error": None}
 
     @app.get("/api/runs/{run_id}/derived", response_model=list[RunListing])
@@ -2114,6 +2535,9 @@ PROJECT_SCOPED = (
     "/api/research",
     "/api/directions",
     "/api/corpora",
+    "/api/corpus",
+    "/api/representations",
+    "/api/activations",
     "/api/dataset",
     "/api/datasets/",
     "/api/tokenize",

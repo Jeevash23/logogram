@@ -18,12 +18,14 @@ import { useStore, workspaceFor, WORKSPACE_VIEWS, type View, type Workspace } fr
 import { AttentionView } from "../views/AttentionView";
 import { BaselineView } from "../views/BaselineView";
 import { CompareView } from "../views/CompareView";
+import { CorpusView } from "../views/CorpusView";
 import { ExperimentView } from "../views/ExperimentView";
 import { ExploreView } from "../views/ExploreView";
 import { HeadComparisonView } from "../views/HeadComparisonView";
 import { PredictionsView } from "../views/PredictionsView";
 import { FeaturesView } from "../views/FeaturesView";
 import { PromptsView } from "../views/PromptsView";
+import { RepresentationsView } from "../views/RepresentationsView";
 import { ResearchView, NoteEditorDialog } from "../views/ResearchView";
 import { ResultsView } from "../views/ResultsView";
 import { SpecView } from "../views/SpecView";
@@ -93,7 +95,7 @@ export function Workbench() {
     <div className={s.body}>
       <main className={s.center} id="main" tabIndex={-1}>
         <div className={s.view} ref={viewPane}><ErrorBoundary key={view} name="This view"><ActiveView view={view} /></ErrorBoundary></div>
-        {!["notes", "compare", "sweep", "spec", "features", "text"].includes(view) && <ErrorBoundary name="The token strip" resetKey={view}><TokenStrip /></ErrorBoundary>}
+        {!["notes", "compare", "sweep", "spec", "features", "text", "corpus", "representations"].includes(view) && <ErrorBoundary name="The token strip" resetKey={view}><TokenStrip /></ErrorBoundary>}
       </main>
       {showInspector && <aside className={s.inspectorPane} aria-label="Inspector" data-tour="inspector"><Splitter orientation="vertical" label="Resize the inspector" value={inspectorWidth} min={280} max={480} onReset={() => setInspectorWidth(320)} onResize={(delta, phase) => {
         if (phase === "start") { startWidth.current = inspectorWidth; return; }
@@ -160,5 +162,7 @@ function ActiveView({ view }: { view: View }) {
     case "sweep": return <SweepView />;
     case "spec": return <SpecView />;
     case "text": return <TextView />;
+    case "corpus": return <CorpusView />;
+    case "representations": return <RepresentationsView />;
   }
 }

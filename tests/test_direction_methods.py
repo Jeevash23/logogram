@@ -497,6 +497,20 @@ def test_probe_and_das_runs_read_from_python_the_command_line_and_the_report(pro
     shown = CliRunner().invoke(app, ["show", probe.id, "--project", str(project.root)])
     assert shown.exit_code == 0, shown.output
     assert "The probes read which prompt it is" in shown.output and "selective" in shown.output
+    where = ["--project", str(project.root)]
+    saved = CliRunner().invoke(
+        app, ["directions", "save", probe.id, str(int(first["site"])), "toward-at-cli", *where]
+    )
+    assert saved.exit_code == 0, saved.output
+    assert "Saved the direction toward-at-cli: 1 dimension, toward corrupt from clean" in (
+        saved.output
+    )
+    again = CliRunner().invoke(
+        app, ["directions", "save", probe.id, str(int(first["site"])), "toward-at-cli", *where]
+    )
+    assert again.exit_code == 1 and "already" in again.output
+    listed = CliRunner().invoke(app, ["directions", *where])
+    assert "toward-at-cli" in listed.output and "linear probe" in listed.output
 
     spec = lg.load_spec(probe.folder / "spec.json")
     text = methods_text(spec, probe.summary, probe.manifest, probe.id)

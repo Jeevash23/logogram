@@ -186,8 +186,11 @@ The workbench has three workspaces, described view by view in [the workbench](do
   diagram connected the way the model was measured to add attention and the MLP, attention
   patterns and the [head finder](docs/guides/find-induction-heads.md), head comparison, layer
   predictions (a [final-norm logit lens](docs/concepts/logit-lens-and-model-checks.md), offered for
-  models where it reproduces their output), an [SAE's features](docs/concepts/sae-features.md), and
-  **Your text**, which reads any text and continues it, with and without an SAE feature added.
+  models where it reproduces their output), an [SAE's features](docs/concepts/sae-features.md),
+  **Your text**, which reads any text and continues it, with and without an SAE feature added,
+  **Corpus**, where a neuron, a feature, a direction or a head is most active in plain text, and
+  **Representations**, the principal components of activations and the directions saved from
+  them (see [corpora and representations](#corpora-and-representations)).
 * **Experiment** sets up what runs: the prompt pairs, the baseline check, the experiment form,
   which shows every choice that can change a number, and the complete spec. Choose components on
   the map and **Add to experiment** to measure them one by one, or **Test as a circuit** to
@@ -230,6 +233,12 @@ logogram models add PATH --name NAME   add a model folder on this machine (its f
 logogram models list          the model folders added here, with their hashes
 logogram models remove NAME   forget a model folder (its files stay)
 logogram toy [NAME [FOLDER]]  a model whose circuit is known, with experiments that say what each finds
+logogram corpora              the project's corpora: plain texts, their labels and where they came from
+logogram corpora import NAME FILE   a corpus from a file (--hub REPO --file PATH, or --dataset PATH)
+logogram corpora rename|delete      rename a corpus, or delete it after asking (--yes doesn't ask)
+logogram directions           the project's directions, with what made each, where and on which model
+logogram directions rename|delete   rename a direction, or delete it after asking
+logogram activations SOURCE   export activations at sites (--site resid_post:6 --position last -o NAME --model ID)
 logogram doctor               environment and hardware report, with fixes (each GPU by its cuda:N)
 logogram env                  the versions and devices results depend on, as JSON (--requirements pins them)
 logogram doctor --report      a short report to paste into an issue (--hardware adds the hardware)
@@ -532,6 +541,43 @@ length, labelling both prompts' positions and recording `"vocabulary": "full"` i
 `meta` (IOI's names of several tokens are then read with the log-probability difference). GPT-2
 small does all of them but the docstring task, where it prefers the right argument in about half
 the prompts.
+
+## Corpora and representations
+
+Prompt pairs measure one behavior; a **corpus** is plain text the model reads as it would any text,
+kept in the project's `corpora/` folder as JSONL, one text per line with an optional label. Import
+one in **Explore → Corpus**, with `logogram corpora import` or with `lg.import_corpus`: from a text,
+JSON Lines, JSON, CSV, TSV or Parquet file (you name the text field and the label field), from one
+file of a Hugging Face dataset, downloaded once at the exact commit its revision resolves to, or
+from a dataset's prompts, labelled by side or by a field of their meta. The corpus records where
+its texts came from and the hash of its file, and analyses that read it record that hash.
+
+* **Where a unit is most active.** For an MLP neuron, a feature of the loaded SAE, a saved
+  direction (its projection at its site, signed) or an attention head (the length of what it
+  writes), the texts and tokens of a corpus where it is largest, each with a window of context
+  shaded by its value, the most negative ones for a signed unit, a histogram of its values and the
+  share of tokens where it is above zero. Every choice (texts, tokens of each, the
+  beginning-of-sequence token, batch size, how many examples, context) comes back with the answer;
+  ties go to the earlier text, then token. An example opens in **Your text**.
+* **Representations.** The activation at one site and token (the last, an index, a labelled
+  position, or the mean over tokens) of each prompt or text, on its principal components: centered,
+  computed in float64, each component signed so its largest loading is positive, with the share of
+  variance each explains. A component, or the mean difference between two classes, is saved as a
+  **direction** in the project's `directions/` folder, with its model and site; the view lists the
+  project's directions, marks one found on another model, and renames and deletes them.
+* **Exported activations.** The activations at chosen sites and a position, one row per prompt or
+  text, written to `activations/NAME.safetensors` (one float32 tensor per site) with a JSON file
+  saying what each row is: from the view, `logogram activations`, or `lg.export_activations`
+  (`lg.activations` returns them as NumPy arrays).
+
+```text
+logogram corpora import reviews reviews.csv --text-field review --label-field stars
+logogram activations datasets/ioi.jsonl --site resid_post:6 --position last -o ioi-last --model openai-community/gpt2
+```
+
+These are readings, not interventions: what they suggest, patching tests. See
+[corpora and representations](docs/concepts/corpora-and-representations.md) and the guide
+[find what a neuron reads](docs/guides/find-what-a-neuron-reads.md).
 
 ## Experiments
 
@@ -941,6 +987,9 @@ my-project/
   research.json                      saved selections and research notes (created on first save)
   datasets/*.jsonl
   datasets/snapshots/<sha256>.jsonl   immutable input bytes, shared by runs with identical data
+  corpora/<name>.jsonl, <name>.json   plain texts, and where they came from with the file's hash
+  directions/<name>.safetensors, .json  directions (orthonormal rows) and what made each
+  activations/<name>.safetensors, .json  exported activations, and what each row is
   experiments/<id>/spec.json          the experiment, with revision and dataset hash pinned
   experiments/<id>/results.parquet    one row per site and prompt
   experiments/<id>/summary.json       per-site statistics and the layout of the results

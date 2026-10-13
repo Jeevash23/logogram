@@ -93,7 +93,7 @@ export interface ModelStatus {
 export interface Job {
   project_session?: string | null;
   id: string;
-  kind: "load_model" | "load_sae" | "run" | "add_model";
+  kind: "load_model" | "load_sae" | "run" | "add_model" | "import_corpus";
   title: string;
   status: "running" | "finished" | "failed" | "cancelled";
   run_id: string | null;
@@ -181,8 +181,168 @@ export interface CorpusListing {
   n?: number;
   sha256?: string;
   labels?: string[];
-  source?: { kind: "file" | "hub" | "dataset" | "texts"; detail: string; repo?: string | null; path?: string | null; revision?: string | null } | null;
+  source?: CorpusSource | null;
   created?: string | null;
+}
+
+/** Where a corpus's texts came from: a file (by its name only), a Hugging Face dataset's file at
+ * an exact commit, a project dataset's prompts, or texts written from Python. */
+export interface CorpusSource {
+  kind: "file" | "hub" | "dataset" | "texts";
+  detail: string;
+  repo?: string | null;
+  path?: string | null;
+  revision?: string | null;
+  /** The hash of the file the texts were read from. */
+  sha256?: string | null;
+}
+
+/** One text on a page of a corpus: its start, when it is long (`length` says how long). */
+export interface CorpusText {
+  index: number;
+  text: string;
+  length: number;
+  label: string | null;
+  id: string | null;
+  meta: Record<string, unknown> | null;
+}
+
+/** A page of a corpus's texts, those a search finds. */
+export interface CorpusPage {
+  name: string;
+  path: string;
+  sha256: string;
+  n: number;
+  labels: string[];
+  source: CorpusSource | null;
+  created: string | null;
+  query: string;
+  matches: number;
+  page: number;
+  pages: number;
+  size: number;
+  start: number;
+  texts: CorpusText[];
+}
+
+/** How an uploaded file's texts are laid out. */
+export type CorpusFormat = "lines" | "paragraphs" | "jsonl" | "json" | "csv" | "tsv";
+
+/** A corpus just written, and how many rows were left out for having no text. */
+export interface CorpusImported {
+  name: string;
+  path: string;
+  sha256: string;
+  n: number;
+  labels: string[];
+  skipped: number;
+  source: CorpusSource | null;
+}
+
+/** A Hugging Face dataset's files at the exact commit its revision resolves to. */
+export interface HubDatasetFiles {
+  repo: string;
+  revision: string;
+  files: { path: string; size: number; readable: boolean }[];
+}
+
+/** Where activations are read: a residual stream site, or an attention or MLP output. */
+export interface ReadSite {
+  kind: StreamKind;
+  layer: number;
+}
+
+/** The token of each prompt or text read: the last, an index (negative from the end), a labelled
+ * position of a dataset's prompts, or the mean over the tokens after the BOS token. */
+export type ReadPosition = { kind: "last" } | { kind: "index"; index: number } | { kind: "label"; label: string } | { kind: "mean" };
+
+/** What is read: a dataset's prompts (marked by side, by a meta field as "meta:FIELD", or not),
+ * or a corpus's texts (marked by their labels), each cut to `max_tokens`. */
+export type RowsSource =
+  | { kind: "dataset"; path: string; sha256?: string | null; sides: "clean" | "corrupt" | "both"; mark: string | null; limit: number | null }
+  | { kind: "corpus"; name: string; sha256?: string | null; limit: number | null; max_tokens: number };
+
+/** A unit whose activity over a corpus is read: a neuron, a feature of the loaded SAE, a saved
+ * direction (at its own site, or at `site`) or a head (the length of what it writes). */
+export type TopUnit =
+  | { kind: "neuron"; layer: number; neuron: number }
+  | { kind: "sae_feature"; feature: number }
+  | { kind: "direction"; name: string; sha256: string | null; site?: ReadSite | null }
+  | { kind: "head"; layer: number; head: number };
+
+/** A token where a unit is active, with a window of its text: `tokens` from token `start`, and
+ * the unit's value at each (null where it isn't counted: the BOS token). `open` is the text up to
+ * the window's end, when Your text can read it. */
+export interface TopExample {
+  text: number;
+  id: string | null;
+  label: string | null;
+  position: number;
+  value: number;
+  start: number;
+  tokens: string[];
+  values: (number | null)[];
+  open: string | null;
+}
+
+/** Where a unit is most active in a corpus, with every choice that made it. */
+export interface CorpusTop {
+  corpus: { name: string; path: string; sha256: string; n: number };
+  unit: Record<string, unknown>;
+  description: string;
+  signed: boolean;
+  settings: { texts: number | null; max_tokens: number; prepend_bos: boolean; batch_size: number; top_k: number; context: number };
+  texts_read: number;
+  truncated: number;
+  tokens: number;
+  first_counted: number;
+  active: number;
+  active_share: number;
+  mean: number;
+  min: number;
+  max: number;
+  histogram: { edges: number[]; counts: number[] };
+  top: TopExample[];
+  bottom: TopExample[] | null;
+  notes: string[];
+}
+
+export interface RepresentationPoint {
+  row: number;
+  index: number;
+  side: "clean" | "corrupt" | null;
+  mark: string | null;
+  text: string;
+  coords: number[];
+}
+
+/** The principal components of the activations at a site over prompts or texts. */
+export interface Representations {
+  source: Record<string, unknown> & { kind: "dataset" | "corpus"; sha256: string; n: number };
+  position: ReadPosition;
+  prepend_bos: boolean;
+  batch_size: number;
+  site: ReadSite;
+  n: number;
+  width: number;
+  components: number;
+  explained: number[];
+  variances: number[];
+  total_variance: number;
+  marks: string[];
+  points: RepresentationPoint[];
+  description: string;
+}
+
+/** Activations written to the project's activations folder. */
+export interface ActivationsExported {
+  name: string;
+  path: string;
+  json_path: string;
+  n: number;
+  sites: string[];
+  sha256: string;
+  bytes: number;
 }
 
 export interface ProjectInfo {

@@ -1,6 +1,6 @@
 import type { DirectionRefSpec } from "../api/types";
 import { Field, Select } from "../components/ui";
-import { directionText, useDirections } from "../lib/directions";
+import { directionText, useSavedDirections } from "../lib/directions";
 import s from "./views.module.css";
 
 /** Choose one of the project's saved directions. Only those that fit are offered: of the model's
@@ -23,7 +23,7 @@ export function DirectionPicker({
   /** The loaded model's residual stream width, when a model is loaded. */
   width?: number;
 }) {
-  const { directions, error } = useDirections();
+  const { directions, error } = useSavedDirections();
   const fits = (directions ?? []).filter(
     (d) => !d.error && (!oneDimension || d.dimensions === 1) && (width === undefined || d.width === width),
   );

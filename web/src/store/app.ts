@@ -73,7 +73,9 @@ export type View =
   | "compare"
   | "sweep"
   | "spec"
-  | "text";
+  | "text"
+  | "corpus"
+  | "representations";
 
 export type Workspace = "explore" | "experiment" | "evidence";
 
@@ -89,6 +91,8 @@ export const WORKSPACE_VIEWS: { id: Workspace; views: { id: View; label: string 
       { id: "predictions", label: "Layer predictions" },
       { id: "features", label: "Features" },
       { id: "text", label: "Your text" },
+      { id: "corpus", label: "Corpus" },
+      { id: "representations", label: "Representations" },
     ],
   },
   {
@@ -116,7 +120,7 @@ export const VIEWS: { id: View; label: string }[] = WORKSPACE_VIEWS.flatMap((w) 
 /** A sweep over sets of sites, each intervened on at once. */
 export type SiteSetsScope = Extract<ScopeSpec, { kind: "site_sets" }>;
 export function workspaceFor(view: View): Workspace {
-  if (["explore", "attention", "heads", "predictions", "features", "text"].includes(view)) return "explore";
+  if (["explore", "attention", "heads", "predictions", "features", "text", "corpus", "representations"].includes(view)) return "explore";
   if (["prompts", "baseline", "experiment", "spec"].includes(view)) return "experiment";
   return "evidence";
 }
@@ -186,6 +190,13 @@ interface Store {
   stagedSites: SiteSpec[];
   headPins: Selection[];
   researchVersion: number;
+  /** Bumped when the project's corpora or directions change (here, in another tab, or by a job),
+   * so the lists that show them are read again. */
+  corporaVersion: number;
+  directionsVersion: number;
+  /** How far a long analysis has got (a corpus's top examples, representations, an export), as
+   * the server reports it while the request is answered. */
+  analysisProgress: { what: string; done: number; total: number } | null;
   noteEditor: { value: NoteInput; edit?: { id: string; revision: number } } | null;
   /** The event stream. "ended": the server no longer accepts this tab's session, so it stopped. */
   connection: "connecting" | "connected" | "reconnecting" | "ended";
@@ -420,6 +431,9 @@ export const useStore = create<Store>((set, get) => ({
   stagedSites: [],
   headPins: [],
   researchVersion: 0,
+  corporaVersion: 0,
+  directionsVersion: 0,
+  analysisProgress: null,
   noteEditor: null,
   connection: "connecting",
   connectionError: null,
@@ -1183,6 +1197,15 @@ export const useStore = create<Store>((set, get) => ({
       case "research.updated":
         set((st) => ({ researchVersion: st.researchVersion + 1 }));
         break;
+      case "corpora.changed":
+        set((st) => ({ corporaVersion: st.corporaVersion + 1 }));
+        break;
+      case "directions.changed":
+        set((st) => ({ directionsVersion: st.directionsVersion + 1 }));
+        break;
+      case "analysis.progress":
+        set({ analysisProgress: { what: String(data.what), done: Number(data.done), total: Number(data.total) } });
+        break;
       case "model": {
         const { type: _type, ...rest } = event;
         const model = rest as unknown as ModelStatus;
@@ -1212,6 +1235,7 @@ export const useStore = create<Store>((set, get) => ({
           if (job.kind === "load_model" && job.status === "finished") get().notify("Model loaded.");
           if (job.kind === "add_model" && job.status === "finished") get().notify(`${job.title.replace(/^Add /, "Added ")}. Choose it in Load a model.`);
           if (job.kind === "load_sae" && job.status === "finished") get().notify("SAE loaded. Measure its fit on these prompts before trusting its features.", "info", { persist: true });
+          if (job.kind === "import_corpus" && job.status === "finished") get().notify(`Imported the corpus ${String(job.progress.corpus ?? "")}.`);
         }
         break;
       }

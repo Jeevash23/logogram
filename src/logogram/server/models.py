@@ -68,7 +68,7 @@ class ModelStatus(_Out):
 
 class JobInfo(_Out):
     id: str
-    kind: Literal["load_model", "load_sae", "run", "add_model"]
+    kind: Literal["load_model", "load_sae", "run", "add_model", "import_corpus"]
     title: str
     status: Literal["running", "finished", "failed", "cancelled"]
     run_id: str | None
@@ -154,6 +154,148 @@ class CorpusListing(_Out):
     labels: list[str] | None = None
     source: dict[str, Any] | None = None
     created: str | None = None
+
+
+class CorpusText(_Out):
+    """One text on a page of a corpus: the start of it, when it is long (``length`` says)."""
+
+    index: int
+    text: str
+    length: int
+    label: str | None
+    id: str | None
+    meta: dict[str, Any] | None
+
+
+class CorpusPage(_Out):
+    """A page of a corpus's texts, those a search finds (logogram.corpora.corpus_page)."""
+
+    name: str
+    path: str
+    sha256: str
+    n: int
+    labels: list[str]
+    source: dict[str, Any] | None
+    created: str | None
+    query: str
+    matches: int
+    page: int
+    pages: int
+    size: int
+    start: int
+    texts: list[CorpusText]
+
+
+class CorpusImported(_Out):
+    """A corpus just written, and how many rows were left out for having no text."""
+
+    name: str
+    path: str
+    sha256: str
+    n: int
+    labels: list[str]
+    skipped: int
+    source: dict[str, Any] | None
+
+
+class HubFile(_Out):
+    path: str
+    size: int
+    # Whether Logogram reads its format (Parquet, JSON Lines, JSON, CSV, TSV or text).
+    readable: bool
+
+
+class HubDatasetFiles(_Out):
+    """A Hugging Face dataset's files at the exact commit its revision resolves to."""
+
+    repo: str
+    revision: str
+    files: list[HubFile]
+
+
+class TopExample(_Out):
+    """A token where a unit is active, with a window of its text: ``tokens`` from token ``start``,
+    and the unit's value at each (null where it isn't counted, at the beginning-of-sequence
+    token). ``open`` is the text up to the window's end, when Your text can read it."""
+
+    text: int
+    id: str | None
+    label: str | None
+    position: int
+    value: float
+    start: int
+    tokens: list[str]
+    values: list[float | None]
+    open: str | None
+
+
+class Histogram(_Out):
+    edges: list[float]
+    counts: list[int]
+
+
+class CorpusTop(_Out):
+    """Where a unit is most active in a corpus (logogram.top_activations), with every choice
+    that made it."""
+
+    corpus: dict[str, Any]
+    unit: dict[str, Any]
+    description: str
+    signed: bool
+    settings: dict[str, Any]
+    texts_read: int
+    truncated: int
+    tokens: int
+    first_counted: int
+    active: int
+    active_share: float
+    mean: float
+    min: float
+    max: float
+    histogram: Histogram
+    top: list[TopExample]
+    bottom: list[TopExample] | None
+    notes: list[str]
+
+
+class RepresentationPoint(_Out):
+    row: int
+    index: int
+    side: str | None
+    mark: str | None
+    text: str
+    coords: list[float]
+
+
+class Representations(_Out):
+    """The principal components of the activations at a site (logogram.representations)."""
+
+    source: dict[str, Any]
+    position: dict[str, Any]
+    prepend_bos: bool
+    batch_size: int
+    site: dict[str, Any]
+    n: int
+    width: int
+    components: int
+    explained: list[float]
+    variances: list[float]
+    total_variance: float
+    marks: list[str]
+    points: list[RepresentationPoint]
+    description: str
+
+
+class ActivationsExported(_Out):
+    """Activations written to the project's activations folder."""
+
+    name: str
+    path: str
+    json_path: str
+    n: int
+    sites: list[str]
+    sha256: str
+    bytes: int
 
 
 class RecentProject(_Out):

@@ -121,6 +121,10 @@ src/logogram/
   fileio.py            atomic writes that never follow symlinks
   project.py           project folders: where runs, datasets and drafts live, read safely
   research.py          research notes and named selections
+  corpus_import.py     corpora from files, Hugging Face datasets' files and a dataset's prompts
+  top_activations.py   where a neuron, an SAE feature, a direction or a head is most active in a corpus
+  representations.py   activations at a site over prompts or texts: principal components, mean
+                       differences, directions saved from them, exported activations
   runner.py            run a spec end to end (used by the app, the CLI and the Python API)
   partial.py           what a run that stops early keeps of what finished, and what it leaves out
   owner.py             which process runs a run, so a run going elsewhere isn't taken for interrupted
