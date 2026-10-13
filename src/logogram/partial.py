@@ -23,7 +23,8 @@ it needs finished:
 A run that kept every site over the prompts that finished is a run of those prompts: its numbers
 are what a finished run of just them gives. A sweep stopped after its last site (a steering run
 records what the steered model says last) keeps every site, with everything the whole run gives
-it. Methods that report nothing before they end (SAE features) keep nothing.
+it. Methods that report nothing before they end (SAE features, and ACDC, whose circuit is
+ACDC's only once every edge has been tested) keep nothing.
 """
 
 from __future__ import annotations

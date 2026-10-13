@@ -1169,19 +1169,21 @@ def create_app(
 
     @app.post("/api/edges/plan", response_model=M.EdgePlan)
     def plan_edges(body: RunRequest) -> dict[str, Any]:
-        """What an edge attribution spec would do on the loaded model and its prompts, before it
-        runs: the graph's size, the passes and memory a run takes, and why the run would be
-        refused, from the same checks the run makes."""
+        """What an edge attribution or ACDC spec would do on the loaded model and its prompts,
+        before it runs: the graph's size, the passes and memory a run takes (and for ACDC how
+        long it may take here), and why the run would be refused, from the same checks the run
+        makes."""
+        from logogram.acdc import acdc_plan
         from logogram.backends.base import BackendError
         from logogram.chat import chat_wrapper
         from logogram.datasets import decode_dataset, parse_jsonl, read_dataset_bytes
         from logogram.edges import edge_plan
         from logogram.prompts import prepare_prompts
-        from logogram.spec import SINGLE_POSITION_METRICS, EdgeAttribution
+        from logogram.spec import ACDC, SINGLE_POSITION_METRICS, EdgeAttribution
 
         spec = Spec.model_validate(body.spec)
-        if not isinstance(spec.experiment, EdgeAttribution):
-            raise ValueError("Only an edge attribution spec has a graph to plan.")
+        if not isinstance(spec.experiment, EdgeAttribution | ACDC):
+            raise ValueError("Only edge attribution and ACDC specs have a graph to plan.")
         backend = state.backend
         if backend is None:
             raise Conflict("Load a model to see its graph and what a run on it costs.")
@@ -1202,6 +1204,8 @@ def create_app(
             )
         except (ValueError, BackendError) as exc:
             return {"n_edges": None, "n_senders": None, "n_receivers": None, "refusal": str(exc)}
+        if isinstance(spec.experiment, ACDC):
+            return acdc_plan(spec, backend, prompts)
         return edge_plan(spec, backend, prompts)
 
     @app.post("/api/models/load", response_model=M.JobInfo)

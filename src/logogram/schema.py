@@ -362,6 +362,39 @@ class EdgeRun(_Model):
     corrections: EdgeCorrections | None = None
 
 
+class AcdcRun(_Model):
+    """An ACDC run (see logogram.acdc): the graph, how the edges were tested, the circuit found
+    and how faithful it is. Each listed edge's values are the change its removal made when it was
+    tested. The summary lists the circuit's edges, then the strongest of the others (``reported``
+    in all); edges.parquet beside it holds every edge, with whether it was kept."""
+
+    threshold: float
+    rule: Literal["toward_source", "either_way"]
+    # The sign of the mean of (source − receiver) in the metric: a change of this sign moves the
+    # metric toward the source run.
+    source_sign: Literal[1, -1]
+    # The order the edges were tested in, in words.
+    order: str
+    n_edges: int
+    # The circuit: the edges kept, by their index in the graph (the sites' index), in its order.
+    n_kept: int
+    kept: list[int]
+    n_senders: int
+    n_receivers: int
+    reported: int
+    structure: Literal["sequential", "parallel"]
+    checks: dict[str, float]
+    cost: dict[str, Any]
+    # The mean metric with every edge kept (as edge patching computes it) and of the circuit.
+    full: float | None
+    circuit: float | None
+    # The circuit's faithfulness: 0 is the source run, 1 the receiver run, with its interval.
+    faithfulness: Stat
+    # The metric per prompt: "circuit" and "full" (every edge kept).
+    per_prompt: dict[str, list[float | None]]
+    corrections: EdgeCorrections | None = None
+
+
 class ChatTemplateInfo(_Model):
     """How the prompts were wrapped in the model's own chat template (logogram.chat): as the
     person's message, or as the start of the model's reply to a fixed message; the template's
@@ -432,6 +465,7 @@ class Summary(_Model):
     circuit: CircuitInfo | None = None
     attribution: AttributionInfo | None = None
     edges: EdgeRun | None = None
+    acdc: AcdcRun | None = None
     chat_template: ChatTemplateInfo | None = None
     # A run that stopped before the end: what it kept. None for a finished run.
     partial: PartialRun | None = None
@@ -550,7 +584,8 @@ class Manifest(_Model):
 
 # -- edges.parquet -----------------------------------------------------------------------------
 
-# Every edge's statistics, beside an edge attribution run's summary (logogram.edges.edge_table).
+# Every edge's statistics, beside an edge attribution or ACDC run's summary
+# (logogram.edges.edge_table).
 EDGES_FILE = "edges.parquet"
 
 # -- continuations.json ------------------------------------------------------------------------

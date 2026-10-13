@@ -46,7 +46,14 @@ from logogram.results import (
     write_results,
 )
 from logogram.schema import CONTINUATIONS_FILE, EDGES_FILE, ContinuationsFile, Manifest
-from logogram.spec import SINGLE_POSITION_METRICS, EdgeAttribution, ModelRef, SAERef, Spec
+from logogram.spec import (
+    ACDC,
+    SINGLE_POSITION_METRICS,
+    EdgeAttribution,
+    ModelRef,
+    SAERef,
+    Spec,
+)
 
 EventFn = Callable[[str, dict[str, Any]], None]
 ModelProvider = Callable[[ModelRef], ModelBackend]
@@ -604,10 +611,10 @@ def run_spec(
                     "n_prompts": len(prompts),
                     "model": model_shape,
                     "layout": layout,
-                    # An edge attribution run's edges (tens of thousands) arrive with its
-                    # summary, which lists the strongest.
+                    # An edge attribution or ACDC run's edges (tens of thousands) arrive with
+                    # its summary, which lists the strongest.
                     "sites": []
-                    if isinstance(spec.experiment, EdgeAttribution)
+                    if isinstance(spec.experiment, EdgeAttribution | ACDC)
                     else [s.to_dict() for s in sites],
                 },
             )
@@ -659,7 +666,7 @@ def run_spec(
             chat_template=chat.to_dict() if chat is not None else None,
         )
         write_results(folder / "results.parquet", results_table(result, stats))
-        if "edges" in result.extra:
+        if "edges" in result.extra or "acdc" in result.extra:
             from logogram.edges import write_edge_table
 
             write_edge_table(folder / EDGES_FILE, result, stats)

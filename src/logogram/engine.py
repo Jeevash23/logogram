@@ -26,6 +26,7 @@ from logogram.metrics import Scorer
 from logogram.prompts import LengthGroup, PreparedPrompt, group_by_length, side_groups
 from logogram.sites import ResolvedSite, check_lined_up, expand_scope, resolve_position, site_unit
 from logogram.spec import (
+    ACDC,
     METRIC_LABELS,
     Ablation,
     ActivationPatching,
@@ -518,6 +519,10 @@ def run_experiment(
         from logogram.edges import run_edge_attribution
 
         return run_edge_attribution(spec, backend, prompts, on_prompts=on_prompts, **kwargs)
+    if isinstance(spec.experiment, ACDC):
+        from logogram.acdc import run_acdc
+
+        return run_acdc(spec, backend, prompts, **kwargs)
     if isinstance(spec.experiment, AttributionPatching):
         from logogram.atp import run_attribution_patching
 

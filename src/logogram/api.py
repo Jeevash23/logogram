@@ -21,6 +21,7 @@ the app would make, and it lands in the project like any other::
     sae = lg.load_sae(release="gpt2-small-res-jb", sae_id="blocks.8.hook_resid_pre", model=model)
     toy = lg.toy_model("induction")   # a model whose circuit is known, with experiments to run
     toy.run("which-heads").sites()    # the planted heads at 1, every other head at 0
+    found.circuit()      # an ACDC run's circuit: the edges it kept, and how faithful they are
 
 Tables come back as pandas DataFrames when pandas is installed, and as pyarrow Tables otherwise.
 """
@@ -890,9 +891,11 @@ class Run:
         return sorted(sites, key=lambda s: -abs(s["effect"]["mean"]))[:k]
 
     def edges(self) -> Any:
-        """An edge attribution run's every edge, one row each (its edges.parquet): the sender and
-        receiver, the mean estimated effect and its interval, the simultaneous band and q-value.
-        The summary lists only the strongest."""
+        """An edge attribution or ACDC run's every edge, one row each (its edges.parquet): the
+        sender and receiver, the mean effect (estimated, or for ACDC the change its removal made
+        when it was tested) and its interval, the simultaneous band and q-value; for ACDC also
+        ``kept`` (in the circuit) and ``step`` (when it was tested, from 0). The summary lists
+        only the strongest."""
         import pyarrow.parquet as pq
 
         from logogram.schema import EDGES_FILE
@@ -900,12 +903,53 @@ class Run:
         self._summary()
         path = self.folder / EDGES_FILE
         if not path.is_file():
-            raise LogogramError(f"{self.id} isn't an edge attribution run: it has no edges.")
+            raise LogogramError(
+                f"{self.id} isn't an edge attribution or ACDC run: it has no edges."
+            )
         table = pq.read_table(self.project.readable(path))
         try:
             return table.to_pandas()
         except ImportError:
             return table
+
+    def circuit(self) -> dict[str, Any]:
+        """An ACDC run's circuit: ``edges``, the kept edges as the spec writes them (sender and
+        receiver) with their ``label`` and the change their removal made when tested (``change``,
+        normalized, and ``delta``, in the metric's units); ``n_kept`` of ``n_edges``; the
+        ``threshold`` and ``rule`` they were kept by; the circuit's ``faithfulness`` with its
+        interval (0 is the source run, 1 the receiver run); and the mean metric of the circuit
+        (``circuit``) and with every edge kept (``full``)."""
+        import pyarrow.parquet as pq
+
+        from logogram.schema import EDGES_FILE
+
+        acdc = self._summary().get("acdc")
+        if not acdc:
+            raise LogogramError(f"{self.id} isn't an ACDC run: it found no circuit.")
+        table = pq.read_table(self.project.readable(self.folder / EDGES_FILE))
+        by_index = {int(r["edge"]): r for r in table.to_pylist()}
+        edges = []
+        for index in acdc["kept"]:
+            row = by_index[index]
+            edges.append(
+                {
+                    "index": index,
+                    "label": row["label"],
+                    "edge": _edge_of(row),
+                    "change": _number(row["effect_mean"]),
+                    "delta": _number(row["delta_mean"]),
+                }
+            )
+        return {
+            "edges": edges,
+            "n_kept": acdc["n_kept"],
+            "n_edges": acdc["n_edges"],
+            "threshold": acdc["threshold"],
+            "rule": acdc["rule"],
+            "faithfulness": acdc["faithfulness"],
+            "circuit": acdc["circuit"],
+            "full": acdc["full"],
+        }
 
     def curve(self) -> dict[str, Any] | None:
         """An edge attribution run's faithfulness curve: for each k, the faithfulness of the k
@@ -995,6 +1039,39 @@ class Sweep(list[Run]):
 
 def _num(x: float | None) -> str:
     return "—" if x is None else f"{x:+.3f}"
+
+
+def _number(x: Any) -> float | None:
+    """A float, or None for a value that isn't a finite number (as summary.json writes it)."""
+    import math
+
+    value = float(x)
+    return value if math.isfinite(value) else None
+
+
+def _edge_of(row: dict[str, Any]) -> dict[str, Any]:
+    """An edge of edges.parquet as the spec writes it: its sender and receiver."""
+    from logogram.spec import Edge
+
+    sender: dict[str, Any] = {"kind": row["sender"]}
+    if row["sender"] != "embed":
+        sender["layer"] = int(row["sender_layer"])
+    if row["sender"] == "head":
+        sender["head"] = int(row["sender_head"])
+    kind = row["receiver"]
+    receiver: dict[str, Any] = (
+        {"kind": "logits"}
+        if kind == "logits"
+        else {"kind": "mlp", "layer": int(row["receiver_layer"])}
+        if kind == "mlp"
+        else {
+            "kind": "head",
+            "layer": int(row["receiver_layer"]),
+            "head": int(row["receiver_head"]),
+            "input": kind,
+        }
+    )
+    return Edge.model_validate({"sender": sender, "receiver": receiver}).model_dump(mode="json")
 
 
 def heatmap_svg(summary: dict[str, Any], cell: int = 18) -> str:

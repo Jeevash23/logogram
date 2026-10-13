@@ -498,6 +498,44 @@ def test_edge_attribution_with_fine_steps_recovers_the_induction_key_edge(toy_ba
     assert _effects(summary)["L0 H2 → L1 H1 k"] == pytest.approx(1.0, abs=0.01)
 
 
+@pytest.mark.parametrize(
+    "name, metric, threshold, direction",
+    [
+        ("induction", {"kind": "logit_diff"}, 1.0, "corrupt_to_clean"),
+        ("induction", {"kind": "logit_diff"}, 1.0, "clean_to_corrupt"),
+        ("ioi", {"kind": "kl", "target": "clean"}, 0.1, "corrupt_to_clean"),
+    ],
+)
+def test_acdc_keeps_exactly_the_planted_edges_the_prompts_differ_along(
+    name, metric, threshold, direction, toy_backend, tmp_path
+):
+    """ACDC removes the edges one at a time, from the logits back. With a threshold between the
+    planted edges' changes (the whole gap: 20 logits, about 10 nats of KL divergence) and every
+    other edge's (none), it keeps exactly the planted edges along which the prompts differ, as
+    path patching each edge alone finds them (above): each moved the metric all the way when it
+    was tested, and the circuit they make keeps all of the behavior."""
+    toy = toys.get_toy(name)
+    experiment = {"kind": "acdc", "direction": direction, "threshold": threshold}
+    spec = _spec(
+        name,
+        _experiment(name, "which-heads"),
+        experiment={**experiment, "rule": "toward_source"},
+        scope={"kind": "graph", "layers": None, "logits": True},
+        metric={**metric, "normalization": "dataset_gap"},
+        limit=16,
+    )
+    summary = _run(toy_backend(name), _project(tmp_path, name), spec)
+    acdc = summary["acdc"]
+    labels = {s["index"]: s["label"] for s in summary["sites"]}
+    planted = {_edge_label(c) for c in toy.compositions if c.changes}
+    assert {labels[i] for i in acdc["kept"]} == planted
+    assert acdc["n_kept"] == len(planted) and acdc["n_edges"] == (
+        110 if name == "induction" else 479
+    )
+    _assert_effects(summary, dict.fromkeys(planted, 1.0), 1e-3)
+    assert acdc["faithfulness"]["mean"] == pytest.approx(1.0, abs=1e-4)
+
+
 # -- attribution patching: exact where linear, blind through saturated attention ---------------
 
 

@@ -1264,16 +1264,24 @@ def correction_counts(stats: Any, alpha: float) -> dict[str, int] | None:
         }
 
 
-def reported_edges(stats: Any) -> list[int]:
+def reported_edges(stats: Any, first: list[int] | None = None) -> list[int]:
     """The edges a summary lists: the strongest :data:`SUMMARY_EDGES` by the magnitude of their
-    mean effect (ties in the graph's order), in the graph's order."""
+    mean effect (ties in the graph's order), in the graph's order. ``first`` (an ACDC circuit's
+    edges) come before every other edge: all of them, or their strongest when they are more."""
     strongest = _ranking(np.asarray(stats.effect_mean, dtype=np.float64))
+    if first:
+        listed = np.zeros(len(strongest), dtype=bool)
+        listed[np.asarray(first, dtype=np.int64)] = True
+        ahead = listed[strongest]
+        strongest = np.concatenate([strongest[ahead], strongest[~ahead]])
     return sorted(int(e) for e in strongest[:SUMMARY_EDGES])
 
 
 def edge_table(result: EngineResult, stats: Any) -> Any:
     """Every edge's statistics, one row per edge (edges.parquet): what the summary reports for
-    the strongest, for all of them. ``stats`` rows are the result's edges."""
+    the strongest, for all of them. ``stats`` rows are the result's edges. An ACDC run's table
+    also says whether each edge was kept in the circuit (``kept``) and when it was tested
+    (``step``, from 0: the reverse of the graph's order)."""
     import pyarrow as pa
 
     def column(values: Any) -> Any:
@@ -1288,52 +1296,56 @@ def edge_table(result: EngineResult, stats: Any) -> Any:
     band_lo = nan if stats.band_lo is None else stats.band_lo
     band_hi = nan if stats.band_hi is None else stats.band_hi
     q = nan if stats.q is None else stats.q
-    return pa.table(
-        {
-            "edge": np.array([s.index for s in sites], dtype=np.int32),
-            "label": [s.label for s in sites],
-            "sender": [e.sender.kind for e in edges],
-            "sender_layer": np.array(
-                [-1 if e.sender.layer is None else e.sender.layer for e in edges],
-                dtype=np.int16,
-            ),
-            "sender_head": np.array(
-                [-1 if e.sender.head is None else e.sender.head for e in edges],
-                dtype=np.int16,
-            ),
-            "receiver": [
-                "logits"
-                if isinstance(e.receiver, LogitsReceiver)
-                else "mlp"
-                if isinstance(e.receiver, MlpReceiver)
-                else e.receiver.input
-                for e in edges
-            ],
-            "receiver_layer": np.array(
-                [getattr(e.receiver, "layer", -1) for e in edges], dtype=np.int16
-            ),
-            "receiver_head": np.array(
-                [getattr(e.receiver, "head", -1) for e in edges], dtype=np.int16
-            ),
-            "n": np.full(len(sites), stats.n, dtype=np.int32),
-            "effect_mean": column(stats.effect_mean),
-            "effect_sd": column(stats.effect_sd),
-            "effect_lo": column(stats.effect_lo),
-            "effect_hi": column(stats.effect_hi),
-            "delta_mean": column(stats.delta_mean),
-            "delta_sd": column(stats.delta_sd),
-            "delta_lo": column(stats.delta_lo),
-            "delta_hi": column(stats.delta_hi),
-            "band_lo": column(band_lo),
-            "band_hi": column(band_hi),
-            "q": column(q),
-            "opposite_sign": np.asarray(stats.opposite_sign, dtype=np.int32),
-        }
-    )
+    index = np.array([s.index for s in sites], dtype=np.int32)
+    columns = {
+        "edge": index,
+        "label": [s.label for s in sites],
+        "sender": [e.sender.kind for e in edges],
+        "sender_layer": np.array(
+            [-1 if e.sender.layer is None else e.sender.layer for e in edges],
+            dtype=np.int16,
+        ),
+        "sender_head": np.array(
+            [-1 if e.sender.head is None else e.sender.head for e in edges],
+            dtype=np.int16,
+        ),
+        "receiver": [
+            "logits"
+            if isinstance(e.receiver, LogitsReceiver)
+            else "mlp"
+            if isinstance(e.receiver, MlpReceiver)
+            else e.receiver.input
+            for e in edges
+        ],
+        "receiver_layer": np.array(
+            [getattr(e.receiver, "layer", -1) for e in edges], dtype=np.int16
+        ),
+        "receiver_head": np.array([getattr(e.receiver, "head", -1) for e in edges], dtype=np.int16),
+        "n": np.full(len(sites), stats.n, dtype=np.int32),
+        "effect_mean": column(stats.effect_mean),
+        "effect_sd": column(stats.effect_sd),
+        "effect_lo": column(stats.effect_lo),
+        "effect_hi": column(stats.effect_hi),
+        "delta_mean": column(stats.delta_mean),
+        "delta_sd": column(stats.delta_sd),
+        "delta_lo": column(stats.delta_lo),
+        "delta_hi": column(stats.delta_hi),
+        "band_lo": column(band_lo),
+        "band_hi": column(band_hi),
+        "q": column(q),
+        "opposite_sign": np.asarray(stats.opposite_sign, dtype=np.int32),
+    }
+    acdc = result.extra.get("acdc")
+    if acdc is not None:
+        kept = np.zeros(int(acdc["n_edges"]), dtype=bool)
+        kept[np.asarray(acdc["kept"], dtype=np.int64)] = True
+        columns["kept"] = kept[index]
+        columns["step"] = (int(acdc["n_edges"]) - 1 - index).astype(np.int32)
+    return pa.table(columns)
 
 
 def write_edge_table(path: Any, result: EngineResult, stats: Any) -> None:
-    """edges.parquet for an edge attribution run's result (``stats`` over every edge)."""
+    """edges.parquet for an edge attribution or ACDC run's result (``stats`` over every edge)."""
     from logogram.results import write_results
 
     write_results(path, edge_table(result, stats))

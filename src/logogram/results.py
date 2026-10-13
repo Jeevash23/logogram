@@ -80,9 +80,9 @@ def compute_stats(
         delta=None if result.delta is None else result.delta[rows],
         gap=result.gap,
         family=indices is None,
-        # An edge attribution run's many edges don't keep their resampled means (nothing
+        # An edge attribution or ACDC run's many edges don't keep their resampled means (nothing
         # compares edges by them), so they go through in chunks.
-        keep_boot="edges" not in result.extra,
+        keep_boot="edges" not in result.extra and "acdc" not in result.extra,
     )
 
 
@@ -211,15 +211,19 @@ def build_summary(
     """The summary of a run. ``chat_template``: how the prompts were wrapped (logogram.chat), if
     they were, for the methods text to say. With ``kept`` (a run that stopped early), only those
     sites are reported, and ``stats`` rows follow ``kept``; ``partial`` says what the run kept.
-    An edge attribution run reports its strongest edges (edges.parquet beside the summary holds
-    every edge's statistics)."""
+    An edge attribution run reports its strongest edges, an ACDC run its circuit's edges and then
+    the strongest (edges.parquet beside the summary holds every edge's statistics)."""
     b = result.baselines
-    if kept is None and "edges" in result.extra:
+    graph_run = result.extra.get("edges") or result.extra.get("acdc")
+    if kept is None and graph_run is not None:
         from logogram.edges import correction_counts, reported_edges
 
         # Counted over every edge: the summary lists only the strongest.
-        result.extra["edges"]["corrections"] = correction_counts(stats, 1 - spec.statistics.ci)
-        top = reported_edges(stats)
+        graph_run["corrections"] = correction_counts(stats, 1 - spec.statistics.ci)
+        circuit = result.extra["acdc"]["kept"] if "acdc" in result.extra else None
+        top = reported_edges(stats, circuit)
+        if "acdc" in result.extra:
+            result.extra["acdc"]["reported"] = len(top)
         if len(top) < len(result.sites):
             kept, stats = top, take_rows(stats, top)
     indices = list(range(len(result.sites))) if kept is None else list(kept)
@@ -299,6 +303,19 @@ def build_summary(
                 f"{edges['gradient']}"
             )
         norm_text = f"estimated {norm_text}"
+    if "acdc" in result.extra:
+        description = (
+            f"the change in {describe_metric(spec.metric)} when ACDC removed the edge from the "
+            "circuit as it stood when the edge was tested (the circuit without the edge − the "
+            "circuit with it), a removed edge carrying its sender's output on the source prompt"
+        )
+        change = "(circuit without the edge − circuit with it)"
+        norm_text = (
+            f"{change} ÷ mean({result.reference} − {result.receiver}) {label}; mean gap = "
+            f"{stats.denominator:.4f}"
+            if normalization == "dataset_gap"
+            else f"{change} ÷ ({result.reference} − {result.receiver}) {label}, per prompt"
+        )
     method = "percentile bootstrap over prompts"
     if spec.statistics.cluster is not None:
         method = (
@@ -366,6 +383,7 @@ def build_summary(
         **({"circuit": result.extra["circuit"]} if "circuit" in result.extra else {}),
         **({"attribution": result.extra["attribution"]} if "attribution" in result.extra else {}),
         **({"edges": result.extra["edges"]} if "edges" in result.extra else {}),
+        **({"acdc": result.extra["acdc"]} if "acdc" in result.extra else {}),
         **({"chat_template": chat_template} if chat_template is not None else {}),
         **({"partial": partial} if partial is not None else {}),
     }

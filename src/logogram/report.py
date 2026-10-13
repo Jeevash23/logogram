@@ -19,6 +19,7 @@ from typing import Any
 from logogram import __version__
 from logogram.schema import stopped_text
 from logogram.spec import (
+    ACDC,
     Ablation,
     ActivationPatching,
     AttributionPatching,
@@ -106,6 +107,8 @@ def _method(spec: Spec, summary: dict[str, Any] | None) -> str:
         )
     if isinstance(e, EdgeAttribution):
         return _edge_method(spec, e, summary)
+    if isinstance(e, ACDC):
+        return _acdc_method(spec, e, summary)
     if isinstance(e, Steering):
         return _steering_method(spec, e, summary)
     assert isinstance(e, AttributionPatching)
@@ -171,6 +174,54 @@ def _edge_method(spec: Spec, e: EdgeAttribution, summary: dict[str, Any] | None)
             text += (
                 f" Patching every edge reproduced the source run's metric within {difference:.2g}."
             )
+    return text
+
+
+def _acdc_method(spec: Spec, e: ACDC, summary: dict[str, Any] | None) -> str:
+    from logogram.acdc import ORDER_TEXT
+
+    acdc = (summary or {}).get("acdc") or {}
+    size = (
+        f"{acdc['n_edges']:,} edges ({acdc['n_senders']} senders, {acdc['n_receivers']} receivers)"
+        if acdc
+        else "the edges of the scope"
+    )
+    receiver, source = (
+        ("corrupt", "clean") if e.direction == "clean_to_corrupt" else ("clean", "corrupt")
+    )
+    counted = (
+        f"toward the {source} prompts' value"
+        if e.rule == "toward_source"
+        else "in either direction"
+    )
+    text = (
+        f"ACDC (automated circuit discovery) over {size}: the graph's nodes are the embeddings, "
+        "every attention head (its output through its slice of the output projection) and every "
+        "MLP, and an edge runs from a node's output to a later head's query, key or value input, "
+        "a later MLP's input, or the logits, each receiver reading its own copy of the residual "
+        f"stream, before its normalization. The {receiver} prompts ran with every edge in the "
+        f"circuit, and the edges were tested one at a time in {ORDER_TEXT}. Removing an edge made "
+        f"it carry its sender's output on the {source} prompt into its receiver (the sender's "
+        f"difference, {source} − this pass, added into the receiver's own input), while the edges "
+        "of the circuit carried what their senders output in that pass. An edge stayed removed "
+        f"when removing it moved the mean metric over the prompts {counted} by less than "
+        f"{e.threshold:g}; otherwise it was put back. Each edge's value is the change its "
+        "removal made when it was tested."
+    )
+    if acdc:
+        f = acdc.get("faithfulness") or {}
+
+        def value(key: str) -> str:
+            v = f.get(key)
+            return "undefined" if v is None else f"{v:.3f}"
+
+        level = round(spec.statistics.ci * 100)
+        text += (
+            f" The circuit kept {acdc['n_kept']:,} of the {acdc['n_edges']:,} edges. Its "
+            f"faithfulness, the share of the gap from the {source} run (0) to the {receiver} run "
+            f"with every edge (1) that it keeps, was {value('mean')} ({level}% interval "
+            f"{value('lo')} to {value('hi')})."
+        )
     return text
 
 
@@ -648,13 +699,18 @@ def _node_place(node: dict[str, Any], n_layers: int) -> tuple[int, float | None]
     return 1 + 2 * layer, float(node.get("head") or 0)
 
 
-def edge_graph_svg(summary: dict[str, Any], top: int = GRAPH_EDGES) -> str:
+def edge_graph_svg(
+    summary: dict[str, Any], top: int = GRAPH_EDGES, only: list[int] | None = None
+) -> str:
     """The strongest edges drawn between the model's nodes, layers left to right: each edge in
     the effect colors on a symmetric scale (with a legend), wider when stronger, the strongest on
     top where edges cross. A head's query, key and value inputs end at the top, middle and bottom
-    of it."""
+    of it. ``only``: the edges that may be drawn (an ACDC run's circuit), by index."""
     model = summary.get("model") or {}
     sites = [s for s in summary["sites"] if s.get("edge") and s["effect"]["mean"] is not None]
+    if only is not None:
+        chosen = set(only)
+        sites = [s for s in sites if s["index"] in chosen]
     strongest = sorted(sites, key=lambda s: (-abs(s["effect"]["mean"]), s["index"]))[:top]
     n_layers = int(model.get("n_layers") or 1)
     n_heads = int(model.get("n_heads") or 1)
@@ -669,6 +725,11 @@ def edge_graph_svg(summary: dict[str, Any], top: int = GRAPH_EDGES) -> str:
     step = (width - left - right) / max(1, columns - 1)
     bound = max((abs(s["effect"]["mean"]) for s in strongest), default=1.0) or 1.0
     esc = html.escape
+    legend = (
+        "normalized change in the metric when ACDC removed the edge"
+        if summary.get("acdc")
+        else "estimated normalized effect of patching the edge alone"
+    )
 
     def place(node: dict[str, Any], inp: str | None = None) -> tuple[float, float]:
         col, head = _node_place(node, n_layers)
@@ -740,8 +801,7 @@ def edge_graph_svg(summary: dict[str, Any], top: int = GRAPH_EDGES) -> str:
         f'<text x="{left + 60}" y="{ly + 22}" text-anchor="middle" fill="currentColor">0</text>'
         f'<text x="{left + 120}" y="{ly + 22}" text-anchor="end" fill="currentColor">'
         f"{_fmt(bound, 2)}</text>"
-        f'<text x="{left + 132}" y="{ly + 8}" fill="currentColor">estimated normalized effect '
-        "of patching the edge alone</text></svg>"
+        f'<text x="{left + 132}" y="{ly + 8}" fill="currentColor">{legend}</text></svg>'
     )
     return "".join(parts)
 
@@ -827,10 +887,30 @@ def curve_svg(curve: dict[str, Any], n_edges: int) -> str:
     return "".join(parts)
 
 
+def _acdc_html(summary: dict[str, Any], ci_level: int) -> str:
+    """An ACDC run's circuit, drawn, with how many edges it kept and how faithful it is."""
+    acdc = summary["acdc"]
+    f = acdc.get("faithfulness") or {}
+    drawn = min(GRAPH_EDGES, acdc["n_kept"])
+    some = f"the {drawn} with the largest changes" if drawn < acdc["n_kept"] else "each"
+    return (
+        "<section><h2>The circuit ACDC found, layers left to right</h2><figure>"
+        f"{edge_graph_svg(summary, only=acdc['kept'])}<figcaption>The {acdc['n_kept']:,} edges "
+        f"ACDC kept of {acdc['n_edges']:,}, {some} drawn in the color of the change its removal "
+        f"made when it was tested. Hover an edge for its {ci_level}% interval.</figcaption>"
+        "</figure><p class='lede'>The circuit's faithfulness, the share of the gap from the "
+        f"{summary['reference']} run (0) to the {summary['receiver']} run with every edge (1) "
+        f"that it keeps: {_fmt(f.get('mean'), sign=False)} ({ci_level}% interval "
+        f"{_fmt(f.get('lo'), sign=False)} to {_fmt(f.get('hi'), sign=False)}).</p></section>"
+    )
+
+
 def _edges_html(summary: dict[str, Any], ci_level: int, verification: dict[str, Any] | None) -> str:
     """An edge attribution run's graph, its faithfulness curve, and its estimates against path
-    patching when a verification ran."""
+    patching when a verification ran; an ACDC run's circuit."""
     esc = html.escape
+    if summary.get("acdc"):
+        return _acdc_html(summary, ci_level)
     edges = summary.get("edges") or {}
     n_edges = edges.get("n_edges", len(summary["sites"]))
     out = (
@@ -1070,7 +1150,18 @@ def run_report(
             _fmt((baseline.get("gap") or {}).get("mean"), 2, sign=False),
         ),
     ]
-    if strongest:
+    acdc = summary.get("acdc")
+    if acdc:
+        f = acdc.get("faithfulness") or {}
+        figures.append(("Edges kept", f"{acdc['n_kept']:,} of {acdc['n_edges']:,}"))
+        figures.append(
+            (
+                "Faithfulness of the circuit",
+                f"{_fmt(f.get('mean'), 2, sign=False)} [{_fmt(f.get('lo'), 2, sign=False)}, "
+                f"{_fmt(f.get('hi'), 2, sign=False)}]",
+            )
+        )
+    elif strongest:
         top = strongest[0]
         figures.append(
             ("Strongest effect", f"{esc(top['label'])} {_fmt(top['effect']['mean'], 2)}")
@@ -1104,11 +1195,15 @@ def run_report(
     )
     if layout.get("kind") == "edges":
         map_html = _edges_html(summary, ci_level, verification)
-    edges = summary.get("edges") or {}
+    edges = summary.get("edges") or summary.get("acdc") or {}
     unit = "edges" if layout.get("kind") == "edges" else "sites"
+    listed = (
+        f"The circuit's edges and the strongest removed, {len(summary['sites']):,} of"
+        if summary.get("acdc")
+        else f"The {len(summary['sites']):,} strongest of"
+    )
     every = (
-        f"The {len(summary['sites']):,} strongest of {edges['n_edges']:,} edges (edges.parquet "
-        "holds every edge's statistics)"
+        f"{listed} {edges['n_edges']:,} edges (edges.parquet holds every edge's statistics)"
         if edges and edges["n_edges"] > len(summary["sites"])
         else f"The {len(summary['sites'])} {unit} that finished"
         if partial_of(summary)

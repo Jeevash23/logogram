@@ -770,6 +770,42 @@ class EdgeAttribution(_Strict):
         return self
 
 
+# ---------------------------------------------------------------------------------------------
+# Automated circuit discovery (ACDC)
+
+
+class ACDC(_Strict):
+    """Find a circuit by removing the edges of the model's graph one at a time (automated circuit
+    discovery, ACDC, as in Conmy et al. 2023).
+
+    The receiver prompt runs with every edge of the ``graph`` scope in the circuit. ACDC tests the
+    edges in the reverse of the graph's order: the receivers from the logits back toward the
+    embeddings (the logits; then each layer from the last, its MLP's input, then its heads from the
+    last, each head's value, key and query), and each receiver's edges from its latest sender back
+    to the embeddings. Every receiver is tested after every receiver its output reaches. Removing
+    an edge makes it carry its sender's output on the source prompt into its receiver, as edge
+    patching does, while the edges of the circuit carry what their senders output in that run.
+    When removing an edge changes the mean of the metric over the prompts by less than
+    ``threshold``, counted as ``rule`` says, it stays removed; otherwise it is put back. The
+    circuit is the edges left. ACDC itself runs the clean prompt with removed edges carrying the
+    corrupt prompt's values: ``direction`` ``corrupt_to_clean``, with the KL divergence from the
+    clean prompt's own prediction as the metric. Each edge costs one forward pass per batch of
+    prompts.
+    """
+
+    kind: Literal["acdc"] = "acdc"
+    direction: Direction
+    threshold: float = Field(gt=0, allow_inf_nan=False)
+    """How small a change in the metric's mean over the prompts leaves an edge out of the
+    circuit, in the metric's own units: nats for the KL divergence, logits for the logit
+    difference."""
+    rule: Literal["toward_source", "either_way"]
+    """Which change is compared with the threshold: ``toward_source``, how far removing the edge
+    moves the metric toward the source prompt's (the paper's rule: a removal that moves it the
+    other way always stays); ``either_way``, how far it moves it in either direction (the absolute
+    value, an option of ACDC's code)."""
+
+
 class MeanDifference(_Strict):
     """At each steered site, the mean difference between the two prompts of each training pair,
     from the receiver toward the other prompt. A strength of 1 adds the whole mean difference."""
@@ -873,7 +909,8 @@ Experiment = Annotated[
     | AttributionPatching
     | Steering
     | PathPatching
-    | EdgeAttribution,
+    | EdgeAttribution
+    | ACDC,
     Field(discriminator="kind"),
 ]
 
@@ -1315,10 +1352,20 @@ class Spec(_Strict):
     @model_validator(mode="after")
     def _edges_fit(self) -> Spec:
         exp, scope = self.experiment, self.scope
-        if isinstance(exp, EdgeAttribution) != isinstance(scope, GraphScope):
+        if isinstance(exp, EdgeAttribution) and not isinstance(scope, GraphScope):
             raise ValueError(
                 "edge attribution estimates the edges of the model's graph: use the graph scope "
-                "with it, and the graph scope with it alone"
+                "with it"
+            )
+        if isinstance(exp, ACDC) and not isinstance(scope, GraphScope):
+            raise ValueError(
+                "ACDC removes the edges of the model's graph one at a time: use the graph scope "
+                "with it"
+            )
+        if isinstance(scope, GraphScope) and not isinstance(exp, EdgeAttribution | ACDC):
+            raise ValueError(
+                "the graph scope holds the edges of the model's graph, which edge attribution and "
+                "ACDC measure: use the graph scope with one of them alone"
             )
         if isinstance(scope, EdgesScope):
             if not isinstance(exp, PathPatching):
@@ -1492,7 +1539,8 @@ def describe_intervention(
     | AttributionPatching
     | Steering
     | PathPatching
-    | EdgeAttribution,
+    | EdgeAttribution
+    | ACDC,
 ) -> str:
     """The intervention in a few words, for example 'Resample-ablate (10 corrupt donors, seed 0)'."""
     if isinstance(exp, ActivationPatching):
@@ -1512,6 +1560,10 @@ def describe_intervention(
         )
         curve = "" if exp.curve is None else f"; {describe_curve(exp.curve)}"
         return f"Edge attribution, estimated with {how} ({arrow}{curve})"
+    if isinstance(exp, ACDC):
+        arrow = "clean → corrupt" if exp.direction == "clean_to_corrupt" else "corrupt → clean"
+        counted = "toward the source" if exp.rule == "toward_source" else "either way"
+        return f"ACDC, threshold {exp.threshold:g} on changes {counted} ({arrow})"
     if isinstance(exp, AttributionPatching):
         arrow = "clean → corrupt" if exp.direction == "clean_to_corrupt" else "corrupt → clean"
         if exp.method == "integrated_gradients":
