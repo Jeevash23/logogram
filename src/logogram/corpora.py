@@ -74,6 +74,9 @@ class CorpusSource(BaseModel):
     repo: str | None = None
     path: str | None = None
     revision: str | None = None
+    sha256: str | None = None
+    """The hash of the file the texts were read from: a file imported, a Hugging Face dataset's
+    file, or a project dataset."""
 
 
 class CorpusMeta(BaseModel):
@@ -104,8 +107,16 @@ class Corpus:
     def path(self) -> str:
         return f"{CORPORA_DIR}/{self.name}.jsonl"
 
+    @property
+    def texts(self) -> list[str]:
+        return [r.text for r in self.records]
+
     def labels(self) -> list[str]:
         return label_values(self.records)
+
+    def describe(self) -> dict[str, Any]:
+        """What an analysis records about the corpus it read."""
+        return {"name": self.name, "path": self.path, "sha256": self.sha256, "n": len(self.records)}
 
 
 def label_text(value: Label | None) -> str | None:
@@ -234,7 +245,21 @@ def write_corpus(
         json.dumps(meta.model_dump(mode="json"), indent=2, ensure_ascii=False) + "\n",
         replace=replace,
     )
+    _remember(sha, records)
     return Corpus(name, records, sha, meta)
+
+
+# Corpora parsed lately, by the hash of their file: paging through one, or reading it again for
+# another analysis, skips checking every line again. The hash is of the bytes, so a file that
+# changed is parsed anew.
+_parsed: dict[str, list[TextRecord]] = {}
+PARSED_KEPT = 4
+
+
+def _remember(sha: str, records: list[TextRecord]) -> None:
+    while len(_parsed) >= PARSED_KEPT:
+        _parsed.pop(next(iter(_parsed)), None)
+    _parsed[sha] = records
 
 
 def read_corpus(project: Project, name: str, sha256: str | None = None) -> Corpus:
@@ -258,13 +283,17 @@ def read_corpus(project: Project, name: str, sha256: str | None = None) -> Corpu
             f"The corpus {name} has changed since this was set up (its hash no longer matches). "
             "Import the original texts again, or choose the corpus as it is now."
         )
-    try:
-        text = content.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise CorpusError(
-            f"{name}.jsonl isn't UTF-8 text (byte {exc.start} can't be decoded). Save it as UTF-8."
-        ) from exc
-    records = parse_corpus(text, source=f"{name}.jsonl")
+    records = _parsed.get(sha)
+    if records is None:
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise CorpusError(
+                f"{name}.jsonl isn't UTF-8 text (byte {exc.start} can't be decoded). Save it as "
+                "UTF-8."
+            ) from exc
+        records = parse_corpus(text, source=f"{name}.jsonl")
+        _remember(sha, records)
     meta = None
     if os.path.lexists(info):
         try:
@@ -273,6 +302,66 @@ def read_corpus(project: Project, name: str, sha256: str | None = None) -> Corpu
         except (ProjectError, OSError, ValueError, ValidationError):
             meta = None  # the texts are what count; their description is best effort
     return Corpus(name, records, sha, meta)
+
+
+# Texts on a page of a corpus, as the app pages a dataset's prompts; and the characters of each
+# text a page shows (the rest is read by the analyses, not shown).
+PAGE_SIZE = 100
+SHOWN_CHARS = 2000
+
+
+def search_text(record: TextRecord) -> str:
+    """What a search looks through for one text: the text, its label, id and meta, lowercase, a
+    line between fields so a search never matches across two of them."""
+    fields = [record.text]
+    label = label_text(record.label)
+    if label is not None:
+        fields.append(label)
+    if record.id is not None:
+        fields.append(record.id)
+    for key, value in (record.meta or {}).items():
+        fields.append(f"{key}: {value if isinstance(value, str) else json.dumps(value)}")
+    return "\n".join(fields).lower()
+
+
+def corpus_page(
+    corpus: Corpus, *, query: str = "", page: int = 0, size: int = PAGE_SIZE
+) -> dict[str, Any]:
+    """One page of a corpus's texts, those containing ``query`` (ignoring case; every text when
+    it is empty), each with its index in the corpus. A page past the last shows the last. Long
+    texts are cut to their first SHOWN_CHARS characters, and say so."""
+    q = query.strip().lower()
+    matches = [i for i, r in enumerate(corpus.records) if not q or q in search_text(r)]
+    pages = max(1, -(-len(matches) // size))
+    shown = min(max(0, page), pages - 1)
+    start = shown * size
+    rows = []
+    for i in matches[start : start + size]:
+        record = corpus.records[i]
+        rows.append(
+            {
+                "index": i,
+                "text": record.text[:SHOWN_CHARS],
+                "length": len(record.text),
+                "label": label_text(record.label),
+                "id": record.id,
+                "meta": record.meta,
+            }
+        )
+    meta = corpus.meta
+    return {
+        **corpus.describe(),
+        "labels": corpus.labels(),
+        "source": None if meta is None else meta.source.model_dump(mode="json"),
+        "created": None if meta is None else meta.created,
+        "query": query,
+        "matches": len(matches),
+        "page": shown,
+        "pages": pages,
+        "size": size,
+        "start": start,
+        "texts": rows,
+    }
 
 
 def list_corpora(project: Project) -> list[dict[str, Any]]:

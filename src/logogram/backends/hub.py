@@ -1,7 +1,8 @@
 """Hugging Face Hub access: resolve an exact revision, download with progress, read metadata.
 
 This is the only module that talks to the network, and only when the user starts it (loading a
-model, asking for a memory estimate, or listing a model's revisions to sweep over). Weights are loaded only from safetensors files, which
+model, asking for a memory estimate, listing a model's revisions to sweep over, or importing a
+dataset's file as a corpus). Weights are loaded only from safetensors files, which
 cannot execute code; pickle-based ``.bin`` checkpoints are refused.
 """
 
@@ -53,7 +54,7 @@ def _is_offline_error(exc: Exception) -> bool:
     )
 
 
-def _friendly_hub_error(model_id: str, exc: Exception) -> BackendError:
+def _friendly_hub_error(model_id: str, exc: Exception, what: str = "model") -> BackendError:
     from huggingface_hub.errors import (
         GatedRepoError,
         RepositoryNotFoundError,
@@ -67,8 +68,8 @@ def _friendly_hub_error(model_id: str, exc: Exception) -> BackendError:
         )
     if isinstance(exc, RepositoryNotFoundError):
         return BackendError(
-            f"No model called {model_id} was found on Hugging Face. Check the spelling (ids look "
-            "like owner/name). Private models need `hf auth login` first."
+            f"No {what} called {model_id} was found on Hugging Face. Check the spelling (ids look "
+            f"like owner/name). Private {what}s need `hf auth login` first."
         )
     if isinstance(exc, RevisionNotFoundError):
         return BackendError(
@@ -203,23 +204,27 @@ def cached_snapshot(model_id: str, revision: str | None) -> tuple[str, Path] | N
     return None if found is None else (found[0], found[1].parent)
 
 
-def cached_file(repo_id: str, filename: str, revision: str | None) -> tuple[str, Path] | None:
+def cached_file(
+    repo_id: str, filename: str, revision: str | None, repo_type: str = "model"
+) -> tuple[str, Path] | None:
     """The commit and local path of ``filename`` in the Hugging Face cache, at ``revision``.
 
     Without a revision, the cached main branch; failing that, the only cached commit that has the
     file. Logogram downloads exact commits, which records no branch in the cache, so this is how a
     model it downloaded opens offline. Several commits and no branch would be a guess, so that is
-    refused with the commits to choose from.
+    refused with the commits to choose from. ``repo_type`` is "dataset" for a dataset's file.
     """
     from huggingface_hub import constants, try_to_load_from_cache
     from huggingface_hub.file_download import repo_folder_name
 
     depth = len(Path(filename).parts)
-    found = try_to_load_from_cache(repo_id, filename, revision=revision or "main")
+    found = try_to_load_from_cache(
+        repo_id, filename, revision=revision or "main", repo_type=repo_type
+    )
     if isinstance(found, str):
         return Path(found).parents[depth - 1].name, Path(found)
     snapshots = (
-        Path(constants.HF_HUB_CACHE) / repo_folder_name(repo_id=repo_id, repo_type="model")
+        Path(constants.HF_HUB_CACHE) / repo_folder_name(repo_id=repo_id, repo_type=repo_type)
     ) / "snapshots"
     if revision is not None or not snapshots.is_dir():
         return None
@@ -319,11 +324,14 @@ def download(
     progress: ProgressFn | None = None,
     *,
     cancel: threading.Event | None = None,
+    repo_type: str = "model",
 ) -> Path:
-    """Download the selected files at the pinned revision and return the snapshot folder.
+    """Download the selected files at the pinned revision and return the snapshot folder (the
+    folder of the last file).
 
     Setting ``cancel`` raises ``Cancelled`` within a fraction of a second and stops the transfer;
-    a partial file stays in the cache, where the next attempt resumes it.
+    a partial file stays in the cache, where the next attempt resumes it. ``repo_type`` is
+    "dataset" for a dataset's files.
     """
     from huggingface_hub import hf_hub_download, try_to_load_from_cache
 
@@ -333,7 +341,9 @@ def download(
     for filename, size in repo.files:
         if cancel is not None and cancel.is_set():
             raise Cancelled()
-        cached = try_to_load_from_cache(model_id, filename, revision=repo.revision)
+        cached = try_to_load_from_cache(
+            model_id, filename, revision=repo.revision, repo_type=repo_type
+        )
         if isinstance(cached, str):
             finished += size
             folder = Path(cached).parent
@@ -356,6 +366,7 @@ def download(
                 model_id,
                 _name,
                 revision=repo.revision,
+                repo_type=repo_type,
                 tqdm_class=_make_bar_class(_on, _size),
             )
 
@@ -364,7 +375,7 @@ def download(
         except Cancelled:
             raise
         except Exception as exc:
-            raise _friendly_hub_error(model_id, exc) from exc
+            raise _friendly_hub_error(model_id, exc, repo_type) from exc
         finished += size
         folder = Path(path).parent
         if progress:
@@ -417,6 +428,80 @@ def _abort_xet() -> None:
         abort_xet_session()
     except Exception:
         log.debug("couldn't abort Xet transfers", exc_info=True)
+
+
+# -- a dataset's files, read as corpora (logogram.corpus_import) ------------------------------
+
+
+def dataset_files(repo: str, revision: str | None) -> tuple[str, list[tuple[str, int]]]:
+    """The exact commit of a dataset repository at ``revision`` (its main branch when None), and
+    its files with their sizes in bytes. One request to Hugging Face, made when the person asks."""
+    from huggingface_hub import HfApi
+
+    try:
+        info = HfApi().dataset_info(repo, revision=revision, files_metadata=True)
+    except Exception as exc:
+        if _is_offline_error(exc):
+            raise BackendError(
+                f"Couldn't reach Hugging Face to list the files of {repo}. Connect to the "
+                "internet, or type the path of a file already downloaded."
+            ) from exc
+        raise _friendly_hub_error(repo, exc, "dataset") from exc
+    if not info.sha:
+        raise BackendError(
+            f"Hugging Face didn't say which commit of {repo} it describes. Try again, or give "
+            "the revision."
+        )
+    files = sorted((s.rfilename, int(s.size or 0)) for s in info.siblings or [])
+    return str(info.sha), files
+
+
+def download_dataset_file(
+    repo: str,
+    path: str,
+    revision: str | None,
+    progress: ProgressFn | None = None,
+    *,
+    cancel: threading.Event | None = None,
+    limit: int | None = None,
+) -> tuple[str, Path]:
+    """One file of a dataset repository, downloaded once into the Hugging Face cache at the exact
+    commit ``revision`` resolves to: that commit and the file's local path. Offline (or with
+    HF_HUB_OFFLINE set), the cached copy at that revision, or of the only cached commit that has
+    it. A file larger than ``limit`` bytes is refused before anything is downloaded."""
+    from huggingface_hub import HfApi
+
+    try:
+        info = HfApi().dataset_info(repo, revision=revision, files_metadata=True)
+    except Exception as exc:
+        if _is_offline_error(exc):
+            found = cached_file(repo, path, revision, repo_type="dataset")
+            if found is not None:
+                return found
+            raise BackendError(
+                f"Couldn't reach Hugging Face, and {path} of {repo} isn't in your local cache. "
+                "Connect to the internet to download it once."
+            ) from exc
+        raise _friendly_hub_error(repo, exc, "dataset") from exc
+    sizes = {s.rfilename: int(s.size or 0) for s in info.siblings or []}
+    sha = str(info.sha or "")
+    if not sha:
+        raise BackendError(f"Hugging Face didn't say which commit of {repo} it describes.")
+    if path not in sizes:
+        near = [name for name in sizes if name.rsplit("/", 1)[-1] == path.rsplit("/", 1)[-1]]
+        hint = f" Did you mean {near[0]}?" if near else ""
+        raise BackendError(
+            f"{repo} has no file {path} at {sha[:7]}.{hint} List its files and choose one."
+        )
+    if limit is not None and sizes[path] > limit:
+        raise BackendError(
+            f"{path} is {sizes[path] / 1e9:.1f} GB; Logogram reads files of a dataset up to "
+            f"{limit / 1e9:.0f} GB. Choose a smaller file (large datasets are usually split into "
+            "several)."
+        )
+    files = RepoFiles(revision=sha, files=[(path, sizes[path])], n_params=None, gated=False)
+    folder = download(repo, files, progress, cancel=cancel, repo_type="dataset")
+    return sha, folder / path.rsplit("/", 1)[-1]
 
 
 @dataclass
