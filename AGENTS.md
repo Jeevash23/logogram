@@ -112,6 +112,10 @@ src/logogram/
   edges.py             edge attribution (EAP, EAP-IG), edge patching and the faithfulness curve
   features.py          SAE features: patching and attribution patching
   sae.py               SAE encode, decode and fit
+  sae_training.py      TopK SAEs trained in the project from a training spec (saes/NAME)
+  lenses.py            tuned lenses trained in the project from a training spec (lenses/NAME)
+  training.py          what both share: a corpus's texts split and ordered by seed, folders
+                       written whole or not at all
   stats.py             bootstrap (over prompts or clusters), bands, q-values, paired differences
   results.py           summary.json and results.parquet
   runs.py              the per-prompt evidence behind one site's number

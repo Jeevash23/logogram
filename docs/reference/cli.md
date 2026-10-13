@@ -233,12 +233,12 @@ logogram lens list [OPTIONS]
 Train a tuned lens (an affine translator per layer, read through the model's final normalization and unembedding) on a corpus of the project, and save it as lenses/NAME. The same spec on the same machine gives the same translators, bit for bit.
 
 ```text
-logogram lens train [OPTIONS] [[SPEC.json]]
+logogram lens train [OPTIONS] [SPEC.json]
 ```
 
 | Argument | Takes | Description |
 |---|---|---|
-| `[SPEC.json]` | path | A training spec. Leave it out to state every choice with the options instead. |
+| `SPEC.json` | path | A training spec. Leave it out to state every choice with the options instead. |
 
 | Option | Takes | Default | Description |
 |---|---|---|---|
@@ -510,12 +510,12 @@ logogram sae list [OPTIONS]
 Train a TopK SAE on one site of one layer, on a corpus of the project, and save it as saes/NAME (in SAELens's format, with training.json and metrics.json). The same spec on the same machine gives the same weights, bit for bit.
 
 ```text
-logogram sae train [OPTIONS] [[SPEC.json]]
+logogram sae train [OPTIONS] [SPEC.json]
 ```
 
 | Argument | Takes | Description |
 |---|---|---|
-| `[SPEC.json]` | path | A training spec. Leave it out to state every choice with the options instead. |
+| `SPEC.json` | path | A training spec. Leave it out to state every choice with the options instead. |
 
 | Option | Takes | Default | Description |
 |---|---|---|---|

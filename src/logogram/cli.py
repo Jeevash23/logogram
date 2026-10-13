@@ -2250,7 +2250,7 @@ lens_app = typer.Typer(
 app.add_typer(lens_app, name="lens")
 
 SpecArgument = typer.Argument(
-    metavar="[SPEC.json]",
+    metavar="SPEC.json",
     help="A training spec. Leave it out to state every choice with the options instead.",
 )
 
@@ -2716,9 +2716,21 @@ def lens_list(project_dir: Annotated[Path | None, ProjectOption] = None) -> None
         if x["error"]:
             typer.echo(f"{x['name']}  can't be read: {x['error']}")
             continue
+        # The held-out KL divergence over the layers it trained, through each lens.
+        rows = [
+            row
+            for row in (x.get("held_out") or {}).get("layers") or []
+            if isinstance(row, dict) and isinstance(row.get("tuned_lens"), int | float)
+        ]
+        kl = (
+            f"held-out KL {sum(r['logit_lens'] for r in rows) / len(rows):.4f} with the logit "
+            f"lens, {sum(r['tuned_lens'] for r in rows) / len(rows):.4f} with this one · "
+            if rows
+            else ""
+        )
         typer.echo(
             f"{x['name']}  layers {', '.join(map(str, x['layers'] or []))} · "
-            f"{(x.get('model') or {}).get('id')} · {str(x['sha256'])[:12]}"
+            f"{(x.get('model') or {}).get('id')} · {kl}{str(x['sha256'])[:12]}"
         )
 
 

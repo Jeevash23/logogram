@@ -31,12 +31,14 @@ a diverging cobalt to amber scale, always with its legend, and nothing else does
   intervention to measure.
 * **Layer predictions** reads what each layer would predict through the model's final
   normalization and unembedding, the [logit lens](concepts/logit-lens-and-model-checks.md), for
-  models where that reproduces their output.
+  models where that reproduces their output, or through a [tuned lens](concepts/tuned-lens.md)
+  trained in the project (**Train a tuned lens…**).
 * **Features** finds a published sparse autoencoder or transcoder by its release and id, in the
   catalogue of SAELens's registry that ships with Logogram, or by its Hugging Face repository and
-  folder, loads it, measures how well it fits your prompts, and lists the features that fire on
-  each token, with what one feature writes into the logits and the prompts where it fires most
-  (see [SAE features](concepts/sae-features.md)).
+  folder, or one [trained in the project](concepts/sae-training.md) (**Train an SAE…**), loads
+  it, measures how well it fits your prompts, and lists the features that fire on each token, with
+  what one feature writes into the logits and the prompts where it fires most (see
+  [SAE features](concepts/sae-features.md)).
 * **Your text** reads any text without making a dataset: its tokens and the model's most likely
   next tokens after each, what each layer would predict at a chosen token, where a head attends,
   the SAE's features when one is loaded, and **Continue the text**, which shows what the model

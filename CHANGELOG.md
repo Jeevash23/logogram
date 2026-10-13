@@ -4,6 +4,53 @@ What changed in each version of Logogram.
 
 ## Unreleased
 
+### Added
+
+- **SAEs trained in the project.** A TopK SAE (Gao et al. 2024) on one site of one layer
+  (`resid_pre`, `resid_post`, `attn_out` or `mlp_out`), trained on a corpus of the project.
+  - A training spec (`logogram_sae_training: 1`) states every choice that can change the weights,
+    with no default: the model, the corpus by name and hash, the tokenization, the site and layer,
+    k and the number of features, the steps and tokens per step, the learning rate, Adam's betas
+    and epsilon, the seed, the held-out share, the normalization (to a mean squared norm of the
+    width, its factor recorded and folded into the saved weights) and the optional AuxK loss.
+  - The same spec on the same machine gives the same weights, bit for bit: seeded generators,
+    fixed batches, float32 and deterministic algorithms throughout.
+  - The decoder's rows keep unit length (the gradient along each is projected out, and each is
+    made unit length again after every step), and the decoder's bias starts at the activations'
+    mean.
+  - It is saved as `saes/NAME` in SAELens's format, read back by the same reader as published
+    SAEs, with `training.json` (its spec, pinned) and `metrics.json`: the loss curve and, on
+    held-out texts, the variance explained, the features that fire per token, the share that
+    never fire, and the next-token loss recovered.
+  - A spec's `sae` gains `source` (`hub` or `project`) and `sha256`. An SAE trained in the project
+    is named by its folder and the hash of its files, which a run pins when it starts, and is
+    refused if they have changed. Version 3 specs read with `source` `hub`.
+  - In the app, **Features** lists the SAEs trained in the project and offers **Train an SAE…**.
+    The dialog shows every choice, then what training would take on this machine (texts, tokens,
+    memory, and time measured there) or why it can't train. It follows the training's progress
+    and loss curve, shows what was measured, and offers **Load this SAE**. A cancelled training
+    writes nothing.
+  - `logogram sae train` (a spec, or options that state every choice), `logogram sae list`,
+    `lg.train_sae` and `lg.load_sae(NAME, project=project, model=model)`.
+- **Tuned lenses** (Belrose et al. 2023). An affine translator per layer, starting as the identity,
+  trained on a corpus of the project to minimize the KL divergence from the model's own
+  next-token distribution.
+  - A training spec (`logogram_lens_training: 1`) states every choice, with no default, and the
+    same spec on the same machine gives the same translators, bit for bit.
+  - It is saved as `lenses/NAME`: `lens.safetensors`, `training.json`, and `metrics.json` with the
+    loss curve and each layer's held-out KL divergence through the logit lens and through the
+    tuned lens.
+  - The layer predictions gain the method `tuned_lens` and `lens`, the lens's name and the hash
+    of its file, pinned when a run starts. Version 3 specs read with `lens` null. A lens trained
+    on another model, with TransformerLens's weight processing the other way, or of another
+    width is refused.
+  - **Layer predictions** chooses between the logit lens and a tuned lens, marks how each layer
+    was read, and offers **Train a tuned lens…**.
+  - `logogram lens train`, `logogram lens list` and `lg.train_lens`.
+- **Documentation**: pages on training an SAE and on the tuned lens (what is computed, every
+  choice, where it can mislead), a guide to training an SAE and a tuned lens and using them, and
+  a reference of the training specs, generated from the code.
+
 ### Fixed
 
 - When edge attribution's batch didn't fit in memory, the batch size it suggested could still be

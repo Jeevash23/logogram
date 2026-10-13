@@ -13,9 +13,9 @@ can change the weights, with no default for any of them. Training:
    are held in memory, in float32;
 3. with ``normalize`` "mean_squared_norm", multiplies every activation by one factor, chosen so
    that their mean squared norm is ``d_in`` (as SAELens's "expected_average_only_in" does);
-4. initializes the decoder's rows as random directions of unit length, the encoder as the
-   decoder's transpose, the encoder's bias at zero and the decoder's bias at the mean activation
-   (Gao et al.);
+4. initializes the decoder's rows as random directions of unit length and the encoder as the
+   decoder's transpose (Gao et al.), the encoder's bias at zero and the decoder's bias at the mean
+   activation (where Bricken et al. and Gao et al. take the geometric median);
 5. takes ``steps`` steps of Adam, each on ``batch_tokens`` tokens drawn in a seeded order (a new
    order each time every token has been read). Each step minimizes the batch's fraction of
    variance unexplained, ``Σ‖x − x̂‖² / Σ‖x − x̄‖²``, plus, with ``auxk``, ``coefficient`` times the
@@ -340,8 +340,8 @@ class _Weights:
 
 
 def initial_weights(d_in: int, d_sae: int, mean: torch.Tensor, seed: int) -> _Weights:
-    """Decoder rows: random directions of unit length; the encoder: their transpose; the
-    encoder's bias zero; the decoder's bias the activations' mean (Gao et al. 2024). Drawn on the
+    """Decoder rows: random directions of unit length; the encoder: their transpose (Gao et
+    al. 2024); the encoder's bias zero; the decoder's bias the activations' mean. Drawn on the
     CPU, in float32."""
     generator = torch.Generator().manual_seed(sub_seed(seed, 2))
     W_dec = torch.randn(d_sae, d_in, generator=generator, dtype=torch.float32)

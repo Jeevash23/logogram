@@ -496,7 +496,8 @@ class SpecPage:
             "off, which is what they did: no chat template, a model from Hugging Face, and steering "
             "along the mean difference without continuations. Version 3 specs (Logogram 0.5 and "
             "0.6) read as version 4 with what version 4 adds turned off: the SAE a spec names is "
-            "a published one, and the layer predictions read the logit lens.",
+            "a published one, and the layer predictions read the logit lens. Version 4 also adds "
+            "methods and sources that a version 3 spec can't name.",
             "",
             "Objects that come in several kinds (an experiment, a scope, a position, ...) say which "
             "with their `kind`, and each kind has fields of its own.",

@@ -119,6 +119,7 @@ def test_a_lens_trains_from_the_command_line(cli_project):
     assert "Saved lenses/cli-lens" in result.output and "layer   0" in result.output
     listed = CliRunner().invoke(cli, ["lens", "list", "--project", str(root)])
     assert listed.exit_code == 0 and "cli-lens" in listed.output
+    assert "with the logit lens" in listed.output and "with this one" in listed.output
 
 
 def test_training_from_python(cli_project, tiny_backend):

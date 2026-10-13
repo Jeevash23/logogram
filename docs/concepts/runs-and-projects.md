@@ -17,9 +17,13 @@ my-project/
   experiments/<id>/summary.json      each site's statistics, and the layout of the results
   experiments/<id>/manifest.json     versions, device, dtype, model revision, dataset hash, timing
   experiments/<id>/annotations.json  a title, a star or the archive mark, when given
-  experiments/<id>/predictions.json  the optional logit lens
+  experiments/<id>/predictions.json  the optional layer predictions (logit lens or tuned lens)
   experiments/<id>/continuations.json  what a steered model went on to say, when asked
   experiments/<id>/traceback.txt     a failed run's traceback, without this machine's paths
+  saes/<name>/                       an SAE trained in the project, in SAELens's format, with its
+                                     training spec and what it measured
+  lenses/<name>/                     a tuned lens trained in the project, with its training spec
+                                     and what it measured
   .logogram/queue.json               the project's run queue (git ignores it)
 ```
 

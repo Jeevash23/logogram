@@ -29,8 +29,10 @@ method comes from.
 | [Direct logit attribution](concepts/direct-logit-attribution.md) | Splitting the logit difference into what each component, neuron or value writes |
 | [Steering](concepts/steering.md) | Adding a direction to the residual stream, with held-out prompts and a random control |
 | [SAE features and transcoders](concepts/sae-features.md) | Finding a published SAE by name, sparse autoencoders, transcoders, patching features, what a feature writes |
+| [Training an SAE](concepts/sae-training.md) | A TopK SAE trained in the project on a corpus, deterministically: every choice, what is measured on held-out text, where it can mislead |
 | [Circuits](concepts/circuits.md) | Sets of sites intervened on at once: faithfulness, completeness, minimality, interactions |
 | [The logit lens and the model checks](concepts/logit-lens-and-model-checks.md) | Reading each layer's prediction, and what Logogram measures about a model when it loads |
+| [The tuned lens](concepts/tuned-lens.md) | An affine translator per layer, trained in the project to read each layer's prediction more faithfully than the logit lens |
 | [Runs and projects](concepts/runs-and-projects.md) | What a run keeps, a run that stops early, reproducibility, the files of a project |
 
 ## How-to guides
@@ -41,6 +43,7 @@ method comes from.
 | [Find induction heads](guides/find-induction-heads.md) | Score every head with the head finder in the Attention view |
 | [Check a method on a toy model](guides/toy-models.md) | Two models whose circuits are known, and what each method should find on them |
 | [Work with an SAE](guides/work-with-an-sae.md) | Find a published SAE by name and load it, check its fit, read and patch its features, steer along one |
+| [Train an SAE](guides/train-an-sae.md) | Train an SAE and a tuned lens on your own texts, read what they measured, and use them |
 | [Check a finding's robustness](guides/check-robustness.md) | Rerun with one choice changed, and read what moved |
 | [Compare two runs](guides/compare-runs.md) | Paired differences, rank correlation and changed conclusions |
 | [Sweep seeds, datasets or checkpoints](guides/sweeps.md) | Run one spec across several values, and read which sites hold |
@@ -56,6 +59,8 @@ Generated from the code (`uv run python scripts/build_reference.py` writes them 
 
 * [The spec](reference/spec.md): every field of `spec.json`, with its type, allowed values and
   description.
+* [The training specs](reference/training.md): every field of the specs that train an SAE or a
+  tuned lens in the project.
 * [The command line](reference/cli.md): every command and option.
 * [The Python API](reference/python-api.md): every public function and class of
   `import logogram as lg`.
