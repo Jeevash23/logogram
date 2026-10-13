@@ -4,6 +4,7 @@ patching, estimates against path patching, the faithfulness curve, and runs end 
 from __future__ import annotations
 
 import json
+import re
 import threading
 from typing import Any
 
@@ -20,6 +21,7 @@ from logogram.edges import (
     _Patcher,
     build_graph,
     count_edges,
+    edge_cost,
     edge_verification_spec,
     random_orders,
     sender_keys,
@@ -563,8 +565,36 @@ def test_a_graph_too_large_to_keep_is_refused(
         run_experiment(edge_spec(spec_factory), tiny_backend, prompts)
     monkeypatch.setattr("logogram.edges.MAX_VALUES", 10_000_000)
     monkeypatch.setattr("logogram.edges.free_memory", lambda device: 1000)
-    with pytest.raises(EngineError, match=r"Lower execution\.batch_size"):
+    with pytest.raises(EngineError, match=r"Even one prompt .* Choose fewer layers"):
         run_experiment(edge_spec(spec_factory), tiny_backend, prompts)
+
+
+def test_the_batch_size_a_memory_refusal_suggests_fits(
+    tiny_backend: Any, project: Any, spec_factory: Any, monkeypatch: Any
+) -> None:
+    """Memory grows with the prompts a batch holds. With a batch size larger than any group of
+    prompts of one length, a batch holds the largest group: the refusal names that batch, and
+    the size it suggests, applied, fits."""
+    prompts = _prompts(tiny_backend, project)
+    data = edge_spec(spec_factory).model_dump(mode="json")
+    data["execution"]["batch_size"] = 1000
+    spec = Spec.model_validate(data)
+    assert isinstance(spec.scope, GraphScope)
+    graph = build_graph(tiny_backend.info, spec.scope)
+    cost = edge_cost(graph, tiny_backend.info, group_by_length(prompts), 1000, spec.experiment)
+    rows = cost["largest_batch"]
+    assert 2 <= rows < 1000
+    # Room for about half of the largest batch.
+    free = int(cost["memory_per_batch"] / rows * (rows // 2) / 0.8)
+    monkeypatch.setattr("logogram.edges.free_memory", lambda device: free)
+    with pytest.raises(EngineError, match=rf"The largest batch, {rows} prompts,") as refused:
+        run_experiment(spec, tiny_backend, prompts)
+    found = re.search(r"execution\.batch_size to (\d+) or fewer", str(refused.value))
+    assert found is not None
+    suggested = int(found.group(1))
+    assert 1 <= suggested < rows
+    data["execution"]["batch_size"] = suggested
+    run_experiment(Spec.model_validate(data), tiny_backend, prompts)
 
 
 # -- the curve -------------------------------------------------------------------------------------

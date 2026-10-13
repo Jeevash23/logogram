@@ -2,6 +2,15 @@
 
 What changed in each version of Logogram.
 
+## Unreleased
+
+### Fixed
+
+- When edge attribution's batch didn't fit in memory, the batch size it suggested could still be
+  too large: it scaled the batch size in the spec, though a batch holds no more prompts than the
+  largest group of prompts of one length. It now names the batch that runs and scales that, and
+  says when not even one prompt fits.
+
 ## 0.6.0 (2026-10-12)
 
 Interventions on single queries, keys, values and neurons, and on the edges between components,
