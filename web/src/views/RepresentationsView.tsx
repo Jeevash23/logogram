@@ -376,7 +376,8 @@ export function RepresentationsView() {
         {stale && <p className={s.small}>The choices changed since these were found: press Find to read them again.</p>}
       </section>
 
-      {shown && !stale && request.body && <Components result={shown} request={request.body} />}
+      {/* Each reading starts its own panel: the classes and names it offers are its own. */}
+      {shown && !stale && request.body && <Components key={kept.request ?? ""} result={shown} request={request.body} />}
 
       <DirectionsList />
     </div>
