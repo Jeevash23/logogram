@@ -1344,7 +1344,7 @@ class ReadoutMetric(_Strict):
     Normalized like the other metrics, an effect of 1 means the intervention moves the value as
     far as switching from the receiver prompt to the other prompt does. A site later in the model
     than the value (a later layer, or a later part of the same layer) can't change it, so its
-    effect is exactly 0."""
+    effect is 0."""
 
     kind: Literal["readout"] = "readout"
     unit: Readout

@@ -56,7 +56,8 @@ def test_scaling_by_one_changes_nothing_and_by_zero_is_zero_ablation(project, ti
         tiny_backend,
         experiment={"kind": "ablation", "baseline": {"kind": "scale", "factor": 1.0}},
     )
-    assert all(s["delta"]["mean"] == 0.0 for s in one.summary["sites"])
+    # Runs in batches of other shapes can differ in the last bits (as tests/test_sanity.py allows).
+    assert all(s["delta"]["mean"] == pytest.approx(0.0, abs=1e-6) for s in one.summary["sites"])
     zero = _run(
         project,
         tiny_backend,
@@ -199,8 +200,8 @@ def test_a_readout_patched_at_its_own_site_moves_all_the_way(project, tiny_backe
         },
     )
     by_layer = {s["layer"]: s["effect"]["mean"] for s in outcome.summary["sites"]}
-    assert by_layer[0] == pytest.approx(1.0, abs=1e-9)  # the value read is the value patched
-    assert by_layer[1] == 0.0  # after the readout: it can't change it
+    assert by_layer[0] == pytest.approx(1.0, abs=1e-6)  # the value read is the value patched
+    assert by_layer[1] == pytest.approx(0.0, abs=1e-6)  # after the readout: it can't change it
     assert any("can't change it" in w for w in outcome.summary["warnings"])
 
 
@@ -390,7 +391,8 @@ def test_das_learns_a_subspace_measured_against_the_whole_site(project, tiny_bac
     das_values = _values(outcome)
     assert full
     for s in full:
-        assert np.array_equal(das_values[s["index"]], every[s["row"]][held_out])
+        # The same patch, in batches of the held-out pairs only: equal up to float32 rounding.
+        np.testing.assert_allclose(das_values[s["index"]], every[s["row"]][held_out], atol=1e-5)
     # Saved as a direction of two dimensions.
     learned = next(s for s in summary["sites"] if s["variant_key"] == "learned")
     saved = save_run_direction(project, outcome.run_id, learned["index"], "s2-subspace")
@@ -441,7 +443,7 @@ def test_steering_along_a_saved_direction(project, tiny_backend):
         },
     )
     zero = next(s for s in outcome.summary["sites"] if s["variant"]["coefficient"] == 0.0)
-    assert zero["delta"]["mean"] == 0.0  # strength 0 adds nothing
+    assert zero["delta"]["mean"] == pytest.approx(0.0, abs=1e-6)  # strength 0 adds nothing
 
 
 # -- reading these runs ---------------------------------------------------------------------------

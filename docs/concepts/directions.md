@@ -42,7 +42,7 @@ was found on another model or revision of the same width: it may not mean the sa
 activation along the direction from the other prompt of the pair, and keeps everything at right
 angles to it: receiver + ((source − receiver) · Dᵀ) · D. Beside patching the whole site (**Check
 robustness → Patch the whole site**), it says how much of the site's effect the direction carries.
-With every dimension of the space, it is activation patching exactly.
+With every dimension of the space it is activation patching, up to rounding.
 
 **Directional ablation** (an ablation with `"baseline": {"kind": "projection", ...}`) removes the
 component along the direction, x − (x · Dᵀ) · D, or with a `reference` sets it to its mean over the

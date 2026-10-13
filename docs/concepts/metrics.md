@@ -89,7 +89,7 @@ Patching and ablation then ask what drives that value: which earlier heads, MLPs
 write the neuron, the direction or the feature. Effects are normalized like any other metric's,
 so 1 means the intervention moves the value as far as switching to the other prompt does. A site
 later in the model than the value (a later layer, or a later part of the same layer) can't change
-it, so its effect is exactly 0, and the run says so.
+it, so its effect is 0, and the run says so.
 
 Readouts work with methods that run the model forward (activation patching, ablation and subspace
 patching), on sites rather than on SAE features or sets of sites. Attribution patching and the
