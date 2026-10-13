@@ -106,12 +106,16 @@ export function nearestPoint(points: RepresentationPoint[], scale: ScatterScale,
   return best;
 }
 
+/** Which prompt or text a point is, and its class. */
+export function pointLabel(point: RepresentationPoint): string {
+  const which = point.side ? `Prompt ${point.index} (${point.side})` : `Text ${point.index}`;
+  return point.mark !== null && point.mark !== point.side ? `${which} · ${point.mark}` : which;
+}
+
 /** A point in words: which prompt or text it is, its class, and the start of its text. */
 export function pointText(point: RepresentationPoint, max = 140): string {
-  const which = point.side ? `Prompt ${point.index} (${point.side})` : `Text ${point.index}`;
-  const mark = point.mark !== null && point.mark !== point.side ? ` · ${point.mark}` : "";
   const text = point.text.length > max ? `${point.text.slice(0, max)}…` : point.text;
-  return `${which}${mark}: ${text}`;
+  return `${pointLabel(point)}: ${text}`;
 }
 
 /** A share of variance as a percentage, with a decimal while it is small. */

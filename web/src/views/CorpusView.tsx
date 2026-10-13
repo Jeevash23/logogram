@@ -1023,7 +1023,10 @@ function Examples({ title, examples, color, bos }: { title: string; examples: To
                   </Button>
                 )}
               </div>
-              <p className={c.window} aria-label={`The text around token ${e.position}: ${plain}`}>
+              <p className={c.window}>
+                <span className="visually-hidden">
+                  The text around token {e.position}: {plain}
+                </span>
                 {e.tokens.map((token, i) => {
                   const v = e.values[i];
                   const bg = v === null ? "transparent" : color(Math.abs(v));

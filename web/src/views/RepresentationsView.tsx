@@ -25,6 +25,7 @@ import {
   keyboardOrder,
   MARKED_CLASSES,
   nearestPoint,
+  pointLabel,
   pointText,
   scatterScale,
   type ClassMark,
@@ -430,7 +431,7 @@ function Components({ result, request }: { result: Representations; request: Rep
           {point && (
             <div className={r.point} aria-live="polite">
               <div className={s.small}>
-                {pointText(point, 0).replace(/: $/, "")} · component {axes[0] + 1} {num(point.coords[axes[0]], 3)}, component {axes[1] + 1} {num(point.coords[axes[1]], 3)}
+                {pointLabel(point)} · component {axes[0] + 1} {num(point.coords[axes[0]], 3)}, component {axes[1] + 1} {num(point.coords[axes[1]], 3)}
               </div>
               <p className={r.pointText}>{point.text}</p>
             </div>

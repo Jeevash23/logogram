@@ -30,6 +30,7 @@ import {
   keyboardOrder,
   MARKED_CLASSES,
   nearestPoint,
+  pointLabel,
   pointText,
   scatterScale,
 } from "../src/lib/representations";
@@ -173,6 +174,7 @@ test("the scatter's scale keeps zero in view, and the keyboard and the pointer f
 
 test("a point and an export are described in words", () => {
   expect(pointText(point(3, [0], "clean", "clean"))).toBe("Prompt 3 (clean): text 3");
+  expect(pointLabel(point(3, [0], "ABBA", "corrupt"))).toBe("Prompt 3 (corrupt) · ABBA");
   expect(pointText(point(3, [0], "ABBA", "corrupt"))).toBe("Prompt 3 (corrupt) · ABBA: text 3");
   expect(pointText({ ...point(7, [0], "pos"), text: "x".repeat(200) }, 10)).toBe("Text 7 · pos: xxxxxxxxxx…");
   expect(explainedText(0.4567)).toBe("46%");
