@@ -339,9 +339,14 @@ class AppState:
             raise Missing("Open a project first.")
         return self.project
 
-    def project_changed(self, project: Project) -> None:
-        """Tell the tabs showing ``project`` to read it again (its name or its datasets)."""
-        payload = {"project_session": project.session_id}
+    def project_changed(
+        self, project: Project, dataset: str | None = None, to: str | None = None
+    ) -> None:
+        """Tell the tabs showing ``project`` to read it again: its name, or its datasets after
+        the file ``dataset`` was renamed ``to`` another path or deleted (``to`` None)."""
+        payload: dict[str, Any] = {"project_session": project.session_id}
+        if dataset is not None:
+            payload["dataset"] = {"path": dataset, "to": to}
         self.hub.publish("project.changed", validate_event("project.changed", payload))
 
     def rename_project(self, name: str) -> Project:
@@ -362,19 +367,20 @@ class AppState:
         with self._job_lock:
             self.require_project()
             rel = delete_dataset(project, name)
-        self.project_changed(project)
+        self.project_changed(project, rel)
         return rel
 
     def rename_dataset(self, name: str, new: str) -> str:
         """Give a dataset file of the open project another name (see
         logogram.datasets.rename_dataset). Returns its new path."""
-        from logogram.datasets import rename_dataset
+        from logogram.datasets import existing_dataset, rename_dataset
 
         project = self.require_project()
         with self._job_lock:
             self.require_project()
+            old = f"datasets/{existing_dataset(project, name).name}"
             rel = rename_dataset(project, name, new)
-        self.project_changed(project)
+        self.project_changed(project, old, rel)
         return rel
 
     def project_at(self, path: str | None) -> Project:

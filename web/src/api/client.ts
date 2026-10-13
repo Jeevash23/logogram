@@ -7,8 +7,10 @@ import type {
   ChatWrapped,
   LocalModel,
   Comparison,
+  DatasetChanged,
   DatasetCreated,
   DatasetDetail,
+  DeletionPlan,
   DeriveRequest,
   DeviceCheck,
   EdgePlan,
@@ -208,9 +210,18 @@ export const api = {
   folders: (path?: string) =>
     get<FolderListing>(`/api/fs${path ? `?path=${encodeURIComponent(path)}` : ""}`),
   recent: () => get<RecentProject[]>("/api/projects/recent"),
+  /** Take a project out of the recent list (its folder is left as it is). */
+  forgetRecent: (path: string) => request<RecentProject[]>("DELETE", `/api/projects/recent?path=${encodeURIComponent(path)}`),
   createProject: (name: string, parent: string | null) =>
     post<ProjectInfo>("/api/projects", { name, parent }),
   openProject: (path: string) => post<ProjectInfo>("/api/projects/open", { path }),
+  /** Give the open project another name (its project.json; its folder keeps its name). */
+  renameProject: (name: string) => request<ProjectInfo>("PATCH", "/api/project", { name }),
+  /** What deleting the project in this folder would delete, and what stops it. */
+  deletionPlan: (path: string) => get<DeletionPlan>(`/api/projects/deletion?path=${encodeURIComponent(path)}`),
+  /** Delete the project in this folder for good, its name typed; the open project is closed first. */
+  deleteProject: (path: string, name: string) =>
+    request<RecentProject[]>("DELETE", `/api/projects?path=${encodeURIComponent(path)}&name=${encodeURIComponent(name)}`),
   examples: () => get<ExampleInfo[]>("/api/examples"),
   /** Copy a bundled example into the projects folder, once, and open it (a copy is never replaced). */
   openExample: (example: string) => post<ProjectInfo>("/api/projects/example", { example }),
@@ -234,6 +245,11 @@ export const api = {
     post<DatasetCreated>("/api/datasets/pair", body),
   /** Save a dataset's prompt pairs, some edited and some left out, as a new dataset. */
   deriveDataset: (body: DeriveRequest) => post<DatasetCreated>("/api/datasets/derive", body),
+  /** Give a dataset file another name; refused while a draft or a queued run names it. */
+  renameDataset: (name: string, newName: string) =>
+    post<DatasetChanged>(`/api/datasets/${encodeURIComponent(name)}/rename`, { name: newName }),
+  /** Delete a dataset file; runs that ran on it keep their own copy of its prompts. */
+  deleteDataset: (name: string) => request<DatasetChanged>("DELETE", `/api/datasets/${encodeURIComponent(name)}`),
   /** The metric decides whether answers of several tokens can be read. */
   tokenize: (body: { dataset?: string; index?: number; record?: PromptRecord; metric: MetricSpec } & AnalysisOptions) =>
     post<TokenStripData>("/api/tokenize", body),

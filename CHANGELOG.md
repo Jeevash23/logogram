@@ -8,18 +8,21 @@ What changed in each version of Logogram.
 
 - **Managing projects.**
   - Rename a project: its project.json says the new name, and its folder keeps its own
-    (`logogram project rename NAME`, `project.rename(name)`).
+    (**Rename project…** in the project menu, `logogram project rename NAME`,
+    `project.rename(name)`).
   - Delete a project: its folder and everything in it, for good, once its name is typed
-    (`logogram project delete`, `lg.delete_project`). Refused while a run is in progress in it or
-    its queue is being run, and when the folder holds anything Logogram doesn't make there (a
-    repository, say), listing what.
-  - Take a project out of the recent list; its folder is left as it is (`logogram projects`
-    lists them, `logogram projects forget PATH`).
+    (**Delete project…** in the project menu and in a recent project's menu, `logogram project
+    delete`, `lg.delete_project`). Refused while a run is in progress in it or its queue is being
+    run, and when the folder holds anything Logogram doesn't make there (a repository, say),
+    listing what.
+  - Take a project out of the recent list; its folder is left as it is (**Remove from the list**
+    in the Projects screen, `logogram projects` and `logogram projects forget PATH`).
   - `logogram new NAME [--parent DIR]` creates a project, as the app's Create project does.
-- **Managing datasets.** Rename or delete a dataset file (`logogram datasets`, `logogram datasets
-  rename NAME NEW`, `logogram datasets delete NAME`, `lg.rename_dataset`, `lg.delete_dataset`).
-  Runs that ran on it keep their own copy of its prompts. Refused while a saved draft or a queued
-  run names it, naming them.
+- **Managing datasets.** Rename or delete a dataset file: in the dataset menu of the header and
+  in the Prompts view, or with `logogram datasets`, `logogram datasets rename NAME NEW`,
+  `logogram datasets delete NAME`, `lg.rename_dataset` and `lg.delete_dataset`. Runs that ran on
+  it keep their own copy of its prompts. Refused while a saved draft or a queued run names it,
+  naming them. Every tab showing the dataset follows it to its new name.
 - `lg.with_model(spec, model)`: the spec with its model replaced by a loaded model, as it was
   loaded (its files, the exact revision, dtype, device and weight processing), to run the spec on
   that model.

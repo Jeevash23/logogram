@@ -136,7 +136,8 @@ def test_a_dataset_is_renamed_and_deleted_in_the_app(
     assert not (project.datasets_dir / "ioi.jsonl").exists()
     assert file_sha256(project.datasets_dir / "names.jsonl") == sha  # the same prompts
     session = app.state.logogram.project.session_id
-    assert ("project.changed", {"project_session": session}) in seen
+    change = {"path": "datasets/ioi.jsonl", "to": "datasets/names.jsonl"}
+    assert ("project.changed", {"project_session": session, "dataset": change}) in seen
     names = [d["name"] for d in client.get("/api/project", headers=tab).json()["datasets"]]
     assert names == ["mixed.jsonl", "names.jsonl"]
     taken = client.post("/api/datasets/names/rename", json={"name": "mixed"}, headers=tab)
@@ -147,6 +148,8 @@ def test_a_dataset_is_renamed_and_deleted_in_the_app(
 
     deleted = client.delete("/api/datasets/names.jsonl", headers=tab)
     assert deleted.status_code == 200 and deleted.json()["path"] == "datasets/names.jsonl"
+    change = {"path": "datasets/names.jsonl", "to": None}
+    assert ("project.changed", {"project_session": session, "dataset": change}) in seen
     assert not (project.datasets_dir / "names.jsonl").exists()
     missing = client.delete("/api/datasets/names.jsonl", headers=tab)
     assert missing.status_code == 400

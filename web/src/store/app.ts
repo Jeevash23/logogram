@@ -292,6 +292,9 @@ interface Store {
   refreshProject: () => Promise<void>;
   refreshRuns: () => Promise<void>;
   selectDataset: (path: string | null, source?: "run" | "form") => Promise<void>;
+  /** A dataset file renamed (`to` its new path) or deleted (`to` null), here or in another tab:
+   * the prompts chosen and their unsaved edits follow it. */
+  followDataset: (from: string, to: string | null) => void;
   reloadDataset: () => Promise<void>;
   setPromptIndex: (i: number) => void;
   /** Keep a dataset's unsaved edits, or drop them (null, or edits that change nothing). */
@@ -756,6 +759,19 @@ export const useStore = create<Store>((set, get) => ({
     const { prepend_bos, chat_template } = analysisContext(get()).options;
     const detail = await get().guard(() => api.dataset(path, prepend_bos, chat_template ?? null));
     if (detail && seq === datasetSeq && project === projectSeq) set({ dataset: detail });
+  },
+
+  followDataset: (from, to) => {
+    const st = get();
+    // Unsaved edits belong to the file's prompts, which a rename keeps and a deletion takes away.
+    const edits = st.datasetEdits[from];
+    if (edits) {
+      const { [from]: _gone, ...rest } = st.datasetEdits;
+      set({ datasetEdits: to ? { ...rest, [to]: edits } : rest });
+    }
+    if (st.datasetPath !== from) return;
+    const next = to ?? st.project?.datasets.find((d) => !d.error && d.path !== from)?.path ?? null;
+    void st.selectDataset(next, st.analysisSource);
   },
 
   reloadDataset: async () => {
@@ -1313,6 +1329,16 @@ export const useStore = create<Store>((set, get) => ({
         if (data.deleted) forgetRun(String(data.run_id));
         void get().refreshRuns();
         break;
+      case "project.changed": {
+        // The project renamed, or a dataset renamed or deleted, here or in another tab.
+        const change = data.dataset as { path: string; to: string | null } | null | undefined;
+        void get()
+          .refreshProject()
+          .then(() => {
+            if (change) get().followDataset(change.path, change.to);
+          });
+        break;
+      }
       case "queue.skipped":
         get().notify(`“${String(data.title)}” couldn't start and was taken out of the queue. ${String(data.error)}`, "error");
         break;
@@ -1327,7 +1353,8 @@ export const useStore = create<Store>((set, get) => ({
         break;
       }
       case "project": {
-        if (data.session_id !== get().project?.session_id) {
+        // A tab that has already left the project (it closed or deleted it) has nothing to do.
+        if ((data.session_id ?? null) !== (get().project?.session_id ?? null)) {
           // Clear synchronously; stale form actions cannot run while the new project loads.
           get().leaveProject();
           const seq = projectSeq;

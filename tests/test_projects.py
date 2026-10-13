@@ -172,7 +172,7 @@ def test_a_project_is_renamed_in_its_project_json_from_every_front_end(
     saved = json.loads(meta.read_text(encoding="utf-8"))
     assert saved["name"] == "Name movers" and saved["note"] == "kept"
     assert project.root.name == "first-name"  # the folder keeps its name
-    assert ("project.changed", {"project_session": session}) in events
+    assert ("project.changed", {"project_session": session, "dataset": None}) in events
     assert client.get("/api/projects/recent", headers=HEADERS).json()[0]["name"] == "Name movers"
     for bad, message in (("   ", "Give the project a name."), ("x" * 201, "at most 200")):
         r = client.patch("/api/project", json={"name": bad}, headers=tab)

@@ -2,6 +2,7 @@ import { Fragment, useDeferredValue, useEffect, useId, useMemo, useRef, useState
 
 import { api } from "../api/client";
 import type { Answer, DatasetDetail, PromptRecord, RunDetail, TaskDatasetCreated, TokenStripData } from "../api/types";
+import { DeleteDatasetDialog, RenameDatasetDialog, type DatasetTarget } from "../components/ManageDialogs";
 import { TokenGrid } from "../components/TokenStrip";
 import { Button, Callout, Checkbox, ConfirmDialog, Dialog, Field, Icon, Input, Segmented, TextArea, Tip } from "../components/ui";
 import { answerText, count, plural, visibleToken } from "../lib/format";
@@ -421,6 +422,8 @@ function DatasetPrompts({ path, dataset, onSaved }: { path: string; dataset: Dat
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const editsTitle = useId();
+  const [renaming, setRenaming] = useState<DatasetTarget | null>(null);
+  const [deleting, setDeleting] = useState<DatasetTarget | null>(null);
 
   const save = async () => {
     if (!edits || problem || emptied) return;
@@ -446,13 +449,31 @@ function DatasetPrompts({ path, dataset, onSaved }: { path: string; dataset: Dat
   };
 
   const lengths = dataset.lengths ?? [];
+  // A dataset of the project (not a run's saved copy) can be renamed or deleted from here.
+  const listed = project?.datasets.find((d) => d.path === path);
+  const target = listed && !isSnapshot(path) ? { path, name: listed.name, n: listed.n } : null;
   return (
     <div className={p.prompts} ref={top}>
-      <p className={s.faint}>
-        {dataset.path}
-        {lengths.length > 0 && <> · {lengths.length === 1 ? `${lengths[0]} tokens each` : `${lengths[0]}–${lengths[lengths.length - 1]} tokens`}</>}
-        {" · "}sha256 {dataset.sha256.slice(0, 12)}
-      </p>
+      <div className={s.row} style={{ alignItems: "center" }}>
+        <p className={s.faint}>
+          {dataset.path}
+          {lengths.length > 0 && <> · {lengths.length === 1 ? `${lengths[0]} tokens each` : `${lengths[0]}–${lengths[lengths.length - 1]} tokens`}</>}
+          {" · "}sha256 {dataset.sha256.slice(0, 12)}
+        </p>
+        {target && (
+          <>
+            <div style={{ flex: 1 }} />
+            <Button size="small" variant="ghost" onClick={() => setRenaming(target)}>
+              Rename…
+            </Button>
+            <Button size="small" variant="ghost" onClick={() => setDeleting(target)}>
+              Delete…
+            </Button>
+          </>
+        )}
+      </div>
+      <RenameDatasetDialog target={renaming} onOpenChange={(open) => !open && setRenaming(null)} />
+      <DeleteDatasetDialog target={deleting} onOpenChange={(open) => !open && setDeleting(null)} />
       {nIssues > 0 && (
         <Callout tone="error" title={`${plural(nIssues, "prompt")} can't be used with this model`}>
           Experiments refuse datasets with unusable prompts, so results never silently skip any. Edit or remove them and

@@ -211,6 +211,30 @@ export interface RecentProject {
   problem?: string | null;
 }
 
+/** What deleting a project would delete, and what stops it now (logogram.project.DeletionPlan). */
+export interface DeletionPlan {
+  path: string;
+  name: string;
+  runs: number;
+  drafts: number;
+  datasets: number;
+  queued: number;
+  /** The folder's entries Logogram doesn't make there: while there are any, it isn't deleted. */
+  others: string[];
+  /** Why it can't be deleted now: a run in progress in it, its queue being run. */
+  busy: string | null;
+  /** Why it can't be deleted (others, or busy), and what to do; null when it can. */
+  problem: string | null;
+  /** What deleting it deletes, in words. */
+  text: string;
+}
+
+/** A dataset file renamed (its new name and path) or deleted (the ones it had). */
+export interface DatasetChanged {
+  name: string;
+  path: string;
+}
+
 /** A bundled example (logogram.gallery): what it asks, the result to expect, and its spec. */
 export interface ExampleInfo {
   id: string;
