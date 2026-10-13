@@ -67,8 +67,11 @@ test("views that don't fit beside the tabs are under More, which names the open 
   await expect(page).toHaveURL(/#\/representations/);
   const open = views.getByRole("button", { name: /^Representations, and \d more views$/ });
   await expect(open).toHaveAttribute("aria-current", "page");
-  // The number keys reach every view, in the row or not.
-  await page.getByRole("main").click({ position: { x: 5, y: 5 } });
+  // The keyboard comes back to the menu's button, named for the view now open.
+  await expect(open).toBeFocused();
+  // The number keys reach every view, in the row or not, from the view itself.
+  await page.locator("#main").focus();
+  await expect(page.locator("#main")).toBeFocused();
   await page.keyboard.press("1");
   await expect(views.getByRole("button", { name: "Model", exact: true })).toHaveAttribute("aria-current", "page");
   // Too narrow for the tabs beside the context, the tabs take a line of their own: every view fits.
