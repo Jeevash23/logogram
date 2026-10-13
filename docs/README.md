@@ -45,6 +45,7 @@ method comes from.
 | [Replicate IOI on GPT-2](guides/replicate-ioi.md) | Find the heads that carry the indirect object, and read them against the paper |
 | [Find induction heads](guides/find-induction-heads.md) | Score every head with the head finder in the Attention view |
 | [Check a method on a toy model](guides/toy-models.md) | Two models whose circuits are known, and what each method should find on them |
+| [Find a direction and test it](guides/find-and-test-a-direction.md) | Probe GPT-2 small for a subject's gender, save the probe's direction, and test where the model uses it by patching along it and removing it |
 | [Work with an SAE](guides/work-with-an-sae.md) | Find a published SAE by name and load it, check its fit, read and patch its features, steer along one |
 | [Check a finding's robustness](guides/check-robustness.md) | Rerun with one choice changed, and read what moved |
 | [Compare two runs](guides/compare-runs.md) | Paired differences, rank correlation and changed conclusions |
