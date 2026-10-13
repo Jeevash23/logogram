@@ -4,6 +4,40 @@ What changed in each version of Logogram.
 
 ## Unreleased
 
+### Added
+
+- **ACDC** (`acdc`, with the `graph` scope): automated circuit discovery (Conmy et al. 2023) over
+  edge attribution's graph.
+  - The receiver prompt runs with every edge in the circuit. Then the candidate edges are removed
+    one at a time, in the reverse of the graph's order (from the logits back toward the
+    embeddings). A removed edge carries its sender's output on the source prompt.
+  - An edge stays removed when removing it moves the metric's mean by less than `threshold`, in
+    the metric's own units. `rule` says which change counts: the move toward the source prompt's
+    value (`toward_source`, the paper's) or its size either way (`either_way`). Neither has a
+    default.
+  - A run keeps every edge's change when it was tested and whether it was kept, the circuit, and
+    the circuit's faithfulness with a bootstrap interval. Tests check that the faithfulness is
+    the faithfulness curve's for the same edges, bit for bit. `edges.parquet` gains `kept` and
+    `step`.
+  - It costs a forward pass per edge and batch of prompts. Before a run, the app says how many
+    passes it takes and about how long, timed on the loaded model. A run that stops early keeps
+    nothing.
+  - The experiment form offers it as **Circuit discovery (ACDC)**. The results draw the circuit
+    and list every tested edge with whether it was kept, and the inspector says how an edge was
+    tested. **Check robustness** offers another threshold, the other rule, the opposite direction
+    and edge attribution over the same graph.
+  - `logogram run` and `logogram show` list the circuit, the report draws it, and `run.circuit()`
+    returns it.
+- **Edges into shared keys and values.** Edge attribution, ACDC and path patching work on models
+  with grouped-query attention, as in Llama and Qwen. A key or value receiver is the key/value
+  head, read by every query head of its group.
+  - Results write it `L5 KV1 k`, and the app and the report draw it at the middle of its group.
+  - Tests on tiny Llama and Qwen 2 models check three things: every estimate is the slope of
+    patching its edge, one edge patched is path patching of that edge, and patching every edge
+    reproduces the source run.
+  - Models whose heads don't add up to their attention output (Gemma 2, OLMo 2) are still
+    refused.
+
 ### Fixed
 
 - When edge attribution's batch didn't fit in memory, the batch size it suggested could still be

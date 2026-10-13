@@ -59,8 +59,9 @@ a diverging cobalt to amber scale, always with its legend, and nothing else does
 * **Configure** is the experiment form: the method and its choices, what to sweep, the metric and
   its normalization, the statistics, and the data and model (with the chat template, for models
   made for chat). Beside it, a summary says what will run, how much work it is (for edge
-  attribution, the graph's size and the passes and memory a batch needs), whether a batch fits in
-  memory, whether the baseline was checked, and what is still missing, above **Run**.
+  attribution, the graph's size and the passes and memory a batch needs; for ACDC, the passes
+  and about how long they take here), whether a batch fits in memory, whether the baseline was
+  checked, and what is still missing, above **Run**.
   While another job runs, **Run** reads **Queue**. Ctrl/⌘ Z and Ctrl/⌘ Shift Z undo and redo
   changes to the form. When an action elsewhere replaces the form (**Patch here**, **Edit and
   rerun**, staged sites), a notice offers to undo it. A form that isn't saved is kept in this
@@ -79,7 +80,9 @@ a diverging cobalt to amber scale, always with its legend, and nothing else does
   A run over queries, keys or values shows a layer × head map, a run over neurons each layer's
   strongest neurons beside the distribution of all of them, and an
   [edge attribution](concepts/edge-attribution.md) run its strongest edges drawn between the
-  components, its faithfulness curve and their verification by path patching.
+  components, its faithfulness curve and their verification by path patching. An
+  [ACDC](concepts/acdc.md) run draws the circuit it found the same way, with the edges it kept and
+  the circuit's faithfulness, and lists every edge with whether it was kept.
 * **Compare runs** puts two runs side by side, or their difference, with paired differences
   prompt by prompt where they measured the same prompts (see
   [compare two runs](guides/compare-runs.md)).

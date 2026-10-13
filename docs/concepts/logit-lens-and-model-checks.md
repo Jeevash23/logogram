@@ -31,10 +31,11 @@ On a short fixed input, every model is checked for four things:
 * **The lens.** The logit lens below is offered when the model's final normalization and
   unembedding, with any soft cap on its logits, reproduce its own output.
 
-[Edge attribution](edge-attribution.md#limits) relies on more, measured the first time it plans
-or runs on a model: that giving each receiver its own copy of the residual stream doesn't change
-what the model predicts, that every copy is read before its normalization, and that changing one
-head's copy changes no other head.
+[Edge attribution](edge-attribution.md#limits) and [ACDC](acdc.md) rely on more, measured the
+first time either plans or runs on a model: that giving each receiver its own copy of the residual
+stream doesn't change what the model predicts, that every copy is read before its normalization,
+and that changing one head's copy changes no other head's (with grouped-query attention, one
+key/value head's key or value copy changes no other key/value head's).
 
 The measured layer structure is kept with each run's results, so a saved run's map can be drawn
 without loading the model. A model that looks made for chat (its name says so, such as `-Instruct`, or it stops generating at the token

@@ -17,6 +17,9 @@ without Logogram:
 * for an [edge attribution](../concepts/edge-attribution.md) run, its strongest edges drawn
   between the components instead of a map, its faithfulness curve, and its estimates beside their
   measurement by path patching once a verification has finished;
+* for an [ACDC](../concepts/acdc.md) run, the circuit it found drawn the same way, how many edges
+  it kept and its faithfulness, and the circuit's edges listed first, each with whether it was
+  kept;
 * the methods paragraph, the complete spec, and where the run came from: the model and its
   revision, the precision and device, the dataset and its hash, and the software versions.
 
@@ -29,10 +32,12 @@ From **Export** on a finished run:
 
 * **Export figure SVG** and **Export figure PNG**: the map as shown, with the value and scale
   chosen (the normalized effect or the change, fitted or ±1). A run over neurons exports its
-  figure as SVG only; an edge attribution run has no map, and its report draws its edges instead;
+  figure as SVG only; an edge attribution or ACDC run has no map, and its report draws its edges
+  instead;
 * **Export per-site CSV**: one row per site, with its mean, interval, band, q-value and counts;
-  for an edge attribution run, **Export every edge (CSV)** has one row per edge it estimated, not
-  only the strongest the results list;
+  for an edge attribution or ACDC run, **Export every edge (CSV)** has one row per edge of its
+  graph, not only those the results list (for ACDC, with whether each was kept and when it was
+  tested, `step`);
 * **Export per-prompt CSV**, with or without each prompt's text: one row per site and prompt,
   everything the statistics came from. Text that a spreadsheet could read as a formula is
   prefixed with an apostrophe;
@@ -51,7 +56,8 @@ logogram methods RUN
 ```python
 run.sites()        # one row per site
 run.per_prompt()   # one row per site and prompt
-run.edges()        # an edge attribution run's every edge, one row each
+run.edges()        # an edge attribution or ACDC run's every edge, one row each
+run.circuit()      # an ACDC run's circuit: the edges it kept, and its faithfulness
 run.methods()      # the methods paragraph
 ```
 
