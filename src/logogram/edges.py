@@ -429,6 +429,8 @@ def edge_cost(
         "forward": (2 + steps + (patched + 1 if patched else 0)) * batches,
         "backward": steps * batches,
         "memory_per_batch": int(per_row * rows),
+        # The prompts in the largest batch: fewer than the batch size when no group fills it.
+        "largest_batch": rows,
         "values": len(graph) * sum(len(g.members) for g in groups),
     }
 
@@ -446,7 +448,7 @@ def free_memory(device: torch.device) -> int | None:
         return None
 
 
-def check_cost(cost: dict[str, Any], batch_size: int, device: torch.device) -> None:
+def check_cost(cost: dict[str, Any], device: torch.device) -> None:
     """Refuse a run that won't fit: too many edges or values to keep, or a batch too large for
     the memory free here."""
     if cost["edges"] > MAX_EDGES:
@@ -463,11 +465,21 @@ def check_cost(cost: dict[str, Any], batch_size: int, device: torch.device) -> N
     free = free_memory(device)
     need = int(cost["memory_per_batch"])
     if free is not None and need > 0.8 * free:
-        fits = max(1, int(batch_size * 0.8 * free / need))
+        # Memory grows with the prompts a batch actually holds, which is fewer than batch_size
+        # when no group of prompts of one length fills it.
+        rows = int(cost["largest_batch"])
+        fits = int(rows * 0.8 * free / need)
+        if fits < 1:
+            raise EngineError(
+                f"Even one prompt needs about {need / rows / 1e9:.1f} GB here to keep the "
+                f"gradient at every receiver, and {free / 1e9:.1f} GB is free. Choose fewer "
+                "layers."
+            )
         raise EngineError(
-            f"A batch of {batch_size} prompts needs about {need / 1e9:.1f} GB here to keep the "
-            f"gradient at every receiver, and {free / 1e9:.1f} GB is free. Lower "
-            f"execution.batch_size to {fits} or fewer, or choose fewer layers."
+            f"The largest batch, {rows} prompt{'s' if rows != 1 else ''}, needs about "
+            f"{need / 1e9:.1f} GB here to keep the gradient at every receiver, and "
+            f"{free / 1e9:.1f} GB is free. Lower execution.batch_size to {fits} or fewer, or "
+            "choose fewer layers."
         )
 
 
@@ -499,7 +511,7 @@ def edge_plan(spec: Spec, backend: ModelBackend, prompts: list[PreparedPrompt]) 
     cost = edge_cost(graph, backend.info, group_by_length(prompts), spec.execution.batch_size, exp)
     if refusal is None:
         try:
-            check_cost(cost, spec.execution.batch_size, backend.device)
+            check_cost(cost, backend.device)
         except EngineError as exc:
             refusal = str(exc)
     return {
@@ -735,7 +747,7 @@ def run_edge_attribution(
         )
     groups = group_by_length(prompts)
     cost = edge_cost(graph, info, groups, batch_size, exp)
-    check_cost(cost, batch_size, backend.device)
+    check_cost(cost, backend.device)
     sites, layout = edge_sites(graph)
     if on_start is not None:
         on_start(sites, layout)

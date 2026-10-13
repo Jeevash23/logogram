@@ -180,18 +180,26 @@ def test_a_set_and_a_distractor_sharing_a_token_is_refused(tiny_backend):
 def test_kl_of_a_prompt_from_itself_is_exactly_zero(tiny_backend, project):
     prompts = _prompts(tiny_backend, project)
     groups = group_by_length(prompts)
+    batch = 5
     for target in ("clean", "corrupt"):
         scorer = Scorer(KLMetric(target=target, normalization="dataset_gap"), prompts)
-        base = compute_baselines(tiny_backend, prompts, groups, 5, scorer=scorer)
+        base = compute_baselines(tiny_backend, prompts, groups, batch, scorer=scorer)
         assert (base.metric(target) == 0).all()
         other = "corrupt" if target == "clean" else "clean"
         assert (base.metric(other) > 0).all()
-        # Against a direct computation of the divergence.
+        # Against a direct computation of the divergence, in the baseline's batches: float32
+        # logits can differ in their last digits between batches of different sizes.
         group = groups[0]
-        lt = torch.log_softmax(tiny_backend.final_logits(getattr(group, target)).double(), -1)
-        lx = torch.log_softmax(tiny_backend.final_logits(getattr(group, other)).double(), -1)
-        expected = (lt.exp() * (lt - lx)).sum(-1).numpy()
-        np.testing.assert_allclose(base.metric(other)[group.members], expected, rtol=1e-6)
+        expected = []
+        for start in range(0, len(group.members), batch):
+            rows = slice(start, start + batch)
+            lt = tiny_backend.final_logits(getattr(group, target)[rows]).double()
+            lx = tiny_backend.final_logits(getattr(group, other)[rows]).double()
+            lt, lx = torch.log_softmax(lt, -1), torch.log_softmax(lx, -1)
+            expected.append((lt.exp() * (lt - lx)).sum(-1).numpy())
+        np.testing.assert_allclose(
+            base.metric(other)[group.members], np.concatenate(expected), rtol=1e-6
+        )
 
 
 @pytest.mark.parametrize("metric", list(METRICS))

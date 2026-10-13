@@ -2,6 +2,20 @@
 
 What changed in each version of Logogram.
 
+## Unreleased
+
+### Fixed
+
+- When edge attribution's batch didn't fit in memory, the batch size it suggested could still be
+  too large: it scaled the batch size in the spec, though a batch holds no more prompts than the
+  largest group of prompts of one length. It now names the batch that runs and scales that, and
+  says when not even one prompt fits.
+- The folder picker's **Choose** chose the folder listed last, not the one in the box: a path
+  typed, or still being listed after Go, gave way to the folder the picker had shown before. It
+  now chooses the folder in the box, listing it first when it hasn't been.
+- A run the queue started could end before the tabs heard it had started, and the queue then
+  read as waiting, with nothing left in it, instead of running.
+
 ## 0.6.0 (2026-10-12)
 
 Interventions on single queries, keys, values and neurons, and on the edges between components,

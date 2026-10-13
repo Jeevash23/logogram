@@ -237,9 +237,13 @@ test("from Help, beside a finished run, it points at the run's map, the inspecto
       timeout: 60_000,
     })
     .toBe("finished");
-  // Open it from the command palette.
+  // Open it from the command palette, once the app has heard of the run: it was started through
+  // the API, so the palette lists it only when the app's own list of runs catches up.
   await page.keyboard.press("ControlOrMeta+k");
   await page.getByLabel("Command", { exact: true }).fill(name);
+  await expect(page.getByRole("option", { name: `Open run: ${name}`, exact: true })).toHaveAttribute("aria-selected", "true", {
+    timeout: 15_000,
+  });
   await page.keyboard.press("Enter");
   await expect(page.getByRole("main").getByRole("heading", { level: 1, name })).toBeVisible();
 
