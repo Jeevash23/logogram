@@ -67,9 +67,14 @@ def _friendly_hub_error(model_id: str, exc: Exception, what: str = "model") -> B
             "machine with `hf auth login` and try again."
         )
     if isinstance(exc, RepositoryNotFoundError):
+        if what != "model":
+            return BackendError(
+                f"No {what} called {model_id} was found on Hugging Face. Check the spelling (ids "
+                f"look like owner/name). Private {what}s need `hf auth login` first."
+            )
         return BackendError(
-            f"No {what} called {model_id} was found on Hugging Face. Check the spelling (ids look "
-            f"like owner/name). Private {what}s need `hf auth login` first."
+            f"No model called {model_id} was found on Hugging Face. Check the spelling (ids look "
+            "like owner/name). Private models need `hf auth login` first."
         )
     if isinstance(exc, RevisionNotFoundError):
         return BackendError(

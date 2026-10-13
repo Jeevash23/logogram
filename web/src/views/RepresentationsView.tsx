@@ -139,6 +139,11 @@ export function RepresentationsView() {
     };
   }, [chosenDataset?.path, chosenDataset?.sha256]);
 
+  // A corpus's texts have no labelled positions: reading one reads the last token instead.
+  useEffect(() => {
+    if (source === "corpus" && position === "label") setPosition("last");
+  }, [source]);
+
   const kinds = STREAM_KINDS.filter((k) => !info || info.site_kinds.includes(k));
   const request = useMemo((): { body: RepresentationsRequest | null; problem: string | null } => {
     if (!info) return { body: null, problem: "Load a model first." };
@@ -316,7 +321,14 @@ export function RepresentationsView() {
             <Input type="number" min={0} max={info.n_layers - 1} value={layer} onChange={(e) => setLayer(e.target.value)} />
           </Field>
           <Field label="Token">
-            <Select value={position} onChange={(e) => setPosition(e.target.value as PositionKind)}>
+            <Select
+              value={position}
+              onChange={(e) => {
+                const next = e.target.value as PositionKind;
+                setPosition(next);
+                if (next === "label" && !facts.labels.includes(label)) setLabel(facts.labels[0] ?? "");
+              }}
+            >
               <option value="last">The last</option>
               <option value="index">An index</option>
               {source === "dataset" && facts.labels.length > 0 && <option value="label">A labelled position</option>}

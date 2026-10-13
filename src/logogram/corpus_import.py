@@ -227,7 +227,7 @@ def _missing_column(where: str, column: str, names: Iterable[str]) -> str:
 # -- rows into texts -----------------------------------------------------------------------------
 
 
-def _label(value: Any, where: str) -> Label | None:
+def as_label(value: Any, where: str) -> Label | None:
     """A label as a corpus keeps it: a string, a whole number or true/false; None when missing.
     Numbers stored as decimals that are whole (1.0) are whole numbers; others keep their text."""
     if type(value).__module__ == "numpy":
@@ -282,7 +282,7 @@ class _Collector:
                 "holds the text."
             )
         try:
-            record = TextRecord(text=text, label=_label(label, where), id=id, meta=meta)
+            record = TextRecord(text=text, label=as_label(label, where), id=id, meta=meta)
         except ValidationError as exc:
             first = exc.errors()[0]
             field = ".".join(str(p) for p in first["loc"])
@@ -503,6 +503,26 @@ def import_file(
     return Imported(write_corpus(project, name, records, source, replace=overwrite), skipped)
 
 
+def check_hub_file(repo: str, path: str, split: str = "lines") -> tuple[str, str, Format]:
+    """A Hugging Face dataset's id and the path of a file in it, checked before anything is
+    downloaded, with the format the file's name says it has."""
+    repo = repo.strip()
+    path = path.strip().lstrip("/")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)?", repo):
+        raise CorpusError(
+            f"{repo!r} isn't a Hugging Face dataset id: they look like owner/name, such as "
+            "stanfordnlp/imdb."
+        )
+    if not path:
+        raise CorpusError("Choose a file of the dataset: a Parquet, JSON Lines, CSV or text file.")
+    if "\\" in path or any(part in ("", ".", "..") for part in path.split("/")):
+        raise CorpusError(
+            f"{path!r} isn't a file of a dataset: give its path in the repository, with forward "
+            "slashes, such as data/train-00000-of-00001.parquet."
+        )
+    return repo, path, format_of(path, split)
+
+
 def import_hub(
     project: Project,
     name: str,
@@ -523,21 +543,7 @@ def import_hub(
     and cancelled by ``cancel``. The corpus records the repository, the file and the commit."""
     from logogram.backends import hub
 
-    repo = repo.strip()
-    path = path.strip().lstrip("/")
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)?", repo):
-        raise CorpusError(
-            f"{repo!r} isn't a Hugging Face dataset id: they look like owner/name, such as "
-            "stanfordnlp/imdb."
-        )
-    if not path:
-        raise CorpusError("Choose a file of the dataset: a Parquet, JSON Lines, CSV or text file.")
-    if "\\" in path or any(part in ("", ".", "..") for part in path.split("/")):
-        raise CorpusError(
-            f"{path!r} isn't a file of a dataset: give its path in the repository, with forward "
-            "slashes, such as data/train-00000-of-00001.parquet."
-        )
-    fmt = format_of(path, split)
+    repo, path, fmt = check_hub_file(repo, path, split)
     commit, local = hub.download_dataset_file(
         repo, path, revision, progress, cancel=cancel, limit=HUB_FILE_LIMIT
     )

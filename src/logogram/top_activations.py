@@ -215,7 +215,7 @@ def unit_reader(
             raise ValueError(f"{site_words(site.kind, site.layer).capitalize()} isn't a site here.")
         notes = check_fits(direction, info, site_words(site.kind, site.layer))
         key = (site.kind, site.layer)
-        vectors = direction.vectors.to(torch.float64)  # [k, width]
+        vectors = float64(direction.vectors)  # [k, width], read from its file on the CPU
         signed = direction.dimensions == 1
 
         def projection(c: dict[tuple[str, int], torch.Tensor]) -> torch.Tensor:
@@ -284,10 +284,10 @@ def top_examples(
     if batch_size < 1:
         raise ValueError("The batch size must be at least 1.")
     check_max_tokens(backend, max_tokens, prepend_bos)
-    reader = unit_reader(backend, unit, sae=sae, direction=direction)
-    records = corpus.records[:texts] if texts is not None else corpus.records
     if texts is not None and texts < 1:
         raise ValueError("Read at least one text.")
+    reader = unit_reader(backend, unit, sae=sae, direction=direction)
+    records = corpus.records[:texts] if texts is not None else corpus.records
     tokenized = []
     truncated = 0
     for record in records:

@@ -1032,11 +1032,11 @@ def create_app(
         """A corpus from one file of a Hugging Face dataset, downloaded as a job with progress in
         bytes, which Cancel stops."""
         from logogram.corpora import CorpusError, check_corpus_name, corpora_dir
-        from logogram.corpus_import import format_of, import_hub
+        from logogram.corpus_import import check_hub_file, import_hub
 
         project = state.require_project()
         name = check_corpus_name(body.name)
-        format_of(body.path, body.split)  # a file it can't read is refused before downloading
+        check_hub_file(body.repo, body.path, body.split)  # refused before anything downloads
         if not body.overwrite and os.path.lexists(corpora_dir(project) / f"{name}.jsonl"):
             raise CorpusError(f"A corpus called {name} already exists. Choose another name.")
 

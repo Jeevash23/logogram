@@ -241,7 +241,7 @@ def load_rows(
 def _dataset_rows(
     backend: ModelBackend, project: Project, source: DatasetRows, prepend_bos: bool
 ) -> LoadedRows:
-    from logogram.corpus_import import _label, check_label
+    from logogram.corpus_import import as_label, check_label
     from logogram.datasets import decode_dataset, parse_jsonl, read_dataset_bytes
     from logogram.spec import check_relative_path
 
@@ -275,7 +275,7 @@ def _dataset_rows(
                     f"{source.path}, prompt {i} has no meta field {name!r}. Mark the prompts by a "
                     "field every prompt has, or by side."
                 )
-            value = label_text(_label(record.meta[name], f"{source.path}, prompt {i}"))
+            value = label_text(as_label(record.meta[name], f"{source.path}, prompt {i}"))
         for side in sides:
             mark = side if by is not None and by[0] == "side" else value
             tokens, labels = (clean, clean_labels) if side == "clean" else (corrupt, corrupt_labels)

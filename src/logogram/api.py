@@ -1244,6 +1244,7 @@ def save_direction(
     it by name. An existing direction of that name is replaced only with ``overwrite``."""
     import torch
 
+    from logogram.backends.base import float64
     from logogram.directions import DirectionError, model_of
     from logogram.directions import save_direction as save
     from logogram.representations import parse_site
@@ -1254,7 +1255,7 @@ def save_direction(
         return save(
             project,
             name,
-            tensor.detach().to(torch.float64),
+            float64(tensor.detach()),
             model=model if isinstance(model, dict) else model_of(model.info),
             site=None if chosen is None else {"kind": chosen.kind, "layer": chosen.layer},
             method=method,  # type: ignore[arg-type]

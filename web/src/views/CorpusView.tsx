@@ -68,11 +68,12 @@ const kept: {
 };
 
 /** The project's corpora, newest list after every change (here, in another tab, or by a job). */
-function useCorpora(): { corpora: CorpusListing[] | null; error: string | null } {
+function useCorpora(): { corpora: CorpusListing[] | null; error: string | null; reload: () => void } {
   const project = useStore((st) => st.project?.session_id);
   const version = useStore((st) => st.corporaVersion);
   const [corpora, setCorpora] = useState<CorpusListing[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [asked, setAsked] = useState(0);
   useEffect(() => {
     let current = true;
     api.corpora().then(
@@ -86,8 +87,8 @@ function useCorpora(): { corpora: CorpusListing[] | null; error: string | null }
     return () => {
       current = false;
     };
-  }, [project, version]);
-  return { corpora, error };
+  }, [project, version, asked]);
+  return { corpora, error, reload: () => setAsked((n) => n + 1) };
 }
 
 /** The project's saved directions, read again whenever they change. */
@@ -111,7 +112,7 @@ export function useDirections(): DirectionListing[] {
 /** Plain texts in the project, and where a unit (a neuron, an SAE feature, a direction, a head)
  * is most active in them. */
 export function CorpusView() {
-  const { corpora, error } = useCorpora();
+  const { corpora, error, reload } = useCorpora();
   const [chosen, setChosen] = useState<string | null>(kept.corpus);
   const [mode, setMode] = useState<AddMode>("none");
   const readable = (corpora ?? []).filter((x) => !x.error);
@@ -135,7 +136,9 @@ export function CorpusView() {
   const created = (name: string) => {
     choose(name);
     setMode("none");
+    reload();
   };
+  const broken = (corpora ?? []).find((x) => x.name === chosen && x.error);
 
   return (
     <div className={s.view}>
@@ -154,7 +157,7 @@ export function CorpusView() {
         <div className={s.tabsInline} role="group" aria-label="Corpora">
           {(corpora ?? []).map((x) => {
             const button = (
-              <button key={x.name} type="button" className={s.datasetButton} aria-pressed={x.name === corpus?.name} disabled={!!x.error} onClick={() => choose(x.name)}>
+              <button key={x.name} type="button" className={s.datasetButton} aria-pressed={x.name === chosen} onClick={() => choose(x.name)}>
                 {x.name}
                 <span>{x.error ? "unreadable" : plural(x.n ?? 0, "text")}</span>
               </button>
@@ -181,6 +184,11 @@ export function CorpusView() {
         />
       </div>
       {error && <Callout tone="error">{error}</Callout>}
+      {broken && (
+        <Callout tone="error" title={`${broken.name} can't be read`}>
+          {broken.error} Import its texts again under another name, or delete corpora/{broken.name}.jsonl.
+        </Callout>
+      )}
 
       {mode === "file" && <FileImport taken={taken} onCreated={created} />}
       {mode === "hub" && <HubImport taken={taken} onCreated={created} />}
@@ -857,7 +865,8 @@ function MostActive({ corpus }: { corpus: CorpusListing }) {
     };
   }, [info, unit, layer, neuron, feature, head, chosenDirection, sae.info, texts, maxTokens, bos, batchSize, topK, context, corpus.name, corpus.sha256]);
   const key = request.body ? JSON.stringify(request.body) : null;
-  const shown = result && kept.request !== null ? result : null;
+  // A reading of another corpus isn't this one's, stale or not.
+  const shown = result && kept.request !== null && result.corpus.name === corpus.name ? result : null;
   const stale = !!shown && key !== kept.request;
 
   useEffect(() => {

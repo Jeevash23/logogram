@@ -175,7 +175,7 @@ def orthonormal(vectors: torch.Tensor) -> tuple[torch.Tensor, list[float]]:
         )
     if vectors.shape[0] > vectors.shape[1]:
         raise DirectionError("A subspace can't have more dimensions than the space it lives in.")
-    v = vectors.detach().to(device="cpu", dtype=torch.float64)
+    v = vectors.detach().to(device="cpu", dtype=torch.float64)  # float64 on the CPU
     if not torch.isfinite(v).all():
         raise DirectionError("A direction's values must be finite numbers.")
     norms = v.norm(dim=1)
@@ -193,11 +193,11 @@ def orthonormal(vectors: torch.Tensor) -> tuple[torch.Tensor, list[float]]:
 
 
 def is_orthonormal(vectors: torch.Tensor) -> bool:
-    v = vectors.to(torch.float64)
+    v = vectors.cpu().to(torch.float64)  # float64 on the CPU
     gram = v @ v.T
-    return bool(
-        (gram - torch.eye(v.shape[0], dtype=torch.float64)).abs().max() <= ORTHONORMAL_TOLERANCE
-    )
+    # float64 on the CPU
+    eye = torch.eye(v.shape[0], dtype=torch.float64)
+    return bool((gram - eye).abs().max() <= ORTHONORMAL_TOLERANCE)
 
 
 def tensor_bytes(vectors: torch.Tensor) -> bytes:
