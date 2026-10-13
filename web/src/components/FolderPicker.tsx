@@ -26,24 +26,30 @@ export function FolderPicker({
   const [listing, setListing] = useState<FolderListing | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [typed, setTyped] = useState("");
+  const [pending, setPending] = useState(false);
 
   // Only the folder asked for last is shown: the first listing, arriving after a typed path was
   // listed, doesn't take its place. Nor does a listing replace a path typed since it was asked
   // for: Go would then list the folder the picker opened in.
   const latest = useRef(0);
   const edited = useRef(false);
-  const go = async (path?: string) => {
+  const go = async (path?: string): Promise<FolderListing | null> => {
     const request = ++latest.current;
     edited.current = false;
+    setPending(true);
     try {
       const next = await api.folders(path);
-      if (request !== latest.current) return;
+      if (request !== latest.current) return null;
       setListing(next);
       if (!edited.current) setTyped(next.path);
       setError(null);
+      return next;
     } catch (e) {
-      if (request !== latest.current) return;
+      if (request !== latest.current) return null;
       setError(e instanceof Error ? e.message : String(e));
+      return null;
+    } finally {
+      if (request === latest.current) setPending(false);
     }
   };
 
@@ -51,7 +57,17 @@ export function FolderPicker({
     if (open) void go(start || undefined);
   }, [open, start]);
 
-  const canChoose = listing && (!requireProject || listing.is_project);
+  // What is chosen is the folder in the box. One typed but not listed yet, or still on its way,
+  // is listed first, so the folder listed before it is never chosen in its place.
+  const listed = !pending && listing !== null && typed === listing.path;
+  const canChoose = listed ? !requireProject || listing.is_project : typed.trim() !== "";
+  const choose = async () => {
+    const chosen = listed ? listing : await go(typed);
+    if (chosen && (!requireProject || chosen.is_project)) {
+      onChoose(chosen.path);
+      onOpenChange(false);
+    }
+  };
 
   return (
     <Dialog
@@ -64,16 +80,7 @@ export function FolderPicker({
           <Button variant="ghost" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button
-            variant="primary"
-            disabled={!canChoose}
-            onClick={() => {
-              if (listing) {
-                onChoose(listing.path);
-                onOpenChange(false);
-              }
-            }}
-          >
+          <Button variant="primary" disabled={!canChoose} onClick={() => void choose()}>
             {chooseLabel}
           </Button>
         </>
