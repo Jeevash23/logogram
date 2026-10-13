@@ -479,6 +479,8 @@ lg.write_dataset(
 ```
 
 Write prompt pairs into the project's datasets/ folder; returns its path in the project.
+`overwrite` replaces a dataset of the same name, unless a saved draft or a queued run names
+it (they would fail, or run on other prompts); finished runs keep their own copy.
 
 ## Classes
 

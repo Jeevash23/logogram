@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import html
 import json
+import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -788,15 +789,23 @@ def generate(
 def write_dataset(
     project: Project, name: str, records: list[Any], *, overwrite: bool = False
 ) -> str:
-    """Write prompt pairs into the project's datasets/ folder; returns its path in the project."""
-    from logogram.datasets import check_dataset_name
+    """Write prompt pairs into the project's datasets/ folder; returns its path in the project.
+    ``overwrite`` replaces a dataset of the same name, unless a saved draft or a queued run names
+    it (they would fail, or run on other prompts); finished runs keep their own copy."""
+    from logogram.datasets import DatasetError, check_dataset_name, check_unused
     from logogram.datasets import write_dataset as write
 
     path = project.dataset_file(check_dataset_name(name))
-    if path.exists() and not overwrite:
-        raise LogogramError(f"{path.name} already exists. Pass overwrite=True to replace it.")
+    rel = path.relative_to(project.root).as_posix()
+    if os.path.lexists(path):
+        if not overwrite:
+            raise LogogramError(f"{path.name} already exists. Pass overwrite=True to replace it.")
+        try:
+            check_unused(project, rel, "replaced")
+        except DatasetError as exc:
+            raise LogogramError(str(exc)) from exc
     write(path, records)
-    return path.relative_to(project.root).as_posix()
+    return rel
 
 
 def _table(rows: list[dict[str, Any]]) -> Any:

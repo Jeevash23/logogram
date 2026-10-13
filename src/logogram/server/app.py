@@ -23,8 +23,10 @@ from logogram import __version__
 from logogram.backends.base import BackendError
 from logogram.datasets import (
     DatasetError,
+    DatasetInUse,
     PromptRecord,
     check_dataset_name,
+    check_unused,
     decode_dataset,
     derive_records,
     file_sha256,
@@ -596,6 +598,7 @@ def create_app(
     @app.exception_handler(Conflict)
     @app.exception_handler(NoteConflict)
     @app.exception_handler(RunInUse)
+    @app.exception_handler(DatasetInUse)
     async def _conflict(_: Request, exc: Conflict) -> JSONResponse:
         return JSONResponse({"error": str(exc)}, status_code=409)
 
@@ -834,8 +837,12 @@ def create_app(
         fix: str = "Choose another name, or replace it explicitly.",
     ) -> dict[str, Any]:
         exists = f"{path.name} already exists. {fix}"
-        if os.path.lexists(path) and not overwrite:
-            raise DatasetError(exists)
+        if os.path.lexists(path):
+            if not overwrite:
+                raise DatasetError(exists)
+            # Never under a draft or a queued run that names it: they would fail, or run on
+            # other prompts.
+            check_unused(state.require_project(), f"datasets/{path.name}", "replaced")
         try:
             write_dataset(path, records, replace=overwrite)
         except FileExistsError:  # created since the check: it is never replaced

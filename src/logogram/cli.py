@@ -1796,8 +1796,10 @@ def generate(
     overwrite: Annotated[bool, typer.Option(help="Replace a dataset of the same name.")] = False,
     project_dir: Annotated[Path | None, ProjectOption] = None,
 ) -> None:
-    """Write a seeded dataset of prompt pairs for a task into the project's datasets folder."""
-    from logogram.datasets import check_dataset_name, write_dataset
+    """Write a seeded dataset of prompt pairs for a task into the project's datasets folder.
+    --overwrite replaces a dataset of the same name, unless a saved draft or a queued run names
+    it (they would fail, or run on other prompts); finished runs keep their own copy."""
+    from logogram.datasets import DatasetError, check_dataset_name, check_unused, write_dataset
     from logogram.tasks import TaskError, generate_task, get_task
 
     project = _open_project(project_dir)
@@ -1810,10 +1812,15 @@ def generate(
         path = project.dataset_file(check_dataset_name(name or task))
     except (TaskError, ValueError) as exc:
         raise _fail(str(exc)) from exc
-    if path.exists() and not overwrite:
-        raise _fail(f"{path.name} already exists. Choose another --name, or pass --overwrite.")
-    write_dataset(path, records)
     rel = path.relative_to(project.root).as_posix()
+    if os.path.lexists(path):
+        if not overwrite:
+            raise _fail(f"{path.name} already exists. Choose another --name, or pass --overwrite.")
+        try:
+            check_unused(project, rel, "replaced")
+        except DatasetError as exc:
+            raise _fail(str(exc)) from exc
+    write_dataset(path, records)
     metric = get_task(task).recommended_metric(options)
     typer.echo(f"Wrote {len(records)} prompt pairs to {rel}.")
     typer.echo(f'Read them with "metric": {{"kind": "{metric}", ...}} in the spec.')

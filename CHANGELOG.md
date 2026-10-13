@@ -46,6 +46,11 @@ What changed in each version of Logogram.
   recent list couldn't be written (Logogram's settings folder read-only, say) or held entries
   that aren't objects. The recent list never stops a project opening now, and entries it can't
   read are left out.
+- `logogram generate --overwrite` and `lg.write_dataset(..., overwrite=True)` replaced a dataset
+  that saved drafts and queued runs named, and they then failed with "has changed since this
+  spec was written". Replacing a dataset, from the app too, is now refused while a draft or a
+  queued run names it, naming them. Finished runs were never affected: each keeps its own copy
+  of the prompts it ran on.
 - `logogram delete` and `lg.delete_run` deleted a draft waiting in the queue, which the app
   refuses; the queue then failed when its turn came. Every front end now refuses it, saying to take
   it out of the queue first, and `logogram delete` says so before asking.

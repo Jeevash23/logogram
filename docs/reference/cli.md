@@ -184,7 +184,7 @@ logogram export [OPTIONS] RUN
 
 ## logogram generate
 
-Write a seeded dataset of prompt pairs for a task into the project's datasets folder.
+Write a seeded dataset of prompt pairs for a task into the project's datasets folder. --overwrite replaces a dataset of the same name, unless a saved draft or a queued run names it (they would fail, or run on other prompts); finished runs keep their own copy.
 
 ```text
 logogram generate [OPTIONS] TASK
