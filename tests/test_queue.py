@@ -136,6 +136,32 @@ def test_queueing_with_nothing_running_starts_the_run(client, ready, events, spe
     assert not [kind for kind, _ in events if kind.startswith("queue")]
 
 
+def test_a_queued_run_that_ends_before_the_tabs_hear_of_it_is_told_as_running(
+    client, ready, held, events, spec_factory, monkeypatch
+):
+    """A run the queue starts can end before the tabs are told it started (a quick run on a fast
+    machine). The queue is then between its own runs, not waiting behind another job."""
+    from logogram import runqueue
+
+    real = runqueue.remove_from_queue
+
+    def remove_once_ended(project: Any, item_id: str) -> None:
+        # The queue takes a run out once its job has started: let that job end first.
+        deadline = time.time() + 60
+        while ready.job is not None and ready.job.status == "running" and time.time() < deadline:
+            time.sleep(0.01)
+        real(project, item_id)
+
+    _run(client, _spec(spec_factory, "First"))
+    _queue(client, _spec(spec_factory, "Second"))
+    monkeypatch.setattr(runqueue, "remove_from_queue", remove_once_ended)
+    held.release()
+    runs = _settled(client)
+    assert [runs[name]["status"] for name in ("First", "Second")] == ["finished"] * 2
+    told = [(_titles(data["runs"]), data["state"]) for data in _told(events)]
+    assert told == [(["Second"], "waiting"), ([], "running"), ([], "idle")]
+
+
 def test_runs_queued_while_one_runs_start_in_order(client, ready, held, events, spec_factory):
     first = _run(client, _spec(spec_factory, "First"))
     # Starting another still says the server is busy; the queue takes it instead.

@@ -681,8 +681,9 @@ class AppState:
     def queue_status(self) -> dict[str, Any]:
         """The open project's queue and how it stands (see schema.QueueChanged): ``waiting``
         when this server starts its next run as the job in progress ends, ``running`` when one
-        of its runs is in progress here or another process runs it, ``paused`` when nothing
-        starts until it is started, ``idle`` when it is empty."""
+        of its runs is in progress here (or has just ended, its next yet to start) or another
+        process runs it, ``paused`` when nothing starts until it is started, ``idle`` when it is
+        empty."""
         project = self.project
         if project is None:
             return {"project_session": None, "runs": [], "state": "idle"}
@@ -695,9 +696,11 @@ class AppState:
         mine = self._queue_hold is not None and runner is not None
         mine = mine and runner.token == self._queue_hold.token  # type: ignore[union-attr]
         job = self.job
-        running = job is not None and job.status == "running"
         if mine:
-            from_queue = running and job is not None and job.id == self._queue_job
+            # The queue's own job runs it, even once that job has ended and the next run is yet
+            # to start (a quick run can end before the tabs hear that it started). The queue
+            # waits only behind a job that isn't one of its own.
+            from_queue = job is not None and job.id == self._queue_job
             state = "running" if from_queue else "waiting"
         elif runner is not None:
             state = "running"
