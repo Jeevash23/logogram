@@ -76,26 +76,10 @@ test("a model folder on this machine is added under a name, offered, and removed
   const dialog = page.getByRole("dialog", { name: "Load a model" });
   await dialog.getByRole("button", { name: "Add a model folder" }).click();
   const picker = page.getByRole("dialog", { name: "Choose a model folder" });
-  // TEMPORARY DIAGNOSTICS (not to be merged): what the Go listing returns on CI.
-  const seen: string[] = [];
-  page.on("console", (m) => seen.push(`console ${m.type()}: ${m.text()}`));
-  page.on("pageerror", (e) => seen.push(`pageerror: ${e.message}`));
-  page.on("request", (r) => r.url().includes("/api/fs") && seen.push(`request ${r.url()}`));
-  page.on("response", async (r) => {
-    if (r.url().includes("/api/fs")) seen.push(`response ${r.status()} ${r.url()} ${(await r.text().catch(() => "?")).slice(0, 300)}`);
-  });
-  page.on("requestfailed", (r) => r.url().includes("/api/fs") && seen.push(`failed ${r.url()} ${r.failure()?.errorText}`));
   await picker.getByLabel("Folder path").fill(folder);
-  seen.push(`after fill: ${await picker.getByLabel("Folder path").inputValue()}`);
   await picker.getByRole("button", { name: "Go", exact: true }).click();
-  seen.push(`after Go: ${await picker.getByLabel("Folder path").inputValue()}`);
-  try {
-    // Listed: the box then holds the folder's own path, without "..".
-    await expect(picker.getByLabel("Folder path")).toHaveValue(/^(?!.*\/\.\.\/).*\/model$/, { timeout: 15_000 });
-  } finally {
-    seen.push(`picker text: ${(await picker.innerText().catch(() => "?")).replace(/\s+/g, " ").slice(0, 600)}`);
-    console.log(`PICKER DIAGNOSTICS\n${seen.join("\n")}`);
-  }
+  // Listed: the box then holds the folder's own path, without "..".
+  await expect(picker.getByLabel("Folder path")).toHaveValue(/^(?!.*\/\.\.\/).*\/model$/, { timeout: 15_000 });
   await picker.getByRole("button", { name: "Choose this folder" }).click();
   await expect(picker).toBeHidden();
   const adding = dialog.getByRole("region", { name: "Add a model folder" });
