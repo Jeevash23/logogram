@@ -29,6 +29,13 @@ test("a file becomes a corpus, and a neuron's most active tokens open in Your te
   await expect(page.getByRole("main").getByRole("heading", { name: "tiny-gpt2", exact: true })).toBeVisible();
   await openView(page, "Corpus");
 
+  // A Hugging Face dataset's files are listed only when asked: nothing is fetched to show the form.
+  const hub = page.waitForRequest((r) => r.url().includes("/api/hub/"), { timeout: 1_000 }).catch(() => null);
+  await page.getByRole("radio", { name: "Hugging Face" }).click();
+  await expect(page.getByRole("button", { name: "List its files" })).toBeDisabled();
+  expect(await hub).toBeNull();
+  await expectAccessible(page, "Explore, Corpus, a Hugging Face dataset's file");
+
   await page.getByRole("radio", { name: "Upload a file" }).click();
   const file = { name: "tales.jsonl", mimeType: "application/json", buffer: Buffer.from(STORIES.map((s) => JSON.stringify(s)).join("\n")) };
   await page.locator('input[type="file"]').setInputFiles(file);
@@ -36,6 +43,7 @@ test("a file becomes a corpus, and a neuron's most active tokens open in Your te
   await expect(page.getByLabel("Text field")).toHaveValue("text");
   await expect(page.getByLabel("Label field")).toHaveValue("label");
   await expect(page.getByLabel("Corpus name")).toHaveValue("tales");
+  await expectAccessible(page, "Explore, Corpus, a file to upload");
   await page.getByRole("button", { name: "Import", exact: true }).click();
   const chosen = page.getByRole("group", { name: "Corpora" }).getByRole("button", { name: /^tales/ });
   await expect(chosen).toHaveAttribute("aria-pressed", "true");
@@ -87,6 +95,7 @@ test("a dataset's prompts as a corpus, and an SAE feature's tokens", async ({ pa
   await page.getByRole("radiogroup", { name: "Prompts" }).getByRole("radio", { name: "Clean" }).click();
   await page.getByLabel("Label each text by").selectOption("meta:pattern");
   await page.getByLabel("Corpus name").fill("ioi-clean-patterns");
+  await expectAccessible(page, "Explore, Corpus, a dataset's prompts as texts");
   await page.getByRole("button", { name: "Import", exact: true }).click();
   await expect(page.getByRole("group", { name: "Corpora" }).getByRole("button", { name: /^ioi-clean-patterns/ })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByText("labels ABBA, BABA")).toBeVisible();

@@ -36,6 +36,7 @@ from pydantic import ValidationError
 
 from logogram.corpora import (
     CORPUS_LIMIT,
+    TEXT_MAX,
     Corpus,
     CorpusError,
     CorpusSource,
@@ -181,6 +182,8 @@ def _json_array(text: str, where: str) -> Iterator[tuple[int, Any]]:
 
 
 def _csv_rows(source: Iterable[str], delimiter: str, where: str) -> Iterator[tuple[int, Any]]:
+    # A cell may hold a text as long as a corpus keeps (the csv module stops at 128 KB).
+    csv.field_size_limit(max(csv.field_size_limit(), TEXT_MAX + 1))
     reader = csv.reader(source, delimiter=delimiter)
     header: list[str] | None = None
     try:

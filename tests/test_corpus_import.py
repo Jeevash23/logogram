@@ -122,6 +122,10 @@ def test_csv_and_tsv_read_columns_by_their_header(empty_project: Project) -> Non
     assert corpus.texts == ["Good, really good", "Two\nlines"] and corpus.labels() == ["5", "1"]
     assert done.skipped == 1
     import_text(empty_project, "tabs", "text\tlabel\na b\tx\n", filename="t.tsv", fmt="tsv")
+    # A cell as long as a corpus keeps a text, longer than the csv module reads by default.
+    long = "word " * 60_000
+    import_text(empty_project, "long", f'text\n"{long}"\n', filename="l.csv", fmt="csv")
+    assert texts_of(empty_project, "long") == [long]
     assert texts_of(empty_project, "tabs") == ["a b"]
     with pytest.raises(CorpusError, match=r"no column 'body'\. Its columns are 'review', 'stars'"):
         import_text(empty_project, "x", csv_text, filename="r.csv", fmt="csv", text_field="body")
