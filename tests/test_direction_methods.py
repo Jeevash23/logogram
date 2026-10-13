@@ -567,3 +567,64 @@ def test_methods_of_one_site_at_a_time_refuse_sets_of_sites():
         make_spec(experiment=PROBE, metric=None, scope=sets)
     # Zero, mean and resample ablation of sets are as before.
     make_spec(experiment={"kind": "ablation", "baseline": {"kind": "zero"}}, scope=sets)
+
+
+def test_steering_says_when_the_pairs_differ_both_ways_along_a_direction(project, tiny_backend):
+    _fixed_ending(project)
+    # The direction from " to" toward " at" at the last token, from a probe that reads it.
+    probe = _run(
+        project,
+        tiny_backend,
+        dataset={"path": "datasets/endings.jsonl"},
+        experiment={**PROBE, "control": False},
+        metric=None,
+        scope={
+            "kind": "sites",
+            "sites": [{"kind": "resid_pre", "layer": 1, "position": {"kind": "last"}}],
+        },
+    )
+    save_run_direction(project, probe.run_id, 0, "toward-at")
+    # The same pairs, half of them the other way round.
+    records = []
+    for i, line in enumerate((project.datasets_dir / "endings.jsonl").read_text().splitlines()):
+        r = PromptRecord.model_validate_json(line)
+        if i % 2:
+            r = PromptRecord(
+                clean=r.corrupt, corrupt=r.clean, answer=r.distractor, distractor=r.answer
+            )
+        records.append(r)
+    write_dataset(project.datasets_dir / "mixed-endings.jsonl", records)
+    steer = {
+        "kind": "steering",
+        "apply_to": "corrupt",
+        "direction": {"kind": "direction", "direction": {"name": "toward-at", "sha256": None}},
+        "coefficients": [1.0],
+        "train_fraction": 0.5,
+        "seed": 0,
+        "control": False,
+        "continuations": None,
+    }
+    at = {
+        "kind": "sites",
+        "sites": [{"kind": "resid_pre", "layer": 1, "position": {"kind": "last"}}],
+    }
+    same = _run(
+        project,
+        tiny_backend,
+        dataset={"path": "datasets/endings.jsonl"},
+        experiment=steer,
+        scope=at,
+    )
+    both = _run(
+        project,
+        tiny_backend,
+        dataset={"path": "datasets/mixed-endings.jsonl"},
+        experiment=steer,
+        scope=at,
+    )
+    said = "differ along toward-at in both directions"
+    assert not any(said in w for w in same.summary["warnings"])
+    assert any(said in w for w in both.summary["warnings"])
+    assert abs(both.summary["steering"]["direction"]["along"][0]) < abs(
+        same.summary["steering"]["direction"]["along"][0]
+    )

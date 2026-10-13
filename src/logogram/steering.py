@@ -443,7 +443,7 @@ def run_steering(
         warnings += check_fits(saved, info, "the residual stream")
     for b, site in enumerate(base):
         if saved is not None:
-            steered, along = _saved_direction(
+            steered, along, spread = _saved_direction(
                 backend,
                 spec,
                 saved.vectors[0],
@@ -456,11 +456,20 @@ def run_steering(
                 cancel,
             )
             steering["direction"]["along"].append(along)
-            if abs(along) < 1e-9:
+            if spread < 1e-9:
                 warnings.append(
                     f"At {site_label(site)}, the training pairs' prompts don't differ along "
                     f"{saved.name} (their mean difference along it is {along:.3g}), so steering "
                     "along it at any strength adds next to nothing there."
+                )
+            elif abs(along) < 0.25 * spread:
+                warnings.append(
+                    f"At {site_label(site)}, the training pairs differ along {saved.name} in both "
+                    f"directions: their mean difference along it is {along:.3g}, though each "
+                    f"pair's is {spread:.3g} in size on average. Steering adds the mean to every "
+                    "prompt, so it adds little, and moves some prompts away from their pair. "
+                    "Steer prompts whose pairs differ the same way along it, or patch along it "
+                    "(subspace patching), which takes each prompt's own pair's value."
                 )
         elif feature is None:
             steered = _mean_difference(
@@ -601,10 +610,11 @@ def _saved_direction(
     test: list[PreparedPrompt],
     test_groups: list[LengthGroup],
     cancel: threading.Event | None,
-) -> tuple[_Steered, float]:
+) -> tuple[_Steered, float, float]:
     """A saved direction's unit vector, scaled by the mean difference between the two prompts of
     each training pair along it (reference - receiver, at the site's token): the same for every
-    held-out prompt. Its control: a random direction of the same length."""
+    held-out prompt. Its control: a random direction of the same length. Also the mean size of
+    each pair's difference along it, to tell pairs that differ both ways along it."""
     exp = spec.experiment
     assert isinstance(exp, Steering)
     receiver = exp.apply_to
@@ -620,7 +630,9 @@ def _saved_direction(
     )
     difference = float64(toward.table(site.kind, probe)) - float64(away.table(site.kind, probe))
     u = float64(unit).to(difference.device)
-    along = float((difference @ u).mean())
+    projected = difference @ u
+    along = float(projected.mean())
+    spread = float(projected.abs().mean())
     direction = along * u
     control = None
     if exp.control:
@@ -642,7 +654,7 @@ def _saved_direction(
         control=None if control is None else control.expand(n, *control.shape),
         norm=float(direction.norm()),
     )
-    return steered, along
+    return steered, along, spread
 
 
 def _feature_direction(

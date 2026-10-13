@@ -53,7 +53,9 @@ ablating the whole site does; removing one it doesn't use, not at all.
 spec) adds the direction's unit vector at the steered sites. Strength 1 moves the activation along
 the direction as far as the mean difference between the two prompts of the training pairs does
 along it; the run reports that distance. A direction the pairs don't differ along steers nothing,
-and the run says so.
+and nor does one they differ along both ways (in the gendered pronoun task, half the clean prompts
+name a man and half a woman, so the mean difference along a gender direction nearly cancels): the
+run says so. Patch along such a direction instead, which takes each prompt's own pair's value.
 
 **A readout** (`"metric": {"kind": "readout", ...}`) reads an activation's component along the
 direction (its dot product with the unit vector) at a site, layer and position you choose, instead
