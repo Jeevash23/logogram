@@ -318,6 +318,9 @@ export const api = {
     post<{ run_id: string; path: string }>("/api/drafts", { spec, draft_id: draftId }),
   rerun: (id: string) =>
     post<{ run_id: string; job: Job }>(`/api/runs/${encodeURIComponent(id)}/rerun`),
+  /** Save what a probe or a learned subspace run found at one of its sites as a direction. */
+  saveRunDirection: (id: string, body: { site: number; name: string; row: number | null }) =>
+    post<DirectionListing>(`/api/runs/${encodeURIComponent(id)}/directions`, body),
   robustness: (id: string, change: RobustnessChange) =>
     post<{ run_id: string; job: Job }>(`/api/runs/${encodeURIComponent(id)}/robustness`, change),
   verify: (id: string, top: number) =>

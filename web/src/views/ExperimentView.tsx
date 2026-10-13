@@ -12,6 +12,8 @@ import { useEdgePlan, type EdgePlanState } from "../lib/edgePlan";
 import { edgeLabel, graphText, parseLayers, receiverLabel, receiverWords, saeWritesText, scopeFor, scopeShort, siteText, steerSiteOf, suggestName, workload } from "../lib/spec";
 import { useStore, type FormState } from "../store/app";
 import { ChatTemplateSettings } from "./ChatTemplateSettings";
+import { DirectionPicker } from "./DirectionPicker";
+import { DASSettings, ProbeSettings } from "./ProbeSettings";
 import { MetricSettings } from "./MetricSettings";
 import { ClusterChooser } from "./StatisticsSettings";
 import { SiteSetsEditor } from "./SiteSetsEditor";
@@ -49,7 +51,23 @@ const METHODS: { value: ExperimentKind; title: string; detail: string }[] = [
     title: "Edge attribution",
     detail: "Estimate every edge between components from gradients, then patch the strongest as a circuit.",
   },
+  {
+    value: "probe",
+    title: "Linear probe",
+    detail: "Train a probe at each site to read a label, and measure it on held-out pairs. Reads; doesn't intervene.",
+  },
+  {
+    value: "das",
+    title: "Learned subspace (DAS)",
+    detail: "Learn a few directions at each site whose patching carries the effect, measured on held-out pairs.",
+  },
+  {
+    value: "subspace_patching",
+    title: "Subspace patching",
+    detail: "Patch only the component of each site along a saved direction: how much of the effect it carries.",
+  },
 ];
+
 
 export function ExperimentView() {
   const form = useStore((st) => st.form);
@@ -219,6 +237,22 @@ export function ExperimentView() {
             <PathSettings form={form} onChange={setForm} />
           ) : form.kind === "edge_attribution" ? (
             <EdgeSettings form={form} onChange={setForm} />
+          ) : form.kind === "probe" ? (
+            <ProbeSettings form={form} onChange={setForm} fields={facts?.fields.filter((f) => f.clusters >= 2).map((f) => f.field) ?? []} />
+          ) : form.kind === "das" ? (
+            <DASSettings form={form} onChange={setForm} width={model.info?.d_model} />
+          ) : form.kind === "subspace_patching" ? (
+            <div className={e.stack}>
+              <Choices label="Direction" value={form.direction} onChange={(direction) => setForm({ direction })} columns={2} options={DIRECTIONS} />
+              <DirectionPicker
+                label="Patch along"
+                value={form.subspace}
+                onChange={(subspace) => setForm({ subspace })}
+                width={model.info?.d_model}
+                help="Only the component along it is taken from the other prompt; everything at right angles to it keeps its own value."
+              />
+              {!form.subspace && <p className={e.required}>Required: the direction is what the run measures.</p>}
+            </div>
           ) : form.kind === "activation_patching" || form.kind === "attribution_patching" ? (
             <div className={e.stack}>
               <Choices
@@ -242,7 +276,7 @@ export function ExperimentView() {
               {form.kind === "attribution_patching" && <AttributionSettings form={form} onChange={setForm} features={usesFeatures(form.scope)} uneven={uneven} />}
             </div>
           ) : (
-            <BaselineChooser baseline={form.baseline} onChange={(baseline) => setForm({ baseline })} />
+            <BaselineChooser baseline={form.baseline} onChange={(baseline) => setForm({ baseline })} width={model.info?.d_model} />
           )}
         </section>
 
@@ -266,7 +300,14 @@ export function ExperimentView() {
 
         <section className={e.section}>
           <h2 className={e.sectionTitle}>Metric</h2>
-          <MetricSettings form={form} onChange={setForm} facts={facts} />
+          {form.kind === "probe" ? (
+            <p className={s.small}>
+              A probe reads activations, not the model's output, so there is no metric: each held-out pair's value is the share of its
+              examples the probe labels correctly.
+            </p>
+          ) : (
+            <MetricSettings form={form} onChange={setForm} facts={facts} labels={labels} width={model.info?.d_model} />
+          )}
         </section>
 
         <section className={e.section}>
@@ -738,8 +779,22 @@ function SteeringSettings({ form, onChange, sae }: { form: FormState; onChange: 
               ? `Its decoder direction, added where the SAE writes: ${saeWritesText(sae)}.`
               : "Its decoder direction, added where its SAE writes. Needs a loaded SAE.",
           },
+          {
+            value: "direction",
+            title: "A saved direction",
+            detail: "A probe's, a learned subspace's or a principal component, added to the residual stream. Strength 1 moves along it as far as the pairs differ.",
+          },
         ]}
       />
+      {form.steerDirection === "direction" && (
+        <DirectionPicker
+          label="Steer along"
+          value={form.steerSaved}
+          onChange={(steerSaved) => onChange({ steerSaved })}
+          oneDimension
+          help="One dimension, added at the steered sites."
+        />
+      )}
       {feature && (
         <div className={s.grid3}>
           <Field
@@ -835,7 +890,7 @@ function SteeringSettings({ form, onChange, sae }: { form: FormState; onChange: 
   );
 }
 
-function BaselineChooser({ baseline, onChange }: { baseline: BaselineSpec | null; onChange: (b: BaselineSpec) => void }) {
+function BaselineChooser({ baseline, onChange, width }: { baseline: BaselineSpec | null; onChange: (b: BaselineSpec) => void; width?: number }) {
   return (
     <div className={e.stack}>
       <Choices
@@ -844,6 +899,8 @@ function BaselineChooser({ baseline, onChange }: { baseline: BaselineSpec | null
         onChange={(kind) => {
           if (kind === "zero") onChange({ kind: "zero" });
           else if (kind === "mean") onChange({ kind: "mean", reference: "corrupt" });
+          else if (kind === "scale") onChange({ kind: "scale", factor: 0 });
+          else if (kind === "projection") onChange({ kind: "projection", direction: { name: "", sha256: null }, reference: null });
           else onChange({ kind: "resample", pool: "corrupt", donors: 10, seed: 0 });
         }}
         columns={3}
@@ -851,8 +908,37 @@ function BaselineChooser({ baseline, onChange }: { baseline: BaselineSpec | null
           { value: "zero", title: "Zero", detail: "Replace the activation with zeros." },
           { value: "mean", title: "Mean", detail: "Replace it with its mean over a stated reference set." },
           { value: "resample", title: "Resample", detail: "Replace it with its value in other prompts, averaged over donors." },
+          { value: "scale", title: "Scale", detail: "Multiply it by a factor: 0 removes it, 2 doubles it." },
+          { value: "projection", title: "Remove a direction", detail: "Remove its component along a saved direction, or set that to its mean." },
         ]}
       />
+      {baseline?.kind === "scale" && (
+        <div className={s.grid3}>
+          <Field label="Factor" help="0 is the same as zero ablation; 1 changes nothing.">
+            <Input type="number" step={0.1} value={baseline.factor} onChange={(ev) => onChange({ kind: "scale", factor: Number(ev.target.value) })} />
+          </Field>
+        </div>
+      )}
+      {baseline?.kind === "projection" && (
+        <div className={s.grid2}>
+          <DirectionPicker
+            label="Direction"
+            value={baseline.direction.name ? baseline.direction : null}
+            onChange={(direction) => onChange({ ...baseline, direction: direction ?? { name: "", sha256: null } })}
+            width={width}
+          />
+          <Field label="Its component becomes" help="Everything at right angles to the direction keeps its own value.">
+            <Select
+              value={baseline.reference ?? "zero"}
+              onChange={(ev) => onChange({ ...baseline, reference: ev.target.value === "zero" ? null : (ev.target.value as "clean" | "corrupt") })}
+            >
+              <option value="zero">Zero: the direction is removed</option>
+              <option value="clean">Its mean over the clean prompts</option>
+              <option value="corrupt">Its mean over the corrupt prompts</option>
+            </Select>
+          </Field>
+        </div>
+      )}
       {!baseline && <p className={e.required}>Required: the baseline changes the result, so there's no default.</p>}
       {baseline?.kind === "mean" && (
         <div className={s.grid3}>

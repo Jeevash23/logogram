@@ -125,8 +125,10 @@ export function withLoadedModel(options: AnalysisOptions, info: ModelInfo | unde
 }
 
 /** The form's metric for tokenizing, while its KL divergence has no target yet: tokenizing reads
- * only the metric's kind, so the target it stands in with changes nothing. */
+ * only whether the metric reads answers of several tokens, so the target it stands in with
+ * changes nothing. A readout and a probe read them as the log-probability difference does. */
 function readingOnly(form: FormState): MetricSpec {
+  if (form.kind === "probe" || form.metric === "readout") return { kind: "logprob_diff", normalization: form.normalization };
   return form.metric === "kl"
     ? { kind: "kl", target: form.klTarget ?? "clean", normalization: form.normalization }
     : { kind: form.metric, normalization: form.normalization };

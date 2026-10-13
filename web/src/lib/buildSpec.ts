@@ -25,6 +25,32 @@ import { modelRefOf, saeWritesText, sameDevice, siteText, splitCount, steerSiteO
 
 /** The residual stream sites the mean difference is added to (src/logogram/steering.py). */
 const RESIDUAL: SiteKind[] = ["resid_pre", "resid_mid", "resid_post"];
+// Activations as wide as the residual stream: what a saved direction lives in.
+const STREAM: SiteKind[] = ["resid_pre", "resid_mid", "resid_post", "attn_out", "mlp_out"];
+// What a probe reads: whole activations, or one head's output, query, key or value.
+const PROBED: SiteKind[] = [...STREAM, "head", "q", "k", "v"];
+// Methods that read a readout metric (READOUT_KINDS in src/logogram/spec.py).
+export const READOUT_METHODS = ["activation_patching", "ablation", "subspace_patching"] as const;
+
+/** The kinds of site a scope reaches, where it names them. */
+function scopeKinds(scope: ScopeSpec): SiteKind[] {
+  switch (scope.kind) {
+    case "heads":
+      return ["head"];
+    case "head_inputs":
+      return [scope.input];
+    case "neurons":
+      return ["neuron"];
+    case "layer_position":
+      return [scope.site];
+    case "layer_components":
+      return scope.components;
+    case "sites":
+      return scope.sites.map((x) => x.kind);
+    default:
+      return [];
+  }
+}
 
 /** What the system message and the person's message of a chat template may hold (spec.py). */
 const CHAT_TEXT_MAX = 4000;
@@ -244,9 +270,13 @@ export function parseCounts(text: string): { values: number[] } | { error: strin
   return { values };
 }
 
-/** The form's metric as a spec writes it, or null while the KL divergence has no target. */
-export function metricOf(form: Pick<FormState, "metric" | "klTarget" | "normalization">): MetricSpec | null {
+/** The form's metric as a spec writes it, or null while the KL divergence has no target or a
+ * readout reads nothing yet. */
+export function metricOf(form: Pick<FormState, "metric" | "klTarget" | "normalization" | "readout" | "readoutPosition">): MetricSpec | null {
   if (form.metric === "kl") return form.klTarget ? { kind: "kl", target: form.klTarget, normalization: form.normalization } : null;
+  if (form.metric === "readout") {
+    return form.readout ? { kind: "readout", unit: form.readout, position: form.readoutPosition, normalization: form.normalization } : null;
+  }
   return { kind: form.metric, normalization: form.normalization };
 }
 
@@ -301,6 +331,10 @@ export function buildSpec(
     const strengths = parseStrengths(form.steerStrengths);
     if ("error" in strengths) return strengths;
     let direction: SteeringDirection = { kind: "mean_difference" };
+    if (form.steerDirection === "direction") {
+      if (!form.steerSaved) return { error: "Choose the saved direction to steer along." };
+      direction = { kind: "direction", direction: form.steerSaved };
+    }
     if (form.steerDirection === "sae_feature") {
       const feature = form.steerFeature;
       if (feature === null || !Number.isInteger(feature) || feature < 0) {
@@ -349,9 +383,68 @@ export function buildSpec(
   } else if (form.kind === "direct_logit_attribution") {
     if (!form.dlaPrompts) return { error: "Choose which prompts' logit difference to split." };
     experiment = { kind: "direct_logit_attribution", prompts: form.dlaPrompts };
+  } else if (form.kind === "probe") {
+    if (!form.probeLabels) return { error: "Choose what the probe reads: which prompt it is, or a field of the prompts' meta." };
+    if (form.probeLabels === "meta" && !form.probeField) return { error: "Choose the field of the prompts' meta that labels them." };
+    if (!(form.probeTrain > 0 && form.probeTrain < 1)) return { error: "Train the probes on a share of the pairs between 0 and 100%." };
+    if (!isSeed(form.probeSeed)) return { error: "The split's seed is a whole number from 0." };
+    if (!(form.probeL2 >= 0 && form.probeL2 <= 1e6)) return { error: "The L2 penalty is a number from 0 to 1,000,000." };
+    if (!Number.isInteger(form.probeIterations) || form.probeIterations < 1 || form.probeIterations > 1000) {
+      return { error: "Fit each probe with 1 to 1,000 iterations." };
+    }
+    experiment = {
+      kind: "probe",
+      labels: form.probeLabels === "side" ? { kind: "side" } : { kind: "meta", field: form.probeField as string, prompts: form.probePrompts },
+      train_fraction: form.probeTrain,
+      seed: form.probeSeed,
+      regularization: form.probeL2,
+      iterations: form.probeIterations,
+      control: form.probeControl,
+    };
+  } else if (form.kind === "das") {
+    if (!Number.isInteger(form.dasDimensions) || form.dasDimensions < 1 || form.dasDimensions > 64) {
+      return { error: "Learn a subspace of 1 to 64 dimensions." };
+    }
+    if (!(form.dasTrain > 0 && form.dasTrain < 1)) return { error: "Train the subspace on a share of the pairs between 0 and 100%." };
+    if (!isSeed(form.dasSeed)) return { error: "The seed is a whole number from 0." };
+    if (!Number.isInteger(form.dasSteps) || form.dasSteps < 1 || form.dasSteps > 10_000) return { error: "Train each subspace for 1 to 10,000 steps." };
+    if (!(form.dasRate > 0 && form.dasRate <= 1)) return { error: "The learning rate is a number above 0, at most 1." };
+    const width = ctx.model.info?.d_model;
+    if (width !== undefined && form.dasDimensions >= width) {
+      return { error: `A subspace of ${form.dasDimensions} dimensions is the whole ${width}-wide activation. Choose fewer dimensions.` };
+    }
+    experiment = {
+      kind: "das",
+      direction: form.direction,
+      dimensions: form.dasDimensions,
+      train_fraction: form.dasTrain,
+      seed: form.dasSeed,
+      steps: form.dasSteps,
+      learning_rate: form.dasRate,
+      control: form.dasControl,
+    };
+  } else if (form.kind === "subspace_patching") {
+    if (!form.subspace) return { error: "Choose the saved direction to patch along." };
+    experiment = { kind: "subspace_patching", direction: form.direction, subspace: form.subspace };
   } else {
     if (!form.baseline) return { error: "Choose a baseline for the ablation. Logogram never assumes one." };
+    if (form.baseline.kind === "scale" && !Number.isFinite(form.baseline.factor)) return { error: "The scale factor is a number, such as 0 or 2." };
+    if (form.baseline.kind === "projection" && !form.baseline.direction.name) return { error: "Choose the saved direction to remove." };
     experiment = { kind: "ablation", baseline: form.baseline };
+  }
+  // Methods that read one position of each prompt, and the sites a direction lives in.
+  const reads = experiment.kind === "probe" || experiment.kind === "das";
+  if (reads && everyPosition(form.scope)) {
+    return { error: `${experiment.kind === "probe" ? "A probe" : "Distributed alignment search"} reads one position of each prompt. Choose the last token, a token index or a named position under What to sweep.` };
+  }
+  const kinds = scopeKinds(form.scope);
+  const directional =
+    experiment.kind === "das" || experiment.kind === "subspace_patching" || (experiment.kind === "ablation" && experiment.baseline.kind === "projection");
+  if (directional && (kinds.length === 0 || kinds.some((k) => !STREAM.includes(k)))) {
+    return { error: "A direction lives in activations as wide as the residual stream. Choose stream sites, attention outputs or MLP outputs under What to sweep." };
+  }
+  if (experiment.kind === "probe" && (kinds.length === 0 || kinds.some((k) => !PROBED.includes(k)))) {
+    return { error: "A probe reads whole activations, or one head's output, query, key or value. Choose those under What to sweep." };
   }
   const scope = form.scope;
   // The edges of the model's graph are edge attribution's, and only it estimates them.
@@ -460,10 +553,22 @@ export function buildSpec(
     return { error: "SAE features are estimated from a single gradient. Choose one gradient, or estimate the model's components with integrated gradients." };
   }
 
-  // The metric, and what the method and the answers allow.
-  const metric = metricOf(form);
-  if (!metric) return { error: "Choose which prompt's prediction the KL divergence is measured from." };
-  if (experiment.kind === "direct_logit_attribution" && metric.kind !== "logit_diff") {
+  // The metric, and what the method and the answers allow. A probe reads activations: no metric.
+  const metric = experiment.kind === "probe" ? null : metricOf(form);
+  if (!metric && experiment.kind !== "probe") {
+    return { error: form.metric === "readout" ? "Choose what the readout reads: a neuron, a saved direction or an SAE feature." : "Choose which prompt's prediction the KL divergence is measured from." };
+  }
+  if (metric?.kind === "readout") {
+    if (!(READOUT_METHODS as readonly string[]).includes(experiment.kind)) {
+      return { error: "A readout is read by activation patching, ablation and subspace patching. Choose one of those, or another metric." };
+    }
+    if (scope.kind === "features" || scope.kind === "site_sets") return { error: "A readout is read site by site: choose single sites, not sets or SAE features." };
+    if (metric.unit.kind === "sae_feature" && !(ctx.sae?.state === "ready" && ctx.sae.info) && !form.saeRef) {
+      return { error: "Load the SAE whose feature the readout reads (Explore → Features)." };
+    }
+    if (metric.position.kind === "label" && !metric.position.label) return { error: "Choose the named position where the readout reads." };
+  }
+  if (experiment.kind === "direct_logit_attribution" && metric?.kind !== "logit_diff") {
     return { error: "Direct logit attribution splits the logit difference, the one metric that is a sum of what each component writes. Choose the logit difference as the metric." };
   }
   const facts = ctx.facts;
@@ -476,7 +581,7 @@ export function buildSpec(
         error: `Direct logit attribution splits the logit difference between two single tokens, and ${have(facts.notSingle)} a set or several tokens as an answer or distractor. Use single-token answers, or activation patching.`,
       };
     }
-    if (several > 0 && metric.kind === "logit_diff") {
+    if (several > 0 && metric?.kind === "logit_diff") {
       return {
         error: `${have(several)} an answer or distractor of several tokens${example}. The logit difference reads one token: choose the log-probability difference, or another metric that reads answers of several tokens.`,
       };
@@ -503,6 +608,18 @@ export function buildSpec(
       if (choose < 1 || facts.n - choose < 2) {
         return { error: `Choosing features on ${Math.round(scope.choose_on * 100)}% of ${plural(facts.n, "prompt")} leaves ${choose} to choose them and ${facts.n - choose} to report them, but it needs at least one and two. Use more prompts, or another share.` };
       }
+    }
+    if ((experiment.kind === "probe" || experiment.kind === "das") && facts.n > 0) {
+      const train = splitCount(facts.n, experiment.train_fraction);
+      const what = experiment.kind === "probe" ? "A probe" : "Distributed alignment search";
+      if (train < 1 || facts.n - train < 2) {
+        return { error: `${what} needs at least one pair to train on and two to measure on, but ${plural(facts.n, "pair")} with a training share of ${Math.round(experiment.train_fraction * 100)}% leaves ${train} and ${facts.n - train}. Use more prompts or another training share.` };
+      }
+    }
+    if (experiment.kind === "probe" && experiment.labels.kind === "meta") {
+      const field = facts.fields.find((f) => f.field === (experiment.labels as { field: string }).field);
+      if (!field) return { error: `Not every prompt has “${experiment.labels.field}” in its meta, so not every prompt has a label. Choose another field.` };
+      if (field.clusters < 2) return { error: `Every prompt has the same ${experiment.labels.field}, so there is nothing for a probe to tell apart. Choose another field.` };
     }
     if (experiment.kind === "steering" && facts.n > 0) {
       const train = splitCount(facts.n, experiment.train_fraction);
@@ -553,9 +670,10 @@ export function buildSpec(
   // SAE features belong to an SAE: the loaded one, or the one a saved spec names.
   const features = usesFeatures(scope);
   const steersFeature = experiment.kind === "steering" && experiment.direction.kind === "sae_feature";
+  const readsFeature = metric?.kind === "readout" && metric.unit.kind === "sae_feature";
   const loadedInfo = ctx.sae?.state === "ready" && ctx.sae.info ? ctx.sae.info : null;
   const loaded = loadedInfo ? { repo: loadedInfo.repo, path: loadedInfo.path, revision: loadedInfo.revision } : null;
-  const sae = features || steersFeature ? (loaded ?? form.saeRef) : null;
+  const sae = features || steersFeature || readsFeature ? (loaded ?? form.saeRef) : null;
   if (features && !sae) return { error: "Load the SAE these features belong to (Explore → Features)." };
   if (experiment.kind === "steering") {
     const direction = experiment.direction;
@@ -574,7 +692,9 @@ export function buildSpec(
         }
       }
     } else if (scope.kind === "sites" && scope.sites.some((x) => !RESIDUAL.includes(x.kind))) {
-      return { error: "Steering by the mean difference adds it to the residual stream. Choose residual sites, or steer along an SAE feature where its SAE writes." };
+      return {
+        error: `Steering ${direction.kind === "direction" ? "along a saved direction" : "by the mean difference"} adds it to the residual stream. Choose residual sites, or steer along an SAE feature where its SAE writes.`,
+      };
     }
   }
   if (scope.kind === "features" && experiment.kind !== "attribution_patching") {

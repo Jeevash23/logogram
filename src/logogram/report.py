@@ -23,17 +23,24 @@ from logogram.spec import (
     ActivationPatching,
     AttributionPatching,
     DirectLogitAttribution,
+    DistributedAlignmentSearch,
     EdgeAttribution,
     EdgesScope,
     FeatureDirection,
     MeanBaseline,
     PathPatching,
+    Probe,
+    ProjectionBaseline,
+    SavedDirection,
+    ScaleBaseline,
     Spec,
     Steering,
+    SubspacePatching,
     ZeroBaseline,
     describe_experiment,
     describe_metric,
     describe_sae_site,
+    labels_text,
     receiver_text,
 )
 
@@ -54,6 +61,18 @@ def _arrow(direction: str) -> str:
 def _baseline(b: Any) -> str:
     if isinstance(b, ZeroBaseline):
         return "zeros"
+    if isinstance(b, ScaleBaseline):
+        return f"itself multiplied by {b.factor:g}"
+    if isinstance(b, ProjectionBaseline):
+        to = (
+            "removed (set to zero)"
+            if b.reference is None
+            else f"set to its mean over the {b.reference} prompts"
+        )
+        return (
+            f"itself with its component along the saved direction {b.direction.name} {to}, "
+            "everything at right angles to it kept"
+        )
     if isinstance(b, MeanBaseline):
         return f"the activation's mean over the {b.reference} prompts"
     return (
@@ -108,6 +127,51 @@ def _method(spec: Spec, summary: dict[str, Any] | None) -> str:
         return _edge_method(spec, e, summary)
     if isinstance(e, Steering):
         return _steering_method(spec, e, summary)
+    if isinstance(e, SubspacePatching):
+        return (
+            f"Subspace patching {_arrow(e.direction)}: at each site, only the activation's "
+            f"component along the saved direction {e.subspace.name} (within the span of its "
+            "orthonormal rows) was taken from the source prompt; everything at right angles to "
+            "it kept the receiver's own value."
+        )
+    if isinstance(e, DistributedAlignmentSearch):
+        das = (summary or {}).get("das") or {}
+        split = (
+            f" {len(das['train'])} pairs trained the subspaces and the {len(das['test'])} "
+            "held-out pairs measured them."
+            if das
+            else ""
+        )
+        control = ", and within a random subspace of the same size" if e.control else ""
+        return (
+            f"Distributed alignment search {_arrow(e.direction)}: at each site, an orthonormal "
+            f"basis of {e.dimensions} vector{'s' if e.dimensions != 1 else ''} (the orthonormal "
+            "part of a free matrix drawn with the seed) was trained by Adam "
+            f"(learning rate {e.learning_rate:g}, {e.steps} steps, each over every training "
+            "pair) to maximize the mean normalized effect of patching only the component within "
+            f"it.{split} The held-out pairs were patched within the learned subspace, as a whole "
+            f"site{control}."
+        )
+    if isinstance(e, Probe):
+        probe = (summary or {}).get("probe") or {}
+        classes = ", ".join(probe.get("classes") or [])
+        control = (
+            " A second probe at each site was fitted to the training labels shuffled with the "
+            "seed and measured on the true held-out labels (a control task); selectivity is the "
+            "difference of the two accuracies, pair by pair."
+            if e.control
+            else ""
+        )
+        return (
+            f"Linear probes: at each site, a logistic regression read {labels_text(e.labels)}"
+            f"{f' ({classes})' if classes else ''} from the activation, standardized with the "
+            "training examples' mean and spread, fitted from zero by L-BFGS in float64 for "
+            f"{e.iterations} iterations to the mean cross-entropy plus {e.regularization:g} / 2 "
+            f"times the squared length of its weights, on {e.train_fraction:.0%} of the pairs "
+            f"(seed {e.seed}); pairs, not examples, were split.{control} Always answering the "
+            f"most common training class scored {probe.get('chance', float('nan')):.3f} on the "
+            "held-out examples."
+        )
     assert isinstance(e, AttributionPatching)
     how = (
         f"the gradient of the metric averaged over {e.steps} runs whose input embeddings lie "
@@ -222,6 +286,15 @@ def _steering_method(spec: Spec, e: Steering, summary: dict[str, Any] | None) ->
                     f"{value:.4g}{at} (positive in {fired} of the {measured} training activations)"
                 )
             text += f" The typical activation was {'; '.join(parts)}."
+    elif isinstance(e.direction, SavedDirection):
+        saved = steering.get("direction") or {}
+        along = ", ".join(f"{a:.4g}" for a in saved.get("along") or [])
+        text = (
+            f"Steering along the saved direction {e.direction.direction.name}: its unit vector was "
+            f"added to the {e.apply_to} prompts at strengths {strengths}, where strength 1 is the "
+            f"mean of ({other} − {e.apply_to}) activations along it at each site over {split}"
+            f"{f' ({along})' if along else ''}."
+        )
     else:
         text = (
             f"Steering: a direction was added to the {e.apply_to} prompts, the mean of ({other} − "
@@ -351,15 +424,31 @@ def methods_text(
         if m.source == "local"
         else f"{m.id} at {revision}"
     )
+    metric = (
+        "A probe reads activations, not the output: each held-out pair's value was the share of "
+        "its examples the probe labelled correctly, not normalized."
+        if spec.metric is None
+        else f"The metric, for each prompt, was {describe_metric(spec.metric)}. "
+        f"{normalized}{f': {formula}' if formula else ''}."
+    )
     paragraphs = [
         f"{describe_experiment(spec)}.",
         f"The model was {model}, run in {m.dtype} on {device}, {weights}.",
         f"{pairs} read from {source}{pinned}{first}, and {_tokenized(spec, summary)}.",
-        f"The metric, for each prompt, was {describe_metric(spec.metric)}. "
-        f"{normalized}{f': {formula}' if formula else ''}.",
+        metric,
         f"Prompts ran in batches of {spec.execution.batch_size}. {_statistics(spec, summary)}",
         _method(spec, summary),
     ]
+    # The saved directions it used, as the run pinned them.
+    used = []
+    for d in manifest.get("directions") or []:
+        size = f"{d['dimensions']} dimension{'s' if d['dimensions'] != 1 else ''}"
+        made = f"made by {d['method']}" + (
+            f" in run {d['made_from']}" if d.get("made_from") else ""
+        )
+        used.append(f"{d['name']} ({size}, {made}, SHA-256 {d['sha256']})")
+    if used:
+        paragraphs.append(f"Saved directions it used, as the run pinned them: {'; '.join(used)}.")
     # A run that stopped early: how far it got, and what its numbers cover.
     partial = (summary or {}).get("partial")
     if partial:
@@ -384,6 +473,18 @@ def methods_text(
 _POSITIVE = (37, 87, 222)
 _NEGATIVE = (200, 120, 20)
 _NEUTRAL = (236, 236, 236)
+
+
+# Held-out accuracy (a probe's) isn't an effect: it is drawn in ink, from white at 0 to ink at 1.
+_INK = (28, 34, 38)
+
+
+def ink_color(value: float | None) -> str:
+    if value is None or not math.isfinite(value):
+        return "#ffffff"
+    t = max(0.0, min(1.0, value))
+    mix = [round(255 + t * (e - 255)) for e in _INK]
+    return "#" + "".join(f"{c:02x}" for c in mix)
 
 
 def effect_color(value: float | None, bound: float) -> str:
@@ -428,8 +529,15 @@ def heatmap_svg(
         for s in summary["sites"]
         if s[value]["mean"] is not None and math.isfinite(s[value]["mean"])
     ]
-    bound = 1.0 if unit and value == "effect" else (max(finite) if finite else 1.0)
-    what = "mean normalized effect" if value == "effect" else "mean change in the metric"
+    accuracy = summary.get("measure") == "probe"
+    bound = 1.0 if accuracy or (unit and value == "effect") else (max(finite) if finite else 1.0)
+    what = (
+        "held-out accuracy"
+        if accuracy
+        else "mean normalized effect"
+        if value == "effect"
+        else "mean change in the metric"
+    )
     left = 72
     top = 64 if labels else 20
     # Wide enough for the legend and its label, however few the columns.
@@ -457,7 +565,7 @@ def heatmap_svg(
         for c in range(len(cols)):
             site = by_cell.get((r, c))
             mean = site[value]["mean"] if site else None
-            fill = effect_color(mean, bound) if site else "none"
+            fill = (ink_color(mean) if accuracy else effect_color(mean, bound)) if site else "none"
             title = (
                 f"<title>{esc(site['label'])}: {_fmt(mean)} "
                 f"[{_fmt(site[value]['lo'])} to {_fmt(site[value]['hi'])}]</title>"
@@ -468,10 +576,25 @@ def heatmap_svg(
                 f'<rect x="{left + c * cell}" y="{top + r * cell}" width="{cell - 1}" '
                 f'height="{cell - 1}" fill="{fill}">{title}</rect>'
             )
-    # The legend: the scale from −bound to +bound.
-    parts.append(_legend(left, top + cell * len(rows) + 18, bound, what))
+    # The legend: the scale from −bound to +bound (accuracy: from 0 to 1, in ink).
+    y = top + cell * len(rows) + 18
+    parts.append(_ink_legend(left, y, what) if accuracy else _legend(left, y, bound, what))
     parts.append("</svg>")
     return "".join(parts)
+
+
+def _ink_legend(left: int, y: int, what: str) -> str:
+    """The ink scale from 0 to 1, with what it measures."""
+    return (
+        '<defs><linearGradient id="ink-scale">'
+        f'<stop offset="0" stop-color="{ink_color(0)}"/>'
+        f'<stop offset="1" stop-color="{ink_color(1)}"/></linearGradient></defs>'
+        f'<rect x="{left}" y="{y}" width="120" height="8" fill="url(#ink-scale)" '
+        'stroke="currentColor" stroke-width="0.5"/>'
+        f'<text x="{left}" y="{y + 22}" fill="currentColor">0</text>'
+        f'<text x="{left + 120}" y="{y + 22}" text-anchor="end" fill="currentColor">1</text>'
+        f'<text x="{left + 132}" y="{y + 8}" fill="currentColor">{what}</text>'
+    )
 
 
 def _legend(left: int, y: int, bound: float, what: str) -> str:

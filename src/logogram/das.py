@@ -30,7 +30,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from logogram.backends.base import STREAM_KINDS, Cancelled, ModelBackend, Patch
+from logogram.backends.base import STREAM_KINDS, Cancelled, ModelBackend, Patch, float64
 from logogram.engine import (
     EngineError,
     EngineResult,
@@ -66,7 +66,7 @@ def orthonormal_basis(free: torch.Tensor) -> torch.Tensor:
     """The orthonormal basis ``[d, k]`` spanned by ``free``'s columns: its QR decomposition, in
     float64 on the CPU (the same on every device), with each column's sign fixed by R's diagonal
     so the basis changes smoothly with ``free``."""
-    q, r = torch.linalg.qr(free.to(device="cpu", dtype=torch.float64))
+    q, r = torch.linalg.qr(free.to(device="cpu", dtype=torch.float64))  # float64 on the CPU
     return q * torch.sign(torch.diagonal(r))[None, :]
 
 
@@ -367,7 +367,7 @@ def _train_effect(
     metric = None
     for part, conts, keep in scorer.passes(rows):
         logits = backend.logits(extend_tokens(tokens, conts, keep), patch, keep, grad=True)
-        term = scorer.differentiable(logits, rows, part).double()
+        term = float64(scorer.differentiable(logits, rows, part))
         metric = term if metric is None else metric + term
     assert metric is not None
     base = torch.from_numpy(np.asarray(receiver_metric, dtype=np.float64)).to(metric.device)

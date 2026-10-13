@@ -912,6 +912,92 @@ class Run:
         strongest edges and of k edges chosen at random, with intervals; None without one."""
         return (self._summary().get("edges") or {}).get("curve")
 
+    def probes(self) -> Any:
+        """A probe run's sites, one row each: the held-out accuracy with its interval, the
+        control's (trained on shuffled labels) and their difference (selectivity) with its
+        interval, the training accuracy, and chance."""
+        summary = self._summary()
+        probe = summary.get("probe")
+        if not probe:
+            raise LogogramError(f"{self.id} isn't a probe run.")
+        sites = {s["index"]: s for s in summary["sites"]}
+        trained = {s["index"]: s for s in probe["sites"]}
+        chosen = {c["index"]: c for c in probe.get("selectivity") or []}
+        rows = []
+        for index, site in sites.items():
+            if (site.get("variant") or {}).get("control"):
+                continue
+            sel = chosen.get(index) or {}
+            control = sites.get(sel.get("control_index", -1))
+            rows.append(
+                {
+                    "site": index,
+                    "label": site["label"],
+                    "kind": site["kind"],
+                    "layer": site["layer"],
+                    "accuracy": site["effect"]["mean"],
+                    "accuracy_lo": site["effect"]["lo"],
+                    "accuracy_hi": site["effect"]["hi"],
+                    "control": None if control is None else control["effect"]["mean"],
+                    "selectivity": sel.get("difference"),
+                    "selectivity_lo": sel.get("lo"),
+                    "selectivity_hi": sel.get("hi"),
+                    "train_accuracy": (trained.get(index) or {}).get("train_accuracy"),
+                    "chance": probe["chance"],
+                }
+            )
+        return _table(rows)
+
+    def subspaces(self) -> Any:
+        """A distributed alignment search run's sites, one row each: the normalized effect on
+        held-out pairs of patching within the learned subspace, of the whole site and (with the
+        control) within a random subspace, the learned subspace's share of the whole site's
+        effect, and its effect on the training pairs."""
+        summary = self._summary()
+        das = summary.get("das")
+        if not das:
+            raise LogogramError(f"{self.id} isn't a distributed alignment search run.")
+        by_row: dict[int, dict[str, Any]] = {}
+        for site in summary["sites"]:
+            key = str((site.get("variant") or {}).get("subspace") or "")
+            row = by_row.setdefault(
+                site["row"], {"label": None, "kind": site["kind"], "layer": site["layer"]}
+            )
+            row[key] = site["effect"]["mean"]
+            if key == "learned":
+                row["site"] = site["index"]
+                row["label"] = site["label"].removesuffix(" learned")
+        trained = {s["row"]: s for s in das["sites"]}
+        rows = []
+        for r, row in sorted(by_row.items()):
+            learned, whole = row.get("learned"), row.get("full")
+            rows.append(
+                {
+                    "site": row.get("site"),
+                    "label": row["label"],
+                    "kind": row["kind"],
+                    "layer": row["layer"],
+                    "learned": learned,
+                    "whole": whole,
+                    "random": row.get("random"),
+                    "share": None if learned is None or not whole else learned / whole,
+                    "train_effect": (trained.get(r) or {}).get("train_effect"),
+                }
+            )
+        return _table(rows)
+
+    def save_direction(self, site: int, name: str, *, row: int | None = None) -> dict[str, Any]:
+        """Save what this probe or learned subspace run found at its site ``site`` (an index of
+        :meth:`sites`) as the project's direction ``name``: a subspace's rows, or a probe's
+        weights (with two classes, the direction toward the second; with more, class ``row``'s).
+        Steering, directional ablation, subspace patching and readouts can then use it."""
+        from logogram.directions import DirectionError, save_run_direction
+
+        try:
+            return save_run_direction(self.project, self.id, site, name, row=row).to_dict()
+        except DirectionError as exc:
+            raise LogogramError(str(exc)) from None
+
     def _repr_html_(self) -> str:
         if self.summary is None:
             return f"<p><b>{html.escape(self.title)}</b> · {html.escape(self.status)}</p>"

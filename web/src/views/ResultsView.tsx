@@ -11,7 +11,7 @@ import { ago, capitalize, ci, count, duration, num, pct, plural, qText, shortRev
 import { modelName, siteValue, useActiveRun, useArchitecture, useRunProfile } from "../lib/hooks";
 import { findSite, gridKey, layoutTitle, queryHeadsText, selectionOfSite, siteGrid, type Selection } from "../lib/sites";
 import { metricWords } from "../lib/metrics";
-import { baselineText, chatTemplateText, experimentText, graphText, layersText, measureOf, measureWords, positionText, receiverLabel, saeWritesText } from "../lib/spec";
+import { baselineText, chatTemplateText, experimentText, graphText, layersText, measureOf, measureWords, positionText, readoutText, receiverLabel, saeWritesText } from "../lib/spec";
 import { useStore } from "../store/app";
 import { Distribution } from "../components/Distribution";
 import { api } from "../api/client";
@@ -23,6 +23,7 @@ import { CircuitDialog } from "../components/CircuitDialog";
 import { rankedSites, universeText } from "../lib/circuits";
 import { membershipText, sweepsOf, sweepsOfRun } from "../lib/sweeps";
 import { CircuitResults } from "./CircuitResults";
+import { DASResults, ProbeResults } from "./DirectionResults";
 import { EdgeResults } from "./EdgeResults";
 import { Continuations } from "./Continuations";
 import { FlagMark, Forest } from "./Forest";
@@ -437,7 +438,31 @@ export function ResultsView() {
           source={summary?.reference ?? "source"}
         />
       )}
-      {layout && layout.kind !== "sites" && layout.kind !== "site_sets" && layout.kind !== "neurons" && layout.kind !== "edges" && (
+      {layout?.kind === "probe" && run.id && (
+        <ProbeResults
+          runId={run.id}
+          probe={summary?.probe}
+          sites={run.sites}
+          results={run.results}
+          ciLevel={run.ciLevel}
+          theme={theme}
+          selectedIndex={selectedSite?.index ?? null}
+          onSelect={(site) => select(selectionOfSite(site))}
+          finished={status === "finished"}
+        />
+      )}
+      {layout?.kind === "das" && run.id && (
+        <DASResults
+          runId={run.id}
+          das={summary?.das}
+          sites={run.sites}
+          results={run.results}
+          selectedIndex={selectedSite?.index ?? null}
+          onSelect={(site) => select(selectionOfSite(site))}
+          finished={status === "finished"}
+        />
+      )}
+      {layout && layout.kind !== "sites" && layout.kind !== "site_sets" && layout.kind !== "neurons" && layout.kind !== "edges" && layout.kind !== "probe" && (
         <div className={r.grid}>
           <div className={r.heat} data-tour="map">
             <div className={r.heatHead}>
@@ -455,7 +480,7 @@ export function ResultsView() {
               results={run.results}
               metric={metric}
               experiment={spec?.experiment}
-              measuredBy={metricSpec}
+              measuredBy={metricSpec ?? undefined}
               color={color}
               theme={theme}
               flagged={flagged}
@@ -716,15 +741,19 @@ function MethodsLine({ spec, n, clusters }: { spec: Spec; n: number | undefined;
                 ? `Path patching ${e.direction === "clean_to_corrupt" ? "clean → corrupt" : "corrupt → clean"} into ${e.receivers.map(receiverLabel).join(", ")}${e.freeze_mlps ? ", MLPs held" : ""}`
                 : e.kind === "steering"
                 ? `Steer ${e.apply_to} ${e.direction?.kind === "sae_feature" ? `along SAE feature ${e.direction.feature}` : `→ ${e.apply_to === "clean" ? "corrupt" : "clean"}`} (${e.coefficients.map((c) => `×${c}`.replace("-", "−")).join(", ")}${e.control ? ", random control" : ""})`
-                : e.kind === "edge_attribution"
-                  ? `${experimentText(e)} (edge attribution)`
+                : e.kind === "edge_attribution" || e.kind === "probe" || e.kind === "das" || e.kind === "subspace_patching"
+                  ? experimentText(e)
                   : `Ablate (${baselineText(e.baseline)})`}
       </strong>
       {" "}{site}{scope.kind === "site_sets" ? ", each intervened on at once" : scope.kind === "graph" ? ", summed over every position" : ` at ${position}`}
       <span className={r.sep}>·</span>
       {e.kind === "direct_logit_attribution"
-        ? `logit difference, as a share of ${spec.metric.normalization === "dataset_gap" ? "the mean" : "each prompt's"}`
-        : `${metricWords(spec.metric).label}, normalized by ${spec.metric.normalization === "dataset_gap" ? "the dataset gap" : "each prompt's gap"}`}
+        ? `logit difference, as a share of ${spec.metric?.normalization === "dataset_gap" ? "the mean" : "each prompt's"}`
+        : !spec.metric
+          ? "held-out accuracy, against chance and shuffled labels"
+          : spec.metric.kind === "readout"
+            ? `reading ${readoutText(spec.metric)}, normalized by ${spec.metric.normalization === "dataset_gap" ? "the dataset gap" : "each prompt's gap"}`
+            : `${metricWords(spec.metric).label}, normalized by ${spec.metric.normalization === "dataset_gap" ? "the dataset gap" : "each prompt's gap"}`}
       {n !== undefined && <><span className={r.sep}>·</span>n = {count(n)}</>}
       {spec.tokenization.chat_template && <><span className={r.sep}>·</span>prompts {chatTemplateText(spec.tokenization.chat_template)}</>}
       <span className={r.sep}>·</span>{Math.round(spec.statistics.ci * 100)}% CI{spec.statistics.cluster ? `, resampling ${clusters ? `${count(clusters)} clusters` : "clusters"} of prompts with the same ${spec.statistics.cluster}` : ""}, {count(spec.statistics.bootstrap)} resamples, seed {spec.statistics.seed}

@@ -510,6 +510,15 @@ class SweepRequest(BaseModel):
         return self
 
 
+class SaveDirectionRequest(BaseModel):
+    """Save what a probe or a learned subspace run found at one of its sites as a direction."""
+
+    site: int = Field(ge=0)
+    name: str = Field(min_length=1, max_length=80)
+    # A probe of more than two classes: the class whose weights are saved.
+    row: int | None = Field(default=None, ge=0)
+
+
 class AnnotateRequest(BaseModel):
     """What to change in what is said about a run (its annotations.json: the spec never changes).
     Fields left out stay as they are; a title of null or "", or the spec's own name, clears it."""
@@ -1887,6 +1896,16 @@ def create_app(
             media_type="text/csv",
             headers={"content-disposition": f'attachment; filename="sweep-{table["sweep"]}.csv"'},
         )
+
+    @app.post("/api/runs/{run_id}/directions", response_model=M.DirectionListing)
+    def save_run_direction(run_id: str, body: SaveDirectionRequest) -> dict[str, Any]:
+        """Save what a probe or a learned subspace run found at a site as a project direction."""
+        from logogram.directions import save_run_direction as save
+
+        with state._job_lock:
+            project = state.require_project()
+            saved = save(project, run_id, body.site, body.name, row=body.row)
+        return {**saved.to_dict(), "error": None}
 
     @app.get("/api/runs/{run_id}/derived", response_model=list[RunListing])
     def derived(run_id: str) -> list[dict[str, Any]]:

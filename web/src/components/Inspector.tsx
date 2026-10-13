@@ -20,7 +20,7 @@ import { setWhat, universeText } from "../lib/circuits";
 import { metricWords } from "../lib/metrics";
 import { runTitle } from "../lib/runs";
 import { siteText } from "../lib/spec";
-import { baselineText, experimentText, measureOf, measureWords, positionText, receiverInputWords, senderWords } from "../lib/spec";
+import { baselineText, experimentText, labelsText, measureOf, measureWords, positionText, readoutText, receiverInputWords, senderWords } from "../lib/spec";
 import { prefersReducedMotion } from "../lib/motion";
 import { useStore } from "../store/app";
 import { Distribution } from "./Distribution";
@@ -276,7 +276,7 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
         <p className={s.text}>Logit difference at the last token: logit(answer) − logit(distractor).</p>
         <p className={s.text}>
           Share = direct effect ÷{" "}
-          {spec.metric.normalization === "dataset_gap" ? (
+          {spec.metric?.normalization === "dataset_gap" ? (
             <>
               the mean {exp.prompts} logit difference{summary?.metric.denominator != null && <> ({num(summary.metric.denominator, 3)})</>}
             </>
@@ -340,13 +340,36 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
         : `Runs each clean prompt and replaces ${what} at ${position} with its value from the paired corrupt prompt. Does this break it?`;
   } else if (exp.kind === "ablation") {
     const b = exp.baseline;
-    const source =
-      b.kind === "zero"
-        ? "zeros"
-        : b.kind === "mean"
-          ? `its mean over the dataset's ${b.reference} prompts`
-          : `its value in ${b.donors} randomly drawn ${b.pool} prompts (seed ${b.seed}), averaging the result`;
-    how = `Runs each clean prompt and replaces ${what} at ${position} with ${source}.`;
+    if (b.kind === "scale") {
+      how = `Runs each clean prompt and multiplies ${what} at ${position} by ${String(b.factor).replace("-", "−")}.`;
+    } else if (b.kind === "projection") {
+      how =
+        `Runs each clean prompt and ${b.reference === null ? "removes" : `sets to its mean over the ${b.reference} prompts`} the component of ${what} at ${position} ` +
+        `along the saved direction ${b.direction.name}, keeping everything at right angles to it.`;
+    } else {
+      const source =
+        b.kind === "zero"
+          ? "zeros"
+          : b.kind === "mean"
+            ? `its mean over the dataset's ${b.reference} prompts`
+            : `its value in ${b.donors} randomly drawn ${b.pool} prompts (seed ${b.seed}), averaging the result`;
+      how = `Runs each clean prompt and replaces ${what} at ${position} with ${source}.`;
+    }
+  } else if (exp.kind === "subspace_patching") {
+    const [receiver, source] = exp.direction === "clean_to_corrupt" ? ["corrupt", "clean"] : ["clean", "corrupt"];
+    how =
+      `Runs each ${receiver} prompt and takes the component of ${what} at ${position} along the saved direction ${exp.subspace.name} ` +
+      `from the paired ${source} prompt, keeping the rest of it as it was.`;
+  } else if (exp.kind === "das") {
+    const [receiver, source] = exp.direction === "clean_to_corrupt" ? ["corrupt", "clean"] : ["clean", "corrupt"];
+    how =
+      `Learns, on the training pairs, a subspace of ${exp.dimensions} dimension${exp.dimensions === 1 ? "" : "s"} of ${what} at ${position} whose patching from the ` +
+      `${source} prompt moves each ${receiver} prompt toward it, then patches within it on the held-out pairs, beside the whole site` +
+      `${exp.control ? " and a random subspace of the same size" : ""}.`;
+  } else if (exp.kind === "probe") {
+    how =
+      `Trains a logistic regression to read ${labelsText(exp.labels)} from ${what} at ${position}, on ${Math.round(exp.train_fraction * 100)}% of the pairs, ` +
+      `and measures how often it is right on the held-out pairs${exp.control ? ", beside a probe trained on shuffled labels" : ""}. A probe shows what can be read here, not what the model uses.`;
   } else {
     how = "";
   }
@@ -357,7 +380,10 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
       ? "corrupt"
       : "clean");
   const estimate = exp.kind === "attribution_patching" || exp.kind === "edge_attribution";
-  const metricText = `${measured.formula}${(summary?.metric ?? spec.metric).kind === "logit_diff" ? " at the last token" : ""}`;
+  const metricText =
+    spec.metric?.kind === "readout"
+      ? readoutText(spec.metric)
+      : `${measured.formula}${(summary?.metric ?? spec.metric)?.kind === "logit_diff" ? " at the last token" : ""}`;
   const reference = summary?.reference ?? (receiver === "corrupt" ? "clean" : "corrupt");
   const gap = summary?.metric.denominator;
   return (
@@ -374,7 +400,7 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
       </p>
       <p className={s.text}>
         {estimate ? "Estimated effect = (estimated patched" : exp.kind === "steering" ? "Normalized effect = (steered" : "Normalized effect = (patched"} − {receiver}) ÷{" "}
-        {spec.metric.normalization === "dataset_gap" ? (
+        {spec.metric?.normalization === "dataset_gap" ? (
           <>
             mean({reference} − {receiver}){gap !== null && gap !== undefined && <> (denominator {num(gap, 3)})</>}
           </>

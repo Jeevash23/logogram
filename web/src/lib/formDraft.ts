@@ -92,6 +92,24 @@ const ADDED = new Set<keyof FormState>([
   "edgePatch",
   "edgeSeed",
   "edgeDraws",
+  "steerSaved",
+  "probeLabels",
+  "probeField",
+  "probePrompts",
+  "probeTrain",
+  "probeSeed",
+  "probeL2",
+  "probeIterations",
+  "probeControl",
+  "dasDimensions",
+  "dasTrain",
+  "dasSeed",
+  "dasSteps",
+  "dasRate",
+  "dasControl",
+  "subspace",
+  "readout",
+  "readoutPosition",
 ]);
 
 /** A sweep stored before it had every field: an every-feature sweep chose and reported its
@@ -195,13 +213,26 @@ const isScope: Check = (v) => {
   }
 };
 
+const isDirectionRef: Check = (v) => isObject(v) && isString(v.name) && orNull(isString)(v.sha256);
+
 const isBaseline: Check = (v) => {
   if (!isObject(v)) return false;
   if (v.kind === "zero") return true;
   if (v.kind === "mean") return SIDES(v.reference);
   if (v.kind === "resample") return SIDES(v.pool) && isNumber(v.donors) && isNumber(v.seed);
+  if (v.kind === "scale") return isNumber(v.factor);
+  if (v.kind === "projection") return isDirectionRef(v.direction) && orNull(SIDES)(v.reference);
   return false;
 };
+
+const isReadoutPosition: Check = (v) =>
+  isObject(v) && (v.kind === "last" || (v.kind === "index" && isNumber(v.index)) || (v.kind === "label" && isString(v.label)));
+
+const isReadout: Check = (v) =>
+  isObject(v) &&
+  ((v.kind === "neuron" && isNumber(v.layer) && isNumber(v.neuron)) ||
+    (v.kind === "direction" && isDirectionRef(v.direction) && oneOf("resid_pre", "resid_mid", "resid_post", "attn_out", "mlp_out")(v.site) && isNumber(v.layer)) ||
+    (v.kind === "sae_feature" && isNumber(v.feature)));
 
 const isReceiver: Check = (v) =>
   isObject(v) &&
@@ -244,7 +275,18 @@ const FIELDS: { [K in keyof FormState]-?: Check } = {
   predictions: orNull(isPredictions),
   name: isString,
   nameEdited: isBoolean,
-  kind: oneOf("activation_patching", "ablation", "attribution_patching", "direct_logit_attribution", "path_patching", "steering", "edge_attribution"),
+  kind: oneOf(
+    "activation_patching",
+    "ablation",
+    "attribution_patching",
+    "direct_logit_attribution",
+    "path_patching",
+    "steering",
+    "edge_attribution",
+    "subspace_patching",
+    "das",
+    "probe",
+  ),
   direction: oneOf("clean_to_corrupt", "corrupt_to_clean"),
   baseline: orNull(isBaseline),
   dlaPrompts: orNull(SIDES),
@@ -253,7 +295,7 @@ const FIELDS: { [K in keyof FormState]-?: Check } = {
   steerTrain: isNumber,
   steerSeed: isNumber,
   steerControl: isBoolean,
-  steerDirection: oneOf("mean_difference", "sae_feature"),
+  steerDirection: oneOf("mean_difference", "sae_feature", "direction"),
   steerFeature: orNull(isNumber),
   steerContinue: isBoolean,
   steerContinuePrompts: isNumber,
@@ -267,9 +309,27 @@ const FIELDS: { [K in keyof FormState]-?: Check } = {
   edgePatch: orNull(oneOf("chosen", "rest")),
   edgeSeed: isNumber,
   edgeDraws: isNumber,
+  steerSaved: orNull(isDirectionRef),
+  probeLabels: orNull(oneOf("side", "meta")),
+  probeField: orNull(isString),
+  probePrompts: oneOf("clean", "corrupt", "both"),
+  probeTrain: isNumber,
+  probeSeed: isNumber,
+  probeL2: isNumber,
+  probeIterations: isNumber,
+  probeControl: isBoolean,
+  dasDimensions: isNumber,
+  dasTrain: isNumber,
+  dasSeed: isNumber,
+  dasSteps: isNumber,
+  dasRate: isNumber,
+  dasControl: isBoolean,
+  subspace: orNull(isDirectionRef),
+  readout: orNull(isReadout),
+  readoutPosition: isReadoutPosition,
   saeRef: orNull(isSaeRef),
   scope: isScope,
-  metric: oneOf("logit_diff", "logprob_diff", "logprob", "prob", "prob_diff", "kl"),
+  metric: oneOf("logit_diff", "logprob_diff", "logprob", "prob", "prob_diff", "kl", "readout"),
   klTarget: orNull(SIDES),
   normalization: oneOf("dataset_gap", "prompt_gap"),
   bootstrap: isNumber,

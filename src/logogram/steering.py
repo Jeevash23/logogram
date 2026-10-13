@@ -618,9 +618,9 @@ def _saved_direction(
     away = _LayerSources(
         backend, train, train_groups, site.layer, kinds, receiver, batch_size, cancel
     )
-    u = unit.to(dtype=torch.float64)
     difference = float64(toward.table(site.kind, probe)) - float64(away.table(site.kind, probe))
-    along = float((difference.to(u.device) @ u).mean())
+    u = float64(unit).to(difference.device)
+    along = float((difference @ u).mean())
     direction = along * u
     control = None
     if exp.control:

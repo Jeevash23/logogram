@@ -73,9 +73,9 @@ An experiment: what runs, on which model and prompts, and how its numbers are me
 | `model` | object | [Model](#model) | The model, exactly: its files, precision, device and weight processing. |
 | `dataset` | object | [Dataset](#dataset) | The prompt pairs. |
 | `tokenization` | object | [Tokenization](#tokenization) | How each prompt becomes tokens. |
-| `experiment` | object | one of [`activation_patching`](#experiment-activation_patching), [`ablation`](#experiment-ablation), [`direct_logit_attribution`](#experiment-direct_logit_attribution), [`attribution_patching`](#experiment-attribution_patching), [`steering`](#experiment-steering), [`path_patching`](#experiment-path_patching) or [`edge_attribution`](#experiment-edge_attribution) ([Experiment](#experiment)) | The method, with every choice that changes its numbers. |
+| `experiment` | object | one of [`activation_patching`](#experiment-activation_patching), [`ablation`](#experiment-ablation), [`direct_logit_attribution`](#experiment-direct_logit_attribution), [`attribution_patching`](#experiment-attribution_patching), [`steering`](#experiment-steering), [`path_patching`](#experiment-path_patching), [`edge_attribution`](#experiment-edge_attribution), [`subspace_patching`](#experiment-subspace_patching), [`das`](#experiment-das) or [`probe`](#experiment-probe) ([Experiment](#experiment)) | The method, with every choice that changes its numbers. |
 | `scope` | object | one of [`heads`](#scope-heads), [`layer_position`](#scope-layer_position), [`layer_components`](#scope-layer_components), [`sites`](#scope-sites), [`features`](#scope-features), [`site_sets`](#scope-site_sets), [`head_inputs`](#scope-head_inputs), [`neurons`](#scope-neurons), [`graph`](#scope-graph) or [`edges`](#scope-edges) ([Scope](#scope)) | The sites the method measures: one result per site. |
-| `metric` | object | one of [`logit_diff`](#metric-logit_diff), [`logprob_diff`](#metric-logprob_diff), [`logprob`](#metric-logprob), [`prob`](#metric-prob), [`prob_diff`](#metric-prob_diff) or [`kl`](#metric-kl) ([Metric](#metric)) | What is read from the model's output, and how effects are normalized. |
+| `metric` | object or null | one of [`logit_diff`](#metric-logit_diff), [`logprob_diff`](#metric-logprob_diff), [`logprob`](#metric-logprob), [`prob`](#metric-prob), [`prob_diff`](#metric-prob_diff), [`kl`](#metric-kl) or [`readout`](#metric-readout) ([Metric](#metric)), or `null` | What is read from the model's output (or, as a readout, from inside it), and how effects are normalized; `null` for probes, which read activations instead. |
 | `statistics` | object | [Statistics](#statistics) | The intervals' bootstrap, confidence level and seed. |
 | `execution` | object | [Execution](#execution) | How the work is batched. |
 | `predictions` (optional, default `null`) | object or null | [Prediction settings](#prediction-settings), or `null` | An optional logit lens saved beside the results; it never changes an intervention. |
@@ -124,7 +124,7 @@ How each prompt becomes the tokens the model reads.
 
 In a spec at `experiment`.
 
-One of these, chosen by `kind`: [`activation_patching`](#experiment-activation_patching), [`ablation`](#experiment-ablation), [`direct_logit_attribution`](#experiment-direct_logit_attribution), [`attribution_patching`](#experiment-attribution_patching), [`steering`](#experiment-steering), [`path_patching`](#experiment-path_patching) or [`edge_attribution`](#experiment-edge_attribution).
+One of these, chosen by `kind`: [`activation_patching`](#experiment-activation_patching), [`ablation`](#experiment-ablation), [`direct_logit_attribution`](#experiment-direct_logit_attribution), [`attribution_patching`](#experiment-attribution_patching), [`steering`](#experiment-steering), [`path_patching`](#experiment-path_patching), [`edge_attribution`](#experiment-edge_attribution), [`subspace_patching`](#experiment-subspace_patching), [`das`](#experiment-das) or [`probe`](#experiment-probe).
 
 ### Experiment: activation_patching
 
@@ -146,7 +146,7 @@ Run the clean prompt and replace the activation with a baseline value.
 | Field | Type | Allowed values | Description |
 |---|---|---|---|
 | `kind` | string | `"ablation"` | Which experiment this is: always `ablation` here. |
-| `baseline` | object | one of [`zero`](#baseline-zero), [`mean`](#baseline-mean) or [`resample`](#baseline-resample) ([Baseline](#baseline)) | What replaces the activation. It changes the result, so there is no default. |
+| `baseline` | object | one of [`zero`](#baseline-zero), [`mean`](#baseline-mean), [`resample`](#baseline-resample), [`scale`](#baseline-scale) or [`projection`](#baseline-projection) ([Baseline](#baseline)) | What replaces the activation. It changes the result, so there is no default. |
 
 ### Experiment: direct_logit_attribution
 
@@ -200,7 +200,7 @@ runs alongside. With `continuations`, the run also records what the model goes o
 |---|---|---|---|
 | `kind` | string | `"steering"` | Which experiment this is: always `steering` here. |
 | `apply_to` | string | `"clean"` or `"corrupt"` | The prompts the direction is added to; it steers them toward the other prompts. |
-| `direction` | object | one of [`mean_difference`](#steering-direction-mean_difference) or [`sae_feature`](#steering-direction-sae_feature) ([Steering direction](#steering-direction)) | What is added: the mean difference between the prompts of each training pair, or one SAE feature's decoder direction. |
+| `direction` | object | one of [`mean_difference`](#steering-direction-mean_difference), [`sae_feature`](#steering-direction-sae_feature) or [`direction`](#steering-direction-direction) ([Steering direction](#steering-direction)) | What is added: the mean difference between the prompts of each training pair, or one SAE feature's decoder direction. |
 | `coefficients` | list of numbers | 1 to 16 items | The strengths: 1 adds the whole mean difference (or the feature at its typical activation), negative values push the other way. |
 | `train_fraction` | number | more than 0 and less than 1 | The share of pairs, drawn with seed, that compute the direction; the rest measure it. |
 | `seed` | integer | 0 to 4,294,967,295 | The seed of the split into training and held-out pairs, and of the random control. |
@@ -251,6 +251,69 @@ together, edge by edge, for a faithfulness curve beside edges chosen at random.
 | `method` | string | `"gradient"` or `"integrated_gradients"` | One gradient at the receiver run, or gradients averaged along the way between the two prompts' input embeddings (integrated gradients). |
 | `steps` | integer or null | 2 to 64, or `null` | The points along the way, for integrated gradients; `null` for a single gradient. |
 | `curve` | object or null | [Faithfulness curve](#faithfulness-curve), or `null` | Patch the strongest edges together for a faithfulness curve; `null` to only estimate. |
+
+### Experiment: subspace_patching
+
+Patch only the component of each site's activation along a saved direction (or within a
+saved subspace) from the other prompt of each pair; everything at right angles to it keeps
+the receiver's own value. Beside activation patching of the whole site, it says how much of
+the site's effect that direction carries.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `kind` | string | `"subspace_patching"` | Which experiment this is: always `subspace_patching` here. |
+| `direction` | string | `"clean_to_corrupt"` or `"corrupt_to_clean"` | `clean_to_corrupt` runs the corrupt prompt with clean activations (does this restore the behavior?); `corrupt_to_clean` runs the clean prompt with corrupt ones (does this break it?). |
+| `subspace` | object | [Direction](#direction) | The direction or subspace patched. |
+
+### Experiment: das
+
+Learn, at each site, a subspace of a few dimensions whose patching restores (or breaks)
+the behavior (distributed alignment search, DAS: Geiger et al. 2023), on a training split of
+the pairs, and measure it on the held-out rest.
+
+At each site, an orthonormal basis of `dimensions` vectors is trained by Adam to maximize
+the normalized effect of patching only the component within it, from the source prompt into
+the receiver run, over the training pairs (all of them at each step, in their batches). The
+held-out pairs are then patched within the learned subspace, beside patching the whole site
+and, with `control`, a random subspace of the same size. A learned subspace can find an
+effect that the model doesn't use as a variable (an interpretability illusion, Makelov et al.
+2023): compare it with the whole site, and check it on other prompts.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `kind` | string | `"das"` | Which experiment this is: always `das` here. |
+| `direction` | string | `"clean_to_corrupt"` or `"corrupt_to_clean"` | `clean_to_corrupt` runs the corrupt prompt with clean activations (does this restore the behavior?); `corrupt_to_clean` runs the clean prompt with corrupt ones (does this break it?). |
+| `dimensions` | integer | 1 to 64 | How many dimensions the learned subspace has. |
+| `train_fraction` | number | more than 0 and less than 1 | The share of pairs, drawn with seed, that train the subspace; the rest measure it. |
+| `seed` | integer | 0 to 4,294,967,295 | The seed of the split, of the subspace's starting point and of the random control. |
+| `steps` | integer | 1 to 10,000 | How many steps of Adam train each site's subspace, each over every training pair. |
+| `learning_rate` | number | more than 0 and at most 1 | Adam's learning rate. |
+| `control` | boolean | `true` or `false` | Also patch a random subspace of the same number of dimensions. |
+
+### Experiment: probe
+
+Train a linear probe at each site: logistic regression that reads a label from the
+activation, on a training split of the pairs, then measure its accuracy on the held-out rest.
+
+Each site's activations are standardized with the training examples' mean and spread, and
+the probe (a weight vector per class and a bias) is fitted by L-BFGS to the mean cross-entropy
+plus `regularization` / 2 times the squared length of the weights, from zero, for
+`iterations` iterations, in float64. Pairs are split, not examples, so the two prompts of a
+pair are never on both sides. A probe shows that a label can be read from a site, not that the
+model reads it: patch the site, or patch along the probe's direction, to test that. With
+`control`, a second probe is trained on the training labels shuffled with `seed` (a
+control task, as in Hewitt and Liang 2019), and measured on the true held-out labels: how far a
+probe gets from what it can memorize.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `kind` | string | `"probe"` | Which experiment this is: always `probe` here. |
+| `labels` | object | one of [`side`](#probe-labels-side) or [`meta`](#probe-labels-meta) ([Probe labels](#probe-labels)) | What each example is labelled with. |
+| `train_fraction` | number | more than 0 and less than 1 | The share of pairs, drawn with seed, that train the probes; the rest measure them. |
+| `seed` | integer | 0 to 4,294,967,295 | The seed of the split, and of the control's shuffle. |
+| `regularization` | number | at least 0 and at most 1e+06 | The weight of the squared length of the weights in the loss (L2); 0 for none. |
+| `iterations` | integer | 1 to 1,000 | How many iterations of L-BFGS fit each probe. |
+| `control` | boolean | `true` or `false` | Also fit a probe on shuffled labels, a control for what a probe can memorize. |
 
 ## Scope
 
@@ -390,7 +453,7 @@ into its receiver alone, with every head and MLP held (see PathPatching).
 
 In a spec at `metric`.
 
-One of these, chosen by `kind`: [`logit_diff`](#metric-logit_diff), [`logprob_diff`](#metric-logprob_diff), [`logprob`](#metric-logprob), [`prob`](#metric-prob), [`prob_diff`](#metric-prob_diff) or [`kl`](#metric-kl).
+One of these, chosen by `kind`: [`logit_diff`](#metric-logit_diff), [`logprob_diff`](#metric-logprob_diff), [`logprob`](#metric-logprob), [`prob`](#metric-prob), [`prob_diff`](#metric-prob_diff), [`kl`](#metric-kl) or [`readout`](#metric-readout).
 
 ### Metric: logit_diff
 
@@ -453,6 +516,24 @@ the source prompt predicts.
 |---|---|---|---|
 | `kind` | string | `"kl"` | Which metric this is: always `kl` here. |
 | `target` | string | `"clean"` or `"corrupt"` | The prompt whose own next-token distribution the divergence is measured from. |
+| `normalization` | string | `"dataset_gap"` or `"prompt_gap"` | What an effect is divided by: the gap between the two prompts' metric, averaged over the dataset (`dataset_gap`) or each prompt's own (`prompt_gap`). |
+
+### Metric: readout
+
+A value inside the model instead of its output: a neuron's activation, an activation's
+component along a saved direction, or an SAE feature's activation, at one position of each
+prompt. Patching and ablation then ask what drives that value.
+
+Normalized like the other metrics, an effect of 1 means the intervention moves the value as
+far as switching from the receiver prompt to the other prompt does. A site later in the model
+than the value (a later layer, or a later part of the same layer) can't change it, so its
+effect is exactly 0.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `kind` | string | `"readout"` | Which metric this is: always `readout` here. |
+| `unit` | object | one of [`neuron`](#readout-neuron), [`direction`](#readout-direction) or [`sae_feature`](#readout-sae_feature) ([Readout](#readout)) | What is read. |
+| `position` | object | one of [`last`](#position-last), [`index`](#position-index) or [`label`](#position-label) ([Position](#position)) | The token of each prompt where it is read. |
 | `normalization` | string | `"dataset_gap"` or `"prompt_gap"` | What an effect is divided by: the gap between the two prompts' metric, averaged over the dataset (`dataset_gap`) or each prompt's own (`prompt_gap`). |
 
 ## Statistics
@@ -538,7 +619,7 @@ so the model goes on with it as its reply.
 
 In a spec at `experiment.baseline` (experiment `ablation`).
 
-One of these, chosen by `kind`: [`zero`](#baseline-zero), [`mean`](#baseline-mean) or [`resample`](#baseline-resample).
+One of these, chosen by `kind`: [`zero`](#baseline-zero), [`mean`](#baseline-mean), [`resample`](#baseline-resample), [`scale`](#baseline-scale) or [`projection`](#baseline-projection).
 
 ### Baseline: zero
 
@@ -575,11 +656,36 @@ Each prompt draws `donors` donors from the pool without replacement, never itsel
 | `donors` | integer | 1 to 1,000 | How many donors each prompt draws. |
 | `seed` | integer | 0 to 4,294,967,295 | The seed of the draw. |
 
+### Baseline: scale
+
+Multiply the activation by a factor: 0 removes it, as zero ablation does; 2 doubles it;
+-1 turns it around. Appended tokens read to score an answer of several tokens are scaled
+too, when every position is.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `kind` | string | `"scale"` | Which baseline this is: always `scale` here. |
+| `factor` | number | any | What the activation is multiplied by. |
+
+### Baseline: projection
+
+Directional ablation: replace the component of the activation along a saved direction
+(or within a saved subspace) and keep everything at right angles to it. With no reference the
+component is removed (set to zero); with one, it is set to its mean over those prompts (at
+the same position, as mean ablation takes it). Only activations as wide as the residual
+stream have such a component: stream sites and attention and MLP outputs.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `kind` | string | `"projection"` | Which baseline this is: always `projection` here. |
+| `direction` | object | [Direction](#direction) | The direction or subspace whose component is replaced. |
+| `reference` | string or null | `"clean"` or `"corrupt"`, or `null` | The prompts whose mean component replaces it, or `null` to remove it. |
+
 ## Steering direction
 
 In a spec at `experiment.direction` (experiment `steering`).
 
-One of these, chosen by `kind`: [`mean_difference`](#steering-direction-mean_difference) or [`sae_feature`](#steering-direction-sae_feature).
+One of these, chosen by `kind`: [`mean_difference`](#steering-direction-mean_difference), [`sae_feature`](#steering-direction-sae_feature) or [`direction`](#steering-direction-direction).
 
 ### Steering direction: mean_difference
 
@@ -598,6 +704,17 @@ The decoder direction of one feature of the spec's SAE, added where the SAE read
 |---|---|---|---|
 | `kind` | string | `"sae_feature"` | Which steering direction this is: always `sae_feature` here. |
 | `feature` | integer | 0 or more | The feature's index in the spec's SAE. |
+
+### Steering direction: direction
+
+A direction saved in the project (one dimension), added where the steered site is. A
+strength of 1 moves an activation's component along it as far as the mean difference between
+the two prompts of each training pair does.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `kind` | string | `"direction"` | Which steering direction this is: always `direction` here. |
+| `direction` | object | [Direction](#direction) | The saved direction; it must have one dimension and the residual stream's width. |
 
 ## Continuations
 
@@ -663,9 +780,49 @@ every edge chosen that the chosen edges close: 0 with none, 1 with every edge of
 | `patch` | string | `"chosen"` or `"rest"` | Which edges carry the source prompt's values: the chosen ones, or every other one. |
 | `control` | object | [Random edges](#random-edges) | The same counts of edges chosen at random, the curve to compare with. |
 
+## Direction
+
+In a spec at `experiment.subspace` (experiment `subspace_patching`), `experiment.baseline.direction` (experiment `ablation`; baseline `projection`), `experiment.direction.direction` (experiment `steering`; steering direction `direction`) and `metric.unit.direction` (metric `readout`; readout `direction`).
+
+A direction (or a subspace of a few) saved in the project's directions folder: a probe's
+weights, a learned subspace, a principal component or a mean difference. A run pins it by the
+hash of its tensor file and keeps a copy, so saving another direction under the same name
+later never changes the run.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `name` | string | any | The direction's name in the project's directions folder. |
+| `sha256` | string or null | any | The hash of its tensor file; `null` uses the direction as saved when a run starts, and the run's spec pins it. |
+
+## Probe labels
+
+In a spec at `experiment.labels` (experiment `probe`).
+
+One of these, chosen by `kind`: [`side`](#probe-labels-side) or [`meta`](#probe-labels-meta).
+
+### Probe labels: side
+
+Each pair gives two examples: its clean prompt, labelled clean, and its corrupt prompt,
+labelled corrupt. The probe reads which of the two prompts the model is reading.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `kind` | string | `"side"` | Which probe labels this is: always `side` here. |
+
+### Probe labels: meta
+
+Each prompt is labelled by a field of its pair's `meta`, such as a template, a number
+or a gender.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `kind` | string | `"meta"` | Which probe labels this is: always `meta` here. |
+| `field` | string | any | The field of each pair's meta whose value is the label. |
+| `prompts` | string | `"clean"`, `"corrupt"` or `"both"` | Which prompts of each pair are examples, each with the pair's label. |
+
 ## Position
 
-In a spec at `scope.position` (scope `heads`, `layer_components`, `features`, `head_inputs` or `neurons`), `predictions.position`, `scope.sites[].position` (scope `sites`) and `scope.sets[].sites[].position` (scope `site_sets`).
+In a spec at `scope.position` (scope `heads`, `layer_components`, `features`, `head_inputs` or `neurons`), `metric.position` (metric `readout`), `predictions.position`, `scope.sites[].position` (scope `sites`) and `scope.sets[].sites[].position` (scope `site_sets`).
 
 One of these, chosen by `kind`: [`all`](#position-all), [`last`](#position-last), [`index`](#position-index) or [`label`](#position-label).
 
@@ -745,6 +902,45 @@ A sender's output read directly by one receiver's input, through the residual st
 |---|---|---|---|
 | `sender` | object | [Edge sender](#edge-sender) | Where the edge starts. |
 | `receiver` | object | one of [`head`](#path-receiver-head), [`logits`](#path-receiver-logits) or [`mlp`](#path-receiver-mlp) ([Path receiver](#path-receiver)) | Where the edge ends: a later head's query, key or value, a later MLP's input, or the logits. |
+
+## Readout
+
+In a spec at `metric.unit` (metric `readout`).
+
+One of these, chosen by `kind`: [`neuron`](#readout-neuron), [`direction`](#readout-direction) or [`sae_feature`](#readout-sae_feature).
+
+### Readout: neuron
+
+One MLP neuron's activation, after its nonlinearity (for a gated MLP, the gate's
+activation times the up projection).
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `kind` | string | `"neuron"` | Which readout this is: always `neuron` here. |
+| `layer` | integer | 0 or more | The neuron's layer, from 0. |
+| `neuron` | integer | 0 or more | The neuron's index among its layer's MLP neurons. |
+
+### Readout: direction
+
+An activation's component along a saved direction of one dimension: its dot product with
+the direction's unit vector, at a stream site and layer you choose.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `kind` | string | `"direction"` | Which readout this is: always `direction` here. |
+| `direction` | object | [Direction](#direction) | The saved direction, of one dimension and the residual stream's width. |
+| `site` | string | `"resid_pre"`, `"resid_mid"`, `"resid_post"`, `"attn_out"` or `"mlp_out"` | The activation it is read from. |
+| `layer` | integer | 0 or more | The layer, from 0. |
+
+### Readout: sae_feature
+
+One feature of the spec's SAE: its activation, as the SAE encodes the activation it reads
+(a transcoder, its MLP's input).
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `kind` | string | `"sae_feature"` | Which readout this is: always `sae_feature` here. |
+| `feature` | integer | 0 or more | The feature's index in the spec's SAE. |
 
 ## Random edges
 

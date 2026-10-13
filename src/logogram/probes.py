@@ -104,7 +104,9 @@ def fit_probe(
     spread = x.std(dim=0, unbiased=False)
     spread = torch.where(spread > 0, spread, torch.ones_like(spread))
     z = (x - mean) / spread
+    # float64 on the CPU
     weights = torch.zeros(classes, x.shape[1], dtype=torch.float64, requires_grad=True)
+    # float64 on the CPU
     bias = torch.zeros(classes, dtype=torch.float64, requires_grad=True)
     optimizer = torch.optim.LBFGS(
         [weights, bias],
@@ -262,7 +264,7 @@ def run_probe(
         delta=delta,
         gap=np.ones(n),
     )
-    chance = float((y_test == int(torch.bincount(y_train).argmax())).double().mean())
+    chance = float(np.mean((y_test == int(torch.bincount(y_train).argmax())).numpy()))
     found: list[dict[str, Any]] = []
     vectors: dict[str, torch.Tensor] = {}
     sides_needed = sorted({side for _, side, _ in examples})
@@ -289,10 +291,10 @@ def run_probe(
                 weights, bias, _mean, _spread = fit_probe(
                     x_train, labels, len(classes), exp.regularization, exp.iterations
                 )
-                correct = (predict(x_test, weights, bias) == y_test).double()
+                correct = (predict(x_test, weights, bias) == y_test).numpy().astype(np.float64)
                 for k, rows in rows_of.items():
                     delta[index, k] = float(correct[rows].mean())
-                train_accuracy = float((predict(x_train, weights, bias) == labels).double().mean())
+                train_accuracy = float(np.mean((predict(x_train, weights, bias) == labels).numpy()))
                 found.append(
                     {
                         "index": index,
@@ -334,6 +336,7 @@ def _features(
     unit = site_unit(site.site)
     if unit is not None:  # one head's vector, of [examples, heads, d_head]
         x = x[:, unit]
+    # float64 on the CPU
     return x.detach().to(device="cpu", dtype=torch.float64).reshape(len(chosen), -1)
 
 

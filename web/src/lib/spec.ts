@@ -9,7 +9,9 @@ import type {
   PathReceiverSpec,
   ExperimentSpec,
   Measure,
+  MetricSpec,
   ModelInfo,
+  ProbeLabels,
   ModelRef,
   PositionSpec,
   SAEInfo,
@@ -21,7 +23,7 @@ import type {
 } from "../api/types";
 import { count, plural } from "./format";
 import { metricWords } from "./metrics";
-import type { Selection } from "./sites";
+import { KIND_SHORT, type Selection } from "./sites";
 
 export function positionText(p: PositionSpec): string {
   switch (p.kind) {
@@ -44,7 +46,18 @@ export function baselineText(b: BaselineSpec): string {
       return `mean over ${b.reference} prompts`;
     case "resample":
       return `resample from ${b.donors} ${b.pool} donor${b.donors === 1 ? "" : "s"}, seed ${b.seed}`;
+    case "scale":
+      return `scale by ${String(b.factor).replace("-", "−")}`;
+    case "projection":
+      return b.reference === null ? `remove the direction ${b.direction.name}` : `set the direction ${b.direction.name} to its ${b.reference} mean`;
   }
+}
+
+/** What a probe reads, in words (src/logogram/spec.py labels_text). */
+export function labelsText(labels: ProbeLabels): string {
+  if (labels.kind === "side") return "which prompt it is (clean or corrupt)";
+  const prompts = { clean: "clean prompts", corrupt: "corrupt prompts", both: "both prompts" }[labels.prompts];
+  return `meta.${labels.field} (${prompts})`;
 }
 
 /** A path's receiver as the results write it, for example "L9 H9 q", "L3 MLP" or "logits". */
@@ -142,9 +155,21 @@ export function experimentText(e: ExperimentSpec): string {
       ? `Estimate patching ${arrow} with integrated gradients (${e.steps} steps)`
       : `Estimate patching ${arrow}`;
   }
+  if (e.kind === "probe") {
+    return `Linear probe for ${labelsText(e.labels)} (${Math.round(e.train_fraction * 100)}% of pairs train, seed ${e.seed}${e.control ? ", against shuffled labels" : ""})`;
+  }
+  if (e.kind === "das") {
+    const arrow = e.direction === "clean_to_corrupt" ? "clean → corrupt" : "corrupt → clean";
+    return `Learn a subspace of ${plural(e.dimensions, "dimension")} and patch ${arrow} within it (${e.steps} steps${e.control ? ", random control" : ""})`;
+  }
+  if (e.kind === "subspace_patching") {
+    const arrow = e.direction === "clean_to_corrupt" ? "clean → corrupt" : "corrupt → clean";
+    return `Patch ${arrow} along the direction ${e.subspace.name}`;
+  }
   if (e.kind === "steering") {
     const strengths = `${e.coefficients.map(strengthText).join(", ")}${e.control ? ", random control" : ""}`;
     if (e.direction.kind === "sae_feature") return `Steer ${e.apply_to} prompts along SAE feature ${e.direction.feature} (${strengths})`;
+    if (e.direction.kind === "direction") return `Steer ${e.apply_to} prompts along the direction ${e.direction.direction.name} (${strengths})`;
     const toward = e.apply_to === "clean" ? "corrupt" : "clean";
     return `Steer ${e.apply_to} prompts toward ${toward} (${strengths})`;
   }
@@ -165,6 +190,10 @@ export function experimentText(e: ExperimentSpec): string {
       return `Mean-ablate (${e.baseline.reference} mean)`;
     case "resample":
       return `Resample-ablate (${e.baseline.donors} ${e.baseline.pool} donors, seed ${e.baseline.seed})`;
+    case "scale":
+      return `Scale by ${String(e.baseline.factor).replace("-", "−")}`;
+    case "projection":
+      return `Ablate the direction ${e.baseline.direction.name} (${e.baseline.reference === null ? "removed" : `set to its ${e.baseline.reference} mean`})`;
   }
 }
 
@@ -177,8 +206,12 @@ export function experimentShort(e: ExperimentSpec): string {
     const arrow = e.direction === "clean_to_corrupt" ? "clean→corrupt" : "corrupt→clean";
     return e.method === "integrated_gradients" ? `Estimated ${arrow}, integrated gradients` : `Estimated ${arrow}`;
   }
+  if (e.kind === "probe") return e.labels.kind === "side" ? "Probe for the prompt" : `Probe for ${e.labels.field}`;
+  if (e.kind === "das") return `Learned subspace, ${e.dimensions}d`;
+  if (e.kind === "subspace_patching") return `Patch along ${e.subspace.name}`;
   if (e.kind === "steering") {
     if (e.direction?.kind === "sae_feature") return `Steer ${e.apply_to} along F${e.direction.feature}`;
+    if (e.direction?.kind === "direction") return `Steer ${e.apply_to} along ${e.direction.direction.name}`;
     return `Steer ${e.apply_to}→${e.apply_to === "clean" ? "corrupt" : "clean"}`;
   }
   if (e.kind === "path_patching") return `Paths ${e.direction === "clean_to_corrupt" ? "clean→corrupt" : "corrupt→clean"}`;
@@ -186,11 +219,24 @@ export function experimentShort(e: ExperimentSpec): string {
     const arrow = e.direction === "clean_to_corrupt" ? "clean→corrupt" : "corrupt→clean";
     return e.method === "integrated_gradients" ? `Edges ${arrow}, integrated gradients` : `Edges ${arrow}`;
   }
-  return { zero: "Zero ablation", mean: "Mean ablation", resample: "Resample ablation" }[e.baseline.kind];
+  return { zero: "Zero ablation", mean: "Mean ablation", resample: "Resample ablation", scale: "Scaled", projection: "Directional ablation" }[e.baseline.kind];
+}
+
+/** A readout metric's unit, in words (src/logogram/spec.py readout_text). */
+export function readoutText(metric: Extract<MetricSpec, { kind: "readout" }>): string {
+  const u = metric.unit;
+  const what =
+    u.kind === "neuron"
+      ? `neuron ${u.neuron} of L${u.layer}'s MLP`
+      : u.kind === "direction"
+        ? `L${u.layer} ${KIND_SHORT[u.site]} along the direction ${u.direction.name}`
+        : `SAE feature ${u.feature}`;
+  return `${what} at ${positionText(metric.position)}`;
 }
 
 /** What a method's per-prompt values are (see Summary.measure). */
 export function measureOf(e: ExperimentSpec | null | undefined): Measure {
+  if (e?.kind === "probe") return "probe";
   if (e?.kind === "direct_logit_attribution") return "attribution";
   if (e?.kind === "attribution_patching" || e?.kind === "edge_attribution") return "estimate";
   return "intervention";
@@ -209,8 +255,26 @@ export function measureWords(e: ExperimentSpec | null | undefined, metric?: { ki
       deltaLegend: "What the component writes directly into the logit difference (answer − distractor), in logits.",
     };
   }
+  if (e?.kind === "probe") {
+    return {
+      effect: "Held-out accuracy",
+      delta: "Held-out accuracy",
+      mean: "held-out accuracy",
+      effectLegend: "The share of held-out examples whose label the site's probe reads correctly. Compare it with chance and with the control probe, trained on shuffled labels.",
+      deltaLegend: "The share of held-out examples whose label the site's probe reads correctly.",
+    };
+  }
   const m = metricWords(metric);
   const delta = `Δ ${m.short}`;
+  if (e?.kind === "das") {
+    return {
+      effect: "Normalized effect",
+      delta,
+      mean: "mean normalized effect",
+      effectLegend: `Normalized effect on held-out pairs of patching within the learned subspace, the whole site, or a random subspace: 1 means it ${e.direction === "clean_to_corrupt" ? "restores the clean behavior" : "shifts the output as far as the corrupt prompt does"}.`,
+      deltaLegend: `Change in the ${m.label} (${m.formula}) caused by the patch.`,
+    };
+  }
   if (e?.kind === "steering") {
     return {
       effect: "Normalized effect",
@@ -230,7 +294,7 @@ export function measureWords(e: ExperimentSpec | null | undefined, metric?: { ki
     };
   }
   const restores =
-    (e?.kind === "activation_patching" || e?.kind === "attribution_patching" || e?.kind === "edge_attribution") &&
+    (e?.kind === "activation_patching" || e?.kind === "attribution_patching" || e?.kind === "edge_attribution" || e?.kind === "subspace_patching") &&
     e.direction === "clean_to_corrupt";
   if (e?.kind === "edge_attribution") {
     return {
@@ -577,6 +641,24 @@ export function scopeFor(kind: ExperimentKind, scope: ScopeSpec, steerSite: { ki
       if (sites.length) return { kind: "sites", sites };
     }
     return { kind: "layer_components", components: ["resid_pre"], position: last };
+  }
+  if (kind === "probe" || kind === "das" || kind === "subspace_patching") {
+    // A probe and a learned subspace read one token of each prompt; a direction lives in the
+    // stream, attention outputs and MLP outputs (a probe also reads heads' outputs).
+    const streams = (c: string) => c === "resid_pre" || c === "resid_mid" || c === "resid_post" || c === "attn_out" || c === "mlp_out";
+    const one = kind !== "subspace_patching";
+    const single = (p: PositionSpec) => (one && p.kind === "all" ? last : p);
+    if (scope.kind === "layer_position") return scope;
+    if (scope.kind === "layer_components") {
+      const components = scope.components.filter(streams);
+      return { kind: "layer_components", components: components.length ? components : ["resid_post"], position: single(scope.position) };
+    }
+    if (scope.kind === "heads" && kind === "probe") return { kind: "heads", position: single(scope.position) };
+    if (scope.kind === "sites") {
+      const sites = scope.sites.filter((x) => streams(x.kind) || (kind === "probe" && x.kind === "head")).map((x) => ({ ...x, position: single(x.position) }));
+      if (sites.length) return { kind: "sites", sites };
+    }
+    return { kind: "layer_components", components: ["resid_post"], position: last };
   }
   if (kind === "path_patching") {
     // Paths start at heads, attention outputs or MLP outputs.

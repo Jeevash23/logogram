@@ -1381,7 +1381,8 @@ def readout_text(unit: NeuronReadout | DirectionReadout | FeatureReadout) -> str
     if isinstance(unit, NeuronReadout):
         return f"neuron {unit.neuron} of L{unit.layer}'s MLP"
     if isinstance(unit, DirectionReadout):
-        return f"the {unit.site} of L{unit.layer} along the direction {unit.direction.name}"
+        site = unit.site.replace("_", " ")
+        return f"L{unit.layer} {site} along the direction {unit.direction.name}"
     return f"SAE feature {unit.feature}"
 
 

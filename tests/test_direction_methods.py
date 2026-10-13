@@ -442,3 +442,80 @@ def test_steering_along_a_saved_direction(project, tiny_backend):
     )
     zero = next(s for s in outcome.summary["sites"] if s["variant"]["coefficient"] == 0.0)
     assert zero["delta"]["mean"] == 0.0  # strength 0 adds nothing
+
+
+# -- reading these runs ---------------------------------------------------------------------------
+
+
+def test_probe_and_das_runs_read_from_python_the_command_line_and_the_report(project, tiny_backend):
+    from typer.testing import CliRunner
+
+    import logogram as lg
+    from logogram.cli import app
+    from logogram.report import methods_text, run_report
+
+    _fixed_ending(project)
+    probe = lg.run(
+        make_spec(
+            dataset={"path": "datasets/endings.jsonl"},
+            experiment=PROBE,
+            metric=None,
+            scope={
+                "kind": "layer_components",
+                "components": ["resid_pre"],
+                "position": {"kind": "last"},
+            },
+        ),
+        project,
+        model=tiny_backend,
+    )
+    table = probe.probes()
+    assert list(table["layer"]) == list(range(tiny_backend.info.n_layers))  # controls aside
+    first = table.iloc[0]
+    assert first["accuracy"] == 1.0 and first["chance"] == pytest.approx(0.5)
+    assert first["selectivity"] == pytest.approx(first["accuracy"] - first["control"])
+    saved = probe.save_direction(int(first["site"]), "toward-at-api")
+    assert saved["name"] == "toward-at-api" and saved["dimensions"] == 1
+    with pytest.raises(lg.api.LogogramError, match="isn't a distributed alignment search run"):
+        probe.subspaces()
+
+    shown = CliRunner().invoke(app, ["show", probe.id, "--project", str(project.root)])
+    assert shown.exit_code == 0, shown.output
+    assert "The probes read which prompt it is" in shown.output and "selective" in shown.output
+
+    spec = lg.load_spec(probe.folder / "spec.json")
+    text = methods_text(spec, probe.summary, probe.manifest, probe.id)
+    assert "probe" in text.lower()
+    page = run_report(spec, probe.summary, probe.manifest, probe.id)
+    assert "<svg" in page and "accuracy" in page.lower()
+
+    # Ablating along the probe's direction names the direction in the methods paragraph.
+    removed = lg.run(
+        make_spec(
+            experiment={
+                "kind": "ablation",
+                "baseline": {
+                    "kind": "projection",
+                    "direction": {"name": "toward-at-api", "sha256": None},
+                    "reference": None,
+                },
+            },
+            scope=STREAM,
+        ),
+        project,
+        model=tiny_backend,
+    )
+    pinned = removed.spec.experiment.baseline.direction  # type: ignore[union-attr]
+    assert pinned.sha256 == read_direction(project, "toward-at-api").meta.sha256
+    assert [d["name"] for d in removed.manifest["directions"]] == ["toward-at-api"]
+    words = methods_text(removed.spec, removed.summary, removed.manifest, removed.id)
+    assert "toward-at-api" in words
+
+    das = lg.run(
+        make_spec(experiment={**DAS, "steps": 3}, scope=STREAM), project, model=tiny_backend
+    )
+    rows = das.subspaces()
+    assert set(rows.columns) >= {"learned", "whole", "random", "share", "train_effect"}
+    assert len(rows) == tiny_backend.info.n_layers
+    page = run_report(das.spec, das.summary, das.manifest, das.id)
+    assert "learned" in page.lower()

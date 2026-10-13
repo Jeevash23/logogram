@@ -4,6 +4,32 @@ What changed in each version of Logogram.
 
 ## Unreleased
 
+### Added
+
+- **Spec version 4.** Versions 1 to 3 still load, and are upgraded as they load.
+- **Directions saved in the project.** A direction, or a subspace of several, is two files in the
+  project's `directions/` folder: the vectors (safetensors, rows made orthonormal) and what they
+  are (the model and site they were found on, how, and the run they came from). A run pins each
+  direction it uses by the hash of its file and keeps a copy, and its manifest and methods
+  paragraph name them. `logogram directions` lists, renames, deletes and saves them.
+- **Linear probes** (`"kind": "probe"`): a logistic regression at each site, trained on a seeded
+  split of the pairs to read which prompt of a pair it is, or a field of the prompts' `meta`, and
+  measured on the held-out pairs, with a probe on shuffled labels as a control and selectivity
+  with its interval. A probe's weights can be saved as a direction.
+- **Distributed alignment search** (`"kind": "das"`): learns the subspace of a stated number of
+  dimensions whose patching carries a site's effect, on training pairs, and measures it on
+  held-out pairs beside the whole site and a random subspace of the same size. The learned
+  subspace can be saved as a direction.
+- **Subspace patching** (`"kind": "subspace_patching"`): patch only the component of each site's
+  activation along a saved direction or within a saved subspace.
+- **Two ablation baselines**: `scale` multiplies the activation by a factor, and `projection`
+  (directional ablation) removes its component along a saved direction or sets it to its mean.
+- **Steering along a saved direction** (`"direction": {"kind": "direction", ...}`).
+- **Readouts** (`"metric": {"kind": "readout", ...}`): patching and ablation can read a neuron's
+  activation, an activation's component along a saved direction or an SAE feature's activation
+  instead of the model's output, to ask what drives it.
+- **Corpora**: plain texts kept in the project's `corpora/` folder, with an optional label each.
+
 ### Fixed
 
 - When edge attribution's batch didn't fit in memory, the batch size it suggested could still be

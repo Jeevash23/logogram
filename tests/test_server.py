@@ -585,3 +585,54 @@ def test_directions_and_corpora_are_listed_for_the_open_project(client, tmp_path
     assert directions[0]["made_by"]["method"] == "mean_difference"
     corpora = client.get("/api/corpora", headers=headers).json()
     assert corpora[0]["name"] == "facts" and corpora[0]["labels"] == ["a"] and corpora[0]["n"] == 1
+
+
+def test_a_probe_s_direction_is_saved_from_its_run(client, tiny_backend, project, spec_factory):
+    from logogram.runner import run_spec
+
+    headers = {**AUTH, **ORIGIN}
+    spec = spec_factory(
+        experiment={
+            "kind": "probe",
+            "labels": {"kind": "side"},
+            "train_fraction": 0.5,
+            "seed": 0,
+            "regularization": 0.01,
+            "iterations": 50,
+            "control": False,
+        },
+        metric=None,
+        scope={
+            "kind": "layer_components",
+            "components": ["resid_post"],
+            "position": {"kind": "last"},
+        },
+    )
+    probe = run_spec(spec, project, backend=tiny_backend)
+    patched = run_spec(spec_factory(), project, backend=tiny_backend)
+    assert probe.status == patched.status == "finished"
+    opened = client.post("/api/projects/open", json={"path": str(project.root)}, headers=headers)
+    assert opened.status_code == 200
+
+    url = f"/api/runs/{probe.run_id}/directions"
+    saved = client.post(url, json={"site": 1, "name": "which-prompt"}, headers=headers)
+    assert saved.status_code == 200, saved.text
+    body = saved.json()
+    assert body["name"] == "which-prompt" and body["dimensions"] == 1 and body["error"] is None
+    assert body["made_by"] == {
+        "method": "probe",
+        "run": probe.run_id,
+        "detail": body["made_by"]["detail"],
+    }
+    listed = client.get("/api/directions", headers=headers).json()
+    assert [d["name"] for d in listed] == ["which-prompt"]
+    # The same name again is refused, and so is a run that found no direction.
+    again = client.post(url, json={"site": 1, "name": "which-prompt"}, headers=headers)
+    assert again.status_code == 400 and "already" in again.json()["error"]
+    other = f"/api/runs/{patched.run_id}/directions"
+    refused = client.post(other, json={"site": 0, "name": "nothing"}, headers=headers)
+    assert refused.status_code == 400 and "probe" in refused.json()["error"]
+    # Only with the token, and never from another origin, as every other request.
+    elsewhere = {**AUTH, "origin": "http://example.com"}
+    assert client.post(url, json={"site": 1, "name": "x"}, headers=elsewhere).status_code == 403
+    assert client.post(url, json={"site": 1, "name": "x"}, headers=ORIGIN).status_code == 401

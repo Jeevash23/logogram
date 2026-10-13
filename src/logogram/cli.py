@@ -668,6 +668,40 @@ def _print_continuations(project: Any, run_id: str) -> None:
         typer.echo(f"  {label:<18} {''.join(tokens)!r}")
 
 
+def _print_probes(summary: dict, ci: int, top: int) -> None:  # type: ignore[type-arg]
+    """A probe run: each site's held-out accuracy beside its control's, and their difference."""
+    probe = summary["probe"]
+    typer.echo(
+        f"\nThe probes read {probe['labels']}: {', '.join(probe['classes'])}. Chance (the most "
+        f"common training class) scores {_fmt(probe['chance'])} on {probe['examples']['test']} "
+        f"held-out examples; {probe['examples']['train']} examples trained them."
+    )
+    sites = {s["index"]: s for s in summary["sites"]}
+    chosen = {c["index"]: c for c in probe.get("selectivity") or []}
+    probes = [s for s in summary["sites"] if not (s.get("variant") or {}).get("control")]
+    probes = sorted(probes, key=lambda s: -(s["effect"]["mean"] or 0.0))[:top]
+    width = max([22, *(len(s["label"]) for s in probes)])
+    typer.echo("")
+    typer.echo(
+        f"{'site':<{width}} {'accuracy':>9}  {f'{ci}% CI':<19} {'control':>8} {'selectivity':>12}"
+    )
+    for s in probes:
+        e = s["effect"]
+        sel = chosen.get(s["index"]) or {}
+        control = sites.get(sel.get("control_index", -1))
+        mark = "  selective" if sel.get("selective") else ""
+        interval = f"[{_fmt(e['lo'])}, {_fmt(e['hi'])}]"
+        held = None if control is None else control["effect"]["mean"]
+        typer.echo(
+            f"{s['label']:<{width}} {_fmt(e['mean']):>9}  {interval:<19} {_fmt(held):>8} "
+            f"{_fmt(sel.get('difference')):>12}{mark}"
+        )
+    typer.echo(
+        "\nA probe shows what can be read at a site, not what the model uses. Save a site's "
+        "direction (logogram directions save RUN SITE NAME) and patch along it to test that."
+    )
+
+
 def _print_summary(summary: dict, top: int) -> None:  # type: ignore[type-arg]
     base = summary["baseline"]
     clean = base["clean"]["logit_diff"]["mean"]
@@ -696,6 +730,9 @@ def _print_summary(summary: dict, top: int) -> None:  # type: ignore[type-arg]
     typer.echo(
         f"Confidence intervals: {ci}% {stats['method']}, {stats['bootstrap']} resamples, seed {stats['seed']}"
     )
+    if summary.get("probe"):
+        _print_probes(summary, ci, top)
+        return
     # What the values are depends on the method: patched runs, estimates of them, or terms of a
     # split; only patched runs can flip a prompt.
     measure = summary.get("measure", "intervention")
@@ -722,6 +759,15 @@ def _print_summary(summary: dict, top: int) -> None:  # type: ignore[type-arg]
         typer.echo(line + (f"  {s['sign_flips']:>3} / {s['n']:<3}" if flips else ""))
     if summary.get("edges"):
         _print_edges(summary["edges"], ci)
+    if summary.get("das"):
+        das = summary["das"]
+        typer.echo(
+            f"\nEach site's subspace of {das['dimensions']} dimension"
+            f"{'s' if das['dimensions'] != 1 else ''} was learned on {len(das['train'])} pairs and "
+            f"measured on the {len(das['test'])} held-out pairs, beside the whole site and (with "
+            "the control) a random subspace. Save one as a direction with logogram directions "
+            "save RUN SITE NAME."
+        )
     if summary.get("direct"):
         d = summary["direct"]
         typer.echo(

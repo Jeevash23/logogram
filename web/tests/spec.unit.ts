@@ -60,7 +60,8 @@ test("the default form builds a version 3 spec that states every choice", () => 
 });
 
 test("each metric is written as the server reads it, and the KL divergence needs its target", () => {
-  for (const kind of METRIC_KINDS.filter((k) => k !== "kl")) {
+  // The KL divergence needs its target, and a readout what it reads (tests/directions.unit.ts).
+  for (const kind of METRIC_KINDS.filter((k) => k !== "kl" && k !== "readout")) {
     expect(built(form({ metric: kind, normalization: "prompt_gap" })).metric).toEqual({ kind, normalization: "prompt_gap" });
   }
   expect(refused(form({ metric: "kl" }))).toContain("KL divergence is measured from");

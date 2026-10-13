@@ -511,10 +511,22 @@ export type ScopeSpec =
   /** Edges measured one at a time by path patching, everything else held (1 to 64). */
   | { kind: "edges"; edges: EdgeSpec[] };
 
+/** A direction saved in the project, pinned by the hash of its tensor file when a run starts
+ * (null until then). */
+export interface DirectionRefSpec {
+  name: string;
+  sha256: string | null;
+}
+
 export type BaselineSpec =
   | { kind: "zero" }
   | { kind: "mean"; reference: "clean" | "corrupt" }
-  | { kind: "resample"; pool: "clean" | "corrupt"; donors: number; seed: number };
+  | { kind: "resample"; pool: "clean" | "corrupt"; donors: number; seed: number }
+  /** Multiply the activation by a factor (0 removes it, 2 doubles it). */
+  | { kind: "scale"; factor: number }
+  /** Remove the activation's component along a saved direction, or set it to the reference
+   * prompts' mean component. */
+  | { kind: "projection"; direction: DirectionRefSpec; reference: "clean" | "corrupt" | null };
 
 export type Direction = "clean_to_corrupt" | "corrupt_to_clean";
 
@@ -552,7 +564,15 @@ export type AttributionMethod = "gradient" | "integrated_gradients";
 
 /** What steering adds: the mean difference of the training pairs, or one SAE feature's decoder
  * direction where the SAE reads. */
-export type SteeringDirection = { kind: "mean_difference" } | { kind: "sae_feature"; feature: number };
+export type SteeringDirection =
+  | { kind: "mean_difference" }
+  | { kind: "sae_feature"; feature: number }
+  /** A saved direction of one dimension; strength 1 moves along it as far as the training pairs'
+   * mean difference does. */
+  | { kind: "direction"; direction: DirectionRefSpec };
+
+/** What a probe reads: which prompt of the pair it is, or a field of the pair's meta. */
+export type ProbeLabels = { kind: "side" } | { kind: "meta"; field: string; prompts: "clean" | "corrupt" | "both" };
 
 /** Greedy continuations of the first held-out prompts, unsteered and at each strength. */
 export interface Continuations {
@@ -576,23 +596,60 @@ export type ExperimentSpec =
       seed: number;
       control: boolean;
       continuations: Continuations | null;
+    }
+  /** Patch only the component along a saved direction (or within a saved subspace). */
+  | { kind: "subspace_patching"; direction: Direction; subspace: DirectionRefSpec }
+  /** Distributed alignment search: learn a subspace whose patching carries the effect. */
+  | {
+      kind: "das";
+      direction: Direction;
+      dimensions: number;
+      train_fraction: number;
+      seed: number;
+      steps: number;
+      learning_rate: number;
+      control: boolean;
+    }
+  /** A linear probe at each site, measured on held-out pairs. It has no metric. */
+  | {
+      kind: "probe";
+      labels: ProbeLabels;
+      train_fraction: number;
+      seed: number;
+      regularization: number;
+      iterations: number;
+      control: boolean;
     };
 
 export type ExperimentKind = ExperimentSpec["kind"];
 
-/** What a run's per-prompt values are: patched runs, estimates of them, or terms of a split. */
-export type Measure = "intervention" | "estimate" | "attribution";
+/** What a run's per-prompt values are: patched runs, estimates of them, terms of a split, or a
+ * probe's held-out accuracy. */
+export type Measure = "intervention" | "estimate" | "attribution" | "probe";
 
 /** What a forward pass is measured by (src/logogram/spec.py, METRIC_LABELS). */
-export type MetricKind = "logit_diff" | "logprob_diff" | "logprob" | "prob" | "prob_diff" | "kl";
+export type MetricKind = "logit_diff" | "logprob_diff" | "logprob" | "prob" | "prob_diff" | "kl" | "readout";
+
+/** What a readout metric reads inside the model: a neuron, a saved direction's component at a
+ * stream site, or a feature of the spec's SAE. */
+export type ReadoutUnit =
+  | { kind: "neuron"; layer: number; neuron: number }
+  | { kind: "direction"; direction: DirectionRefSpec; site: StreamKind; layer: number }
+  | { kind: "sae_feature"; feature: number };
 export type Normalization = "dataset_gap" | "prompt_gap";
 export type Side = "clean" | "corrupt";
 
 /** The metric of a spec. The KL divergence is measured from a target prompt's next-token
  * distribution, which has no default. */
 export type MetricSpec =
-  | { kind: Exclude<MetricKind, "kl">; normalization: Normalization }
-  | { kind: "kl"; target: Side; normalization: Normalization };
+  | { kind: Exclude<MetricKind, "kl" | "readout">; normalization: Normalization }
+  | { kind: "kl"; target: Side; normalization: Normalization }
+  | {
+      kind: "readout";
+      unit: ReadoutUnit;
+      position: { kind: "last" } | { kind: "index"; index: number } | { kind: "label"; label: string };
+      normalization: Normalization;
+    };
 
 /** The model of a spec: from Hugging Face, pinned by its revision, or a local folder found by the
  * hash of its files (`sha256`). */
@@ -612,7 +669,7 @@ export type ChatTemplateSpec =
   | { kind: "user_turn"; system: string | null }
   | { kind: "assistant_prefix"; system: string | null; user: string };
 
-/** A version 3 spec: every choice that can change a number is stated. */
+/** A version 4 spec: every choice that can change a number is stated. A probe has no metric. */
 export interface Spec {
   logogram_spec: 4;
   name: string;
@@ -622,7 +679,7 @@ export interface Spec {
   tokenization: { prepend_bos: boolean; chat_template: ChatTemplateSpec | null };
   experiment: ExperimentSpec;
   scope: ScopeSpec;
-  metric: MetricSpec;
+  metric: MetricSpec | null;
   /** Percentile bootstrap; with `cluster`, over groups of prompts sharing that field of their meta. */
   statistics: { bootstrap: number; ci: number; seed: number; cluster: string | null };
   execution: { batch_size: number };
@@ -696,7 +753,7 @@ export interface SiteBase {
   label: string;
   /** One of several measurements of the same site, such as a steering strength or its control,
    * or a set of sites (whether it keeps its sites, and how many). */
-  variant?: { coefficient?: number; control?: boolean; complement?: boolean; size?: number } | null;
+  variant?: { coefficient?: number; control?: boolean; complement?: boolean; size?: number; subspace?: "learned" | "full" | "random" } | null;
   variant_key?: string | null;
   /** The sites of a set intervened on together (kind site_set). */
   members?: SiteSpec[] | null;
@@ -749,7 +806,7 @@ export interface Layout {
   /** head_inputs: every head's query or key/value head's key or value (`site`); neurons: every
    * neuron of the chosen layers, a row per layer with no columns listed; edges: senders by
    * receivers of an edge attribution run. */
-  kind: "heads" | "layer_position" | "layer_components" | "sites" | "steering" | "site_sets" | "head_inputs" | "neurons" | "edges";
+  kind: "heads" | "layer_position" | "layer_components" | "sites" | "steering" | "site_sets" | "head_inputs" | "neurons" | "edges" | "probe" | "das";
   site?: StreamKind | HeadInputKind | "neuron";
   row_title: string;
   col_title: string;
@@ -814,6 +871,8 @@ export interface Summary {
     norms: number[];
     control?: ControlComparison[] | null;
     feature?: SteeringFeature | null;
+    /** Along a saved direction: which, and how far strength 1 moves along it at each row. */
+    direction?: { name: string; sha256: string; along: number[] } | null;
   } | null;
   /** Runs on SAE features: the SAE, its fit on these prompts, and (attribution patching) how much
    * of the site's estimated effect its features account for. */
@@ -847,6 +906,10 @@ export interface Summary {
   partial?: PartialRun | null;
   /** Edge attribution: the graph, how the estimates were taken, what it cost, and the curve. */
   edges?: EdgeRun | null;
+  /** A probe run: the labels and classes, chance, the split, each site's probe and its control. */
+  probe?: ProbeRun | null;
+  /** Distributed alignment search: the subspace's size, its training, and the split. */
+  das?: DASRun | null;
 }
 
 /** One point of a faithfulness curve: k edges and how much of the behavior they carry. */
@@ -997,6 +1060,51 @@ export interface SteeringFeature {
 export interface GeneratedTokens {
   ids: number[];
   tokens: string[];
+}
+
+/** A probe at one site of the layout: its accuracy on the training and the held-out examples. */
+export interface ProbeSite {
+  index: number;
+  control: boolean;
+  train_accuracy: number;
+  test_accuracy: number;
+}
+
+/** A site's probe against its control, pair by pair: the difference of their held-out accuracies
+ * and its interval; selective where the interval lies above zero. */
+export interface ProbeSelectivity {
+  row: number;
+  index: number;
+  control_index: number;
+  difference: number | null;
+  lo: number | null;
+  hi: number | null;
+  selective: boolean;
+}
+
+export interface ProbeRun {
+  labels: string;
+  classes: string[];
+  /** The held-out accuracy of always answering the most common training class. */
+  chance: number;
+  train: number[];
+  test: number[];
+  examples: { train: number; test: number };
+  /** The scope's own layout of the probed sites, and where each (a row of the layout) is in it. */
+  grid: Layout & { sites: { row: number; col: number }[] };
+  sites: ProbeSite[];
+  selectivity: ProbeSelectivity[];
+}
+
+export interface DASRun {
+  dimensions: number;
+  steps: number;
+  learning_rate: number;
+  train: number[];
+  test: number[];
+  /** Each site's learned subspace (`index` in the layout, of row `row`): the mean normalized
+   * effect on the training pairs after each step. */
+  sites: { index: number; row: number; curve: number[]; train_effect: number | null }[];
 }
 
 /** A steering run's continuations.json: greedy continuations of the first held-out prompts,

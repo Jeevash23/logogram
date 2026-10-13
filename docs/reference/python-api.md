@@ -649,6 +649,38 @@ run.curve() -> dict[str, Any] | None
 An edge attribution run's faithfulness curve: for each k, the faithfulness of the k
 strongest edges and of k edges chosen at random, with intervals; None without one.
 
+#### Run.probes
+
+```python
+run.probes() -> Any
+```
+
+A probe run's sites, one row each: the held-out accuracy with its interval, the
+control's (trained on shuffled labels) and their difference (selectivity) with its
+interval, the training accuracy, and chance.
+
+#### Run.subspaces
+
+```python
+run.subspaces() -> Any
+```
+
+A distributed alignment search run's sites, one row each: the normalized effect on
+held-out pairs of patching within the learned subspace, of the whole site and (with the
+control) within a random subspace, the learned subspace's share of the whole site's
+effect, and its effect on the training pairs.
+
+#### Run.save_direction
+
+```python
+run.save_direction(site: int, name: str, *, row: int | None = None) -> dict[str, Any]
+```
+
+Save what this probe or learned subspace run found at its site `site` (an index of
+`sites()`) as the project's direction `name`: a subspace's rows, or a probe's
+weights (with two classes, the direction toward the second; with more, class `row`'s).
+Steering, directional ablation, subspace patching and readouts can then use it.
+
 ### lg.Sweep
 
 A sweep's runs, one per value in the order given (see [`sweep()`](#lgsweep)): a list of

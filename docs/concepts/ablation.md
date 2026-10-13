@@ -36,6 +36,17 @@ averaged over the dataset or taken per prompt, as the spec's
   donors, and the same donors serve every site. Each replacement is something the model really
   computes, on another input; resampling is the replacement causal scrubbing uses (Chan et al.,
   2022).
+* **Scale** (`{"kind": "scale", "factor": 0.5}`) multiplies the activation by a factor: 0 removes
+  it, as zero ablation does; 0.5 halves it; 2 doubles it; −1 turns it around. It asks how the
+  behavior grows or shrinks with the component, rather than whether it is needed.
+* **Projection**, or directional ablation (`{"kind": "projection", "direction": {"name": …,
+  "sha256": null}, "reference": null}`), replaces only the component of the activation along a
+  [saved direction](directions.md) (or within a saved subspace) and keeps everything at right
+  angles to it: with no reference the component is removed, x − (x · Dᵀ) · D; with one, it is set
+  to its mean over the clean or corrupt prompts, at the same position, as mean ablation takes it.
+  It applies to activations as wide as the residual stream (stream sites, attention and MLP
+  outputs). Removing a direction the model uses should hurt as much as ablating the whole site;
+  removing one it doesn't use, not at all (Arditi et al., 2024).
 
 The baselines answer different questions, so a component that matters under one can matter less
 under another. **Check robustness** reruns an ablation with another baseline, or with more
@@ -78,4 +89,6 @@ See [the spec reference](../reference/spec.md#experiment-ablation) for every fie
 * Chan, Garriga-Alonso, Goldowsky-Dill, Greenblatt, Nitishinskaya, Radhakrishnan, Shlegeris and
   Thomas (2022). *Causal Scrubbing: a method for rigorously testing interpretability hypotheses.*
   Alignment Forum.
+* Arditi, Obeso, Syed, Paleka, Panickssery, Gurnee and Nanda (2024). *Refusal in Language Models
+  Is Mediated by a Single Direction.* NeurIPS.
 * Heimersheim and Nanda (2024). *How to use and interpret activation patching.* arXiv.

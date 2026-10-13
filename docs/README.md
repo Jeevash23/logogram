@@ -28,6 +28,9 @@ method comes from.
 | [Edge attribution](concepts/edge-attribution.md) | Estimating every edge of the model's graph from gradients (EAP and EAP-IG), verifying the strongest by path patching, and the faithfulness curve |
 | [Direct logit attribution](concepts/direct-logit-attribution.md) | Splitting the logit difference into what each component, neuron or value writes |
 | [Steering](concepts/steering.md) | Adding a direction to the residual stream, with held-out prompts and a random control |
+| [Linear probes](concepts/probes.md) | What can be read from a site: held-out accuracy, a shuffled-label control and selectivity |
+| [Directions](concepts/directions.md) | Directions and subspaces saved in the project: patching along them, removing them, steering along them and reading them out |
+| [Distributed alignment search](concepts/das.md) | Learning the subspace that carries an effect, against the whole site and a random subspace |
 | [SAE features and transcoders](concepts/sae-features.md) | Finding a published SAE by name, sparse autoencoders, transcoders, patching features, what a feature writes |
 | [Circuits](concepts/circuits.md) | Sets of sites intervened on at once: faithfulness, completeness, minimality, interactions |
 | [The logit lens and the model checks](concepts/logit-lens-and-model-checks.md) | Reading each layer's prediction, and what Logogram measures about a model when it loads |
