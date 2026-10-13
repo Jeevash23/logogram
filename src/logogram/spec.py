@@ -412,13 +412,19 @@ class SiteSetsScope(_Strict):
 
 
 class HeadReceiver(_Strict):
-    """A later attention head whose query, key or value input receives the path."""
+    """A later attention head whose query, key or value input receives the path.
+
+    With grouped-query attention (Llama, Qwen, Mistral, Gemma) a model has fewer key and value
+    heads than query heads, and every query head of a group reads its key/value head's key and
+    value: a key or value receiver then names the key/value head (results write it "L5 KV1 k"),
+    and the path reaches every query head of its group through it, as a k or v site does."""
 
     kind: Literal["head"] = "head"
     layer: int = Field(ge=0)
     """The receiving head's layer, from 0."""
     head: int = Field(ge=0)
-    """The receiving head's index in its layer."""
+    """The receiving head's index in its layer: the query head for ``q``, the key/value head for
+    ``k`` and ``v`` (the same as the query head without grouped-query attention)."""
     input: Literal["q", "k", "v"]
     """The input the path reaches: the head's query, key or value."""
 
@@ -440,22 +446,29 @@ class MlpReceiver(_Strict):
 PathReceiver = Annotated[HeadReceiver | LogitsReceiver | MlpReceiver, Field(discriminator="kind")]
 
 
-def receiver_text(receiver: HeadReceiver | LogitsReceiver | MlpReceiver) -> str:
+def receiver_text(
+    receiver: HeadReceiver | LogitsReceiver | MlpReceiver, shared: bool = False
+) -> str:
+    """A receiver as Logogram names it, for example "L9 H6 q". ``shared``: on a model whose
+    heads share keys and values (grouped-query attention), a key or value is its key/value
+    head's, "L9 KV1 k"."""
     if isinstance(receiver, LogitsReceiver):
         return "logits"
     if isinstance(receiver, MlpReceiver):
         return f"L{receiver.layer} MLP"
-    return f"L{receiver.layer} H{receiver.head} {receiver.input}"
+    unit = "KV" if shared and receiver.input in ("k", "v") else "H"
+    return f"L{receiver.layer} {unit}{receiver.head} {receiver.input}"
 
 
 class GraphScope(_Strict):
-    """The edges of the model's graph, for edge attribution.
+    """The edges of the model's graph, for edge attribution and ACDC.
 
     The graph's nodes are the embeddings, every attention head (its output, z through its slice of
     the output projection), every MLP and the logits. An edge runs from a node's output to a later
-    node's input: a head's query, key or value input (each its own edge), an MLP's input, or the
-    logits. ``layers`` chooses the heads and MLPs whose inputs receive the edges (from every
-    earlier node), None for every layer; ``logits`` adds the edges into the logits.
+    node's input: a head's query, key or value input (each its own edge; where heads share keys
+    and values, a key or value input is a key/value head's), an MLP's input, or the logits.
+    ``layers`` chooses the heads and MLPs whose inputs receive the edges (from every earlier
+    node), None for every layer; ``logits`` adds the edges into the logits.
     """
 
     kind: Literal["graph"] = "graph"
@@ -531,9 +544,10 @@ def sender_text(sender: EdgeSender) -> str:
     return f"L{sender.layer} MLP"
 
 
-def edge_text(edge: Edge) -> str:
-    """An edge as Logogram names it, for example "L5 H5 → L9 H6 q"."""
-    return f"{sender_text(edge.sender)} → {receiver_text(edge.receiver)}"
+def edge_text(edge: Edge, shared: bool = False) -> str:
+    """An edge as Logogram names it, for example "L5 H5 → L9 H6 q" ("L5 H5 → L9 KV1 k" into a
+    key/value head's key, with ``shared``: grouped-query attention)."""
+    return f"{sender_text(edge.sender)} → {receiver_text(edge.receiver, shared)}"
 
 
 class EdgesScope(_Strict):
@@ -817,6 +831,44 @@ class EdgeAttribution(_Strict):
         return self
 
 
+# ---------------------------------------------------------------------------------------------
+# Automated circuit discovery (ACDC)
+
+
+class ACDC(_Strict):
+    """Find a circuit by removing the edges of the model's graph one at a time (automated circuit
+    discovery, ACDC, as in Conmy et al. 2023).
+
+    The receiver prompt runs with every edge of the ``graph`` scope in the circuit. ACDC tests the
+    edges in the reverse of the graph's order: the receivers from the logits back toward the
+    embeddings (the logits; then each layer from the last, its MLP's input, then its heads from the
+    last, each head's value, key and query, or where heads share keys and values each key/value
+    head's value and key before its group's queries), and each receiver's edges from its latest
+    sender back to the embeddings. Every receiver is tested after every receiver its output
+    reaches. Removing
+    an edge makes it carry its sender's output on the source prompt into its receiver, as edge
+    patching does, while the edges of the circuit carry what their senders output in that run.
+    When removing an edge changes the mean of the metric over the prompts by less than
+    ``threshold``, counted as ``rule`` says, it stays removed; otherwise it is put back. The
+    circuit is the edges left. ACDC itself runs the clean prompt with removed edges carrying the
+    corrupt prompt's values: ``direction`` ``corrupt_to_clean``, with the KL divergence from the
+    clean prompt's own prediction as the metric. Each edge costs one forward pass per batch of
+    prompts.
+    """
+
+    kind: Literal["acdc"] = "acdc"
+    direction: Direction
+    threshold: float = Field(gt=0, allow_inf_nan=False)
+    """How small a change in the metric's mean over the prompts leaves an edge out of the
+    circuit, in the metric's own units: nats for the KL divergence, logits for the logit
+    difference."""
+    rule: Literal["toward_source", "either_way"]
+    """Which change is compared with the threshold: ``toward_source``, how far removing the edge
+    moves the metric toward the source prompt's (the paper's rule: an edge whose removal moves it
+    the other way always stays removed); ``either_way``, how far it moves it in either direction
+    (the absolute value, an option of ACDC's code)."""
+
+
 class MeanDifference(_Strict):
     """At each steered site, the mean difference between the two prompts of each training pair,
     from the receiver toward the other prompt. A strength of 1 adds the whole mean difference."""
@@ -1034,6 +1086,7 @@ Experiment = Annotated[
     | Steering
     | PathPatching
     | EdgeAttribution
+    | ACDC
     | SubspacePatching
     | DistributedAlignmentSearch
     | Probe,
@@ -1610,10 +1663,20 @@ class Spec(_Strict):
     @model_validator(mode="after")
     def _edges_fit(self) -> Spec:
         exp, scope = self.experiment, self.scope
-        if isinstance(exp, EdgeAttribution) != isinstance(scope, GraphScope):
+        if isinstance(exp, EdgeAttribution) and not isinstance(scope, GraphScope):
             raise ValueError(
                 "edge attribution estimates the edges of the model's graph: use the graph scope "
-                "with it, and the graph scope with it alone"
+                "with it"
+            )
+        if isinstance(exp, ACDC) and not isinstance(scope, GraphScope):
+            raise ValueError(
+                "ACDC removes the edges of the model's graph one at a time: use the graph scope "
+                "with it"
+            )
+        if isinstance(scope, GraphScope) and not isinstance(exp, EdgeAttribution | ACDC):
+            raise ValueError(
+                "the graph scope holds the edges of the model's graph, which edge attribution and "
+                "ACDC measure: use the graph scope with one of them alone"
             )
         if isinstance(scope, EdgesScope):
             if not isinstance(exp, PathPatching):
@@ -1796,6 +1859,7 @@ def describe_intervention(
     | Steering
     | PathPatching
     | EdgeAttribution
+    | ACDC
     | SubspacePatching
     | DistributedAlignmentSearch
     | Probe,
@@ -1835,6 +1899,10 @@ def describe_intervention(
         )
         curve = "" if exp.curve is None else f"; {describe_curve(exp.curve)}"
         return f"Edge attribution, estimated with {how} ({arrow}{curve})"
+    if isinstance(exp, ACDC):
+        arrow = "clean → corrupt" if exp.direction == "clean_to_corrupt" else "corrupt → clean"
+        counted = "toward the source" if exp.rule == "toward_source" else "either way"
+        return f"ACDC, threshold {exp.threshold:g} on changes {counted} ({arrow})"
     if isinstance(exp, AttributionPatching):
         arrow = "clean → corrupt" if exp.direction == "clean_to_corrupt" else "corrupt → clean"
         if exp.method == "integrated_gradients":

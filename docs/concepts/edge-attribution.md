@@ -25,12 +25,22 @@ input:
 GPT-2 small, 12 layers of 12 heads, has 157 senders, 445 receivers and 32,491 edges. A model of
 the same size whose layers read attention and MLP from the same stream has 144 fewer.
 
+**Shared keys and values.** With grouped-query attention (Llama, Qwen, Mistral), a layer has fewer
+key/value heads than query heads, and each query head of a group reads its key/value head's key and
+value. A key or value input then belongs to the key/value head: a layer has a query input for every
+query head and a key and a value input for every key/value head, and an edge into one reaches
+every query head of the group through what they share. The results write such a receiver `L5 KV1 k`
+(key/value head 1's key in layer 5), and draw it at the middle of the query heads that read it.
+Qwen 2.5 0.5B, 24 layers of 14 query heads sharing 2 key/value heads, has 361 senders, 457
+receivers and 79,813 edges.
+
 **Each receiver's own input.** In the model, a layer's heads all read one residual stream,
 normalized once. For an edge to mean something on its own, each receiver reads its own copy of
 the residual stream at its layer, before its normalization, and normalizes that copy itself: each
-head for its query, key and value (as TransformerLens's split inputs do), each MLP for its input,
-and the final normalization for the logits. The residual stream itself runs on unchanged; only
-what one receiver reads can differ.
+head for its query, key and value (each key/value head for its key and value, where heads share
+them), as TransformerLens's split inputs do, each MLP for its input, and the final normalization
+for the logits. The residual stream itself runs on unchanged; only what one receiver reads can
+differ.
 
 The `graph` scope chooses the receivers: `layers`, the layers whose heads and MLPs receive edges
 (each from every earlier node), in order, or `null` for every layer; and `logits`, whether the
@@ -184,15 +194,17 @@ stopped during the curve keeps every edge and leaves the curve out.
 ## Limits
 
 * **Models.** Edges need heads that each write into the residual stream and receivers that each
-  read their own copy of it. The first time edge attribution plans or runs on a model, Logogram
-  measures that giving every receiver its own copy reproduces the model's output, that each copy is
-  read before its normalization, and that changing one head's copy changes no other head. It
-  refuses models that normalize the attention output after combining the heads (Gemma 2, OLMo 2),
-  and models whose heads share keys and values (grouped-query attention, as in Llama and Qwen),
-  whose graph would need edges into shared inputs, which Logogram doesn't build yet. GPT-2 and
-  Pythia have what edges need.
+  read their own copy of it. The first time edge attribution or [ACDC](acdc.md) plans or runs on a
+  model, Logogram measures that giving every receiver its own copy reproduces the model's output,
+  that each copy is read before its normalization, and that changing one head's copy changes no
+  other head's (for a shared key or value, no other key/value head's). It refuses models that
+  normalize the attention output after combining the heads (Gemma 2, OLMo 2), whose heads don't
+  each add into the residual stream, and models whose query heads don't divide evenly among their
+  key/value heads. Tiny models of the GPT-2, Pythia, Llama and Qwen 2 families pass, and on each
+  the tests check that every estimate is the slope of patching its edge, that one edge patched is
+  path patching of that edge, and that patching every edge reproduces the source run.
 * **Prompt pairs of equal length.** An edge carries its sender's output from one prompt into the
-  other at every position, so edge attribution and path patching of edges refuse
+  other at every position, so edge attribution, ACDC and path patching of edges refuse
   [pairs of different lengths](activation-patching.md#pairs-of-different-lengths).
 * **Answers of single tokens**, or sets of them: continuations of several tokens are refused.
 
@@ -212,11 +224,15 @@ stopped during the curve keeps every edge and leaves the curve out.
 ## When to use it
 
 Use edge attribution to find how the components of a circuit connect: which earlier components a
-head reads through its query, key or value, and what reaches the logits directly. Automated circuit
-discovery that patches edges one at a time (ACDC, Conmy et al., 2023) needs forward passes for
-every edge; edge attribution estimates them all at once, which is what Syed, Rager and Conmy (2023)
-proposed it for. Then verify the strongest by path patching, read the curve against its control,
-and prefer integrated gradients wherever one gradient and path patching disagree.
+head reads through its query, key or value, and what reaches the logits directly. Then verify the
+strongest by path patching, read the curve against its control, and prefer integrated gradients
+wherever one gradient and path patching disagree.
+
+[ACDC](acdc.md) (Conmy et al., 2023), which Logogram also runs over the same graph, removes the
+edges one at a time in real forward passes and keeps those the metric needs: a forward pass for
+every edge, where edge attribution estimates them all at once, which is what Syed, Rager and Conmy
+(2023) proposed it for. Use edge attribution to search a large graph, and ACDC where a circuit
+whose every edge was measured is worth a pass per edge, on chosen layers of a larger model.
 
 ## In a spec
 
@@ -255,6 +271,7 @@ measured one at a time by path patching:
 
 A sender is `{"kind": "embed"}`, a head (`layer` and `head`) or an MLP (`layer`); a receiver is a
 head's `q`, `k` or `v`, an MLP's input (`{"kind": "mlp", "layer": 9}`) or `{"kind": "logits"}`.
+Where heads share keys and values, a `k` or `v` receiver's `head` is the key/value head.
 See the spec reference for [edge attribution](../reference/spec.md#experiment-edge_attribution),
 the [`graph`](../reference/spec.md#scope-graph) and [`edges`](../reference/spec.md#scope-edges)
 scopes and the [faithfulness curve](../reference/spec.md#faithfulness-curve).

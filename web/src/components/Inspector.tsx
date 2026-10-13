@@ -20,7 +20,7 @@ import { setWhat, universeText } from "../lib/circuits";
 import { metricWords } from "../lib/metrics";
 import { runTitle } from "../lib/runs";
 import { siteText } from "../lib/spec";
-import { baselineText, experimentText, labelsText, measureOf, measureWords, positionText, readoutText, receiverInputWords, senderWords } from "../lib/spec";
+import { baselineText, experimentText, labelsText, measureOf, measureWords, positionText, readoutText, receiverInputWords, senderWords, sharesKeys } from "../lib/spec";
 import { prefersReducedMotion } from "../lib/motion";
 import { useStore } from "../store/app";
 import { Distribution } from "./Distribution";
@@ -52,7 +52,13 @@ export function Inspector() {
             {run.detail?.spec && pendingBase && (
               <p className={s.note}>
                 {experimentText(run.detail.spec.experiment)} ·{" "}
-                {pendingBase.kind === "site_set" ? "every site of the set at once" : pendingBase.kind === "edge" ? "summed over every position" : positionText(pendingBase.position)}
+                {pendingBase.kind === "site_set"
+                  ? "every site of the set at once"
+                  : pendingBase.kind === "edge"
+                    ? run.detail.spec.experiment.kind === "edge_attribution"
+                      ? "summed over every position"
+                      : "at every position"
+                    : positionText(pendingBase.position)}
               </p>
             )}
             {site && run.detail ? (
@@ -104,8 +110,9 @@ function ComponentHeader({ selection }: { selection: Selection }) {
   }
   else if (selection.part === "edge") {
     const edge = findSite(run.sites, selection)?.edge;
+    const grouped = sharesKeys(run.detail?.summary?.model);
     kind = edge
-      ? `An edge of the model's graph: ${senderWords(edge.sender)}, read directly by ${receiverInputWords(edge.receiver)} through the residual stream.`
+      ? `An edge of the model's graph: ${senderWords(edge.sender)}, read directly by ${receiverInputWords(edge.receiver, grouped)} through the residual stream.${grouped && edge.receiver.kind === "head" && edge.receiver.input !== "q" ? " The key/value head's key and value are read by every query head of its group." : ""}`
       : "An edge of the model's graph: a sender's output, read directly by a later component's input.";
   }
   else if (selection.part === "set") {
@@ -212,6 +219,7 @@ function SetReading({ site, summary }: { site: SiteResult; summary: Summary }) {
 function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | null; selection: Selection }) {
   const exp = spec.experiment;
   const measured = metricWords(summary?.metric ?? spec.metric);
+  const grouped = sharesKeys(summary?.model);
   const base = summary ? findSite(summary.sites, selection) : null;
   const position = base ? positionText(base.position) : selection.positionKey ? `position ${selection.positionKey}` : "the positions in the spec";
   const kind = base?.kind ?? selection.kind;
@@ -294,11 +302,26 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
     how =
       `Runs each ${receiver} prompt, encodes the activation the SAE reads, and changes only ${what} at ${position} to ${to}. ` +
       "The activation moves along the feature's decoder direction, and what the SAE misses (its error) is kept as it was.";
+  } else if (selection.part === "edge" && exp.kind === "acdc") {
+    const [receiver, source] = exp.direction === "clean_to_corrupt" ? ["corrupt", "clean"] : ["clean", "corrupt"];
+    const edge = base?.edge;
+    const into = edge ? receiverInputWords(edge.receiver, grouped) : "its receiver";
+    const kept = base && summary?.acdc ? summary.acdc.kept.includes(base.index) : null;
+    const counted = exp.rule === "toward_source" ? `toward the ${source} prompts'` : "either way";
+    how =
+      `ACDC tested the edges from the logits back toward the embeddings, this one after every edge downstream of ${into}. It ran each ${receiver} prompt with the ` +
+      `edges removed so far, and this one, carrying their senders' outputs from the paired ${source} prompt, and compared the mean ` +
+      `of the metric with the circuit's just before. ` +
+      (kept === null
+        ? `An edge stays removed when that moves the metric ${counted} by less than ${exp.threshold}.`
+        : kept
+          ? `It moved the metric ${counted} by ${exp.threshold} or more, so the edge was put back: it is in the circuit.`
+          : `It moved the metric ${counted} by less than ${exp.threshold}, so the edge stayed removed.`);
   } else if (selection.part === "edge" && (exp.kind === "edge_attribution" || exp.kind === "path_patching")) {
     const [receiver, source] = exp.direction === "clean_to_corrupt" ? ["corrupt", "clean"] : ["clean", "corrupt"];
     const edge = base?.edge;
     const from = edge ? senderWords(edge.sender) : "the sender's output";
-    const into = edge ? receiverInputWords(edge.receiver) : "the receiver's input";
+    const into = edge ? receiverInputWords(edge.receiver, grouped) : "the receiver's input";
     how =
       exp.kind === "edge_attribution"
         ? `Estimates, to first order, what letting only ${into} read ${from} from the paired ${source} prompt would do in each ${receiver} prompt: ` +
@@ -321,7 +344,7 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
       `Nothing is replaced. ${exp.method === "integrated_gradients" ? "Averaging the gradient along the way corrects much of the saturation one gradient misses, but it is still an estimate" : "The estimate misses saturation and can miss or even invert an effect"}; verify it by patching.`;
   } else if (exp.kind === "path_patching") {
     const [receiver, source] = exp.direction === "clean_to_corrupt" ? ["corrupt", "clean"] : ["clean", "corrupt"];
-    const into = exp.receivers.map(receiverInputWords).join(", ");
+    const into = exp.receivers.map((r) => receiverInputWords(r, grouped)).join(", ");
     how =
       `Runs each ${receiver} prompt with ${what} at ${position} taken from the paired ${source} prompt and every other attention head ` +
       `held at its own value${exp.freeze_mlps ? ", MLPs too" : ""}, records what ${into} read, and patches only that into an unchanged ` +
@@ -375,7 +398,7 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
   }
   const receiver =
     summary?.receiver ??
-    ((exp.kind === "activation_patching" || exp.kind === "attribution_patching" || exp.kind === "path_patching" || exp.kind === "edge_attribution") &&
+    ((exp.kind === "activation_patching" || exp.kind === "attribution_patching" || exp.kind === "path_patching" || exp.kind === "edge_attribution" || exp.kind === "acdc") &&
     exp.direction === "clean_to_corrupt"
       ? "corrupt"
       : "clean");
@@ -399,7 +422,14 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
         {capitalize(measured.label)}: {metricText}.
       </p>
       <p className={s.text}>
-        {estimate ? "Estimated effect = (estimated patched" : exp.kind === "steering" ? "Normalized effect = (steered" : "Normalized effect = (patched"} − {receiver}) ÷{" "}
+        {estimate
+          ? `Estimated effect = (estimated patched − ${receiver})`
+          : exp.kind === "acdc"
+            ? "Normalized change = (circuit without the edge − circuit with it)"
+            : exp.kind === "steering"
+              ? `Normalized effect = (steered − ${receiver})`
+              : `Normalized effect = (patched − ${receiver})`}{" "}
+        ÷{" "}
         {spec.metric?.normalization === "dataset_gap" ? (
           <>
             mean({reference} − {receiver}){gap !== null && gap !== undefined && <> (denominator {num(gap, 3)})</>}

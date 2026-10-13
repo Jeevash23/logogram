@@ -110,6 +110,8 @@ const ADDED = new Set<keyof FormState>([
   "subspace",
   "readout",
   "readoutPosition",
+  "acdcThreshold",
+  "acdcRule",
 ]);
 
 /** A sweep stored before it had every field: an every-feature sweep chose and reported its
@@ -283,6 +285,7 @@ const FIELDS: { [K in keyof FormState]-?: Check } = {
     "path_patching",
     "steering",
     "edge_attribution",
+    "acdc",
     "subspace_patching",
     "das",
     "probe",
@@ -327,6 +330,8 @@ const FIELDS: { [K in keyof FormState]-?: Check } = {
   subspace: orNull(isDirectionRef),
   readout: orNull(isReadout),
   readoutPosition: isReadoutPosition,
+  acdcThreshold: isString,
+  acdcRule: orNull(oneOf("toward_source", "either_way")),
   saeRef: orNull(isSaeRef),
   scope: isScope,
   metric: oneOf("logit_diff", "logprob_diff", "logprob", "prob", "prob_diff", "kl", "readout"),

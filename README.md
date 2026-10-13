@@ -102,8 +102,8 @@ The [documentation](docs/README.md) teaches the app and the methods:
   for, and [Models](docs/models.md) which models load and how.
 * [Concepts](docs/README.md#concepts): what each method computes, exactly, and the papers it
   comes from: activation patching, ablation, metrics and normalization, statistics, attribution
-  patching, path patching, edge attribution, direct logit attribution, steering, SAE features,
-  circuits, and the logit lens with the checks each model passes when it loads.
+  patching, path patching, edge attribution, ACDC, direct logit attribution, steering, SAE
+  features, circuits, and the logit lens with the checks each model passes when it loads.
 * [How-to guides](docs/README.md#how-to-guides): replicate IOI, find induction heads, work with
   an SAE, check a finding's robustness, compare runs, sweep seeds, datasets or checkpoints, queue
   runs and run them headless, run a chat model on its template, study your own fine-tune, share a
@@ -165,6 +165,7 @@ What each method finds, as normalized effects (every other head 0):
 | Steering | none: the difference is a token's identity, not a direction | on ABBA prompts, the mean difference after layer 2 at the last token flips the answer (1.0 at ×1, 2/3 at ×0.5) and beats a random direction; with ABBA and BABA mixed it cancels to 0 |
 | Edges, each path patched alone | 1.0 for each planted edge along which the prompts differ (the embeddings → L0 H2's value, L0 H2 → L1 H1's key, L1 H1 → the logits), 0 for the others | 1.0 for the embeddings → L1 H1's query, L1 H1 → L2 H3's value, L2 H3 → L3 H0's query and L3 H0 → the logits, 0 for the others |
 | Edge attribution | one gradient: L1 H1 → logits 1.0, exact; edges into queries and keys about 0. With 32 steps of integrated gradients, L0 H2 → L1 H1's key about 1.0 | one gradient: L3 H0 → logits 1.0, exact; edges into queries and keys about 0 |
+| ACDC | with the logit difference and a threshold of 1 logit (the gap is 20), in either direction: exactly the embeddings → L0 H2's value, L0 H2 → L1 H1's key and L1 H1 → the logits, 3 of 110 edges, each a change of 1.0 when it was removed; faithfulness 1.0 | with the KL divergence from the clean prompt's prediction and a threshold of 0.1 nats (the gap is about 10): exactly the four edges path patching finds, 4 of 479, each a change of 1.0; faithfulness 1.0 |
 
 How the weights do it: every direction of the residual stream is one named feature (a token's
 identity, the previous token's, the token to predict, the position p/128 and its square, a few
@@ -339,6 +340,13 @@ lg.add_local_model("~/models/my-fine-tune", "my-fine-tune")   # hash a model fol
 tuned = lg.load_model("my-fine-tune", device="cuda:1")         # a local model, on the second GPU
 toy = lg.toy_model("ioi")        # a model whose circuit is known: project, datasets, experiments
 toy.run("which-heads").sites()   # L1 H1, L2 H3 and L3 H0 at 1.0, every other head at 0
+found = lg.run(lg.load_spec({**toy.specs["which-heads"].model_dump(), "name": "The circuit",
+    "notes": "", "scope": {"kind": "graph", "layers": None, "logits": True},
+    "experiment": {"kind": "acdc", "direction": "corrupt_to_clean", "threshold": 0.1,
+                   "rule": "toward_source"},
+    "metric": {"kind": "kl", "target": "clean", "normalization": "dataset_gap"}}),
+    toy.project, model=toy.model)
+found.circuit()      # the 4 planted edges of 479 kept, each a change of 1.0; faithfulness 1.0
 chat = lg.load_model("Qwen/Qwen2.5-0.5B-Instruct")
 lg.look(chat, "The capital of France is", prepend_bos=False,
         chat_template={"kind": "user_turn", "system": None})   # read in its own chat template
@@ -487,9 +495,9 @@ A dataset is a JSONL file in the project's `datasets/` folder, one prompt pair p
   patching with one gradient, path patching, mean and resample ablation, steering by the mean
   difference) refuses them on such pairs, naming the pairs; zero ablation, direct logit
   attribution and steering along an SAE feature read one prompt at a time and take any position
-  they otherwise take. Integrated gradients, edge attribution and path patching of edges (an edge
-  carries its sender's output at every position), sets that keep their sites and patch the rest,
-  and mean or resample ablation of sets need pairs of equal length. Pairs of equal length may
+  they otherwise take. Integrated gradients, edge attribution, ACDC and path patching of edges (an
+  edge carries its sender's output at every position), sets that keep their sites and patch the
+  rest, and mean or resample ablation of sets need pairs of equal length. Pairs of equal length may
   give `corrupt_positions` too.
 * `meta` is optional: anything about the prompt, such as `{"template": "went"}`. The bootstrap can
   resample prompts by one of its fields (see Statistics).
@@ -588,18 +596,21 @@ change travels only through the residual stream (and the MLPs, unless you hold t
 receivers read in that run is recorded and patched into an unchanged receiver run, where the metric
 is read. Senders in or after the last receiver's layer have no path, so a sweep keeps only the
 layers before it. In models that share keys and values across heads (grouped-query attention),
-only queries can be receivers. Tests check that from the last layer to the logits a path is the
-whole effect, exactly as patching measures it. **Check robustness** offers holding or releasing
-the MLPs, the opposite direction, and the senders' whole effect by patching.
+a key or value receiver is a key/value head (`L5 KV1 k`), and the path reaches every query head of
+its group through what they share. Tests check that from the last layer to the logits a path is
+the whole effect, exactly as patching measures it. **Check robustness** offers holding or
+releasing the MLPs, the opposite direction, and the senders' whole effect by patching.
 
 **Edge attribution** estimates which edges of the model's graph carry the behavior (EAP, Syed et
 al. 2023; with integrated gradients, EAP-IG, Hanna et al. 2024). The graph's nodes are the
 embeddings, every attention head's output, every MLP and the logits. An edge runs from a node's
 output to a later node's input through the residual stream: a head's query, key and value are an
-edge each, an MLP's input one and the logits one, so GPT-2 small has 32,491 edges. An edge's
-estimate is (the sender's output on the source prompt − on the receiver prompt) · the gradient of
-the metric with respect to the receiver's own copy of the residual stream, summed over positions.
-The gradient goes through the receiver's normalization with its scale recomputed from its input,
+edge each, an MLP's input one and the logits one, so GPT-2 small has 32,491 edges. Where heads
+share keys and values (grouped-query attention, as in Llama and Qwen), a key or value input is the
+key/value head's, read by every query head of its group (`L5 KV1 k`): Qwen 2.5 0.5B has 79,813
+edges. An edge's estimate is (the sender's output on the source prompt − on the receiver prompt) ·
+the gradient of the metric with respect to the receiver's own copy of the residual stream, summed
+over positions. The gradient goes through the receiver's normalization with its scale recomputed from its input,
 as patching the edge would recompute it (holding the scale, as direct logit attribution does, would
 linearize another function). Tests check it against finite differences on tiny models, and that
 each estimate is the slope of patching its edge. Every edge keeps its per-prompt values and
@@ -632,8 +643,25 @@ keep none of it.
 
 Edge attribution needs heads that each write into the residual stream and receivers that can each
 read their own copy of it. Logogram measures both when a run starts, and refuses models that
-normalize after combining heads (Gemma 2, OLMo 2) or whose heads share keys and values
-(grouped-query attention, as in Llama and Qwen), which it doesn't build edges for yet.
+normalize after combining heads (Gemma 2, OLMo 2). Tests on tiny GPT-2, Pythia, Llama and Qwen 2
+models check that each estimate is the slope of patching its edge, that one edge patched is path
+patching of that edge and that patching every edge reproduces the source run.
+
+**ACDC** (automated circuit discovery, Conmy et al. 2023) finds a circuit in the same graph by
+measuring instead of estimating. The receiver prompt runs with every edge in the circuit; then the
+edges are removed one at a time, in the reverse of the graph's order (from the logits back toward
+the embeddings, so a node is tested only after everything it feeds), and a removed edge carries
+its sender's output on the source prompt. An edge stays removed when its removal moves the
+metric's mean by less than `threshold`, in the metric's own units (nats for the KL divergence,
+logits for the logit difference); `rule` says which change counts: the move toward the source
+prompt's value (`toward_source`, the paper's) or its size either way (`either_way`). Neither has a
+default. The run records every edge's change when it was tested and whether it was kept, the
+circuit, and its faithfulness with a bootstrap interval, normalized as the faithfulness curve
+normalizes (tests check that the two agree bit for bit). It costs a forward pass per edge and batch
+of prompts, so the form says how many passes a run takes and about how long, timed on the loaded
+model, before it runs; choose layers to search part of a large graph. A run that stops early keeps
+nothing, since the edges left aren't a circuit until every edge has been tested. See
+[ACDC](docs/concepts/acdc.md).
 
 **Steering** adds a direction to the residual stream and measures what it does. At each steered
 site (one residual stream state per layer, or chosen ones, at one token of each prompt) the
@@ -897,8 +925,8 @@ methods and sources that a version 3 spec can't name.
 | `tokenization.chat_template` | `null` feeds each prompt as raw text. `{"kind": "user_turn", "system": null}` makes each prompt the person's message in the model's own chat template, so the answer is the first token of the reply; `{"kind": "assistant_prefix", "system": null, "user": "…"}` makes it the start of the model's reply to a fixed message. `system` is an optional system message. The template is the one the tokenizer ships at the model's revision (see [Chat templates](#chat-templates)). With a template, `prepend_bos` is `false`: the template writes the beginning of the text. |
 | `model.process_weights` | Fold LayerNorm and center weights, as TransformerLens does by default. Logit differences don't change. Value biases are folded into the attention output's bias, so zero ablation of head outputs and heads' direct effects do change (by up to several logits in Qwen 2.5, whose value biases are large); a layer's attention output doesn't. |
 | `dataset.sha256` | If set, the run refuses a dataset file that has changed. |
-| `experiment` | `{"kind": "activation_patching", "direction": "clean_to_corrupt" \| "corrupt_to_clean"}`, `{"kind": "ablation", "baseline": …}` with `{"kind": "zero"}`, `{"kind": "mean", "reference": "clean" \| "corrupt"}` or `{"kind": "resample", "pool": "clean" \| "corrupt", "donors": 10, "seed": 0}`, `{"kind": "attribution_patching", "direction": …, "method": "gradient", "steps": null}` (same directions as patching; or `"method": "integrated_gradients", "steps": 8`), `{"kind": "direct_logit_attribution", "prompts": "clean" \| "corrupt"}`, `{"kind": "path_patching", "direction": …, "receivers": [{"kind": "head", "layer": 9, "head": 9, "input": "q" \| "k" \| "v"}, {"kind": "mlp", "layer": 3}, {"kind": "logits"}], "freeze_mlps": false}`, `{"kind": "edge_attribution", "direction": …, "method": "gradient", "steps": null, "curve": {"counts": [10, 100, 1000], "patch": "chosen" \| "rest", "control": {"seed": 0, "draws": 1}}}` (`curve` `null` for none) with a `graph` scope, or `{"kind": "steering", "apply_to": "clean" \| "corrupt", "direction": {"kind": "mean_difference"}, "coefficients": [-1, 1, 2], "train_fraction": 0.5, "seed": 0, "control": true, "continuations": null}` with a scope of one residual component per layer (`layer_components`) or residual `sites`, at one token. The direction can instead be one SAE feature's decoder direction, `{"kind": "sae_feature", "feature": 1234}` (with the spec's `sae`, and `sites` naming where the SAE writes), and `continuations` can be `{"prompts": 3, "tokens": 20}` to record what the steered model goes on to say |
-| `scope` | `{"kind": "heads", "position": …}`, `{"kind": "layer_position", "site": "resid_pre", "positions": "each" \| "labels"}`, `{"kind": "layer_components", "components": ["attn_out", "mlp_out"], "position": …}` `{"kind": "sites", "sites": [{"kind": "head", "layer": 9, "head": 9, "position": {"kind": "label", "label": "end"}}]}` (feature sites are `{"kind": "sae_feature", "layer": 8, "feature": 1234, "position": …}`), `{"kind": "head_inputs", "input": "q" \| "k" \| "v", "position": …}`, `{"kind": "neurons", "layers": [3, 4], "position": …}`, for attribution patching, `{"kind": "features", "position": …, "top": 50, "choose_on": 0.5, "seed": 0}` (`choose_on` and `seed` both `null` to choose and report on every prompt), `{"kind": "site_sets", "universe": ["head"], "sets": [{"label": "circuit", "sites": […], "complement": true}]}`, for edge attribution `{"kind": "graph", "layers": null, "logits": true}` (`layers` the heads and MLPs that receive edges, `null` for every layer), or, for path patching edges one at a time, `{"kind": "edges", "edges": [{"sender": {"kind": "head", "layer": 5, "head": 5}, "receiver": {"kind": "head", "layer": 9, "head": 6, "input": "v"}}]}` (senders `{"kind": "embed"}`, heads or `{"kind": "mlp", "layer": 0}`; `freeze_mlps` true, and the experiment's receivers those of the edges) |
+| `experiment` | `{"kind": "activation_patching", "direction": "clean_to_corrupt" \| "corrupt_to_clean"}`, `{"kind": "ablation", "baseline": …}` with `{"kind": "zero"}`, `{"kind": "mean", "reference": "clean" \| "corrupt"}` or `{"kind": "resample", "pool": "clean" \| "corrupt", "donors": 10, "seed": 0}`, `{"kind": "attribution_patching", "direction": …, "method": "gradient", "steps": null}` (same directions as patching; or `"method": "integrated_gradients", "steps": 8`), `{"kind": "direct_logit_attribution", "prompts": "clean" \| "corrupt"}`, `{"kind": "path_patching", "direction": …, "receivers": [{"kind": "head", "layer": 9, "head": 9, "input": "q" \| "k" \| "v"}, {"kind": "mlp", "layer": 3}, {"kind": "logits"}], "freeze_mlps": false}`, `{"kind": "edge_attribution", "direction": …, "method": "gradient", "steps": null, "curve": {"counts": [10, 100, 1000], "patch": "chosen" \| "rest", "control": {"seed": 0, "draws": 1}}}` (`curve` `null` for none) with a `graph` scope, `{"kind": "acdc", "direction": …, "threshold": 0.1, "rule": "toward_source" \| "either_way"}` with a `graph` scope (`threshold` in the metric's units), or `{"kind": "steering", "apply_to": "clean" \| "corrupt", "direction": {"kind": "mean_difference"}, "coefficients": [-1, 1, 2], "train_fraction": 0.5, "seed": 0, "control": true, "continuations": null}` with a scope of one residual component per layer (`layer_components`) or residual `sites`, at one token. The direction can instead be one SAE feature's decoder direction, `{"kind": "sae_feature", "feature": 1234}` (with the spec's `sae`, and `sites` naming where the SAE writes), and `continuations` can be `{"prompts": 3, "tokens": 20}` to record what the steered model goes on to say |
+| `scope` | `{"kind": "heads", "position": …}`, `{"kind": "layer_position", "site": "resid_pre", "positions": "each" \| "labels"}`, `{"kind": "layer_components", "components": ["attn_out", "mlp_out"], "position": …}` `{"kind": "sites", "sites": [{"kind": "head", "layer": 9, "head": 9, "position": {"kind": "label", "label": "end"}}]}` (feature sites are `{"kind": "sae_feature", "layer": 8, "feature": 1234, "position": …}`), `{"kind": "head_inputs", "input": "q" \| "k" \| "v", "position": …}`, `{"kind": "neurons", "layers": [3, 4], "position": …}`, for attribution patching, `{"kind": "features", "position": …, "top": 50, "choose_on": 0.5, "seed": 0}` (`choose_on` and `seed` both `null` to choose and report on every prompt), `{"kind": "site_sets", "universe": ["head"], "sets": [{"label": "circuit", "sites": […], "complement": true}]}`, for edge attribution and ACDC `{"kind": "graph", "layers": null, "logits": true}` (`layers` the heads and MLPs that receive edges, `null` for every layer), or, for path patching edges one at a time, `{"kind": "edges", "edges": [{"sender": {"kind": "head", "layer": 5, "head": 5}, "receiver": {"kind": "head", "layer": 9, "head": 6, "input": "v"}}]}` (senders `{"kind": "embed"}`, heads or `{"kind": "mlp", "layer": 0}`; `freeze_mlps` true, and the experiment's receivers those of the edges; a `k` or `v` receiver's `head` is a key/value head where heads share them) |
 | `sae` | The SAE that feature sites belong to: `{"repo": "…", "path": "blocks.8.hook_resid_pre", "revision": "…"}`. The revision is pinned when a run starts. |
 | `metric` | `{"kind": "logit_diff" \| "logprob_diff" \| "logprob" \| "prob" \| "prob_diff", "normalization": …}` or `{"kind": "kl", "target": "clean" \| "corrupt", "normalization": …}` |
 | `metric.normalization` | `dataset_gap` or `prompt_gap` |

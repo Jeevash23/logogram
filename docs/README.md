@@ -1,8 +1,8 @@
 # Logogram's documentation
 
 Logogram is a local workbench for causal experiments inside language models: activation
-patching, ablation, attribution patching, path patching, edge attribution, direct logit
-attribution, steering and SAE features, with the statistics to read them by. These pages teach
+patching, ablation, attribution patching, path patching, edge attribution, circuit discovery
+(ACDC), direct logit attribution, steering and SAE features, with the statistics to read them by. These pages teach
 the app and the methods, from a first run to the exact definition of every number.
 
 ## Start here
@@ -26,7 +26,8 @@ method comes from.
 | [Statistics](concepts/statistics.md) | Bootstrap intervals, clusters, simultaneous bands, q-values, sign flips, paired comparisons |
 | [Attribution patching](concepts/attribution-patching.md) | Estimating every site from gradients (neurons and SAE features included), integrated gradients, and verifying estimates by patching |
 | [Path patching](concepts/path-patching.md) | A component's effect through chosen receivers only, and single edges one at a time |
-| [Edge attribution](concepts/edge-attribution.md) | Estimating every edge of the model's graph from gradients (EAP and EAP-IG), verifying the strongest by path patching, and the faithfulness curve |
+| [Edge attribution](concepts/edge-attribution.md) | Estimating every edge of the model's graph from gradients (EAP and EAP-IG), edges into shared keys and values, verifying the strongest by path patching, and the faithfulness curve |
+| [ACDC](concepts/acdc.md) | Finding a circuit by removing the graph's edges one at a time: the order, the threshold and its units, the circuit's faithfulness, and what a run costs |
 | [Direct logit attribution](concepts/direct-logit-attribution.md) | Splitting the logit difference into what each component, neuron or value writes |
 | [Steering](concepts/steering.md) | Adding a direction to the residual stream, with held-out prompts and a random control |
 | [Linear probes](concepts/probes.md) | What can be read from a site: held-out accuracy, a shuffled-label control and selectivity |

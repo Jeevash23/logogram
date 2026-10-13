@@ -178,7 +178,7 @@ logogram export [OPTIONS] RUN
 | Option | Takes | Default | Description |
 |---|---|---|---|
 | `--output` / `-o` | path | — | Where to write the CSV (default: stdout). |
-| `--sites` | nothing | off | One row per site instead of per site and prompt (for an edge attribution run, every edge of its graph). |
+| `--sites` | nothing | off | One row per site instead of per site and prompt (for an edge attribution or ACDC run, every edge of its graph). |
 | `--prompt-text` | nothing | off | Add each prompt's text to its rows. |
 | `--project` | path | — | Project folder (default: the one containing the current folder). |
 

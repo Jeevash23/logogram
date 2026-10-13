@@ -26,6 +26,8 @@ lg.list_saes(model, "layer 8")    # published SAEs for the model, and what Logog
 sae = lg.load_sae(release="gpt2-small-res-jb", sae_id="blocks.8.hook_resid_pre", model=model)
 toy = lg.toy_model("induction")   # a model whose circuit is known, with experiments to run
 toy.run("which-heads").sites()    # the planted heads at 1, every other head at 0
+found = lg.run(acdc_spec, project, model=model)   # ACDC over the graph scope's edges
+found.circuit()      # the edges it kept, the change each made when removed, its faithfulness
 ```
 
 Tables come back as pandas DataFrames when pandas is installed, and as pyarrow Tables otherwise.
@@ -636,9 +638,24 @@ them: each site's label, effect with its interval, and the rest of its statistic
 run.edges() -> Any
 ```
 
-An edge attribution run's every edge, one row each (its edges.parquet): the sender and
-receiver, the mean estimated effect and its interval, the simultaneous band and q-value.
-The summary lists only the strongest.
+An edge attribution or ACDC run's every edge, one row each (its edges.parquet): the
+sender and receiver, the mean effect (estimated, or for ACDC the change its removal made
+when it was tested) and its interval, the simultaneous band and q-value; for ACDC also
+`kept` (in the circuit) and `step` (when it was tested, from 0). The summary lists
+only the strongest.
+
+#### Run.circuit
+
+```python
+run.circuit() -> dict[str, Any]
+```
+
+An ACDC run's circuit: `edges`, the kept edges as the spec writes them (sender and
+receiver) with their `label` and the change their removal made when tested (`change`,
+normalized, and `delta`, in the metric's units); `n_kept` of `n_edges`; the
+`threshold` and `rule` they were kept by; the circuit's `faithfulness` with its
+interval (0 is the source run, 1 the receiver run); and the mean metric of the circuit
+(`circuit`) and with every edge kept (`full`).
 
 #### Run.curve
 

@@ -1166,16 +1166,14 @@ class TransformerLensBackend(ModelBackend):
             raise BackendError(
                 f"{info.id}'s heads don't add up to what its attention writes (it normalizes after "
                 f"combining them, or this couldn't be measured when it loaded), {why}. Edge "
-                "attribution needs a model whose heads each write into the residual stream, such "
-                "as GPT-2 or Pythia."
+                "attribution and ACDC need a model whose heads each write into the residual "
+                "stream, such as GPT-2, Pythia, Llama or Qwen 2."
             )
         kv = int(info.extra.get("n_key_value_heads") or info.n_heads)
-        if kv != info.n_heads:
+        if kv < 1 or info.n_heads % kv:
             raise BackendError(
-                f"{info.id} shares each key and value among {info.n_heads // kv} heads, so a single "
-                "head's key or value input doesn't exist on its own, and its graph would need edges "
-                "into shared inputs, which Logogram doesn't build yet. Use a model whose heads "
-                "each read their own keys and values, such as GPT-2 or Pythia."
+                f"{info.id} has {info.n_heads} heads and {kv} key/value heads a layer, which don't "
+                f"divide into groups of query heads, {why}."
             )
         bridge = self._bridge()
         probe = _probe_tokens(info.d_vocab, str(bridge.cfg.device))
@@ -1239,16 +1237,18 @@ class TransformerLensBackend(ModelBackend):
 
     def _separate_copies(self, bridge: Any, probe: torch.Tensor) -> float:
         """Move one head's query, key or value copy in the last layer: that head's query, key or
-        value (its projection of the copy) must change, and no other head's. The largest change
-        of another head, relative to the moved head's, measured three times (q, k, v). The head
-        moved is the first whose projection responds: a head with no query weights (one that
-        attends evenly) reads its copy without changing."""
+        value (its projection of the copy) must change, and no other head's. With grouped-query
+        attention a key or value copy is a key/value head's, and the heads compared are the
+        key/value heads. The largest change of another head, relative to the moved head's,
+        measured three times (q, k, v). The head moved is the first whose projection responds: a
+        head with no query weights (one that attends evenly) reads its copy without changing."""
         layer = self.info.n_layers - 1
-        heads = self.info.n_heads
+        kv = int(self.info.extra.get("n_key_value_heads") or self.info.n_heads)
         generator = torch.Generator(device="cpu").manual_seed(0)
         worst = 0.0
         for part in ("q", "k", "v"):
-            name = HOOKS[part].format(layer=layer)  # [B, pos, H, d_head]
+            heads = self.info.n_heads if part == "q" else kv
+            name = HOOKS[part].format(layer=layer)  # [B, pos, H (or key/value heads), d_head]
             _, base = bridge.run_with_cache(probe, names_filter=[name])
             before = base[name].float()
             shape = (probe.shape[0], probe.shape[1], self.info.d_model)

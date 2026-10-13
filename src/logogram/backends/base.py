@@ -155,9 +155,10 @@ class EdgePatcher:
     ``sent`` gets each node's output as the pass computes it, in the order of the pass: the
     embeddings (``"embed"``, layer -1, ``[B, pos, d_model]``), a layer's heads (``"head"``, their
     outputs z, ``[B, pos, H, d_head]``) and a layer's MLP (``"mlp"``, ``[B, pos, d_model]``).
-    ``update`` returns what to add to a receiver's own input before it is read (``"q"``, ``"k"``
-    or ``"v"`` of a layer, ``[B, pos, H, d_model]``; ``"mlp"`` of a layer or ``"logits"``,
-    ``[B, pos, d_model]``), or None to leave it as it is."""
+    ``update`` returns what to add to a receiver's own input before it is read (``"q"`` of a
+    layer, ``[B, pos, H, d_model]``; ``"k"`` or ``"v"``, ``[B, pos, H_kv, d_model]``, one copy for
+    each key/value head; ``"mlp"`` of a layer or ``"logits"``, ``[B, pos, d_model]``), or None to
+    leave it as it is."""
 
     def sent(self, node: str, layer: int, output: torch.Tensor) -> None:  # pragma: no cover
         raise NotImplementedError
@@ -302,9 +303,10 @@ class ModelBackend(ABC):
     def edge_checks(self) -> dict[str, float]:
         """Measure, once, what edge attribution relies on, and raise BackendError when the model
         doesn't have it: that each head reads its own copy of the residual stream for its query,
-        key and value, before its normalization, without changing what the model computes; that
-        MLPs and the logits read theirs before their normalization; and that heads and MLPs add
-        into the residual stream (measured when the model loaded). Returns the measured errors."""
+        key and value (with grouped-query attention, each key/value head its own for its key and
+        value), before its normalization, without changing what the model computes; that MLPs and
+        the logits read theirs before their normalization; and that heads and MLPs add into the
+        residual stream (measured when the model loaded). Returns the measured errors."""
         raise BackendError("Edge attribution isn't supported by this model backend.")
 
     def head_output_weights(self, layer: int) -> torch.Tensor:

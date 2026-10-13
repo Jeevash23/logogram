@@ -112,7 +112,7 @@ A **scope** is the set of sites one run measures, each on its own:
 * `site_sets`: [sets of sites intervened on together](circuits.md).
 
 The `graph` and `edges` scopes hold connections between components rather than sites, for
-[edge attribution](edge-attribution.md).
+[edge attribution](edge-attribution.md), [ACDC](acdc.md) and path patching of edges.
 
 ## Pairs of different lengths
 
@@ -138,8 +138,8 @@ altogether:
   sets;
 * the layer × position sweep of every token index (`"positions": "each"`), whose labelled form
   works;
-* [edge attribution](edge-attribution.md) and path patching of edges, which carry each sender's
-  output at every position.
+* [edge attribution](edge-attribution.md), [ACDC](acdc.md) and path patching of edges, which
+  carry each sender's output at every position.
 
 In the app, the token strip lines the two prompts up by their labels and last tokens, each with
 its own positions. With such pairs and a method that carries values between prompts, the

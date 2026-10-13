@@ -119,27 +119,53 @@ def test_a_head_receiver_changes_only_through_its_input(tiny_backend, project, s
     assert not np.allclose(every.patched, one.patched)
 
 
-def test_shared_keys_and_values_are_refused(arch_backend, project, spec_factory):
-    backend = arch_backend("llama")  # two key/value heads for four query heads
+@pytest.mark.parametrize("arch", ["llama", "qwen2"])
+def test_a_shared_key_or_value_receives_a_path_through_its_key_value_head(
+    arch_backend, project, spec_factory, arch
+):
+    """With grouped-query attention a key or value receiver names a key/value head, read by every
+    query head of its group. Path patching a layer-0 head into it, with everything else held,
+    is that head's edge into the key/value head, which edge patching measures by another code
+    path. A key/value head the model doesn't have is refused, saying how many it has."""
+    from logogram.edges import PatchPlan, build_graph, patched_forward, sender_keys
+    from logogram.engine import make_scorer
+    from logogram.prompts import group_by_length
+    from logogram.spec import GraphScope
+
+    backend = arch_backend(arch)  # two key/value heads for four query heads
     scope = {"kind": "heads", "position": {"kind": "all"}}
     prompts = _prompts(backend, project)
-    with pytest.raises(ScopeError, match="shares each key and value"):
+    for part in ("k", "v"):
+        receiver = {"kind": "head", "layer": 1, "head": 1, "input": part}
+        spec = spec_factory(
+            experiment=path([receiver], direction="clean_to_corrupt", freeze_mlps=True),
+            scope=scope,
+        )
+        result = run_experiment(spec, backend, prompts)
+        assert [rs.label for rs in result.sites] == [f"L0 H{h}" for h in range(4)]
+        assert np.abs(result.patched - result.receiver_metric).max() > 1e-4
+        graph = build_graph(backend.info, GraphScope(layers=None, logits=True))
+        scorer = make_scorer(spec, prompts)
+        weights = {layer: backend.head_output_weights(layer) for layer in range(2)}
+        for rs in result.sites:
+            label = f"L0 H{rs.head} → L1 KV1 {part}"
+            e = next(e for e in range(len(graph)) if graph.label(e) == label)
+            values = np.zeros(len(prompts))
+            for group in group_by_length(prompts):
+                source = backend.capture(group.clean, sender_keys(graph))
+                plan = PatchPlan.of(graph, np.array([e]), backend.device)
+                forward = patched_forward(backend, plan, source, weights)
+                values[group.members] = scorer.score(forward, group.corrupt, group.members).metric
+            np.testing.assert_allclose(result.patched[rs.index], values, atol=TOL, err_msg=label)
+    with pytest.raises(ScopeError, match=r"L1 KV2 doesn't exist.*2 key/value heads"):
         run_experiment(
             spec_factory(
-                experiment=path([{"kind": "head", "layer": 1, "head": 0, "input": "k"}]),
+                experiment=path([{"kind": "head", "layer": 1, "head": 2, "input": "k"}]),
                 scope=scope,
             ),
             backend,
             prompts,
         )
-    result = run_experiment(
-        spec_factory(
-            experiment=path([{"kind": "head", "layer": 1, "head": 0, "input": "q"}]), scope=scope
-        ),
-        backend,
-        prompts,
-    )
-    assert np.isfinite(result.patched).all()
 
 
 def test_receivers_must_be_distinct_and_senders_components(tiny_backend, project, spec_factory):

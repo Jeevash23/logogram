@@ -15,6 +15,10 @@ so a sweep keeps only the layers before the last receiver.
 Between prompts of different token lengths, the sender is patched at a label or the last token:
 from the source prompt's token there into the receiver's. The rest of both passes runs on the
 receiver prompt alone.
+
+With grouped-query attention, a key or value receiver is a key/value head ("L5 KV1 k"): what it
+reads is recorded and patched for that key/value head, so the path reaches every query head of its
+group through their shared key or value.
 """
 
 from __future__ import annotations
@@ -42,7 +46,7 @@ from logogram.engine import (
     make_scorer,
 )
 from logogram.prompts import PreparedPrompt, group_by_length
-from logogram.sites import ResolvedSite, ScopeError, check_lined_up, expand_scope
+from logogram.sites import ResolvedSite, ScopeError, check_lined_up, expand_scope, kv_heads
 from logogram.spec import (
     ALL_POSITIONS,
     AllPositions,
@@ -79,11 +83,14 @@ def check_receivers(exp: PathPatching, info: ModelInfo) -> None:
                 f"L{receiver.layer} H{receiver.head} doesn't exist; this model has "
                 f"{info.n_layers} layers of {info.n_heads} heads."
             )
-        kv = int(info.extra.get("n_key_value_heads") or info.n_heads)
-        if receiver.input in ("k", "v") and kv != info.n_heads:
+        kv = kv_heads(info)
+        if receiver.input in ("k", "v") and receiver.head >= kv:
+            group = info.n_heads // kv
             raise ScopeError(
-                f"This model shares each key and value among {info.n_heads // kv} heads, so a "
-                "single head's key or value can't receive a path on its own. Use query receivers."
+                f"L{receiver.layer} KV{receiver.head} doesn't exist: this model shares each key and "
+                f"value among {group} heads, so its layers have {kv} key/value heads (0 to "
+                f"{kv - 1}), and a key or value receiver names one of them (key/value head 0 is "
+                f"read by query heads 0 to {group - 1})."
             )
 
 
@@ -285,10 +292,13 @@ def run_path_patching(
 # -- edges, one at a time ------------------------------------------------------------------------
 
 
-def edge_rows(scope: EdgesScope, n_layers: int) -> tuple[list[ResolvedSite], dict[str, Any]]:
+def edge_rows(
+    scope: EdgesScope, n_layers: int, shared: bool = False
+) -> tuple[list[ResolvedSite], dict[str, Any]]:
     """One row per edge, in a senders × receivers layout of the senders and receivers it names.
     A row stands at its receiver's layer (the logits at the last), as an edge attribution run's
-    rows do."""
+    rows do. ``shared``: the model's keys and values are key/value heads' (grouped-query
+    attention), named "L5 KV1 k"."""
     senders = {e.sender.model_dump_json(): e.sender for e in scope.edges}
     receivers = {e.receiver.model_dump_json(): e.receiver for e in scope.edges}
     sender_keys, receiver_keys = list(senders), list(receivers)
@@ -302,7 +312,7 @@ def edge_rows(scope: EdgesScope, n_layers: int) -> tuple[list[ResolvedSite], dic
                 site=Site(kind="resid_pre", layer=layer, position=ALL_POSITIONS),
                 row=sender_keys.index(edge.sender.model_dump_json()),
                 col=receiver_keys.index(r.model_dump_json()),
-                label=edge_text(edge),
+                label=edge_text(edge, shared),
                 edge=edge,
             )
         )
@@ -315,7 +325,7 @@ def edge_rows(scope: EdgesScope, n_layers: int) -> tuple[list[ResolvedSite], dic
             for i, k in enumerate(sender_keys)
         ],
         "cols": [
-            {"key": str(i), "label": receiver_text(receivers[k]), "node": receivers[k].kind}
+            {"key": str(i), "label": receiver_text(receivers[k], shared), "node": receivers[k].kind}
             for i, k in enumerate(receiver_keys)
         ],
     }
@@ -329,13 +339,14 @@ def _check_edge(edge: Edge, info: ModelInfo) -> None:
         raise ScopeError(
             f"{edge_text(edge)} names a layer this model doesn't have; it has {info.n_layers}."
         )
+    shared = kv_heads(info) != info.n_heads
     if s.head is not None and s.head >= info.n_heads:
-        raise ScopeError(f"{edge_text(edge)} names a head this model doesn't have.")
+        raise ScopeError(f"{edge_text(edge, shared)} names a head this model doesn't have.")
     parallel = str(info.extra.get("block_structure")) == "parallel"
     if parallel and isinstance(r, MlpReceiver) and s.kind == "head" and s.layer == r.layer:
         raise ScopeError(
             "In this model a layer's MLP reads the residual stream its heads read, not what they "
-            f"write, so {edge_text(edge)} isn't an edge."
+            f"write, so {edge_text(edge, shared)} isn't an edge."
         )
 
 
@@ -362,7 +373,7 @@ def run_edge_paths(
     check_receivers(exp, info)
     for edge in scope.edges:
         _check_edge(edge, info)
-    sites, layout = edge_rows(scope, info.n_layers)
+    sites, layout = edge_rows(scope, info.n_layers, kv_heads(info) != info.n_heads)
     if on_start is not None:
         on_start(sites, layout)
     groups = group_by_length(prompts)

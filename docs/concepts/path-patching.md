@@ -27,8 +27,11 @@ nothing travels along it.
   layers before the last receiver.
 * A path starts at a component that writes into the residual stream, so queries, keys, values and
   neurons can't be senders.
-* In models whose heads share keys and values (grouped-query attention, as in Llama and Qwen),
-  only queries can be receivers.
+* In models whose heads share keys and values (grouped-query attention, as in Llama and Qwen), a
+  key or value receiver is a key/value head: its `head` counts the layer's key/value heads, and
+  the path reaches every query head of the group through the key or value they share. The results
+  write it `L5 KV1 k`. Tests on tiny Llama and Qwen 2 models check that a path from a head into a
+  key/value head is what patching that one edge of the graph does.
 * With [pairs of different lengths](activation-patching.md#pairs-of-different-lengths), the
   sender is patched at a label or the last token, from the source prompt's token there into the
   receiver's; the rest of both passes runs on the receiver prompt alone.

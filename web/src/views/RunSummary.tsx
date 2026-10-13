@@ -6,7 +6,7 @@ import { MOD } from "../components/Header";
 import { RunButton } from "../components/RunButton";
 import { Button, Callout, Kbd } from "../components/ui";
 import { chatAdvice, chatReason } from "../lib/chat";
-import { bytes, count, plural } from "../lib/format";
+import { bytes, count, duration, plural, roughDuration } from "../lib/format";
 import type { EdgePlanState } from "../lib/edgePlan";
 import { modelName, useAnalysisContext } from "../lib/hooks";
 import { metricWords } from "../lib/metrics";
@@ -51,7 +51,7 @@ export function RunSummary({
   differences: string[];
   onRun: (spec: Spec) => void;
   onQueue: (spec: Spec) => void;
-  /** Edge attribution: the graph and what a run on the loaded model costs. */
+  /** Edge attribution and ACDC: the graph and what a run on the loaded model costs. */
   edgePlan?: EdgePlanState | null;
 }) {
   const titleId = useId();
@@ -78,6 +78,8 @@ export function RunSummary({
       <dl className={e.facts}>
         {method === "edge_attribution" ? (
           <EdgeFacts plan={edgePlan} />
+        ) : method === "acdc" ? (
+          <AcdcFacts plan={edgePlan} />
         ) : (
           <>
             <dt>Memory</dt>
@@ -225,6 +227,41 @@ function EdgeFacts({ plan }: { plan: EdgePlanState | null }) {
             <span className={e.factNote}>
               About {bytes(p.cost.memory_per_batch)} a batch{p.free != null ? ` of the ${bytes(p.free)} free` : ""}, and{" "}
               {count(p.cost.values)} per-prompt values kept.{p.refusal ? ` ${p.refusal}` : ""}
+            </span>
+          </>
+        ) : p?.refusal ? (
+          <span className={e.alert}>{p.refusal}</span>
+        ) : (
+          pending
+        )}
+      </dd>
+    </>
+  );
+}
+
+/** An ACDC run on the loaded model: its graph's size, the passes it takes (one per edge and batch
+ * of prompts) and how long they may take here, from one pass timed by the server. */
+function AcdcFacts({ plan }: { plan: EdgePlanState | null }) {
+  const ready = useStore((st) => st.model.state === "ready");
+  const p = plan?.plan;
+  const pending = <span className="faint">{plan?.pending ? "Counting…" : !ready ? "Known once a model is loaded." : plan?.error ?? "Known once the experiment is ready."}</span>;
+  return (
+    <>
+      <dt>Graph</dt>
+      <dd>{p?.n_edges != null ? <span>{count(p.n_edges)} edges to test, from {count(p.n_senders)} senders into {count(p.n_receivers)} inputs</span> : pending}</dd>
+      <dt>Cost</dt>
+      <dd>
+        {p?.cost ? (
+          <>
+            <span className={p.refusal ? e.alert : undefined}>
+              {count(p.cost.forward)} forward passes: {plural(p.cost.batches, "batch", "batches")} of{" "}
+              {count(p.cost.patched_per_batch)} edge-patched passes each, one per edge and one with every edge
+              {p.cost.seconds != null ? `, ${roughDuration(p.cost.seconds)} here` : ""}.
+            </span>
+            <span className={e.factNote}>
+              {p.cost.seconds_per_pass != null ? `A pass of the largest batch took ${duration(p.cost.seconds_per_pass)} just now. ` : ""}
+              The source prompts&rsquo; outputs kept for every pass take about {bytes(p.cost.cache ?? 0)}, and{" "}
+              {count(p.cost.values)} per-prompt values are kept.{p.refusal ? ` ${p.refusal}` : ""}
             </span>
           </>
         ) : p?.refusal ? (

@@ -461,8 +461,9 @@ class MethodsText(_Out):
 
 
 class EdgePlan(_Out):
-    """What an edge attribution spec would do on the loaded model, before it runs: the graph's
-    size, the passes and memory a run takes, and why it would be refused (null when it
+    """What an edge attribution or ACDC spec would do on the loaded model, before it runs: the
+    graph's size, the passes and memory a run takes (for ACDC, also how long it may take here:
+    ``cost.seconds``, from one pass timed), and why it would be refused (null when it
     wouldn't)."""
 
     n_edges: int | None

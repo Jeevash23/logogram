@@ -93,10 +93,10 @@ test("the curve's numbers of edges increase, its random control is seeded, and i
   expect(scopeText({ kind: "graph", layers: null, logits: false })).toBe("every edge but those into the logits");
 });
 
-test("only edge attribution estimates the graph, and answers of several tokens are refused", () => {
+test("only edge attribution and ACDC measure the graph, and answers of several tokens are refused", () => {
   // Another method leaves the graph for a sweep of its own; edge attribution always has one.
   expect(scopeFor("activation_patching", { kind: "graph", layers: [1], logits: true })).toEqual({ kind: "heads", position: { kind: "all" } });
-  expect(refused({ ...DEFAULT_FORM, scope: { kind: "graph", layers: null, logits: true } })).toContain("Only edge attribution estimates the edges");
+  expect(refused({ ...DEFAULT_FORM, scope: { kind: "graph", layers: null, logits: true } })).toContain("Only edge attribution and ACDC measure the edges");
   expect(refused(edges({ edgePatch: "chosen", scope: { kind: "heads", position: { kind: "all" } } }))).toContain("Edge attribution estimates the edges of the model's graph");
 
   const record = (patch: Partial<PromptRecord> = {}): PromptRecord => ({ clean: "When A and B", corrupt: "When A and C", answer: " B", distractor: " C", ...patch });

@@ -215,7 +215,7 @@ function unevenError(form: FormState, experiment: Spec["experiment"], scope: Sco
     return `${pairs}. ${experiment.baseline.kind === "mean" ? "Mean" : "Resample"} ablation of a set replaces whole activations position by position with other prompts', which needs the prompts to line up. Patch the sets at labels or the last token, zero-ablate them, or use pairs of equal length.`;
   }
   if (scope.kind === "graph" || scope.kind === "edges") {
-    const what = scope.kind === "graph" ? "Edge attribution" : "Path patching an edge";
+    const what = scope.kind === "edges" ? "Path patching an edge" : experiment.kind === "acdc" ? "ACDC" : "Edge attribution";
     return `${pairs}. ${what} carries each sender's output from one prompt to the other at every position, which needs their positions to line up. Use pairs of equal length.`;
   }
   const method = carriedBy(form);
@@ -268,6 +268,16 @@ export function parseCounts(text: string): { values: number[] } | { error: strin
   if (values.length > 24) return { error: "Use at most 24 numbers of edges for the curve." };
   if (values.some((v, i) => i > 0 && v <= values[i - 1])) return { error: "List the curve's numbers of edges in increasing order, each once." };
   return { values };
+}
+
+/** ACDC's threshold as typed: a number above 0, in the metric's units. */
+export function parseThreshold(text: string): { value: number } | { error: string } {
+  const typed = text.trim().replace(/−/g, "-");
+  if (!typed) return { error: "Give ACDC a threshold: how small a change in the metric's mean leaves an edge out, such as 0.1." };
+  const value = Number(typed);
+  if (!Number.isFinite(value)) return { error: `“${text.trim()}” isn't a number. Give the threshold as a number above 0, like 0.1.` };
+  if (value <= 0) return { error: "ACDC's threshold is a number above 0: with 0, no edge could be removed." };
+  return { value };
 }
 
 /** The form's metric as a spec writes it, or null while the KL divergence has no target or a
@@ -325,6 +335,16 @@ export function buildSpec(
     }
   } else if (form.kind === "path_patching") {
     if (form.pathReceivers.length === 0) return { error: "Add at least one receiver: a later head's query, key or value, or the logits." };
+    // With grouped-query attention a key or value receiver names a key/value head (paths.py).
+    const info = ctx.model.info;
+    const kv = info?.extra?.n_key_value_heads ?? info?.n_heads;
+    const missing = info && kv ? form.pathReceivers.find((r) => r.kind === "head" && r.input !== "q" && r.head >= kv) : undefined;
+    if (info && kv && missing && missing.kind === "head") {
+      const group = info.n_heads / kv;
+      return {
+        error: `L${missing.layer} KV${missing.head} doesn't exist: ${info.id} shares each key and value among ${plural(group, "head")}, so its layers have ${plural(kv, "key/value head")} (0 to ${kv - 1}), and a key or value receiver names one of them.`,
+      };
+    }
     experiment = { kind: "path_patching", direction: form.direction, receivers: form.pathReceivers, freeze_mlps: form.pathFreezeMlps };
   } else if (form.kind === "steering") {
     if (!form.steerApplyTo) return { error: "Choose which prompts to steer." };
@@ -380,6 +400,11 @@ export function buildSpec(
       curve = { counts: counts.values, patch: form.edgePatch, control: { seed: form.edgeSeed, draws: form.edgeDraws } };
     }
     experiment = { kind: "edge_attribution", direction: form.direction, method: form.atpMethod, steps, curve };
+  } else if (form.kind === "acdc") {
+    const threshold = parseThreshold(form.acdcThreshold);
+    if ("error" in threshold) return threshold;
+    if (!form.acdcRule) return { error: "Choose which change in the metric ACDC compares with its threshold." };
+    experiment = { kind: "acdc", direction: form.direction, threshold: threshold.value, rule: form.acdcRule };
   } else if (form.kind === "direct_logit_attribution") {
     if (!form.dlaPrompts) return { error: "Choose which prompts' logit difference to split." };
     experiment = { kind: "direct_logit_attribution", prompts: form.dlaPrompts };
@@ -456,13 +481,13 @@ export function buildSpec(
     return { error: "A probe reads whole activations, or one head's output, query, key or value. Choose those under What to sweep." };
   }
   const scope = form.scope;
-  // The edges of the model's graph are edge attribution's, and only it estimates them.
-  if ((experiment.kind === "edge_attribution") !== (scope.kind === "graph")) {
+  // The edges of the model's graph are edge attribution's and ACDC's, and only they measure them.
+  const onGraph = experiment.kind === "edge_attribution" || experiment.kind === "acdc";
+  if (onGraph !== (scope.kind === "graph")) {
     return {
-      error:
-        experiment.kind === "edge_attribution"
-          ? "Edge attribution estimates the edges of the model's graph. Choose the whole graph or some of its layers under What to sweep."
-          : "Only edge attribution estimates the edges of the model's graph. Choose it, or another sweep.",
+      error: onGraph
+        ? `${experiment.kind === "acdc" ? "ACDC removes" : "Edge attribution estimates"} the edges of the model's graph. Choose the whole graph or some of its layers under What to sweep.`
+        : "Only edge attribution and ACDC measure the edges of the model's graph. Choose one of them, or another sweep.",
     };
   }
   if (scope.kind === "graph" && scope.layers !== null) {
@@ -595,8 +620,9 @@ export function buildSpec(
         error: `${have(several)} an answer or distractor of several tokens${example}. The logit difference reads one token: choose the log-probability difference, or another metric that reads answers of several tokens.`,
       };
     }
-    if (several > 0 && experiment.kind === "edge_attribution") {
-      return { error: `Edge attribution reads the metric at the last prompt position, and ${have(several)} an answer or distractor of several tokens${example}. Use single-token answers or sets.` };
+    if (several > 0 && onGraph) {
+      const what = experiment.kind === "acdc" ? "ACDC" : "Edge attribution";
+      return { error: `${what} reads the metric at the last prompt position, and ${have(several)} an answer or distractor of several tokens${example}. Use single-token answers or sets.` };
     }
     if (several > 0 && experiment.kind === "path_patching") {
       return { error: `Path patching reads the metric at the last prompt position, and ${have(several)} an answer or distractor of several tokens${example}. Use single-token answers or sets, or activation patching.` };

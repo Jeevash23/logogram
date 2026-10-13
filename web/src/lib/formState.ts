@@ -2,6 +2,7 @@
 // the store so that the form's draft storage and the spec builder can use it without a cycle.
 
 import type {
+  AcdcRule,
   AttributionMethod,
   BaselineSpec,
   ChatTemplateSpec,
@@ -94,6 +95,10 @@ export interface FormState {
   /** A readout metric (metric "readout"): what it reads (no default), and at which token. */
   readout: ReadoutUnit | null;
   readoutPosition: { kind: "last" } | { kind: "index"; index: number } | { kind: "label"; label: string };
+  /** ACDC: the threshold as typed, in the metric's units, and which change in the metric it is
+   * compared with. Neither has a default: they decide which edges stay. */
+  acdcThreshold: string;
+  acdcRule: AcdcRule | null;
   /** The SAE a saved spec's features belong to; used when no SAE is loaded. */
   saeRef: SAERef | null;
   scope: ScopeSpec;
@@ -169,6 +174,8 @@ export const DEFAULT_FORM: FormState = {
   subspace: null,
   readout: null,
   readoutPosition: { kind: "last" },
+  acdcThreshold: "",
+  acdcRule: null,
   saeRef: null,
   scope: { kind: "heads", position: { kind: "all" } },
   metric: "logit_diff",
@@ -199,8 +206,13 @@ export function formFromSpec(spec: Spec): FormState {
     nameEdited: true,
     kind: e.kind,
     direction:
-      e.kind === "activation_patching" || e.kind === "attribution_patching" || e.kind === "path_patching" || e.kind === "edge_attribution" ||
-      e.kind === "subspace_patching" || e.kind === "das"
+      e.kind === "activation_patching" ||
+      e.kind === "attribution_patching" ||
+      e.kind === "path_patching" ||
+      e.kind === "edge_attribution" ||
+      e.kind === "acdc" ||
+      e.kind === "subspace_patching" ||
+      e.kind === "das"
         ? e.direction
         : "clean_to_corrupt",
     baseline: e.kind === "ablation" ? e.baseline : null,
@@ -243,6 +255,8 @@ export function formFromSpec(spec: Spec): FormState {
     subspace: e.kind === "subspace_patching" ? e.subspace : null,
     readout: metric?.kind === "readout" ? metric.unit : null,
     readoutPosition: metric?.kind === "readout" ? metric.position : DEFAULT_FORM.readoutPosition,
+    acdcThreshold: e.kind === "acdc" ? String(e.threshold) : DEFAULT_FORM.acdcThreshold,
+    acdcRule: e.kind === "acdc" ? e.rule : null,
     saeRef: spec.sae ?? null,
     scope: spec.scope.kind === "features"
       ? { ...spec.scope, choose_on: spec.scope.choose_on ?? null, seed: spec.scope.seed ?? null }

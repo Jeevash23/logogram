@@ -742,13 +742,23 @@ def _print_summary(summary: dict, top: int) -> None:  # type: ignore[type-arg]
         "estimate": ("estimated", "estimated Δ"),
         "attribution": ("share", "direct"),
     }.get(measure, ("effect", delta))
-    flips = measure == "intervention"
-    sites = sorted(summary["sites"], key=lambda s: -abs(s["effect"]["mean"] or 0.0))[:top]
+    acdc = summary.get("acdc")
+    # An ACDC run's values are changes between circuits, not patched runs of the whole model.
+    flips = measure == "intervention" and not acdc
+    sites = sorted(summary["sites"], key=lambda s: -abs(s["effect"]["mean"] or 0.0))
+    if acdc:
+        # The circuit's edges first, then the strongest of the edges removed.
+        circuit = set(acdc["kept"])
+        sites = [s for s in sites if s["index"] in circuit] + [
+            s for s in sites if s["index"] not in circuit
+        ]
+        value = "change"
+    sites = sites[:top]
     typer.echo("")
     # Edges are named by both ends ("L5 H5 → L9 H6 q"): the column fits the longest.
     width = max([22, *(len(s["label"]) for s in sites)])
     header = f"{'site':<{width}} {value:>9}  {f'{ci}% CI':<19} {change:>12}"
-    typer.echo(header + (f"  {'flipped':>8}" if flips else ""))
+    typer.echo(header + (f"  {'flipped':>8}" if flips else "") + ("  circuit" if acdc else ""))
     for s in sites:
         e = s["effect"]
         interval = f"[{_fmt(e['lo'])}, {_fmt(e['hi'])}]"
@@ -756,7 +766,11 @@ def _print_summary(summary: dict, top: int) -> None:  # type: ignore[type-arg]
             f"{s['label']:<{width}} {_fmt(e['mean']):>9}  {interval:<19} "
             f"{_fmt(s['delta']['mean']):>12}"
         )
-        typer.echo(line + (f"  {s['sign_flips']:>3} / {s['n']:<3}" if flips else ""))
+        if flips:
+            line += f"  {s['sign_flips']:>3} / {s['n']:<3}"
+        if acdc:
+            line += "  kept" if s["index"] in circuit else "  removed"
+        typer.echo(line)
     if summary.get("edges"):
         _print_edges(summary["edges"], ci)
     if summary.get("das"):
@@ -768,6 +782,8 @@ def _print_summary(summary: dict, top: int) -> None:  # type: ignore[type-arg]
             "the control) a random subspace. Save one as a direction with logogram directions "
             "save RUN SITE NAME."
         )
+    if acdc:
+        _print_acdc(summary, ci)
     if summary.get("direct"):
         d = summary["direct"]
         typer.echo(
@@ -831,7 +847,7 @@ def _print_summary(summary: dict, top: int) -> None:  # type: ignore[type-arg]
                     f"\n{r['label']}: beyond {i['a']} and {i['b']} alone, an effect of "
                     f"{_interval(i['effect'])}"
                 )
-    corrections = (summary.get("edges") or {}).get("corrections")
+    corrections = (summary.get("edges") or summary.get("acdc") or {}).get("corrections")
     if stats.get("band_level") is not None and corrections:
         # Counted over every edge: the summary lists only the strongest.
         typer.echo(
@@ -1277,6 +1293,34 @@ def _print_edges(edges: dict[str, Any], ci: int) -> None:
         typer.echo(f"Patching every edge reproduces the source run within {difference:.2g}.")
 
 
+def _print_acdc(summary: dict[str, Any], ci: int) -> None:
+    """An ACDC run's circuit: how many edges it kept and by which rule, how faithful it is, and
+    what the run cost."""
+    acdc = summary["acdc"]
+    label = summary["metric"].get("label") or "metric"
+    receiver, source = summary["receiver"], summary["reference"]
+    moved = (
+        f"moved the {label} toward the {source} prompts' by less than"
+        if acdc["rule"] == "toward_source"
+        else f"moved the {label} either way by less than"
+    )
+    typer.echo(
+        f"\nACDC kept {acdc['n_kept']:,} of {acdc['n_edges']:,} edges: an edge stayed removed when "
+        f"removing it {moved} {acdc['threshold']:g}. Each edge's change is what its removal did "
+        "when it was tested."
+    )
+    typer.echo(
+        f"The circuit's faithfulness: {_interval(acdc['faithfulness'])} ({ci}% CI; 0 is the "
+        f"{source} run, 1 the {receiver} run). Mean {label}: every edge kept "
+        f"{_fmt(acdc['full'])}, the circuit {_fmt(acdc['circuit'])}."
+    )
+    typer.echo(
+        f"The summary lists the circuit's edges, then the strongest removed ({acdc['reported']:,} "
+        "in all); edges.parquet has every edge, and whether it was kept."
+    )
+    typer.echo(f"Cost: {acdc['cost']['text']}.")
+
+
 def _print_edge_verification(table: dict[str, Any]) -> None:
     """Each verified edge's estimate beside its path-patched measurement, and how they agree."""
     rho = table["spearman"]
@@ -1547,8 +1591,8 @@ def export(
         bool,
         typer.Option(
             "--sites",
-            help="One row per site instead of per site and prompt (for an edge attribution run, "
-            "every edge of its graph).",
+            help="One row per site instead of per site and prompt (for an edge attribution or "
+            "ACDC run, every edge of its graph).",
         ),
     ] = False,
     prompt_text: Annotated[

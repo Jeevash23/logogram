@@ -7,9 +7,10 @@ import { capitalize, count, plural, shortRevision } from "../lib/format";
 import { modelName } from "../lib/hooks";
 import { EVERYTHING, SET_SITE_KINDS } from "../lib/circuits";
 import { KIND_SHORT, parseHeadQuery, queryHeadsOf, queryHeadsText } from "../lib/sites";
-import { buildSpec, carriedBy, datasetFacts, lastInstead, parseCounts, parseStrengths, savedDifferences, unlinedReason, unevenPairsText, usesFeatures } from "../lib/buildSpec";
+import { buildSpec, carriedBy, datasetFacts, lastInstead, parseCounts, parseStrengths, parseThreshold, savedDifferences, unlinedReason, unevenPairsText, usesFeatures } from "../lib/buildSpec";
+import { metricWords } from "../lib/metrics";
 import { useEdgePlan, type EdgePlanState } from "../lib/edgePlan";
-import { edgeLabel, graphText, parseLayers, receiverLabel, receiverWords, saeWritesText, scopeFor, scopeShort, siteText, steerSiteOf, suggestName, workload } from "../lib/spec";
+import { edgeLabel, graphText, parseLayers, receiverLabel, receiverWords, saeWritesText, scopeFor, scopeShort, sharesKeys, siteText, steerSiteOf, suggestName, workload } from "../lib/spec";
 import { useStore, type FormState } from "../store/app";
 import { ChatTemplateSettings } from "./ChatTemplateSettings";
 import { DirectionPicker } from "./DirectionPicker";
@@ -54,6 +55,12 @@ const METHODS: { value: ExperimentKind; title: string; detail: string; group: st
     value: "edge_attribution",
     title: "Edge attribution",
     detail: "Estimate every edge between components from gradients, then patch the strongest as a circuit.",
+    group: TRACE,
+  },
+  {
+    value: "acdc",
+    title: "Circuit discovery (ACDC)",
+    detail: "Remove the edges between components one at a time, keeping those whose removal changes the metric.",
     group: TRACE,
   },
   {
@@ -116,13 +123,19 @@ export function ExperimentView() {
   // Edge attribution: the graph's size and what a run costs on the loaded model, and why a run
   // would be refused (too many edges, or too little memory), before it runs. Neither depends on
   // which edges the curve patches, so they are known before that is chosen.
+  // ACDC's threshold and rule don't change what a run costs either.
+  const onGraph = form.kind === "edge_attribution" || form.kind === "acdc";
   let planned = spec;
   if (!planned && form.kind === "edge_attribution" && form.edgeCurve && !form.edgePatch) {
     const unchosen = buildSpec({ ...form, edgePatch: "chosen" }, buildContext);
     planned = "spec" in unchosen ? unchosen.spec : null;
   }
-  const plan = useEdgePlan(form.kind === "edge_attribution" ? planned : null);
-  const refusal = form.kind === "edge_attribution" ? (plan.plan?.refusal ?? null) : null;
+  if (!planned && form.kind === "acdc" && (!form.acdcRule || "error" in parseThreshold(form.acdcThreshold))) {
+    const unchosen = buildSpec({ ...form, acdcRule: form.acdcRule ?? "toward_source", acdcThreshold: "1" }, buildContext);
+    planned = "spec" in unchosen ? unchosen.spec : null;
+  }
+  const plan = useEdgePlan(onGraph ? planned : null);
+  const refusal = onGraph ? (plan.plan?.refusal ?? null) : null;
 
   const suggested = spec
     ? suggestName(spec)
@@ -132,7 +145,9 @@ export function ExperimentView() {
         ? `Direct attribution · ${scopeShort(form.scope).toLowerCase()}`
         : form.kind === "steering" && !form.steerApplyTo
           ? `Steering · ${scopeShort(form.scope).toLowerCase()}`
-          : "";
+          : form.kind === "acdc"
+            ? `ACDC · ${scopeShort(form.scope).toLowerCase()}`
+            : "";
   useEffect(() => {
     // The suggested name follows the rest of the form: not a change of its own to undo.
     if (!form.nameEdited && suggested && form.name !== suggested) setForm({ name: suggested }, { record: false });
@@ -248,7 +263,7 @@ export function ExperimentView() {
               </p>
             </div>
           ) : form.kind === "path_patching" ? (
-            <PathSettings form={form} onChange={setForm} />
+            <PathSettings form={form} onChange={setForm} model={arch} />
           ) : form.kind === "edge_attribution" ? (
             <EdgeSettings form={form} onChange={setForm} />
           ) : form.kind === "probe" ? (
@@ -267,6 +282,8 @@ export function ExperimentView() {
               />
               {!form.subspace && <p className={e.required}>Required: the direction is what the run measures.</p>}
             </div>
+          ) : form.kind === "acdc" ? (
+            <AcdcSettings form={form} onChange={setForm} />
           ) : form.kind === "activation_patching" || form.kind === "attribution_patching" ? (
             <div className={e.stack}>
               <Choices
@@ -417,7 +434,7 @@ export function ExperimentView() {
       <RunSummary
         spec={refusal ? null : spec}
         error={refusal ?? ("error" in built ? built.error : null)}
-        edgePlan={form.kind === "edge_attribution" ? plan : null}
+        edgePlan={onGraph ? plan : null}
         method={form.kind}
         scope={form.scope}
         bootstrap={form.bootstrap}
@@ -464,10 +481,14 @@ const DIRECTIONS = [
   },
 ];
 
-function PathSettings({ form, onChange }: { form: FormState; onChange: (patch: Partial<FormState>) => void }) {
+function PathSettings({ form, onChange, model }: { form: FormState; onChange: (patch: Partial<FormState>) => void; model: ModelInfo | null }) {
   const [query, setQuery] = useState("");
   const [part, setPart] = useState<"q" | "k" | "v" | "mlp">("q");
-  const head = part === "mlp" ? null : parseHeadQuery(query);
+  // With grouped-query attention a key or value receiver is a key/value head ("L9 KV1"), read by
+  // every query head of its group.
+  const grouped = sharesKeys(model);
+  const kvHead = grouped && (part === "k" || part === "v");
+  const head = part === "mlp" ? null : parseHeadQuery(kvHead ? query.replace(/kv/i, "H") : query);
   // An MLP is named by its layer: "L3" or "3".
   const mlp = part === "mlp" ? /^\s*l?\s*(\d+)\s*$/i.exec(query) : null;
   const has = (r: PathReceiverSpec) => form.pathReceivers.some((x) => JSON.stringify(x) === JSON.stringify(r));
@@ -481,8 +502,8 @@ function PathSettings({ form, onChange }: { form: FormState; onChange: (patch: P
         <div className={e.receivers}>
           {form.pathReceivers.map((r) => (
             <span key={receiverLabel(r)} className={e.receiver}>
-              {receiverWords(r)}
-              <button type="button" aria-label={`Remove ${receiverLabel(r)}`} onClick={() => onChange({ pathReceivers: form.pathReceivers.filter((x) => x !== r) })}>
+              {receiverWords(r, grouped)}
+              <button type="button" aria-label={`Remove ${receiverLabel(r, grouped)}`} onClick={() => onChange({ pathReceivers: form.pathReceivers.filter((x) => x !== r) })}>
                 ×
               </button>
             </span>
@@ -494,15 +515,15 @@ function PathSettings({ form, onChange }: { form: FormState; onChange: (patch: P
         <Input
           value={query}
           onChange={(ev) => setQuery(ev.target.value)}
-          placeholder={part === "mlp" ? "L3" : "L9 H9"}
-          aria-label={part === "mlp" ? "Receiver MLP's layer, like L3" : "Receiver head, like L9 H9"}
+          placeholder={part === "mlp" ? "L3" : kvHead ? "L9 KV1" : "L9 H9"}
+          aria-label={part === "mlp" ? "Receiver MLP's layer, like L3" : kvHead ? "Receiver key/value head, like L9 KV1" : "Receiver head, like L9 H9"}
           style={{ width: 110 }}
           spellCheck={false}
         />
         <Select value={part} onChange={(ev) => setPart(ev.target.value as "q" | "k" | "v" | "mlp")} aria-label="Which input receives the path">
           <option value="q">Head's query</option>
-          <option value="k">Head's key</option>
-          <option value="v">Head's value</option>
+          <option value="k">{grouped ? "Key/value head's key" : "Head's key"}</option>
+          <option value="v">{grouped ? "Key/value head's value" : "Head's value"}</option>
           <option value="mlp">MLP's input</option>
         </Select>
         {part === "mlp" ? (
@@ -511,7 +532,7 @@ function PathSettings({ form, onChange }: { form: FormState; onChange: (patch: P
           </Button>
         ) : (
           <Button size="small" disabled={!head} onClick={() => head && (add({ kind: "head", layer: head.layer, head: head.head, input: part }), setQuery(""))}>
-            Add head
+            {kvHead ? "Add key/value head" : "Add head"}
           </Button>
         )}
         <Button size="small" disabled={has({ kind: "logits" })} onClick={() => add({ kind: "logits" })}>
@@ -525,6 +546,9 @@ function PathSettings({ form, onChange }: { form: FormState; onChange: (patch: P
         Each sender is patched while every other attention head keeps its own value, so its effect reaches the receivers only
         through the residual stream{form.pathFreezeMlps ? "" : " and the MLPs"}. What the receivers read in that run is then patched
         into an unchanged run. Senders in or after the last receiver's layer have no path and are left out.
+        {grouped && model
+          ? ` ${modelName(model.id)} shares each key and value among ${plural(model.n_heads / (model.extra?.n_key_value_heads ?? model.n_heads), "head")}: a key or value receiver is a key/value head, and the path reaches every query head of its group through it.`
+          : ""}
       </p>
     </div>
   );
@@ -696,8 +720,77 @@ function EdgeSettings({ form, onChange }: { form: FormState; onChange: (patch: P
   );
 }
 
-/** The graph an edge attribution run estimates: the edges into every layer or chosen ones, and
- * into the logits; with its size on the loaded model. */
+/** ACDC: the direction, the threshold (in the metric's units) and which change it is compared
+ * with. */
+function AcdcSettings({ form, onChange }: { form: FormState; onChange: (patch: Partial<FormState>) => void }) {
+  const [receiver, source] = form.direction === "clean_to_corrupt" ? ["corrupt", "clean"] : ["clean", "corrupt"];
+  const threshold = parseThreshold(form.acdcThreshold);
+  const typed = form.acdcThreshold.trim() !== "";
+  // The threshold is compared with the metric's mean over the prompts, in the metric's own units.
+  const units =
+    form.metric === "kl"
+      ? "In nats of KL divergence, compared with the change in its mean over the prompts."
+      : form.metric === "logit_diff"
+        ? "In logits, compared with the change in the mean logit difference over the prompts."
+        : `In the units of the ${metricWords({ kind: form.metric, target: form.klTarget }).label}, compared with the change in its mean over the prompts.`;
+  return (
+    <div className={e.stack}>
+      <Choices
+        label="Direction"
+        value={form.direction}
+        onChange={(direction) => onChange({ direction })}
+        columns={2}
+        options={[
+          {
+            value: "corrupt_to_clean",
+            title: "Corrupt → clean",
+            detail: "Run the clean prompts; a removed edge carries its sender's corrupt output. Which edges does the behavior need? ACDC's own choice.",
+          },
+          {
+            value: "clean_to_corrupt",
+            title: "Clean → corrupt",
+            detail: "Run the corrupt prompts; a removed edge carries its sender's clean output. Which edges keep the behavior away?",
+          },
+        ]}
+      />
+      <div className={s.grid3}>
+        <Field label="Threshold" help={typed && "error" in threshold ? threshold.error : units}>
+          <Input value={form.acdcThreshold} onChange={(ev) => onChange({ acdcThreshold: ev.target.value })} inputMode="decimal" spellCheck={false} placeholder="0.1" aria-invalid={typed && "error" in threshold} />
+        </Field>
+      </div>
+      {!typed && <p className={e.required}>Required: it decides how small a change leaves an edge out, so there&rsquo;s no default.</p>}
+      <Choices
+        label="Compare with the threshold"
+        value={form.acdcRule}
+        onChange={(acdcRule) => onChange({ acdcRule })}
+        columns={2}
+        options={[
+          {
+            value: "toward_source",
+            title: `The change toward ${source}`,
+            detail: `How far removing the edge moves the metric toward the ${source} prompts'. A removal that moves it the other way always stays: the paper's rule.`,
+          },
+          {
+            value: "either_way",
+            title: "The change either way",
+            detail: "How far removing the edge moves the metric in either direction, so an edge that works against the behavior is kept too.",
+          },
+        ]}
+      />
+      {!form.acdcRule && <p className={e.required}>Required: it decides which changes count, so there&rsquo;s no default.</p>}
+      <p className={s.small}>
+        The {receiver} prompts run with every edge in the circuit. ACDC tests the edges one at a time, from the logits back toward
+        the embeddings: removing an edge makes it carry its sender&rsquo;s output on the {source} prompt into its receiver, while
+        the edges of the circuit carry what their senders output in that run. An edge stays removed when removing it moves the
+        mean of the metric over the prompts by less than the threshold; otherwise it is put back. Each edge costs one forward
+        pass per batch of prompts, and which edges stay can depend on the threshold and on the order they are tested in.
+      </p>
+    </div>
+  );
+}
+
+/** The graph an edge attribution or ACDC run measures: the edges into every layer or chosen ones,
+ * and into the logits; with its size on the loaded model. */
 function GraphScopeEditor({
   scope,
   onChange,
@@ -1204,7 +1297,7 @@ function ScopeEditor({
       <div className={e.stack}>
         <p className={s.small}>
           {scope.edges.length === 1 ? "One edge" : `${count(scope.edges.length)} edges`}, each path-patched alone with every other head and MLP
-          held: {scope.edges.slice(0, 6).map(edgeLabel).join(", ")}
+          held: {scope.edges.slice(0, 6).map((x) => edgeLabel(x, sharesKeys(model))).join(", ")}
           {scope.edges.length > 6 ? ` and ${count(scope.edges.length - 6)} more` : ""}.
         </p>
         <p className={s.faint}>Set up by verifying an edge attribution run. Pick another method above to sweep components instead.</p>

@@ -1178,19 +1178,21 @@ def create_app(
 
     @app.post("/api/edges/plan", response_model=M.EdgePlan)
     def plan_edges(body: RunRequest) -> dict[str, Any]:
-        """What an edge attribution spec would do on the loaded model and its prompts, before it
-        runs: the graph's size, the passes and memory a run takes, and why the run would be
-        refused, from the same checks the run makes."""
+        """What an edge attribution or ACDC spec would do on the loaded model and its prompts,
+        before it runs: the graph's size, the passes and memory a run takes (and for ACDC how
+        long it may take here), and why the run would be refused, from the same checks the run
+        makes."""
+        from logogram.acdc import acdc_plan
         from logogram.backends.base import BackendError
         from logogram.chat import chat_wrapper
         from logogram.datasets import decode_dataset, parse_jsonl, read_dataset_bytes
         from logogram.edges import edge_plan
         from logogram.prompts import prepare_prompts
-        from logogram.spec import EdgeAttribution
+        from logogram.spec import ACDC, EdgeAttribution
 
         spec = Spec.model_validate(body.spec)
-        if not isinstance(spec.experiment, EdgeAttribution):
-            raise ValueError("Only an edge attribution spec has a graph to plan.")
+        if not isinstance(spec.experiment, EdgeAttribution | ACDC):
+            raise ValueError("Only edge attribution and ACDC specs have a graph to plan.")
         backend = state.backend
         if backend is None:
             raise Conflict("Load a model to see its graph and what a run on it costs.")
@@ -1211,6 +1213,8 @@ def create_app(
             )
         except (ValueError, BackendError) as exc:
             return {"n_edges": None, "n_senders": None, "n_receivers": None, "refusal": str(exc)}
+        if isinstance(spec.experiment, ACDC):
+            return acdc_plan(spec, backend, prompts)
         return edge_plan(spec, backend, prompts)
 
     @app.post("/api/models/load", response_model=M.JobInfo)
@@ -1641,8 +1645,8 @@ def create_app(
 
     @app.get("/api/runs/{run_id}/sites.csv")
     def export_sites(run_id: str) -> Response:
-        """One row per site: its mean, intervals, q-value and counts. For an edge attribution
-        run, one row per edge of the graph (its edges.parquet)."""
+        """One row per site: its mean, intervals, q-value and counts. For an edge attribution or
+        ACDC run, one row per edge of the graph (its edges.parquet)."""
         from logogram.exports import results_csv, sites_csv
         from logogram.report import sites_table
         from logogram.runs import load_summary
