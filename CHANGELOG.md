@@ -4,6 +4,12 @@ What changed in each version of Logogram.
 
 ## Unreleased
 
+### Added
+
+- `lg.with_model(spec, model)`: the spec with its model replaced by a loaded model, as it was
+  loaded (its files, the exact revision, dtype, device and weight processing), to run the spec on
+  that model.
+
 ### Fixed
 
 - When edge attribution's batch didn't fit in memory, the batch size it suggested could still be
@@ -20,6 +26,13 @@ What changed in each version of Logogram.
   now checked first, and the loaded model stays. The model dialog keeps **Load** disabled while
   the device chosen isn't there, and the message no longer says "the spec asks for" when no spec
   is involved.
+- `lg.run(spec, project, model=model)` loaded a second copy of the model, without a word, when
+  `model` wasn't the one the spec names (loaded on another GPU, say, or in bfloat16). It now
+  refuses, naming each difference (the files or revision, the dtype, the device as it resolves
+  here, weight processing), and says what to do: pass `lg.with_model(spec, model)`, or no model
+  to load the spec's own. `lg.verify_run`, `lg.check_robustness` and `lg.sweep` refuse a model
+  passed to them that their runs don't name, and a toy's experiments run on the toy as it was
+  loaded.
 
 ## 0.6.0 (2026-10-12)
 

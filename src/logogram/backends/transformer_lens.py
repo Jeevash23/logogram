@@ -1812,6 +1812,7 @@ def load_model(
         except BackendError:
             backend.close()
             raise
+    backend.requested_device = device
     emit("ready")
     return backend
 

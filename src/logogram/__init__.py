@@ -41,6 +41,7 @@ _API = (
     "sweep",
     "toy_model",
     "verify_run",
+    "with_model",
     "write_dataset",
 )
 

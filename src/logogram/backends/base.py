@@ -178,6 +178,9 @@ class ModelBackend(ABC):
     info: ModelInfo
     # The model's own beginning-of-sequence token, if it has one.
     bos_token_id: int | None = None
+    # The device it was loaded with, as asked ("auto", "cuda", "cpu", ...), where that is known:
+    # info.device is where that put it.
+    requested_device: str | None = None
 
     def __init__(self) -> None:
         # All model use goes through this lock, one forward pass at a time, so interactive

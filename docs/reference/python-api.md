@@ -14,8 +14,9 @@ import logogram as lg
 project = lg.open_project("~/Documents/Logogram/ioi-example")
 model = lg.load_model("openai-community/gpt2")   # or a local model, by the name it was added under
 spec = lg.load_spec(project.root / "experiments/ioi-head-patching/spec.json")
-run = lg.run(spec, project, model=model)
-run.sites()          # one row per site: mean effect, interval, q-value, ...
+run = lg.run(spec, project, model=model)  # reuses the model the spec names; another is refused
+lg.with_model(spec, model)   # the spec, naming this model as it was loaded
+run.sites()         # one row per site: mean effect, interval, q-value, ...
 run.per_prompt()     # one row per site and prompt: everything the statistics came from
 run                  # in a notebook: the method, the strongest sites and a heatmap
 run.rename("Name movers").star()   # as the history shows it; the spec never changes
@@ -62,6 +63,7 @@ Every public name of `import logogram as lg`, from the docstrings in [`src/logog
 | [`lg.sweep`](#lgsweep) | Run a run's spec (or a spec, into `project`) across `values` of one `field`, one run after another, as `logogram sweep` does: a seed the spec states (`statistics.seed`, `experiment.baseline.seed`, `experiment.seed` or `scope.seed`), the dataset (`dataset.path`: dataset files of the project) or the model's revision (`model.revision`: commits, tags or branches, each run pinning its commit). |
 | [`lg.toy_model`](#lgtoy_model) | A model whose circuit is known, to learn the methods on and to check them against: `"induction"` (a previous-token head and an induction head) or `"ioi"` (GPT-2 small's indirect-object circuit, one head per step), with weights set by hand (see `logogram.toys`). |
 | [`lg.verify_run`](#lgverify_run) | Patch, for real, the `top` sites an attribution patching run estimated to matter most; for an edge attribution run, path patch its `top` strongest edges one at a time, at most 50 (compare the two with [`edge_verification()`](#lgedge_verification)). |
+| [`lg.with_model`](#lgwith_model) | The spec with its model replaced by `model` (from [`load_model()`](#lgload_model)): its id and source, the exact revision it loaded (or a local model's hash), its dtype, the device it was loaded with and whether its weights are processed. |
 | [`lg.write_dataset`](#lgwrite_dataset) | Write prompt pairs into the project's datasets/ folder; returns its path in the project. |
 
 ### lg.add_local_model
@@ -267,8 +269,11 @@ lg.load_model(
 ) -> Any
 ```
 
-Download (once) and load a model, checked as the app checks it. Pass it to [`run()`](#lgrun) to
-reuse it across runs; every choice it was loaded with is recorded in each run's spec.
+Download (once) and load a model, checked as the app checks it. Pass it to [`run()`](#lgrun)
+with specs that name it, to reuse it across runs. A spec names a model by its files (id and
+revision, or a local model's hash), dtype, device and weight processing; one that names it
+otherwise is refused, rather than run on another copy of its own model. [`with_model()`](#lgwith_model)
+makes a spec name this model as it was loaded.
 
 `model_id` is a Hugging Face id, or the name a local model was added under (see
 [`add_local_model()`](#lgadd_local_model)): `source` says which ("hub" or "local"); by default a name this
@@ -390,7 +395,10 @@ lg.run(
 ```
 
 Run a spec and write its experiment folder into `project`, as the app does. `model`
-is reused when it matches the spec (otherwise the spec's model is loaded).
+(from [`load_model()`](#lgload_model)) is reused when it is the model the spec names, by its files,
+dtype, device and weight processing. A model that isn't is refused, naming each difference:
+pass `with_model(spec, model)` to run the spec on it, or no model to load the spec's
+own.
 
 ### lg.sweep
 
@@ -446,6 +454,16 @@ lg.verify_run(estimated: Run, top: int = 10, *, model: Any = None) -> Run
 Patch, for real, the `top` sites an attribution patching run estimated to matter most;
 for an edge attribution run, path patch its `top` strongest edges one at a time, at most 50
 (compare the two with [`edge_verification()`](#lgedge_verification)).
+
+### lg.with_model
+
+```python
+lg.with_model(experiment: Spec | dict[str, Any], model: Any) -> Spec
+```
+
+The spec with its model replaced by `model` (from [`load_model()`](#lgload_model)): its id and
+source, the exact revision it loaded (or a local model's hash), its dtype, the device it was
+loaded with and whether its weights are processed. `run(with_model(spec, model), project, model=model)` runs the spec on that model, and the run's spec says so.
 
 ### lg.write_dataset
 

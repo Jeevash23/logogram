@@ -9,8 +9,9 @@ the app would make, and it lands in the project like any other::
     project = lg.open_project("~/Documents/Logogram/ioi-example")
     model = lg.load_model("openai-community/gpt2")   # or a local model, by the name it was added under
     spec = lg.load_spec(project.root / "experiments/ioi-head-patching/spec.json")
-    run = lg.run(spec, project, model=model)
-    run.sites()          # one row per site: mean effect, interval, q-value, ...
+    run = lg.run(spec, project, model=model)  # reuses the model the spec names; another is refused
+    lg.with_model(spec, model)   # the spec, naming this model as it was loaded
+    run.sites()         # one row per site: mean effect, interval, q-value, ...
     run.per_prompt()     # one row per site and prompt: everything the statistics came from
     run                  # in a notebook: the method, the strongest sites and a heatmap
     run.rename("Name movers").star()   # as the history shows it; the spec never changes
@@ -67,6 +68,7 @@ __all__ = [
     "sweep",
     "toy_model",
     "verify_run",
+    "with_model",
     "write_dataset",
 ]
 
@@ -109,8 +111,11 @@ def load_model(
     on_progress: Callable[[dict[str, Any]], None] | None = None,
     source: str | None = None,
 ) -> Any:
-    """Download (once) and load a model, checked as the app checks it. Pass it to :func:`run` to
-    reuse it across runs; every choice it was loaded with is recorded in each run's spec.
+    """Download (once) and load a model, checked as the app checks it. Pass it to :func:`run`
+    with specs that name it, to reuse it across runs. A spec names a model by its files (id and
+    revision, or a local model's hash), dtype, device and weight processing; one that names it
+    otherwise is refused, rather than run on another copy of its own model. :func:`with_model`
+    makes a spec name this model as it was loaded.
 
     ``model_id`` is a Hugging Face id, or the name a local model was added under (see
     :func:`add_local_model`): ``source`` says which ("hub" or "local"); by default a name this
@@ -230,7 +235,8 @@ class ToyModel:
                 f"The {self.name} toy has no experiment {experiment!r}. Its experiments are "
                 f"{', '.join(self.specs)}."
             )
-        return run(self.specs[experiment], self.project, model=self.model)
+        # On the toy as it was loaded (its device and dtype), which the run's spec records.
+        return run(with_model(self.specs[experiment], self.model), self.project, model=self.model)
 
 
 def _chat_template(value: Any) -> Any:
@@ -354,6 +360,44 @@ def load_spec(data: dict[str, Any] | str | Path) -> Spec:
     return Spec.from_path(Path(text).expanduser())
 
 
+def with_model(experiment: Spec | dict[str, Any], model: Any) -> Spec:
+    """The spec with its model replaced by ``model`` (from :func:`load_model`): its id and
+    source, the exact revision it loaded (or a local model's hash), its dtype, the device it was
+    loaded with and whether its weights are processed. ``run(with_model(spec, model), project,
+    model=model)`` runs the spec on that model, and the run's spec says so."""
+    from logogram.spec import ModelRef
+
+    specification = load_spec(experiment) if isinstance(experiment, dict) else experiment
+    info = model.info
+    ref = ModelRef(
+        id=info.id,
+        source=info.source,
+        revision=info.revision if info.source == "hub" else None,
+        sha256=info.sha256 if info.source == "local" else None,
+        dtype=info.dtype,
+        device=getattr(model, "requested_device", None) or info.device,
+        process_weights=info.process_weights,
+    )
+    return specification.model_copy(update={"model": ref})
+
+
+def _passed_model(model: Any, specification: Spec, what: str, fix: str) -> Any:
+    """``model``, when it is the model ``specification`` names, to be reused. One that isn't is
+    refused, saying how it differs and ``fix``, rather than another copy of the spec's own model
+    being loaded beside it. None passes: the spec's own model is loaded."""
+    from logogram.runner import model_differences
+
+    if model is None:
+        return None
+    differences = model_differences(model, specification.model)
+    if differences:
+        raise LogogramError(
+            f"The model passed to {what} isn't the one the spec names: {'; '.join(differences)}. "
+            f"{fix}"
+        )
+    return model
+
+
 def run(
     experiment: Spec | dict[str, Any],
     project: Project,
@@ -363,10 +407,20 @@ def run(
     on_event: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> Run:
     """Run a spec and write its experiment folder into ``project``, as the app does. ``model``
-    is reused when it matches the spec (otherwise the spec's model is loaded)."""
+    (from :func:`load_model`) is reused when it is the model the spec names, by its files,
+    dtype, device and weight processing. A model that isn't is refused, naming each difference:
+    pass ``with_model(spec, model)`` to run the spec on it, or no model to load the spec's
+    own."""
     from logogram.runner import run_spec
 
     experiment = load_spec(experiment) if isinstance(experiment, dict) else experiment
+    model = _passed_model(
+        model,
+        experiment,
+        "run()",
+        "Pass lg.with_model(spec, model) to run the spec on this model (the run's spec then "
+        "names it), or pass no model to load the spec's own.",
+    )
     outcome = run_spec(experiment, project, backend=model, sae=sae, on_event=on_event)
     if outcome.status != "finished":
         raise LogogramError(_ended(outcome, "The run"))
@@ -564,6 +618,13 @@ def verify_run(estimated: Run, top: int = 10, *, model: Any = None) -> Run:
         variant = verification_spec(estimated.spec, estimated.summary, top)
     except ValueError as exc:
         raise LogogramError(str(exc)) from exc
+    if model is not None:
+        _passed_model(
+            model,
+            variant,
+            "verify_run()",
+            "Pass the model the run was made with, or no model to load it.",
+        )
     outcome = run_spec(
         variant,
         estimated.project,
@@ -608,6 +669,14 @@ def check_robustness(
     except ValueError as exc:
         raise LogogramError(str(exc)) from exc
     variant, change = robustness_spec(original.spec, experiment=experiment, dtype=dtype)
+    if model is not None:
+        _passed_model(
+            model,
+            variant,
+            "check_robustness()",
+            "Pass the model the rerun's spec names (in the dtype checked, for a dtype check), or "
+            "no model to load it.",
+        )
     outcome = run_spec(
         variant,
         original.project,
@@ -636,9 +705,11 @@ def sweep(
     commits, tags or branches, each run pinning its commit). A finished run stands in for its own
     value, which isn't run again. Returns the runs, one per value in the order given; a run that
     doesn't finish is kept with its status, and the next value runs."""
+    from logogram.runner import model_matches
     from logogram.sweeps import SweepError, plan_sweep, run_sweep
 
     original = None
+    passed = model
     if isinstance(experiment, Run):
         if project is not None and project.root != experiment.project.root:
             raise LogogramError(f"{experiment.id} belongs to another project.")
@@ -656,6 +727,17 @@ def sweep(
         plan = plan_sweep(project, specification, field, values, original=original)
     except SweepError as exc:
         raise LogogramError(str(exc)) from exc
+    # A model passed is reused by the runs that name it (a revision sweep's runs name one
+    # revision each); one that no run names is refused.
+    planned = [item.spec for item in plan.runs if item.spec is not None]
+    if passed is not None and planned and not any(model_matches(passed, s.model) for s in planned):
+        _passed_model(
+            passed,
+            planned[0],
+            "sweep()",
+            "Sweep lg.with_model(spec, model) to run on this model, or pass no model to load the "
+            "spec's own.",
+        )
     outcomes, last = run_sweep(plan, project, backend=model, on_event=on_event, sae=sae)
     runs = []
     for outcome in outcomes:

@@ -299,7 +299,7 @@ PyTorch; functions load what they need.
 import logogram as lg
 
 project = lg.open_project("~/Documents/Logogram/ioi-example")
-model = lg.load_model("openai-community/gpt2")   # load once, pass it to every run
+model = lg.load_model("openai-community/gpt2")   # load once, pass it to the runs that name it
 spec = lg.load_spec(project.root / "experiments/ioi-head-patching/spec.json")
 run = lg.run(spec, project, model=model)
 
@@ -337,6 +337,7 @@ lg.feature_writes(model, sae, 1234, "When Mary and John went to the store, John 
 
 lg.add_local_model("~/models/my-fine-tune", "my-fine-tune")   # hash a model folder, once
 tuned = lg.load_model("my-fine-tune", device="cuda:1")         # a local model, on the second GPU
+lg.run(lg.with_model(spec, tuned), project, model=tuned)       # the same spec, on this model
 toy = lg.toy_model("ioi")        # a model whose circuit is known: project, datasets, experiments
 toy.run("which-heads").sites()   # L1 H1, L2 H3 and L3 H0 at 1.0, every other head at 0
 chat = lg.load_model("Qwen/Qwen2.5-0.5B-Instruct")
@@ -357,9 +358,12 @@ steered.continuations()   # what the steered model said, prompt by prompt and st
 ```
 
 Tables come back as pandas DataFrames when pandas is installed, and as pyarrow Tables otherwise.
-`lg.list_runs(project)` and `lg.load_run(project, run_id)` read runs made anywhere. A run that
-fails raises `lg.api.LogogramError` with the reason, and `lg.load_run(project, run_id).traceback`
-reads the traceback it kept. Interrupting the kernel records the run as cancelled, keeping what
+A model passed to `lg.run` is reused when it is the model the spec names (its files, dtype,
+device and weight processing). One that isn't is refused, with each difference named, rather
+than another copy loaded beside it: `lg.with_model(spec, model)` makes the spec name the model as
+it was loaded. `lg.list_runs(project)` and `lg.load_run(project, run_id)` read runs made
+anywhere. A run that fails raises `lg.api.LogogramError` with the reason, and
+`lg.load_run(project, run_id).traceback` reads the traceback it kept. Interrupting the kernel records the run as cancelled, keeping what
 finished: `run.partial` says how far a run that stopped early got and what it doesn't keep.
 `run.rename("Name movers")`, `run.star()` and `run.archive()` change what the history shows
 (`run.title`, `run.starred`, `run.archived`), and `lg.delete_run(project, run)` deletes a run's
