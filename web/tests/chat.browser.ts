@@ -78,8 +78,10 @@ test("a model folder on this machine is added under a name, offered, and removed
   const picker = page.getByRole("dialog", { name: "Choose a model folder" });
   await picker.getByLabel("Folder path").fill(folder);
   await picker.getByRole("button", { name: "Go", exact: true }).click();
-  await expect(picker.getByLabel("Folder path")).toHaveValue(/model$/);
+  // Listed: the box then holds the folder's own path, without "..".
+  await expect(picker.getByLabel("Folder path")).toHaveValue(/^(?!.*\/\.\.\/).*\/model$/, { timeout: 15_000 });
   await picker.getByRole("button", { name: "Choose this folder" }).click();
+  await expect(picker).toBeHidden();
   const adding = dialog.getByRole("region", { name: "Add a model folder" });
   await expect(adding.getByRole("textbox", { name: "Name" })).toHaveValue("model");
   await adding.getByRole("textbox", { name: "Name" }).fill("fixture-model");
@@ -125,29 +127,32 @@ test("a folder typed while the first listing is on its way isn't replaced by it"
   await picker.getByRole("button", { name: "Cancel" }).click();
 });
 
-test("Choose this folder chooses the folder in the box, though it isn't listed yet", async ({ page }) => {
-  const state = await (await page.request.get("/api/state")).json();
-  const folder = `${state.projects_parent}/../model`;
-  await page.getByRole("button", { name: /^tiny-gpt2 · / }).click();
-  const dialog = page.getByRole("dialog", { name: "Load a model" });
-  await dialog.getByRole("button", { name: "Add a model folder" }).click();
-  const picker = page.getByRole("dialog", { name: "Choose a model folder" });
-  // The folder the picker opens in is listed; the typed folder's listing is held back.
-  await expect(picker.getByLabel("Folder path")).not.toHaveValue("");
-  let release = () => {};
-  const held = new Promise<void>((resolve) => (release = resolve));
-  await page.route(/\/api\/fs\?/, async (route) => {
-    await held;
-    await route.continue();
+for (const go of [false, true]) {
+  test(`Choose this folder chooses the folder in the box, though it isn't listed yet${go ? ", with Go's listing on its way" : ""}`, async ({ page }) => {
+    const state = await (await page.request.get("/api/state")).json();
+    const folder = `${state.projects_parent}/../model`;
+    await page.getByRole("button", { name: /^tiny-gpt2 · / }).click();
+    const dialog = page.getByRole("dialog", { name: "Load a model" });
+    await dialog.getByRole("button", { name: "Add a model folder" }).click();
+    const picker = page.getByRole("dialog", { name: "Choose a model folder" });
+    // The folder the picker opens in is listed; the typed folder's listings are held back.
+    await expect(picker.getByLabel("Folder path")).not.toHaveValue("");
+    let release = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    await page.route(/\/api\/fs\?/, async (route) => {
+      await held;
+      await route.continue();
+    });
+    await picker.getByLabel("Folder path").fill(folder);
+    if (go) await picker.getByRole("button", { name: "Go", exact: true }).click();
+    await picker.getByRole("button", { name: "Choose this folder" }).click();
+    release();
+    const adding = dialog.getByRole("region", { name: "Add a model folder" });
+    await expect(adding.getByRole("textbox", { name: "Name" })).toHaveValue("model");
+    await expect(picker).toBeHidden();
+    await page.unroute(/\/api\/fs\?/);
   });
-  await picker.getByLabel("Folder path").fill(folder);
-  await picker.getByRole("button", { name: "Choose this folder" }).click();
-  release();
-  const adding = dialog.getByRole("region", { name: "Add a model folder" });
-  await expect(adding.getByRole("textbox", { name: "Name" })).toHaveValue("model");
-  await expect(picker).toBeHidden();
-  await page.unroute(/\/api\/fs\?/);
-});
+}
 
 test("a folder typed before the first listing arrives is the one the picker shows", async ({ page }) => {
   const state = await (await page.request.get("/api/state")).json();
