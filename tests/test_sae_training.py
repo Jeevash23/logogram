@@ -261,14 +261,37 @@ def test_a_run_on_a_project_sae_pins_its_hash(tiny_backend, trained_project, spe
     assert failed.status == "failed" and "has changed" in failed.manifest["error"]
 
 
+def feature_firing_at_the_last_token(backend: Any, project: Project, sha256: str) -> int:
+    """The project SAE's feature that fires at the last token of the most prompts of
+    datasets/ioi.jsonl, clean and corrupt. Which feature that is depends on the tiny model, which
+    other versions of PyTorch and Transformers build differently from the same seed. It fires on
+    more than half of them, so on some prompt of the pairs steering trains on, whatever the
+    split."""
+    from logogram.representations import DatasetRows, LastPosition, ReadSite, collect, load_rows
+
+    ref = SAERef(
+        repo="tiny-sae", path="saes/tiny-sae", revision=None, source="project", sha256=sha256
+    )
+    sae = load_project_sae(project, ref, "cpu", backend.info)
+    rows = load_rows(backend, project, DatasetRows(path="datasets/ioi.jsonl", sides="both"), True)
+    site = ReadSite(kind=sae.site_in, layer=sae.layer)
+    values = collect(backend, rows, [site], LastPosition(), prepend_bos=True, batch_size=8)
+    features, _ = sae.encode(torch.as_tensor(values[site.name], dtype=torch.float32))
+    fired = (features > 0).sum(dim=0)
+    best = int(torch.argmax(fired))
+    assert int(fired[best]) > len(rows.rows) // 2
+    return best
+
+
 def test_steering_along_a_project_sae_feature(tiny_backend, trained_project, spec_factory):
     from logogram.runner import run_spec
 
     trained = train_sae(sae_spec(layer=1, site="resid_pre"), trained_project, backend=tiny_backend)
+    feature = feature_firing_at_the_last_token(tiny_backend, trained_project, trained.sha256)
     steering = {
         "kind": "steering",
         "apply_to": "corrupt",
-        "direction": {"kind": "sae_feature", "feature": 3},
+        "direction": {"kind": "sae_feature", "feature": feature},
         "coefficients": [1.0],
         "train_fraction": 0.5,
         "seed": 0,
