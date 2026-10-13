@@ -858,7 +858,7 @@ must state every such choice, and a spec that leaves one out is refused with the
 
 ```json
 {
-  "logogram_spec": 3,
+  "logogram_spec": 4,
   "name": "Which heads restore the answer?",
   "notes": "",
   "model": {
@@ -883,9 +883,10 @@ must state every such choice, and a spec that leaves one out is refused with the
 Version 1 specs (from Logogram 0.1) still run. Where one leaves a choice out, it takes the value
 version 1 gave it, the run's first warning lists each such value, and the spec saved with the run
 states them all. `logogram validate SPEC.json` shows the list without running anything. Version 2
-specs (Logogram 0.2 to 0.4) read as version 3 with what version 3 added turned off, which is what
-they did: no chat template, a model from Hugging Face, and steering along the mean difference
-without continuations.
+specs (Logogram 0.2 to 0.4) read with what version 3 added turned off, which is what they did: no
+chat template, a model from Hugging Face, and steering along the mean difference without
+continuations. Version 3 specs (Logogram 0.5 and 0.6) read as version 4 unchanged: version 4 adds
+methods and sources that a version 3 spec can't name.
 
 | Field | Values |
 |---|---|

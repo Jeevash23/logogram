@@ -9,7 +9,9 @@ Version 1 specs (Logogram 0.1) are still read: the fields they leave out take th
 gave them, and :attr:`Spec.upgraded_fields` lists which, so a run can say so instead of assuming
 silently. Version 3 (Logogram 0.5) added chat templates, local models, a steering direction and
 steered continuations; a version 2 spec reads as version 3 with each of them off, which is what
-version 2 did.
+version 2 did. Version 4 (Logogram 0.7) added methods that find and use directions in the model
+(probes, learned subspaces, directional ablation, readouts), automated circuit discovery, and SAEs
+and lenses trained in the project; a version 3 spec reads as version 4 unchanged.
 
 Specs refer to abstract sites (``resid_pre``, ``attn_out``, ``head``, ...). Backend-specific hook
 names never appear in a spec.
@@ -30,7 +32,7 @@ from logogram.fileio import JSON_LIMIT, read_limited
 
 NAME_MAX = 200
 
-SPEC_VERSION = 3
+SPEC_VERSION = 4
 
 # Seeds are drawn into 32-bit generators on some paths: keep every seed in that range.
 SEED_MAX = 2**32
@@ -998,6 +1000,33 @@ class SAERef(_Strict):
         return self
 
 
+DIRECTION_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
+
+
+class DirectionRef(_Strict):
+    """A direction (or a subspace of a few) saved in the project's directions folder: a probe's
+    weights, a learned subspace, a principal component or a mean difference. A run pins it by the
+    hash of its tensor file and keeps a copy, so saving another direction under the same name
+    later never changes the run."""
+
+    name: str
+    """The direction's name in the project's directions folder."""
+    sha256: str | None
+    """The hash of its tensor file; null uses the direction as saved when a run starts, and the
+    run's spec pins it."""
+
+    @model_validator(mode="after")
+    def _named(self) -> DirectionRef:
+        if not DIRECTION_NAME.match(self.name) or self.name == "snapshots":
+            raise ValueError(
+                "a direction's name is letters, digits, dots, dashes and underscores, starting "
+                "with a letter or digit"
+            )
+        if self.sha256 is not None and not SHA256.match(self.sha256):
+            raise ValueError("a direction's sha256 is 64 lowercase hex digits")
+        return self
+
+
 class UserTurn(_Strict):
     """The prompt is the person's message. The template then opens the model's reply, so the
     answer is the first token of the reply."""
@@ -1202,8 +1231,8 @@ class PredictionSettings(_Strict):
 class Spec(_Strict):
     """An experiment: what runs, on which model and prompts, and how its numbers are measured."""
 
-    logogram_spec: Literal[3]
-    """The spec's version. Version 1 and 2 specs are read too, as version 3."""
+    logogram_spec: Literal[4]
+    """The spec's version. Version 1, 2 and 3 specs are read too, as version 4."""
     name: str = Field(min_length=1, max_length=NAME_MAX)
     """What the experiment is called, in the history and the results."""
     notes: str = ""
@@ -1242,6 +1271,8 @@ class Spec(_Strict):
             data, filled = upgrade_v1(data)
         if isinstance(data, dict) and data.get("logogram_spec") == 2:
             data = upgrade_v2(data)
+        if isinstance(data, dict) and data.get("logogram_spec") == 3:
+            data = upgrade_v3(data)
         spec = handler(data)
         if filled:
             spec._upgraded = filled
@@ -1407,6 +1438,19 @@ def upgrade_v2(data: dict[str, Any]) -> dict[str, Any]:
     if isinstance(experiment, dict) and experiment.get("kind") == "steering":
         experiment.setdefault("direction", {"kind": "mean_difference"})
         experiment.setdefault("continuations", None)
+    return data
+
+
+# ---------------------------------------------------------------------------------------------
+# Version 3 specs
+
+
+def upgrade_v3(data: dict[str, Any]) -> dict[str, Any]:
+    """A version 3 spec as version 4. Version 4 added methods, metrics and sources that a version
+    3 spec can't name, and fields that are off when it doesn't: an SAE from Hugging Face, the
+    final-norm logit lens. These didn't exist to be chosen, so they aren't listed as filled."""
+    data = copy.deepcopy(data)
+    data["logogram_spec"] = 4
     return data
 
 

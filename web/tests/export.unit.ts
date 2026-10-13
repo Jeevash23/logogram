@@ -4,7 +4,7 @@ import type { RunDetail, Spec, Summary } from "../src/api/types";
 import { exportFigure } from "../src/lib/export";
 
 const spec: Spec = {
-  logogram_spec: 3, name: "Chat heads", notes: "",
+  logogram_spec: 4, name: "Chat heads", notes: "",
   model: { id: "my-chat-model", source: "local", revision: null, sha256: "a".repeat(64), device: "auto", dtype: "float32", process_weights: true },
   dataset: { path: "datasets/ioi.jsonl", sha256: "abc", limit: null },
   tokenization: { prepend_bos: false, chat_template: { kind: "user_turn", system: null } },

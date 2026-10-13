@@ -42,7 +42,7 @@ const dataset = (records: PromptRecord[], continuations?: number[]): DatasetDeta
 test("the default form builds a version 3 spec that states every choice", () => {
   const spec = built(form());
   expect(spec).toEqual({
-    logogram_spec: 3,
+    logogram_spec: 4,
     name: "Patch clean→corrupt · layer × head",
     notes: "",
     model: { id: "tiny-gpt2", source: "hub", revision: "test", sha256: null, dtype: "float32", device: "cpu", process_weights: true },

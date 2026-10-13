@@ -484,9 +484,11 @@ class SpecPage:
             f"This is version {self.module.SPEC_VERSION}. Version 1 specs (Logogram 0.1) still run: "
             "each choice one leaves out takes the value version 1 gave it, the run's first warning "
             "lists those values, and `logogram validate SPEC.json` shows them without running "
-            "anything. Version 2 specs (Logogram 0.2 to 0.4) read as version 3 with what version 3 "
-            "added turned off, which is what they did: no chat template, a model from Hugging Face, "
-            "and steering along the mean difference without continuations.",
+            "anything. Version 2 specs (Logogram 0.2 to 0.4) read with what version 3 added turned "
+            "off, which is what they did: no chat template, a model from Hugging Face, and steering "
+            "along the mean difference without continuations. Version 3 specs (Logogram 0.5 and "
+            "0.6) read as version 4 unchanged: version 4 adds methods and sources that a version 3 "
+            "spec can't name.",
             "",
             "Objects that come in several kinds (an experiment, a scope, a position, ...) say which "
             "with their `kind`, and each kind has fields of its own.",

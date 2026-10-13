@@ -39,7 +39,7 @@ V1_MINIMAL = {
 
 def test_version_1_specs_list_what_they_left_out():
     spec = Spec.model_validate(V1_MINIMAL)
-    assert spec.logogram_spec == 3
+    assert spec.logogram_spec == 4
     filled = "\n".join(spec.upgraded_fields)
     for expected in (
         'model.dtype = "float32"',
@@ -61,7 +61,7 @@ def test_version_1_specs_list_what_they_left_out():
     assert Spec.model_validate(dumped).upgraded_fields == []
 
 
-def test_version_2_specs_read_as_version_3_with_its_additions_off():
+def test_version_2_specs_read_as_the_current_version_with_its_additions_off():
     v2 = Spec.model_validate(V1_MINIMAL).model_dump(mode="json")
     v2["logogram_spec"] = 2
     del v2["tokenization"]["chat_template"], v2["model"]["source"], v2["model"]["sha256"]
@@ -75,7 +75,7 @@ def test_version_2_specs_read_as_version_3_with_its_additions_off():
     }
     for experiment in (v2["experiment"], steering):
         spec = Spec.model_validate({**v2, "experiment": experiment})
-        assert spec.logogram_spec == 3 and spec.upgraded_fields == []
+        assert spec.logogram_spec == 4 and spec.upgraded_fields == []
         assert spec.tokenization.chat_template is None
         assert (spec.model.source, spec.model.sha256) == ("hub", None)
     assert spec.experiment.model_dump() == {
@@ -219,7 +219,7 @@ def test_a_version_1_run_says_what_it_assumed(tiny_backend, project):
     assert "This spec is version 1" in outcome.summary["warnings"][0]
     assert "statistics.seed = 0" in outcome.summary["warnings"][0]
     saved = json.loads((outcome.folder / "spec.json").read_text(encoding="utf-8"))
-    assert saved["logogram_spec"] == 3 and saved["statistics"]["cluster"] is None
+    assert saved["logogram_spec"] == 4 and saved["statistics"]["cluster"] is None
 
 
 def test_upgrading_never_changes_the_input():

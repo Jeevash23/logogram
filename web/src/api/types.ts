@@ -584,7 +584,7 @@ export type ChatTemplateSpec =
 
 /** A version 3 spec: every choice that can change a number is stated. */
 export interface Spec {
-  logogram_spec: 3;
+  logogram_spec: 4;
   name: string;
   notes: string;
   model: ModelRef;

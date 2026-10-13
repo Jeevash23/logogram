@@ -581,7 +581,7 @@ export function buildSpec(
     return { error: "Only attribution patching estimates every SAE feature. Choose it, or patch chosen features." };
   }
   const spec: Spec = {
-    logogram_spec: 3,
+    logogram_spec: 4,
     name: form.name.trim() || suggestName({ experiment, scope }),
     notes: form.notes,
     model,

@@ -4,7 +4,7 @@
 
 Every experiment is a `spec.json`: the single description of an experiment, which the app, `logogram run` and the Python API all run the same way. Nothing that can change a number is left implicit. A spec states every such field, and a spec that leaves one out is refused with the field's name. This page lists every field, from the models in [`src/logogram/spec.py`](https://github.com/Jeevash23/logogram/blob/main/src/logogram/spec.py).
 
-This is version 3. Version 1 specs (Logogram 0.1) still run: each choice one leaves out takes the value version 1 gave it, the run's first warning lists those values, and `logogram validate SPEC.json` shows them without running anything. Version 2 specs (Logogram 0.2 to 0.4) read as version 3 with what version 3 added turned off, which is what they did: no chat template, a model from Hugging Face, and steering along the mean difference without continuations.
+This is version 4. Version 1 specs (Logogram 0.1) still run: each choice one leaves out takes the value version 1 gave it, the run's first warning lists those values, and `logogram validate SPEC.json` shows them without running anything. Version 2 specs (Logogram 0.2 to 0.4) read with what version 3 added turned off, which is what they did: no chat template, a model from Hugging Face, and steering along the mean difference without continuations. Version 3 specs (Logogram 0.5 and 0.6) read as version 4 unchanged: version 4 adds methods and sources that a version 3 spec can't name.
 
 Objects that come in several kinds (an experiment, a scope, a position, ...) say which with their `kind`, and each kind has fields of its own.
 
@@ -12,7 +12,7 @@ The bundled IOI example's spec:
 
 ```json
 {
-  "logogram_spec": 3,
+  "logogram_spec": 4,
   "name": "Which heads restore the answer?",
   "notes": "Run each corrupt prompt (the subject is replaced by the indirect object, so the model should prefer the other name) and patch in one head's output from the clean prompt at every position. A normalized effect of 1 means that head alone restores the clean behavior; negative values mean the head works against the answer.",
   "model": {
@@ -67,7 +67,7 @@ An experiment: what runs, on which model and prompts, and how its numbers are me
 
 | Field | Type | Allowed values | Description |
 |---|---|---|---|
-| `logogram_spec` | integer | `3` | The spec's version. Version 1 and 2 specs are read too, as version 3. |
+| `logogram_spec` | integer | `4` | The spec's version. Version 1, 2 and 3 specs are read too, as version 4. |
 | `name` | string | 1 to 200 characters | What the experiment is called, in the history and the results. |
 | `notes` (optional, default `""`) | string | any | What you expect and why, saved with the spec and shown beside the results. |
 | `model` | object | [Model](#model) | The model, exactly: its files, precision, device and weight processing. |

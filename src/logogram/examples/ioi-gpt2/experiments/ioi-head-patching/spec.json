@@ -1,5 +1,5 @@
 {
-  "logogram_spec": 3,
+  "logogram_spec": 4,
   "name": "Which heads restore the answer?",
   "notes": "Run each corrupt prompt (the subject is replaced by the indirect object, so the model should prefer the other name) and patch in one head's output from the clean prompt at every position. A normalized effect of 1 means that head alone restores the clean behavior; negative values mean the head works against the answer.",
   "model": {
