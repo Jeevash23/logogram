@@ -1023,6 +1023,19 @@ def create_app(
     def presets() -> dict[str, Any]:
         return {"presets": MODEL_PRESETS, "suggestions": MODEL_SUGGESTIONS}
 
+    @app.get("/api/models/device", response_model=M.DeviceCheck)
+    def check_device(device: str) -> dict[str, Any]:
+        """Whether a model can be loaded on ``device`` here (no model is needed): the model
+        dialog keeps Load disabled while the device chosen isn't there, and says why."""
+        from logogram.backends.transformer_lens import resolve_device
+
+        if not DEVICE.match(device):
+            raise ValueError("A device is auto, cpu, cuda, cuda:N (such as cuda:1) or mps.")
+        try:
+            return {"device": device, "resolved": resolve_device(device), "error": None}
+        except BackendError as exc:
+            return {"device": device, "resolved": None, "error": str(exc)}
+
     @app.post("/api/models/estimate", response_model=M.EstimateOut)
     def estimate(body: EstimateRequest) -> dict[str, Any]:
         """What loading a model would take: its size, and whether it fits in the memory free on

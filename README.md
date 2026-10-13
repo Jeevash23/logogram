@@ -1129,9 +1129,11 @@ The messages people see most often, as Logogram shows them, and what to do. If y
 * *In float16, …'s own forward pass gives values that aren't finite numbers (it overflows), so its
   predictions can't be checked. Load it in bfloat16 or float32, which have a wider range than
   float16.* Pythia is one such model.
-* *The spec asks for CUDA, but PyTorch can't see a CUDA GPU here.* `logogram doctor` names the
-  cause, usually a CPU-only PyTorch, and the command that fixes it. Or set `model.device` to
-  `auto` or `cpu` in the spec.
+* *CUDA was chosen, but PyTorch can't see a CUDA GPU here.* `logogram doctor` names the cause,
+  usually a CPU-only PyTorch, and the command that fixes it. Or choose the device **Automatic**
+  or **CPU** (`auto` or `cpu`, as `model.device` in a spec). A model that is loaded stays loaded:
+  the device is checked before it is closed, and the model dialog keeps **Load** disabled while
+  the device chosen isn't there.
 
 **A model or a run that doesn't fit.** The model dialog estimates, before downloading, the memory
 a model needs against what is free, and the experiment form's summary says whether a batch fits.
@@ -1165,8 +1167,8 @@ pairs can't be used, and why:
 * **Automatic** runs on the CPU: TransformerLens reports that Apple's MPS can give silently wrong
   results, and Logogram hasn't been checked on it, so MPS is used only when you choose it under
   **Device**. Check results that matter by rerunning on the CPU and comparing the two runs.
-* *The spec asks for Apple's MPS, which isn't available here. Set model.device to auto or cpu.*
-  The spec was made on a Mac: change its `model.device`.
+* *Apple's MPS was chosen, but it isn't available here. Choose the device auto or cpu
+  (model.device in a spec).* A spec made on a Mac asks for it: change its `model.device`.
 * `logogram doctor` says *Python is running under Rosetta*: an Intel Python can't use the Apple
   GPU. Install a native arm64 Python and reinstall Logogram with it, as it says.
 * `logogram doctor` says *Apple GPU (MPS) unavailable*: MPS needs macOS 12.3 or later.

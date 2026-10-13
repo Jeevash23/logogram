@@ -15,6 +15,11 @@ What changed in each version of Logogram.
   now chooses the folder in the box, listing it first when it hasn't been.
 - A run the queue started could end before the tabs heard it had started, and the queue then
   read as waiting, with nothing left in it, instead of running.
+- Loading a model on a device this machine doesn't have (CUDA without a GPU, say) unloaded the
+  model that was loaded before it said so. The device, the dtype and a local model's folder are
+  now checked first, and the loaded model stays. The model dialog keeps **Load** disabled while
+  the device chosen isn't there, and the message no longer says "the spec asks for" when no spec
+  is involved.
 
 ## 0.6.0 (2026-10-12)
 

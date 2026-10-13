@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { api } from "../api/client";
-import type { Device, Dtype, EstimateResponse, LocalModel, ModelPreset, SystemReport } from "../api/types";
+import type { Device, DeviceCheck, Dtype, EstimateResponse, LocalModel, ModelPreset, SystemReport } from "../api/types";
 import { chatAdvice, chatReason } from "../lib/chat";
 import { gpuChoices, whereText } from "../lib/devices";
 import { bytes, params, pct, shortRevision } from "../lib/format";
@@ -53,6 +53,8 @@ export function ModelDialog() {
   // The saved experiment's local model, when this machine has no folder with its files.
   const [missing, setMissing] = useState<string | null>(null);
   useEffect(() => setMissing(null), [choice]);
+  // Whether the device chosen is there: Load waits for one that is, and the dialog says why.
+  const [deviceCheck, setDeviceCheck] = useState<DeviceCheck | null>(null);
 
   const local = choice.startsWith(LOCAL) ? (locals.find((m) => LOCAL + m.sha256 === choice) ?? null) : null;
   const id = local ? local.name : choice === OTHER ? other.trim() : choice;
@@ -78,6 +80,21 @@ export function ModelDialog() {
   const nameInput = useRef<HTMLInputElement>(null);
 
   const refreshLocals = () => api.localModels().then(setLocals, () => undefined);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    api.checkDevice(device).then(
+      (checked) => {
+        if (!cancelled) setDeviceCheck(checked);
+      },
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [open, device]);
+  const deviceProblem = deviceCheck?.device === device ? deviceCheck.error : null;
 
   useEffect(() => {
     if (!open) return;
@@ -111,7 +128,8 @@ export function ModelDialog() {
     setEstimate(null);
     setEstimateError(null);
     setEstimating(false);
-    if (!open || !id || (!local && !/^[\w.-]+(\/[\w.-]+)?$/.test(id))) return;
+    // Nothing to estimate on a device that isn't here: the dialog says so instead.
+    if (!open || !id || deviceProblem || (!local && !/^[\w.-]+(\/[\w.-]+)?$/.test(id))) return;
     let cancelled = false;
     const t = window.setTimeout(() => {
       setEstimating(true);
@@ -137,7 +155,7 @@ export function ModelDialog() {
       cancelled = true;
       window.clearTimeout(t);
     };
-  }, [open, id, local?.sha256, revision, dtype, device, processWeights, choice]);
+  }, [open, id, local?.sha256, revision, dtype, device, processWeights, choice, deviceProblem]);
 
   const load = async () => {
     const out = await guard(() =>
@@ -211,7 +229,7 @@ export function ModelDialog() {
           <Button
             variant="primary"
             onClick={load}
-            disabled={!id || loading || busy || est?.verdict === "wont_fit" || estimate?.supported === false}
+            disabled={!id || loading || busy || deviceProblem !== null || est?.verdict === "wont_fit" || estimate?.supported === false}
           >
             {loading ? "Loading…" : "Load"}
           </Button>
@@ -382,7 +400,12 @@ export function ModelDialog() {
           </Field>
         )}
       </div>
-      {device === "mps" && (
+      {deviceProblem && (
+        <Callout tone="error" title="The device chosen isn't available here">
+          {deviceProblem}
+        </Callout>
+      )}
+      {device === "mps" && !deviceProblem && (
         <p className={s.fine}>
           TransformerLens reports that Apple's MPS can give silently wrong results, and Logogram hasn't been checked on it
           yet. MPS is faster; check results that matter on the CPU.
@@ -398,7 +421,7 @@ export function ModelDialog() {
             <Spinner /> {local ? `Reading the folder of ${local.name}…` : `Checking ${id} on Hugging Face…`}
           </div>
         )}
-        {estimateError && <Callout tone="error">{estimateError}</Callout>}
+        {estimateError && estimateError !== deviceProblem && <Callout tone="error">{estimateError}</Callout>}
         {estimate?.support_note && <Callout tone="error" title="This model can't be loaded">{estimate.support_note}</Callout>}
         {estimate && est && estimate.supported && (
           <>

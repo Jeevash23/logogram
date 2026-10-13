@@ -1719,6 +1719,14 @@ export interface EstimateResponse {
   estimate: MemoryEstimate;
 }
 
+/** Whether a device is there to load a model on: what it resolves to here, or why it isn't and
+ * what to choose instead. */
+export interface DeviceCheck {
+  device: Device;
+  resolved: string | null;
+  error: string | null;
+}
+
 export interface IOITemplate {
   id: string;
   text: string;

@@ -407,6 +407,86 @@ def test_cancelling_a_model_load_leaves_no_model(app, monkeypatch):
     assert state.backend is None and state.model_status["state"] == "none"
 
 
+def _job_ended(client, timeout=60):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        job = client.get("/api/state", headers=HEADERS).json()["job"]
+        if job is not None and job["status"] != "running":
+            return job
+        time.sleep(0.02)
+    raise AssertionError("the job did not end")
+
+
+def test_a_device_that_isnt_here_leaves_the_loaded_model_loaded(
+    app, client, project, tiny_model_dir, spec_factory, monkeypatch
+):
+    from logogram.backends.transformer_lens import TransformerLensBackend, boot_local
+
+    # A model of this test's own: a regression would close it.
+    backend = TransformerLensBackend.from_bridge(
+        boot_local(tiny_model_dir, device="cpu", dtype="float32"),
+        model_id="tiny-gpt2",
+        revision="test",
+        dtype="float32",
+        process_weights=True,
+    )
+    state = app.state.logogram
+    state.backend = backend
+    state.model_status = {"state": "ready"}
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    # The model dialog asks before Load is pressed, and keeps Load disabled.
+    checked = client.get("/api/models/device", params={"device": "cuda"}, headers=HEADERS).json()
+    assert checked["resolved"] is None
+    assert checked["error"].startswith("CUDA was chosen, but PyTorch can't see a CUDA GPU here.")
+    here = client.get("/api/models/device", params={"device": "cpu"}, headers=HEADERS).json()
+    assert here == {"device": "cpu", "resolved": "cpu", "error": None}
+    bad = client.get("/api/models/device", params={"device": "tpu"}, headers=HEADERS)
+    assert bad.status_code == 400
+    # Loaded anyway (from another tab, or a script): refused before the model is closed.
+    ref = {
+        "id": "tiny-gpt2",
+        "source": "hub",
+        "revision": "test",
+        "sha256": None,
+        "dtype": "float32",
+        "device": "cuda",
+        "process_weights": True,
+    }
+    assert client.post("/api/models/load", json=ref, headers=HEADERS).status_code == 200
+    job = _job_ended(client)
+    assert job["status"] == "failed" and job["error"].startswith("CUDA was chosen")
+    assert state.backend is backend and backend.bridge is not None
+    model = client.get("/api/state", headers=HEADERS).json()["model"]
+    assert model["state"] == "ready" and model["info"]["device"] == "cpu"
+    # So is a run whose spec asks for the GPU: it fails, saying why, and the model stays.
+    client.post("/api/projects/open", json={"path": str(project.root)}, headers=HEADERS)
+    spec = spec_factory(model={"id": "tiny-gpt2", "revision": "test", "device": "cuda"})
+    run_id = client.post(
+        "/api/runs", json={"spec": spec.model_dump(mode="json")}, headers=HEADERS
+    ).json()["run_id"]
+    assert _wait(client, run_id) == "failed", _why(client, run_id)
+    assert _why(client, run_id)["error"].startswith("CUDA was chosen")
+    assert state.backend is backend and backend.bridge is not None
+
+
+def test_a_device_that_isnt_here_with_no_model_loaded_says_why(app, monkeypatch):
+    state = app.state.logogram
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    ref = ModelRef(
+        id="some/model",
+        source="hub",
+        revision=None,
+        sha256=None,
+        dtype="float32",
+        device="cuda:1",
+        process_weights=True,
+    )
+    with pytest.raises(BackendError, match="CUDA was chosen"):
+        state.load_model(ref)
+    assert state.backend is None
+    assert state.model_status["state"] == "error" and "CUDA" in state.model_status["error"]
+
+
 def test_a_cancelled_load_stops_before_the_network():
     from logogram.backends.transformer_lens import load_model
 

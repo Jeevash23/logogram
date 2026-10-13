@@ -346,14 +346,30 @@ class AppState:
     def load_model(self, ref: ModelRef, cancel: threading.Event | None = None) -> ModelBackend:
         """Load (or reuse) a model. Runs on a worker thread.
 
-        The current model is closed first to make room, so if the new one fails to load, no model
-        is loaded. Closing waits for an analysis that is using the old model.
+        What can be checked without loading anything (the device, the dtype, a local model's
+        folder) is checked first, so a request that can't load, such as one for a GPU this machine
+        lacks, leaves the loaded model as it is. Then the current model is closed to make room,
+        so if the new one fails to load, no model is loaded. Closing waits for an analysis that is
+        using the old model.
         """
-        from logogram.backends.transformer_lens import load_model
+        from logogram.backends.transformer_lens import check_request, load_model
         from logogram.runner import model_matches
 
         if model_matches(self.backend, ref):
             return self.backend  # type: ignore[return-value]
+        try:
+            check_request(
+                ref.id,
+                revision=ref.revision,
+                dtype=ref.dtype,
+                device=ref.device,
+                source=ref.source,
+                sha256=ref.sha256,
+            )
+        except Exception as exc:
+            if self.backend is None:  # otherwise the loaded model stays, and its status with it
+                self._set_model_status(state="error", id=ref.id, error=str(exc))
+            raise
         if self.backend is not None:
             old, self.backend = self.backend, None
             old.close()

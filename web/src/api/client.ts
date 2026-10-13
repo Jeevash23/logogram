@@ -10,6 +10,7 @@ import type {
   DatasetCreated,
   DatasetDetail,
   DeriveRequest,
+  DeviceCheck,
   EdgePlan,
   EdgeVerification,
   Environment,
@@ -244,6 +245,8 @@ export const api = {
     }>("/api/models/presets"),
   estimate: (body: { id: string; source?: "hub" | "local"; sha256?: string | null; revision?: string | null; dtype: Dtype; device: Device; process_weights: boolean }) =>
     post<EstimateResponse>("/api/models/estimate", body),
+  /** Whether a model can be loaded on this device here, and if not, why. */
+  checkDevice: (device: Device) => get<DeviceCheck>(`/api/models/device?device=${encodeURIComponent(device)}`),
   /** The models added from folders on this machine. */
   localModels: () => get<LocalModel[]>("/api/models/local"),
   /** Hash a model folder and add it under a name: a job, with progress in bytes. */

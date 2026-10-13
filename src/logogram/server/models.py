@@ -670,6 +670,15 @@ class EstimateOut(_Out):
     estimate: MemoryEstimateOut
 
 
+class DeviceCheck(_Out):
+    """Whether a device is there to load a model on: what it resolves to here, or why it isn't
+    there and what to choose instead."""
+
+    device: str
+    resolved: str | None
+    error: str | None
+
+
 # -- published SAEs ----------------------------------------------------------------------------
 
 
