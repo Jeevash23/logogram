@@ -896,6 +896,16 @@ def _rows(
     return CorpusRows(name=text, limit=limit, max_tokens=max_tokens)
 
 
+def _sites(sites: Any) -> list[Any]:
+    """Sites as ``"KIND:LAYER"``, one or a list of them (or dicts, as the app sends them)."""
+    from logogram.representations import parse_site
+
+    try:
+        return [parse_site(s) for s in ([sites] if isinstance(sites, str | dict) else sites)]
+    except ValueError as exc:
+        raise LogogramError(str(exc)) from exc
+
+
 def _read(model: Any, project: Project, source: Any, prepend_bos: bool, **choices: Any) -> Any:
     from logogram.corpora import CorpusError
     from logogram.representations import load_rows
@@ -972,7 +982,7 @@ def activations(
     model: Any,
     project: Project,
     source: Any,
-    sites: Sequence[Any] | Any,
+    sites: str | Sequence[str],
     position: Any = "last",
     *,
     prepend_bos: bool = True,
@@ -994,7 +1004,7 @@ def activations(
     ``"mean"`` (the mean over the tokens after the beginning-of-sequence token). The same rows
     always run in the same batches, so they give the same numbers. Write them to the project
     with :func:`export_activations`."""
-    from logogram.representations import collect, parse_position, parse_site
+    from logogram.representations import collect, parse_position
 
     loaded = _read(
         model,
@@ -1006,7 +1016,7 @@ def activations(
         limit=limit,
         max_tokens=max_tokens,
     )
-    chosen = [parse_site(s) for s in (sites if isinstance(sites, list | tuple) else [sites])]
+    chosen = _sites(sites)
     try:
         with model.lock:
             return collect(
@@ -1026,7 +1036,7 @@ def export_activations(
     project: Project,
     name: str,
     source: Any,
-    sites: Sequence[Any] | Any,
+    sites: str | Sequence[str],
     position: Any = "last",
     *,
     prepend_bos: bool = True,
@@ -1044,7 +1054,7 @@ def export_activations(
     ``"meta:FIELD"`` for a dataset; a corpus's labels), and how texts were tokenized. Returns where
     they were written."""
     from logogram.representations import export_activations as export
-    from logogram.representations import parse_position, parse_site
+    from logogram.representations import parse_position
 
     loaded = _read(
         model,
@@ -1056,7 +1066,7 @@ def export_activations(
         limit=limit,
         max_tokens=max_tokens,
     )
-    chosen = [parse_site(s) for s in (sites if isinstance(sites, list | tuple) else [sites])]
+    chosen = _sites(sites)
     try:
         with model.lock:
             return export(
