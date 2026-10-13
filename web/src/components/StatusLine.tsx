@@ -49,6 +49,14 @@ export function StatusLine() {
       progress = (model.done ?? 0) / model.total;
       detail = `downloading ${bytes(model.done)} of ${bytes(model.total)}${model.file ? ` · ${model.file}` : ""}`;
     } else detail = model.stage === "resolving" ? "checking the revision" : model.stage ?? "";
+  } else if (running) {
+    // Another job, such as a model folder hashed or a corpus downloaded: its title, and its bytes.
+    text = job.title;
+    const p = job.progress as { done?: unknown; total?: unknown };
+    if (typeof p.total === "number" && p.total > 0 && typeof p.done === "number") {
+      progress = p.done / p.total;
+      detail = `${bytes(p.done)} of ${bytes(p.total)}`;
+    }
   } else if (job && job.status === "failed") {
     text = `“${job.title}” failed`;
     detail = job.error ?? "";
