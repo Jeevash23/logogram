@@ -190,7 +190,7 @@ class Project:
         root = Path(path).expanduser().resolve()
         meta_path = root / PROJECT_FILE
         if not meta_path.is_file():
-            if not root.is_dir():
+            if not root.exists():
                 raise ProjectMissing(
                     f"The folder {root} isn't there any more: it was moved, renamed or deleted, "
                     "or it is on a drive that isn't connected. Connect the drive, or open the "

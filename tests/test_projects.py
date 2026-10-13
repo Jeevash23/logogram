@@ -15,7 +15,14 @@ from typer.testing import CliRunner
 import logogram as lg
 from logogram.api import LogogramError
 from logogram.cli import app as cli
-from logogram.project import Project, forget_recent, load_recent, remember_recent
+from logogram.project import (
+    Project,
+    ProjectError,
+    ProjectMissing,
+    forget_recent,
+    load_recent,
+    remember_recent,
+)
 from logogram.server.app import create_app
 from logogram.server.security import SecurityConfig
 
@@ -151,6 +158,15 @@ def test_opening_a_project_whose_folder_is_gone_says_so(client, config, tmp_path
     )
     assert left.status_code == 200 and left.json() == []
     assert (tmp_path / "moved" / "project.json").is_file()
+
+
+def test_a_file_where_a_project_was_isnt_taken_for_a_missing_folder(tmp_path):
+    (tmp_path / "notes.txt").write_text("mine", encoding="utf-8")
+    with pytest.raises(ProjectError, match="isn't a Logogram project") as raised:
+        Project.read(tmp_path / "notes.txt")
+    assert not isinstance(raised.value, ProjectMissing)
+    with pytest.raises(ProjectMissing, match="isn't there any more"):
+        Project.read(tmp_path / "nowhere")
 
 
 # -- renaming ----------------------------------------------------------------------------------
