@@ -1126,7 +1126,9 @@ def _rows(
     if isinstance(source, DatasetRows | CorpusRows):
         return source
     if isinstance(source, dict):
-        return TypeAdapter(Rows).validate_python(source)
+        # pydantic 2.14 types TypeAdapter's argument as a TypeForm, which the pyright CI pins
+        # doesn't see an Annotated alias as.
+        return TypeAdapter(Rows).validate_python(source)  # type: ignore[arg-type]
     text = str(source).replace("\\", "/")
     if text.startswith("corpora/") and text.endswith(".jsonl"):
         return CorpusRows(
@@ -1194,7 +1196,8 @@ def top_examples(
     from logogram.top_activations import top_examples as top
 
     try:
-        chosen = TypeAdapter(Unit).validate_python(unit)
+        # See _rows.
+        chosen = TypeAdapter(Unit).validate_python(unit)  # type: ignore[arg-type]
         direction = None
         if isinstance(chosen, DirectionUnit):
             direction = read_direction(project, chosen.name)
