@@ -131,6 +131,9 @@ rows come back from Python as NumPy arrays with `lg.activations`, without writin
 import logogram as lg
 from safetensors.numpy import load_file
 
+project = lg.open_project("my-project")
+model = lg.load_model("openai-community/gpt2")
+lg.export_activations(model, project, "ioi-s2", "datasets/ioi.jsonl", "resid_post:6", "label:S2")
 acts = load_file(project.root / "activations/ioi-s2.safetensors")["resid_post:6"]  # [rows, width]
 ```
 
