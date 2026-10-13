@@ -172,6 +172,7 @@ export function ResultsView() {
               <Button onClick={() => useStore.setState({ robustnessDialogOpen: true })} icon="refresh" data-tour="robustness">
                 Check robustness
               </Button>
+              <RerunButton runId={run.id} busy={job?.status === "running"} />
               <Button
                 onClick={() => useStore.setState({ sweepDialogRun: run.id })}
                 tip="Run this spec once for each of several seeds, datasets or revisions, and see which sites hold"
@@ -197,6 +198,7 @@ export function ResultsView() {
               {status === "draft" ? "Open in the form" : "Edit and rerun"}
             </Button>
           )}
+          {spec && (status === "failed" || status === "cancelled") && <RerunButton runId={run.id} busy={job?.status === "running"} />}
         </div>
       </div>
 
@@ -782,6 +784,24 @@ function RunNotes({ text }: { text: string }) {
         </button>
       )}
     </div>
+  );
+}
+
+/** Run the spec again, exactly as it ran: a new run, which says when it finishes whether every
+ * per-prompt value matches. */
+function RerunButton({ runId, busy }: { runId: string; busy: boolean }) {
+  return (
+    <Button
+      disabled={busy}
+      onClick={() => void useStore.getState().rerunRun(runId)}
+      tip={
+        busy
+          ? "A run is in progress. This can start when it finishes."
+          : "Run this spec again, exactly as it ran, and say whether every per-prompt value matches"
+      }
+    >
+      Rerun
+    </Button>
   );
 }
 

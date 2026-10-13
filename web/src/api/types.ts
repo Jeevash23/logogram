@@ -229,6 +229,20 @@ export interface DeletionPlan {
   text: string;
 }
 
+/** Whether a rerun reproduced the run it reran, value by value (logogram.compare.reproduction_of). */
+export interface Reproduction {
+  run_id: string;
+  original: string;
+  /** Every per-prompt value matches exactly. */
+  identical: boolean;
+  rows: number;
+  original_rows: number;
+  /** The largest change in a per-prompt value; null when the rows differ. */
+  largest: number | null;
+  /** The sentence `logogram run` says it in. */
+  text: string;
+}
+
 /** A dataset file renamed (its new name and path) or deleted (the ones it had). */
 export interface DatasetChanged {
   name: string;

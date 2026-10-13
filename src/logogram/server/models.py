@@ -702,6 +702,21 @@ class EstimateOut(_Out):
     estimate: MemoryEstimateOut
 
 
+class Reproduction(_Out):
+    """Whether a rerun reproduced the run it reran, value by value (see
+    logogram.compare.reproduction_of)."""
+
+    run_id: str
+    original: str
+    # Every per-prompt value matches exactly.
+    identical: bool
+    rows: int
+    original_rows: int
+    # The largest change in a per-prompt value; None when the rows differ.
+    largest: float | None
+    text: str
+
+
 class DeviceCheck(_Out):
     """Whether a device is there to load a model on: what it resolves to here, or why it isn't
     there and what to choose instead."""

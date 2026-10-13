@@ -405,6 +405,64 @@ def test_a_run_in_progress_or_in_the_queue_is_never_deleted(
     assert client.delete(f"/api/runs/{draft}", headers=HEADERS).status_code == 200
 
 
+def _wait(client, run_id: str, timeout: float = 120) -> str:
+    import time
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        status = _listed(client).get(run_id, {}).get("status")
+        job = client.get("/api/state", headers=HEADERS).json()["job"]
+        if status not in (None, "running", "draft") and (job is None or job["status"] != "running"):
+            return status
+        time.sleep(0.05)
+    raise AssertionError("the run did not finish")
+
+
+def test_a_rerun_says_whether_it_reproduced_the_run_exactly(
+    client, ready, project, tiny_backend, spec_factory
+):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    original = _finished(project, tiny_backend, spec_factory, "Heads")
+    started = client.post(f"/api/runs/{original}/rerun", headers=HEADERS)
+    assert started.status_code == 200, started.text
+    rerun = started.json()["run_id"]
+    assert _wait(client, rerun) == "finished"
+    assert _listed(client)[rerun]["derived_from"] == {
+        "run": original,
+        "kind": "rerun",
+        "change": None,
+    }
+    found = client.get(f"/api/runs/{rerun}/reproduction", headers=HEADERS)
+    assert found.status_code == 200, found.text
+    rows = pq.read_table(project.run_dir(original) / "results.parquet").num_rows
+    assert found.json() == {
+        "run_id": rerun,
+        "original": original,
+        "identical": True,
+        "rows": rows,
+        "original_rows": rows,
+        "largest": 0.0,
+        "text": f"Identical to {original}: all {rows:,} per-prompt values match exactly.",
+    }
+    # A value that changed is found, and how much: as `logogram run` says it.
+    path = project.run_dir(rerun) / "results.parquet"
+    table = pq.read_table(path)
+    effects = table.column("effect").to_pylist()
+    effects[0] += 0.5
+    i = table.schema.get_field_index("effect")
+    pq.write_table(table.set_column(i, "effect", pa.array(effects, pa.float64())), path)
+    differs = client.get(f"/api/runs/{rerun}/reproduction", headers=HEADERS).json()
+    assert differs["identical"] is False and differs["largest"] == pytest.approx(0.5)
+    assert differs["text"].startswith(
+        f"Differs from {original}: largest change in a per-prompt value is 0.5. Check the device"
+    )
+    # Only a rerun has a run to be compared with.
+    other = client.get(f"/api/runs/{original}/reproduction", headers=HEADERS)
+    assert other.status_code == 409 and "isn't a rerun" in other.json()["error"]
+
+
 def test_a_queued_draft_is_never_deleted_from_the_command_line_or_python(project, spec_factory):
     from logogram.runner import write_json
 

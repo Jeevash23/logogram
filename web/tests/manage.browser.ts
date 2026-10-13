@@ -134,6 +134,44 @@ test("a recent project whose folder is missing stays listed until it is removed"
   expect(existsSync(`${project.path}-moved`)).toBe(true); // its folder is left as it is
 });
 
+/** Wait until no job runs on the server. */
+async function idle(page: Page) {
+  await expect
+    .poll(async () => (await (await page.request.get("/api/state", { headers: API })).json()).job?.status ?? "none", { timeout: 60_000 })
+    .not.toBe("running");
+}
+
+test("a run is rerun from its results and from the history, and says whether it reproduced exactly", async ({ page }) => {
+  const spec = await fixtureSpec(page);
+  await scratch(page, `Reruns ${Date.now()}`);
+  expect((await page.request.post("/api/datasets/ioi", { data: { name: "ioi", n: 6 }, headers: API })).ok()).toBe(true);
+  const heads = { ...spec, name: "Heads sweep", dataset: { path: "datasets/ioi.jsonl", sha256: null, limit: 4 } };
+  const { run_id: id } = await (await page.request.post("/api/runs", { data: { spec: heads }, headers: API })).json();
+  await idle(page);
+  await page.reload();
+  await page.getByRole("button", { name: "Evidence", exact: true }).click();
+  await page.getByRole("button", { name: "Results", exact: true }).click();
+  await expect(page.getByRole("main").getByRole("heading", { level: 1, name: "Heads sweep" })).toBeVisible();
+  const said = page.getByRole("status").filter({ hasText: new RegExp(`^Rerun finished\\. Identical to ${id}: all [\\d,]+ per-prompt values match exactly\\.$`) });
+
+  // From the run's results: the rerun opens as it streams, and says so when it ends.
+  await page.getByRole("button", { name: "Rerun", exact: true }).click();
+  await expect(said).toBeVisible({ timeout: 60_000 });
+  await said.getByRole("button", { name: "Dismiss" }).click();
+  await idle(page);
+
+  // From the history's menu, for the same run.
+  await page.getByRole("button", { name: /^History/ }).click();
+  const history = page.getByRole("dialog", { name: "Experiment history" });
+  await history.locator(`li[data-run="${id}"]`).getByRole("button", { name: /^Actions for/ }).click();
+  await page.getByRole("menuitem", { name: "Rerun" }).click();
+  await expect(history).toBeHidden();
+  await expect(said).toBeVisible({ timeout: 60_000 });
+  await idle(page);
+  const listed: { derived_from: { run: string; kind: string } | null }[] = await (await page.request.get("/api/runs", { headers: API })).json();
+  expect(listed.filter((r) => r.derived_from?.kind === "rerun" && r.derived_from.run === id)).toHaveLength(2);
+});
+
 test("the model dialog waits for a device that is there", async ({ page }) => {
   await page.getByRole("button", { name: /^tiny-gpt2 · / }).click();
   const dialog = page.getByRole("dialog", { name: "Load a model" });

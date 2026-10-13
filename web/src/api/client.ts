@@ -37,6 +37,7 @@ import type {
   PromptRecord,
   ProblemReport,
   RecentProject,
+  Reproduction,
   RobustnessChange,
   RunAnnotationsChange,
   RunDetail,
@@ -331,6 +332,8 @@ export const api = {
     post<{ run_id: string; path: string }>("/api/drafts", { spec, draft_id: draftId }),
   rerun: (id: string) =>
     post<{ run_id: string; job: Job }>(`/api/runs/${encodeURIComponent(id)}/rerun`),
+  /** Whether a rerun reproduced the run it reran, value by value. */
+  reproduction: (id: string) => get<Reproduction>(`/api/runs/${encodeURIComponent(id)}/reproduction`),
   robustness: (id: string, change: RobustnessChange) =>
     post<{ run_id: string; job: Job }>(`/api/runs/${encodeURIComponent(id)}/robustness`, change),
   verify: (id: string, top: number) =>

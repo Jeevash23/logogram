@@ -811,24 +811,13 @@ def _print_summary(summary: dict, top: int) -> None:  # type: ignore[type-arg]
 
 
 def _report_reproduction(original: Path, new: Path, original_id: str) -> None:
+    """Whether the new run's per-prompt values match the run its spec came from, as the app says
+    it when a rerun finishes (logogram.compare.reproduction_of)."""
     import pyarrow.parquet as pq
 
-    from logogram.results import largest_change
+    from logogram.compare import reproduction_of
 
-    a = pq.read_table(original)
-    b = pq.read_table(new)
-    largest = largest_change(a, b)
-    if largest is None:
-        typer.echo(f"Differs from {original_id}: {a.num_rows} rows before, {b.num_rows} now.")
-    elif largest == 0.0:
-        typer.echo(
-            f"Identical to {original_id}: all {a.num_rows:,} per-prompt values match exactly."
-        )
-    else:
-        typer.echo(
-            f"Differs from {original_id}: largest change in a per-prompt value is {largest:.3g}. "
-            "Check the device, dtype and library versions in the two manifests."
-        )
+    typer.echo(reproduction_of(pq.read_table(original), pq.read_table(new), original_id)["text"])
 
 
 # -- runs without the app ---------------------------------------------------------------------

@@ -1856,10 +1856,29 @@ def create_app(
 
     @app.post("/api/runs/{run_id}/rerun", response_model=M.StartedRun)
     def rerun(run_id: str) -> dict[str, Any]:
+        """Run a run's spec again, exactly as it ran (its pinned revision and its copy of the
+        prompts): a new run, derived from it as a rerun."""
         project = state.require_project()
         spec = Spec.from_path(project.readable(project.run_dir(run_id) / "spec.json"))
         job = state.run_spec_job(spec, derived_from={"run": run_id, "kind": "rerun"})
         return {"run_id": job.run_id, "job": job.to_dict()}
+
+    @app.get("/api/runs/{run_id}/reproduction", response_model=M.Reproduction)
+    def reproduction(run_id: str) -> dict[str, Any]:
+        """Whether a rerun reproduced the run it reran, value by value: identical when every
+        per-prompt value matches exactly, as `logogram run` says it."""
+        from logogram.compare import reproduction as compare_values
+
+        project = state.require_project()
+        listing = project.run_listing(run_id)
+        if listing is None:
+            raise Missing(f"There is no run {run_id}. It may have been deleted.")
+        derived = listing.derived_from
+        if derived is None or derived.kind != "rerun":
+            raise Conflict(
+                f"{run_id} isn't a rerun of another run, so there is nothing to compare."
+            )
+        return {"run_id": run_id, **compare_values(project, derived.run, run_id)}
 
     @app.post("/api/runs/{run_id}/robustness", response_model=M.StartedRun)
     def robustness(run_id: str, body: RobustnessRequest) -> dict[str, Any]:

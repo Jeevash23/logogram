@@ -1,10 +1,10 @@
 import { test, expect } from "@playwright/test";
 
 import type { DatasetListing, ProjectInfo } from "../src/api/types";
-import { useStore } from "../src/store/app";
+import { reproductionNotice, useStore } from "../src/store/app";
 
 // A dataset renamed or deleted, in this tab or another: the prompts chosen, and their unsaved
-// edits, follow it.
+// edits, follow it. A rerun says whether it reproduced the run it reran.
 
 const dataset = (name: string): DatasetListing => ({ name, path: `datasets/${name}`, modified: null, n: 4 });
 const project = (datasets: string[]): ProjectInfo => ({
@@ -80,6 +80,52 @@ test("the prompts chosen follow a dataset that is renamed, and their edits go wi
     expect(api.seen.length).toBe(before);
   } finally {
     api.restore();
+    store.leaveProject();
+  }
+});
+
+test("a finished rerun says whether it reproduced its run, and a difference offers the comparison", async () => {
+  const same = {
+    run_id: "b",
+    original: "a",
+    identical: true,
+    rows: 160,
+    original_rows: 160,
+    largest: 0,
+    text: "Identical to a: all 160 per-prompt values match exactly.",
+  };
+  expect(reproductionNotice(same, "a")).toEqual(["Rerun finished. Identical to a: all 160 per-prompt values match exactly.", "info", {}]);
+  const differs = { ...same, identical: false, largest: 0.5, text: "Differs from a: largest change in a per-prompt value is 0.5." };
+  const [text, tone, options] = reproductionNotice(differs, "a");
+  expect([text, tone, options.persist]).toEqual(["Rerun finished. Differs from a: largest change in a per-prompt value is 0.5.", "info", true]);
+  options.action?.run();
+  expect(useStore.getState()).toMatchObject({ compareIds: ["a", "b"], view: "compare" });
+
+  // When the rerun's run ends, the tab asks the server and says so.
+  const info = project([]);
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: string) => {
+    if (input === "/api/project") return new Response(JSON.stringify(info));
+    if (input === "/api/runs") return new Response("[]");
+    if (input === "/api/runs/b") {
+      return new Response(JSON.stringify({ id: "b", spec: null, summary: null, manifest: { derived_from: { run: "a", kind: "rerun", change: null } }, listing: null }));
+    }
+    if (input === "/api/runs/b/reproduction") return new Response(JSON.stringify(same));
+    return new Response(JSON.stringify({ error: "Not part of this test." }), { status: 404 });
+  }) as typeof fetch;
+  const store = useStore.getState();
+  try {
+    store.leaveProject();
+    await store.enterProject(info);
+    store.handleEvent({ type: "run.finished", run_id: "b", project_session: "one" });
+    await expect.poll(() => useStore.getState().notices.map((n) => n.text)).toContain("Rerun finished. Identical to a: all 160 per-prompt values match exactly.");
+    // A replayed end (a tab that connects later) says nothing again.
+    useStore.setState({ notices: [] });
+    store.handleEvent({ type: "run.finished", run_id: "b", project_session: "one", replay: true });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(useStore.getState().notices).toEqual([]);
+  } finally {
+    globalThis.fetch = original;
     store.leaveProject();
   }
 });

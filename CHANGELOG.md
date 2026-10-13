@@ -23,6 +23,11 @@ What changed in each version of Logogram.
   `logogram datasets delete NAME`, `lg.rename_dataset` and `lg.delete_dataset`. Runs that ran on
   it keep their own copy of its prompts. Refused while a saved draft or a queued run names it,
   naming them. Every tab showing the dataset follows it to its new name.
+- **Rerun** in the app: a run's results and its menu in the history run its spec again, exactly
+  as it ran (a finished, failed or cancelled run; Edit and rerun stays for changing it first). When
+  the rerun finishes, a notice says whether every per-prompt value matches the original exactly,
+  as `logogram run` does, and a difference offers the comparison of the two runs
+  (`GET /api/runs/{id}/reproduction`).
 - `lg.with_model(spec, model)`: the spec with its model replaced by a loaded model, as it was
   loaded (its files, the exact revision, dtype, device and weight processing), to run the spec on
   that model.

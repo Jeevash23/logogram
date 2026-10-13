@@ -112,6 +112,11 @@ export function History({ onOpen }: { onOpen?: () => void } = {}) {
     await annotate(run.id, { archived: !run.archived });
     keepFocus(index);
   };
+  // A rerun opens as it streams, in Results.
+  const rerun = async (run: RunListing) => {
+    await useStore.getState().rerunRun(run.id);
+    onOpen?.();
+  };
   // Where the keyboard goes once a title has been edited: back to its run, once the run's line
   // is drawn again in place of the field.
   const afterRename = useRef<{ id: string; index: number } | null>(null);
@@ -232,6 +237,7 @@ export function History({ onOpen }: { onOpen?: () => void } = {}) {
                   onRenamed={(refocus) => renamed(run.id, index, refocus)}
                   onStar={() => void star(run, index)}
                   onArchive={() => void archive(run, index)}
+                  onRerun={() => void rerun(run)}
                   onDelete={() => {
                     deletingAt.current = { id: run.id, index };
                     setDeleting(run);
@@ -284,6 +290,7 @@ function RunRow({
   onRenamed,
   onStar,
   onArchive,
+  onRerun,
   onDelete,
   sweeps,
   onShowSweep,
@@ -299,6 +306,7 @@ function RunRow({
   onRenamed: (refocus: boolean) => void;
   onStar: () => void;
   onArchive: () => void;
+  onRerun: () => void;
   onDelete: () => void;
   /** The sweeps the run is a value of. */
   sweeps: SweepGroup[];
@@ -386,7 +394,7 @@ function RunRow({
           >
             <Icon name="star" size={15} fill={run.starred ? "currentColor" : "none"} />
           </button>
-          <RunMenu run={run} label={label} onRename={onRename} onStar={onStar} onArchive={onArchive} onDelete={onDelete} sweeps={sweeps} onShowSweep={onShowSweep} />
+          <RunMenu run={run} label={label} onRename={onRename} onStar={onStar} onArchive={onArchive} onRerun={onRerun} onDelete={onDelete} sweeps={sweeps} onShowSweep={onShowSweep} />
         </>
       )}
     </li>
@@ -401,6 +409,7 @@ function RunMenu({
   onRename,
   onStar,
   onArchive,
+  onRerun,
   onDelete,
   sweeps,
   onShowSweep,
@@ -410,6 +419,7 @@ function RunMenu({
   onRename: () => void;
   onStar: () => void;
   onArchive: () => void;
+  onRerun: () => void;
   onDelete: () => void;
   sweeps: SweepGroup[];
   onShowSweep: (id: string) => void;
@@ -418,6 +428,10 @@ function RunMenu({
   const running = useStore((st) => st.live[run.id]?.status === "running" || (st.job?.status === "running" && st.job.run_id === run.id));
   const queued = useStore((st) => st.queue.some((q) => q.draft_id === run.id));
   const busy = run.status === "running" || running ? "Running" : queued ? "Queued" : null;
+  // A run that has ended (finished, failed or cancelled) can run again as it ran, when nothing
+  // else is running.
+  const jobRunning = useStore((st) => st.job?.status === "running");
+  const ended = !run.damaged && (run.status === "finished" || run.status === "failed" || run.status === "cancelled");
   const afterClosing = (action: () => void) => () => {
     pending.current = action;
   };
@@ -449,6 +463,12 @@ function RunMenu({
           <DropdownMenu.Item className={menuClasses.item} onSelect={onArchive}>
             {run.archived ? "Move out of the archive" : "Archive"}
           </DropdownMenu.Item>
+          {ended && (
+            <DropdownMenu.Item className={menuClasses.item} disabled={jobRunning} onSelect={onRerun}>
+              Rerun
+              {jobRunning && <span className={menuClasses.shortcut}>Busy</span>}
+            </DropdownMenu.Item>
+          )}
           {sweeps.map((x) => (
             <DropdownMenu.Item key={x.id} className={menuClasses.item} onSelect={afterClosing(() => onShowSweep(x.id))}>
               {sweeps.length > 1 ? `Show the sweep over ${fieldWords(x.field).plural}` : "Show the sweep"}
