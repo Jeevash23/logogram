@@ -13,6 +13,11 @@ runs from a node's output to one later node's input:
   residual stream (Pythia), not those;
 * the logits, from every node.
 
+With grouped-query attention (Llama, Qwen, Mistral, Gemma) a layer has fewer key/value heads than
+query heads, and every query head of a group reads its key/value head's key and value. A key or
+value input then belongs to the key/value head: an edge into "L5 KV1 k" reaches every query head of
+group 1 through their shared key. Queries stay one per query head.
+
 GPT-2 small (12 layers of 12 heads) has 32,491 edges. The graph relies on what the model was
 measured to do (``ModelBackend.edge_checks``): its heads and MLPs add into the residual stream, and
 each receiver can be given its own copy of the stream to read.
@@ -107,7 +112,7 @@ from logogram.engine import (
 from logogram.metrics import Scorer
 from logogram.prompts import LengthGroup, PreparedPrompt, group_by_length
 from logogram.schema import EDGES_FILE
-from logogram.sites import ResolvedSite, ScopeError
+from logogram.sites import ResolvedSite, ScopeError, kv_heads
 from logogram.spec import (
     ALL_POSITIONS,
     NAME_MAX,
@@ -185,11 +190,18 @@ class Node:
 @dataclass(frozen=True)
 class Input:
     """A receiver: a head's query, key or value input, an MLP's input, or the logits (whose layer
-    is the model's number of layers: they come after the last)."""
+    is the model's number of layers: they come after the last). A key or value input is a key/value
+    head's: with grouped-query attention (``shared``) every query head of its group reads it, and
+    it is named "L5 KV1 k"."""
 
     kind: str
     layer: int
     head: int | None = None
+    shared: bool = False
+
+    @property
+    def unit(self) -> str:
+        return "KV" if self.shared else "H"
 
     @property
     def label(self) -> str:
@@ -197,7 +209,7 @@ class Input:
             return "logits"
         if self.kind == "mlp":
             return f"L{self.layer} MLP"
-        return f"L{self.layer} H{self.head} {self.kind}"
+        return f"L{self.layer} {self.unit}{self.head} {self.kind}"
 
     @property
     def key(self) -> str:
@@ -205,7 +217,7 @@ class Input:
             return "logits"
         if self.kind == "mlp":
             return f"L{self.layer}M"
-        return f"L{self.layer}H{self.head}{self.kind}"
+        return f"L{self.layer}{self.unit}{self.head}{self.kind}"
 
     def block(self) -> tuple[Block, int]:
         if self.kind in ("q", "k", "v"):
@@ -228,6 +240,8 @@ class Graph:
 
     n_layers: int
     n_heads: int
+    # Key/value heads a layer: fewer than n_heads with grouped-query attention.
+    n_kv_heads: int
     parallel: bool
     senders: list[Node]
     receivers: list[Input]
@@ -286,8 +300,16 @@ def senders_of(receiver: Input, n_heads: int, parallel: bool) -> list[Node]:
 def build_graph(info: ModelInfo, scope: GraphScope) -> Graph:
     """The edges of ``scope`` for the loaded model, in a fixed order: receivers layer by layer
     (each head's query, key and value, then the MLP; the logits last), and each receiver's senders
-    in the order the residual stream adds them."""
+    in the order the residual stream adds them. With grouped-query attention, each group's query
+    heads' queries come first, then its key/value head's key and value."""
     n, H = info.n_layers, info.n_heads
+    kv = kv_heads(info)
+    if kv < 1 or H % kv:
+        raise ScopeError(
+            f"This model has {H} heads and {kv} key/value heads a layer, which don't divide into "
+            "groups, so its keys and values can't be laid out as edges."
+        )
+    group = H // kv
     parallel = str(info.extra.get("block_structure")) == "parallel"
     layers = list(range(n)) if scope.layers is None else list(scope.layers)
     for layer in layers:
@@ -300,8 +322,9 @@ def build_graph(info: ModelInfo, scope: GraphScope) -> Graph:
     index = {s: i for i, s in enumerate(senders)}
     receivers: list[Input] = []
     for layer in layers:
-        for h in range(H):
-            receivers += [Input(part, layer, h) for part in ("q", "k", "v")]
+        for g in range(kv):
+            receivers += [Input("q", layer, h) for h in range(g * group, (g + 1) * group)]
+            receivers += [Input(part, layer, g, shared=group > 1) for part in ("k", "v")]
         receivers.append(Input("mlp", layer))
     if scope.logits:
         receivers.append(Input("logits", n))
@@ -316,6 +339,7 @@ def build_graph(info: ModelInfo, scope: GraphScope) -> Graph:
     graph = Graph(
         n_layers=n,
         n_heads=H,
+        n_kv_heads=kv,
         parallel=parallel,
         senders=senders,
         receivers=receivers,
@@ -336,14 +360,21 @@ def build_graph(info: ModelInfo, scope: GraphScope) -> Graph:
 
 
 def count_edges(
-    n_layers: int, n_heads: int, parallel: bool, layers: list[int] | None, logits: bool
+    n_layers: int,
+    n_heads: int,
+    parallel: bool,
+    layers: list[int] | None,
+    logits: bool,
+    n_kv_heads: int | None = None,
 ) -> int:
-    """How many edges a graph scope has, without building it (the app shows this before a run)."""
+    """How many edges a graph scope has, without building it (the app shows this before a run).
+    With grouped-query attention, keys and values are ``n_kv_heads`` a layer."""
+    kv = n_heads if n_kv_heads is None else n_kv_heads
     chosen = range(n_layers) if layers is None else layers
     total = 0
     for layer in chosen:
         before = 1 + layer * (n_heads + 1)  # the embeddings, and every head and MLP before
-        total += 3 * n_heads * before
+        total += (n_heads + 2 * kv) * before  # each query head's query, each key/value head's two
         total += before + (0 if parallel else n_heads)
     if logits:
         total += 1 + n_layers * (n_heads + 1)
@@ -351,8 +382,18 @@ def count_edges(
 
 
 def edge_sites(graph: Graph) -> tuple[list[ResolvedSite], dict[str, Any]]:
-    """One result row per edge, at (sender, receiver) in a senders × receivers layout."""
+    """One result row per edge, at (sender, receiver) in a senders × receivers layout. With
+    grouped-query attention, a key or value receiver's column names the query heads that read it
+    (``query_heads``), as a map of keys or values does."""
     last = graph.n_layers - 1
+    group = graph.n_heads // graph.n_kv_heads
+
+    def column(r: Input) -> dict[str, Any]:
+        out = {"key": r.key, "label": r.label, "node": r.kind, "layer": r.layer, "head": r.head}
+        if r.shared and r.head is not None:
+            out["query_heads"] = list(range(r.head * group, (r.head + 1) * group))
+        return out
+
     sites = []
     for e in range(len(graph)):
         s, r = int(graph.edge_sender[e]), int(graph.edge_receiver[e])
@@ -375,10 +416,7 @@ def edge_sites(graph: Graph) -> tuple[list[ResolvedSite], dict[str, Any]]:
             {"key": s.key, "label": s.label, "node": s.kind, "layer": s.layer, "head": s.head}
             for s in graph.senders
         ],
-        "cols": [
-            {"key": r.key, "label": r.label, "node": r.kind, "layer": r.layer, "head": r.head}
-            for r in graph.receivers
-        ],
+        "cols": [column(r) for r in graph.receivers],
     }
     return sites, layout
 
@@ -637,7 +675,9 @@ class PatchPlan:
 
 
 def _places(graph: Graph, block: Block) -> int:
-    return graph.n_heads if block[0] in ("head", "q", "k", "v") else 1
+    if block[0] in ("k", "v"):
+        return graph.n_kv_heads
+    return graph.n_heads if block[0] in ("head", "q") else 1
 
 
 class _Patcher(EdgePatcher):

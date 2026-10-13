@@ -412,13 +412,19 @@ class SiteSetsScope(_Strict):
 
 
 class HeadReceiver(_Strict):
-    """A later attention head whose query, key or value input receives the path."""
+    """A later attention head whose query, key or value input receives the path.
+
+    With grouped-query attention (Llama, Qwen, Mistral, Gemma) a model has fewer key and value
+    heads than query heads, and every query head of a group reads its key/value head's key and
+    value: a key or value receiver then names the key/value head (results write it "L5 KV1 k"),
+    and the path reaches every query head of its group through it, as a k or v site does."""
 
     kind: Literal["head"] = "head"
     layer: int = Field(ge=0)
     """The receiving head's layer, from 0."""
     head: int = Field(ge=0)
-    """The receiving head's index in its layer."""
+    """The receiving head's index in its layer: the query head for ``q``, the key/value head for
+    ``k`` and ``v`` (the same as the query head without grouped-query attention)."""
     input: Literal["q", "k", "v"]
     """The input the path reaches: the head's query, key or value."""
 
@@ -440,12 +446,18 @@ class MlpReceiver(_Strict):
 PathReceiver = Annotated[HeadReceiver | LogitsReceiver | MlpReceiver, Field(discriminator="kind")]
 
 
-def receiver_text(receiver: HeadReceiver | LogitsReceiver | MlpReceiver) -> str:
+def receiver_text(
+    receiver: HeadReceiver | LogitsReceiver | MlpReceiver, shared: bool = False
+) -> str:
+    """A receiver as Logogram names it, for example "L9 H6 q". ``shared``: on a model whose
+    heads share keys and values (grouped-query attention), a key or value is its key/value
+    head's, "L9 KV1 k"."""
     if isinstance(receiver, LogitsReceiver):
         return "logits"
     if isinstance(receiver, MlpReceiver):
         return f"L{receiver.layer} MLP"
-    return f"L{receiver.layer} H{receiver.head} {receiver.input}"
+    unit = "KV" if shared and receiver.input in ("k", "v") else "H"
+    return f"L{receiver.layer} {unit}{receiver.head} {receiver.input}"
 
 
 class GraphScope(_Strict):
@@ -531,9 +543,10 @@ def sender_text(sender: EdgeSender) -> str:
     return f"L{sender.layer} MLP"
 
 
-def edge_text(edge: Edge) -> str:
-    """An edge as Logogram names it, for example "L5 H5 → L9 H6 q"."""
-    return f"{sender_text(edge.sender)} → {receiver_text(edge.receiver)}"
+def edge_text(edge: Edge, shared: bool = False) -> str:
+    """An edge as Logogram names it, for example "L5 H5 → L9 H6 q" ("L5 H5 → L9 KV1 k" into a
+    key/value head's key, with ``shared``: grouped-query attention)."""
+    return f"{sender_text(edge.sender)} → {receiver_text(edge.receiver, shared)}"
 
 
 class EdgesScope(_Strict):

@@ -658,6 +658,9 @@ def edge_graph_svg(summary: dict[str, Any], top: int = GRAPH_EDGES) -> str:
     strongest = sorted(sites, key=lambda s: (-abs(s["effect"]["mean"]), s["index"]))[:top]
     n_layers = int(model.get("n_layers") or 1)
     n_heads = int(model.get("n_heads") or 1)
+    # With grouped-query attention a key or value is a key/value head's, read by every query head
+    # of its group: its edges end in the middle of the group.
+    group = max(1, n_heads // int(model.get("n_key_value_heads") or n_heads))
     columns = 2 * n_layers + 2
     left, right, top_pad = 40, 24, 16
     width = max(640, 36 * columns + left + right)
@@ -683,12 +686,17 @@ def edge_graph_svg(summary: dict[str, Any], top: int = GRAPH_EDGES) -> str:
         e = s["edge"]
         receiver = e["receiver"]
         x1, y1 = place(e["sender"])
+        shared = receiver.get("input") in ("k", "v") and group > 1
         x2, y2 = place(
             {"kind": "logits"}
             if receiver["kind"] == "logits"
             else {"kind": "mlp", "layer": receiver["layer"]}
             if receiver["kind"] == "mlp"
-            else {"kind": "head", "layer": receiver["layer"], "head": receiver["head"]},
+            else {
+                "kind": "head",
+                "layer": receiver["layer"],
+                "head": receiver["head"] * group + (group - 1) / 2 if shared else receiver["head"],
+            },
             receiver.get("input"),
         )
         mean = s["effect"]["mean"]
