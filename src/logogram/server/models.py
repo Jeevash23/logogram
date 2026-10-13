@@ -129,7 +129,12 @@ class RecentProject(_Out):
     path: str
     name: str
     opened: str | None
-    modified: str
+    # None when the project can't be read now.
+    modified: str | None
+    # Its folder isn't there now (or holds no project Logogram can read): kept in the list until
+    # it is removed from it, with ``problem`` saying why.
+    missing: bool = False
+    problem: str | None = None
 
 
 class ExampleInfo(_Out):

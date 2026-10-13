@@ -37,6 +37,15 @@ What changed in each version of Logogram.
   an SAE's features, …) failed with "Internal Server Error". It now gives the memory back and
   says what ran out (GPU memory, or memory) and what to do: fewer prompts, a smaller batch size
   or a shorter text, or a smaller model or a 16-bit dtype.
+- A project whose folder was missing when the recent projects were listed (on a drive that
+  wasn't connected, say) was dropped from the list for good. It now stays, marked *Folder not
+  found*, until it is removed from the list, and opening it says plainly that its folder isn't
+  there. Listing the recent projects no longer writes into them: it used to add their folders and
+  `.gitignore` when they were missing.
+- Opening a project could fail after the project had been switched, with no tab told, when the
+  recent list couldn't be written (Logogram's settings folder read-only, say) or held entries
+  that aren't objects. The recent list never stops a project opening now, and entries it can't
+  read are left out.
 - A settings file holding `null`, a list or anything else that isn't an object stopped the app
   from starting (an internal server error). It now reads as no settings, and settings are written
   whole, through a temporary file, so an interrupted write never leaves half a file.

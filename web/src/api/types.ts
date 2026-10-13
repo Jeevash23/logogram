@@ -203,7 +203,12 @@ export interface RecentProject {
   path: string;
   name: string;
   opened: string | null;
-  modified: string;
+  /** Null when the project can't be read now. */
+  modified: string | null;
+  /** Its folder isn't there now (or holds no project Logogram can read): it stays in the list
+   * until it is removed from it, and `problem` says why. */
+  missing?: boolean;
+  problem?: string | null;
 }
 
 /** A bundled example (logogram.gallery): what it asks, the result to expect, and its spec. */

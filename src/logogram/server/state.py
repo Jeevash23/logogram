@@ -297,7 +297,10 @@ class AppState:
             # The queue of the project open until now stays in it, paused.
             self._release_queue(publish=False)
             self.project = project
-        remember_recent(project)
+        try:
+            remember_recent(project)
+        except Exception as exc:  # noqa: BLE001 - the recent list never stops a project opening
+            log.warning("Couldn't add the project to the recent projects: %s", _reason(exc))
         log.info("Opened the project %s", project.root)
         self.hub.publish("project", {"session_id": project.session_id})
 

@@ -48,6 +48,11 @@ class ProjectError(ValueError):
     pass
 
 
+class ProjectMissing(ProjectError):
+    """The project's folder isn't there: moved, renamed, deleted, or on a drive that isn't
+    connected."""
+
+
 class ProjectMeta(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -167,9 +172,26 @@ class Project:
 
     @classmethod
     def open(cls, path: str | Path) -> Project:
+        """The project in the folder ``path``, with any of its folders and its .gitignore that
+        are missing added."""
+        project = cls.read(path)
+        project.ensure_layout()
+        return project
+
+    @classmethod
+    def read(cls, path: str | Path) -> Project:
+        """The project in the folder ``path``, as its project.json says, read without writing
+        anything into the folder (:meth:`open` adds what is missing). A folder that isn't there
+        raises :class:`ProjectMissing`."""
         root = Path(path).expanduser().resolve()
         meta_path = root / PROJECT_FILE
         if not meta_path.is_file():
+            if not root.is_dir():
+                raise ProjectMissing(
+                    f"The folder {root} isn't there any more: it was moved, renamed or deleted, "
+                    "or it is on a drive that isn't connected. Connect the drive, or open the "
+                    "project where it is now."
+                )
             raise ProjectError(
                 f"{root.name or root} isn't a Logogram project (there's no project.json). "
                 "Create a project there instead."
@@ -181,9 +203,7 @@ class Project:
             )
         except Exception as exc:
             raise ProjectError(f"project.json can't be read: {exc}") from exc
-        project = cls(root, meta)
-        project.ensure_layout()
-        return project
+        return cls(root, meta)
 
     @classmethod
     def create(cls, parent: str | Path, name: str, folder: str | None = None) -> Project:
@@ -433,35 +453,84 @@ def recent_file() -> Path:
     return config_dir() / "recent.json"
 
 
-def load_recent() -> list[dict[str, Any]]:
+# How many projects the recent list keeps.
+RECENT_LIMIT = 12
+
+
+def _recent_items() -> list[dict[str, Any]]:
+    """recent.json's entries, last opened first: each a path, the project's name when it was last
+    opened and when that was. Entries that aren't such an object are left out."""
     data = _read_json(recent_file())
-    items = data.get("projects", []) if data else []
+    items = data.get("projects") if data else None
+    out: list[dict[str, Any]] = []
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        path, name, opened = item.get("path"), item.get("name"), item.get("opened")
+        if not isinstance(path, str) or not path or any(i["path"] == path for i in out):
+            continue
+        out.append(
+            {
+                "path": path,
+                "name": name if isinstance(name, str) and name else None,
+                "opened": opened if isinstance(opened, str) else None,
+            }
+        )
+    return out
+
+
+def _save_recent(items: list[dict[str, Any]]) -> None:
+    recent_file().parent.mkdir(parents=True, exist_ok=True)
+    payload = {"projects": items[:RECENT_LIMIT]}
+    write_text_atomic(recent_file(), json.dumps(payload, indent=2) + "\n")
+
+
+def load_recent() -> list[dict[str, Any]]:
+    """The projects opened lately, last opened first: each one's path, name, when it was opened
+    and when it last changed. Listing them writes nothing into them: each project.json is only
+    read. A project whose folder can't be found now (moved, deleted, or on a drive that isn't
+    connected) stays in the list, ``missing``, with ``problem`` saying why, until it is removed
+    from the list (:func:`forget_recent`)."""
     out = []
-    for item in items:
-        path = Path(item.get("path", ""))
+    for item in _recent_items():
+        path = Path(item["path"])
+        entry: dict[str, Any] = {
+            "path": item["path"],
+            "name": item["name"] or path.name or item["path"],
+            "opened": item["opened"],
+            "modified": None,
+            "missing": False,
+            "problem": None,
+        }
         try:
-            if not (path / PROJECT_FILE).is_file():
-                continue
-            project = Project.open(path)
-            out.append(
-                {
-                    "path": str(path),
-                    "name": project.meta.name,
-                    "opened": item.get("opened"),
-                    "modified": project.last_modified(),
-                }
-            )
-        except (ProjectError, OSError):
-            continue  # moved, deleted or unreadable: leave it out of the list
+            project = Project.read(path)
+            entry.update(name=project.meta.name, modified=project.last_modified())
+        except ProjectMissing:
+            entry.update(missing=True, problem="Folder not found")
+        except (ProjectError, OSError) as exc:  # there, but not a project Logogram can read
+            entry.update(missing=True, problem=str(exc).splitlines()[0] if str(exc) else None)
+        out.append(entry)
     return out
 
 
 def remember_recent(project: Project) -> None:
-    items = [i for i in load_recent() if i["path"] != str(project.root)]
-    items.insert(0, {"path": str(project.root), "opened": now_iso()})
-    recent_file().parent.mkdir(parents=True, exist_ok=True)
-    payload = {"projects": [{"path": i["path"], "opened": i.get("opened")} for i in items[:12]]}
-    write_text_atomic(recent_file(), json.dumps(payload, indent=2) + "\n")
+    """Put ``project`` first in the recent list."""
+    items = [i for i in _recent_items() if i["path"] != str(project.root)]
+    items.insert(0, {"path": str(project.root), "name": project.meta.name, "opened": now_iso()})
+    _save_recent(items)
+
+
+def forget_recent(path: str | Path) -> bool:
+    """Take the project at ``path`` out of the recent list (its folder is left as it is). Whether
+    it was listed."""
+    given = str(path)
+    resolved = str(Path(given).expanduser().resolve())
+    items = _recent_items()
+    kept = [i for i in items if i["path"] not in (given, resolved)]
+    if len(kept) == len(items):
+        return False
+    _save_recent(kept)
+    return True
 
 
 def default_projects_parent() -> Path:
