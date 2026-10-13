@@ -110,6 +110,13 @@ def _name(path: str) -> str:
     return path.replace("\\", "/").rsplit("/", 1)[-1]
 
 
+def readable(path: str) -> bool:
+    """Whether a file of this name is one Logogram reads as a corpus."""
+    return path.lower().endswith(
+        (".parquet", ".jsonl", ".ndjson", ".json", ".csv", ".tsv", ".txt", ".text")
+    )
+
+
 # -- reading rows --------------------------------------------------------------------------------
 
 
