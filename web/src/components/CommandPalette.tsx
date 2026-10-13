@@ -147,6 +147,13 @@ function useCommands(query: string): Command[] {
       { id: "projects", label: "All projects", group: "Project", run: () => st.goto("projects") },
       { id: "system", label: "System check", group: "Project", keywords: "gpu cuda doctor hardware", run: () => st.goto("system") },
       { id: "updates", label: "Check for updates", group: "Project", keywords: "version upgrade new release pypi", run: () => void st.checkUpdates() },
+      {
+        id: "start-here",
+        label: "Learn the basics",
+        group: "Help",
+        keywords: "start here new beginner primer first hour clean corrupt patching effect head layer mlp residual stream token site",
+        run: () => openGuide("start"),
+      },
       { id: "guide", label: "Open the guide", group: "Help", keywords: "help learn workspaces map logogram numbers intervals docs", run: () => openGuide() },
       { id: "walkthrough", label: "Walk me through the example", group: "Help", keywords: "tour tutorial learn start ioi first run", run: () => void walkThroughExample() },
       { id: "shortcuts", label: "Show keyboard shortcuts", group: "Help", keywords: "keys hotkeys keyboard help", shortcut: key("?"), run: () => useStore.setState({ shortcutsOpen: true }) },

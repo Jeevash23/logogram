@@ -4,7 +4,10 @@ This page takes you from installing Logogram to reading your first result: which
 small's attention heads carry the answer in the indirect object identification (IOI) task. It
 takes about ten minutes, most of it the first download of GPT-2 small. The app can walk you
 through the same steps: open the example from the first screen with **Walk me through it**, or
-choose **Help → Walk me through the example** at any time.
+choose **Help → Walk me through the example** at any time. New to interpretability? **Start
+here**, under the tagline on the first screens and the first page of **Help → Guide**, explains in
+five minutes the ideas this page relies on: clean and corrupt prompts, patching a head, what its
+effect means, and the parts of a model.
 
 ## Install
 

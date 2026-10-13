@@ -10,15 +10,17 @@ import { STEPS, TOUR_EXAMPLE } from "../lib/walkthrough";
 import { useStore } from "./app";
 
 interface HelpState {
-  /** The guide's page, kept while it is closed, so it opens where it was left. */
+  /** The guide's page, kept while it is closed, so it opens where it was left: on Start here,
+   * the first time in a session. */
   guidePage: GuidePageId;
   /** The walkthrough's step, from 0, or null while it isn't running. */
   tourStep: number | null;
-  /** Set when a help dialog closes to show a view: the keyboard goes to that view, not to Help. */
+  /** Set when a help dialog closes to show a view (or, from the guide, the examples on All
+   * projects): the keyboard goes there, not to Help. */
   toView: boolean;
 }
 
-export const useHelp = create<HelpState>(() => ({ guidePage: "workspaces", tourStep: null, toView: false }));
+export const useHelp = create<HelpState>(() => ({ guidePage: "start", tourStep: null, toView: false }));
 
 // Leaving the workbench, or the project the walkthrough runs in, ends it without a word: it was
 // neither finished nor skipped, so the first screens keep offering it.

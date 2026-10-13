@@ -1,14 +1,18 @@
 import { test, expect, type Locator, type Page } from "@playwright/test";
 
+import { START_NOTE } from "../src/lib/start";
 import { expectAccessible } from "./axe";
 
 // The walkthrough of the bundled IOI example, from the keyboard alone: offered on the first
 // screens until it is finished or skipped, and started from Help, the guide and the command
 // palette too; a step at a time beside the real controls, each with an ink outline and nothing
 // dimming the page; Next, Back, Skip and Escape; the keyboard on the step, and back on the page
-// when it ends; and how it ended kept in the person's settings. Axe checks every step, in the
-// theme the run is in. Each test reopens the project that was open before it, so the other checks
-// see the fixture as they expect.
+// when it ends; and how it ended kept in the person's settings. Start here, the first thing the
+// keyboard reaches on the first screens, opens the guide at its first page, whose walkthrough
+// button stays after the examples stop offering it; in a short window it stays whole under the
+// tagline, and in a narrow one at the end of the slim bar. Axe checks every step, in the theme the run
+// is in. Each test reopens the project that was open before it, so the other checks see the
+// fixture as they expect.
 
 test.use({ bypassCSP: true, reducedMotion: "reduce" });
 test.describe.configure({ mode: "serial" });
@@ -213,6 +217,88 @@ test("the first screen offers the walkthrough with the example, and it goes step
   expect(errors).toEqual([]);
 });
 
+test("Start here is the first Tab stop on the first screens, and its walkthrough starts even once the walkthrough was skipped", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  // Skipped: the examples stop offering the walkthrough; Start here keeps offering it.
+  await page.request.post("/api/settings", { data: { walkthrough: "skipped" }, headers: ORIGIN });
+  await page.goto("/?token=browser-test-token");
+  await expect(page.getByRole("main").getByRole("heading", { name: "tiny-gpt2", exact: true })).toBeVisible();
+  await allProjects(page);
+  await expect(page.getByRole("button", { name: "Walk me through it", exact: true })).toHaveCount(0);
+  const start = page.getByRole("complementary", { name: "Logogram" }).getByRole("button", { name: "Start here", exact: true });
+  await expect(start).toHaveAccessibleDescription(START_NOTE);
+  await expect(page.getByText(START_NOTE)).toBeVisible();
+
+  // Tab, then Enter: the guide, at Start here.
+  await page.keyboard.press("Tab");
+  await expect(start).toBeFocused();
+  await page.keyboard.press("Enter");
+  const guide = page.getByRole("dialog", { name: "Guide", exact: true });
+  await expect(guide).toBeVisible();
+  await expect(guide.getByRole("tab", { name: "Start here", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expectAccessible(page, "Guide, Start here, on All projects");
+  // Escape gives the keyboard back to the button.
+  await page.keyboard.press("Escape");
+  await expect(guide).toBeHidden();
+  await expect(start).toBeFocused();
+  await expectAccessible(page, "All projects, with Start here");
+
+  // In a short window the glyph gives up its room first: Start here stays whole under the tagline,
+  // and the first Tab reaches it without scrolling the brand out of the panel, which clips.
+  const bar = page.getByRole("complementary", { name: "Logogram" });
+  const glyph = bar.locator("svg").first();
+  const tagline = bar.locator("p", { hasText: "what a model computes" });
+  for (const size of [
+    { width: 960, height: 600 },
+    { width: 1024, height: 560 },
+    { width: 1280, height: 540 },
+  ]) {
+    await page.setViewportSize(size);
+    await expect(start).toBeInViewport({ ratio: 1 });
+    await expect
+      .poll(async () => {
+        const [box, button, mark, line] = [await bar.boundingBox(), await start.boundingBox(), await glyph.boundingBox(), await tagline.boundingBox()];
+        if (!box || !button || !mark || !line) return false;
+        return button.y >= box.y && button.y + button.height <= box.y + box.height && mark.y + mark.height <= line.y;
+      }, { message: `Start here is whole and the glyph above the tagline at ${size.width}×${size.height}` })
+      .toBe(true);
+    expect(await reachable(start)).toBe(true);
+    // A click at the panel's top corner, then Tab, as from the top of the page.
+    await bar.click({ position: { x: 2, y: 2 } });
+    await page.keyboard.press("Tab");
+    await expect(start).toBeFocused();
+    expect(await bar.evaluate((el) => el.scrollTop)).toBe(0);
+    await expect(bar.getByText("Logogram", { exact: true })).toBeInViewport({ ratio: 1 });
+  }
+
+  // In an 800-pixel window it is at the end of the slim bar, without its line.
+  await page.setViewportSize({ width: 800, height: 700 });
+  await expect(start).toBeInViewport({ ratio: 1 });
+  await expect(page.getByText(START_NOTE)).toBeHidden();
+  // The bar can keep part of its wide layout for a frame after the window shrinks: wait for the slim one.
+  await expect
+    .poll(async () => {
+      const [box, button] = [await bar.boundingBox(), await start.boundingBox()];
+      return !!box && !!button && button.x + button.width > box.x + box.width - 40 && button.y + button.height <= box.y + box.height;
+    })
+    .toBe(true);
+  expect(await reachable(start)).toBe(true);
+
+  // Walk me through the example opens the example and starts at the first step.
+  await start.focus();
+  await page.keyboard.press("Enter");
+  await tabTo(page, guide.getByRole("button", { name: "Walk me through the example", exact: true }));
+  await page.keyboard.press("Enter");
+  await expect(step(page, STEPS[0])).toBeVisible({ timeout: 30_000 });
+  await expect(guide).toBeHidden();
+  await expect.poll(() => focusOnStep(page)).toBe(true);
+  expect((await (await page.request.get("/api/state")).json()).project.name).toBe("IOI example");
+  await page.keyboard.press("Escape");
+  await expect(step(page, STEPS[0])).toBeHidden();
+  expect(errors).toEqual([]);
+});
+
 test("from Help, beside a finished run, it points at the run's map, the inspector and Check robustness, and Finish is kept", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -289,6 +375,10 @@ test("from the guide, in an 800-pixel window, every step stays in view, and a si
   await expect(page.getByRole("menuitem", { name: "Guide", exact: true })).toBeFocused();
   await page.keyboard.press("Enter");
   const guide = page.getByRole("dialog", { name: "Guide", exact: true });
+  // The page on the workspaces offers it too, beside Start here.
+  await tabTo(page, guide.getByRole("tab", { name: "Start here", exact: true }));
+  await page.keyboard.press("ArrowRight");
+  await expect(guide.getByRole("tabpanel")).toHaveAccessibleName("Workspaces");
   await tabTo(page, guide.getByRole("button", { name: "Walk me through the example", exact: true }));
   await page.keyboard.press("Enter");
   for (const [i, title] of STEPS.entries()) {

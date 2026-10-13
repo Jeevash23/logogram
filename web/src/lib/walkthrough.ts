@@ -7,6 +7,10 @@ import type { View } from "../store/app";
 /** The bundled example the walkthrough is written for. */
 export const TOUR_EXAMPLE = "ioi-gpt2";
 
+/** What the example's first run costs, said the same way by the walkthrough and by the guide's
+ * first page (lib/start.ts). */
+export const FIRST_RUN = { download: "about 0.5 GB", cpu: "about a minute on a CPU" } as const;
+
 /** What a step's view and words depend on. */
 export interface TourContext {
   /** A run is open whose results can be drawn: running, or ended with results. */
@@ -75,7 +79,7 @@ export const STEPS: TourStep[] = [
     align: "start",
     text: () => [
       "The form is the experiment's spec: the method, what to sweep, the metric and the statistics. Every choice that can change a number is here, and none is filled in for you.",
-      "This one patches each head's output from the clean prompt into the corrupt one, at every position. Press **Run**: GPT-2 small downloads once, about 0.5 GB, and the sweep takes about a minute on a CPU.",
+      `This one patches each head's output from the clean prompt into the corrupt one, at every position. Press **Run**: GPT-2 small downloads once, ${FIRST_RUN.download}, and the sweep takes ${FIRST_RUN.cpu}.`,
     ],
   },
   {
@@ -122,7 +126,7 @@ export const STEPS: TourStep[] = [
       ctx.finished
         ? "A finding should survive changes that shouldn't matter. **Check robustness** reruns the sweep with one choice changed, such as the other direction or another baseline, and flags the heads whose conclusion changed."
         : "A finding should survive changes that shouldn't matter. Once the run finishes, **Check robustness** here reruns it with one choice changed, such as the other direction or another baseline, and flags the heads whose conclusion changed.",
-      "**Help → Guide** explains the map and the numbers again whenever you need it.",
+      "**Start here**, the first page of **Help → Guide**, says what this example finds and what to try next. The guide's other pages explain the map and the numbers whenever you need them.",
     ],
   },
 ];

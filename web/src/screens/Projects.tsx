@@ -189,7 +189,8 @@ export function Projects() {
         </div>
 
         <section className={s.examples} aria-labelledby="examples-title">
-          <h2 id="examples-title" className={s.sectionTitle}>
+          {/* The guide's Start here can send the keyboard here. */}
+          <h2 id="examples-title" className={s.sectionTitle} tabIndex={-1}>
             Examples
           </h2>
           <ExampleGallery disabled={busy} />

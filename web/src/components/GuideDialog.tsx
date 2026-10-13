@@ -5,14 +5,16 @@ import { guideUrl } from "../lib/help";
 import { useStore, type View } from "../store/app";
 import { useHelp, walkThroughExample } from "../store/help";
 import { MOD } from "./Header";
+import { StartHere } from "./StartHere";
 import { Button, Dialog, Kbd } from "./ui";
 import s from "./GuideDialog.module.css";
 
 /**
- * Help → Guide: short pages on what each workspace is for, how to read the map and the logogram,
- * what the numbers and intervals mean, and the keyboard, each with buttons that open the views it
- * talks about and links to the documentation on GitHub. The pages are tabs: the arrow keys move
- * between them.
+ * Help → Guide: short pages, starting with the basics for someone new (Start here), then what each
+ * workspace is for, how to read the map and the logogram, what the numbers and intervals mean, and
+ * the keyboard, each with buttons that open the views it talks about and links to the
+ * documentation on GitHub. The pages are part of the app, so they read the same without a network.
+ * The pages are tabs: the arrow keys move between them.
  */
 export function GuideDialog() {
   const open = useStore((st) => st.helpDialog === "guide");
@@ -41,6 +43,12 @@ export function GuideDialog() {
     useStore.setState({ helpDialog: null });
     useStore.getState().setView(view);
   };
+  // Start here's examples are on All projects: the keyboard goes to them.
+  const toExamples = () => {
+    useHelp.setState({ toView: true });
+    useStore.setState({ helpDialog: null });
+    useStore.getState().goto("projects");
+  };
 
   return (
     <Dialog
@@ -49,13 +57,14 @@ export function GuideDialog() {
         if (!value) useStore.setState({ helpDialog: null });
       }}
       title="Guide"
-      description="How Logogram works, in short. The documentation on GitHub says more."
+      description="How Logogram works, in short. These pages are part of the app and work without a network; the documentation on GitHub says more."
       wide
       onCloseAutoFocus={(e) => {
         if (!useHelp.getState().toView) return;
         e.preventDefault();
         useHelp.setState({ toView: false });
-        document.getElementById("main")?.focus();
+        // The view a button opened, or the examples on All projects.
+        document.getElementById(useStore.getState().screen === "workbench" ? "main" : "examples-title")?.focus();
       }}
     >
       <div className={s.tabs} role="tablist" aria-label="Pages of the guide">
@@ -80,7 +89,7 @@ export function GuideDialog() {
         ))}
       </div>
       <div className={s.panel} role="tabpanel" id={`${id}-panel`} aria-labelledby={`${id}-${current.id}`} tabIndex={0}>
-        <PageText page={current.id} />
+        {current.id === "start" ? <StartHere inWorkbench={inWorkbench} go={go} toExamples={toExamples} /> : <PageText page={current.id} />}
         {(inWorkbench && current.views.length > 0) || current.id === "keys" ? (
           <div className={s.actions}>
             {inWorkbench &&

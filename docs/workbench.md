@@ -147,4 +147,9 @@ a diverging cobalt to amber scale, always with its legend, and nothing else does
   leads back to the open project as you left it.
 * **Commands** (Ctrl/⌘ K) runs any action by name, or jumps to a head (`L9H9`).
 * **Help** opens the guide, the walkthrough of the example, the keyboard shortcuts, these pages
-  on GitHub, a problem report to paste into an issue, the system check, and About.
+  on GitHub, a problem report to paste into an issue, the system check, and About. The guide's
+  first page, **Start here**, is for someone new: the IOI example's two prompts, what patching a
+  head measures, the parts of a model, a first hour and what to try next. The guide opens on it
+  the first time in a session, the first screens offer it under the tagline, and **Learn the
+  basics** in the commands opens it from anywhere. Its pages are part of the app, so they read
+  the same without a network.
