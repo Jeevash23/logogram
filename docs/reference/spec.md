@@ -73,7 +73,7 @@ An experiment: what runs, on which model and prompts, and how its numbers are me
 | `model` | object | [Model](#model) | The model, exactly: its files, precision, device and weight processing. |
 | `dataset` | object | [Dataset](#dataset) | The prompt pairs. |
 | `tokenization` | object | [Tokenization](#tokenization) | How each prompt becomes tokens. |
-| `experiment` | object | one of [`activation_patching`](#experiment-activation_patching), [`ablation`](#experiment-ablation), [`direct_logit_attribution`](#experiment-direct_logit_attribution), [`attribution_patching`](#experiment-attribution_patching), [`steering`](#experiment-steering), [`path_patching`](#experiment-path_patching) or [`edge_attribution`](#experiment-edge_attribution) ([Experiment](#experiment)) | The method, with every choice that changes its numbers. |
+| `experiment` | object | one of [`activation_patching`](#experiment-activation_patching), [`ablation`](#experiment-ablation), [`direct_logit_attribution`](#experiment-direct_logit_attribution), [`attribution_patching`](#experiment-attribution_patching), [`steering`](#experiment-steering), [`path_patching`](#experiment-path_patching), [`edge_attribution`](#experiment-edge_attribution) or [`acdc`](#experiment-acdc) ([Experiment](#experiment)) | The method, with every choice that changes its numbers. |
 | `scope` | object | one of [`heads`](#scope-heads), [`layer_position`](#scope-layer_position), [`layer_components`](#scope-layer_components), [`sites`](#scope-sites), [`features`](#scope-features), [`site_sets`](#scope-site_sets), [`head_inputs`](#scope-head_inputs), [`neurons`](#scope-neurons), [`graph`](#scope-graph) or [`edges`](#scope-edges) ([Scope](#scope)) | The sites the method measures: one result per site. |
 | `metric` | object | one of [`logit_diff`](#metric-logit_diff), [`logprob_diff`](#metric-logprob_diff), [`logprob`](#metric-logprob), [`prob`](#metric-prob), [`prob_diff`](#metric-prob_diff) or [`kl`](#metric-kl) ([Metric](#metric)) | What is read from the model's output, and how effects are normalized. |
 | `statistics` | object | [Statistics](#statistics) | The intervals' bootstrap, confidence level and seed. |
@@ -124,7 +124,7 @@ How each prompt becomes the tokens the model reads.
 
 In a spec at `experiment`.
 
-One of these, chosen by `kind`: [`activation_patching`](#experiment-activation_patching), [`ablation`](#experiment-ablation), [`direct_logit_attribution`](#experiment-direct_logit_attribution), [`attribution_patching`](#experiment-attribution_patching), [`steering`](#experiment-steering), [`path_patching`](#experiment-path_patching) or [`edge_attribution`](#experiment-edge_attribution).
+One of these, chosen by `kind`: [`activation_patching`](#experiment-activation_patching), [`ablation`](#experiment-ablation), [`direct_logit_attribution`](#experiment-direct_logit_attribution), [`attribution_patching`](#experiment-attribution_patching), [`steering`](#experiment-steering), [`path_patching`](#experiment-path_patching), [`edge_attribution`](#experiment-edge_attribution) or [`acdc`](#experiment-acdc).
 
 ### Experiment: activation_patching
 
@@ -252,6 +252,34 @@ together, edge by edge, for a faithfulness curve beside edges chosen at random.
 | `steps` | integer or null | 2 to 64, or `null` | The points along the way, for integrated gradients; `null` for a single gradient. |
 | `curve` | object or null | [Faithfulness curve](#faithfulness-curve), or `null` | Patch the strongest edges together for a faithfulness curve; `null` to only estimate. |
 
+### Experiment: acdc
+
+Find a circuit by removing the edges of the model's graph one at a time (automated circuit
+discovery, ACDC, as in Conmy et al. 2023).
+
+The receiver prompt runs with every edge of the `graph` scope in the circuit. ACDC tests the
+edges in the reverse of the graph's order: the receivers from the logits back toward the
+embeddings (the logits; then each layer from the last, its MLP's input, then its heads from the
+last, each head's value, key and query, or where heads share keys and values each key/value
+head's value and key before its group's queries), and each receiver's edges from its latest
+sender back to the embeddings. Every receiver is tested after every receiver its output
+reaches. Removing
+an edge makes it carry its sender's output on the source prompt into its receiver, as edge
+patching does, while the edges of the circuit carry what their senders output in that run.
+When removing an edge changes the mean of the metric over the prompts by less than
+`threshold`, counted as `rule` says, it stays removed; otherwise it is put back. The
+circuit is the edges left. ACDC itself runs the clean prompt with removed edges carrying the
+corrupt prompt's values: `direction` `corrupt_to_clean`, with the KL divergence from the
+clean prompt's own prediction as the metric. Each edge costs one forward pass per batch of
+prompts.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `kind` | string | `"acdc"` | Which experiment this is: always `acdc` here. |
+| `direction` | string | `"clean_to_corrupt"` or `"corrupt_to_clean"` | `clean_to_corrupt` runs the corrupt prompt with clean activations (does this restore the behavior?); `corrupt_to_clean` runs the clean prompt with corrupt ones (does this break it?). |
+| `threshold` | number | more than 0 | How small a change in the metric's mean over the prompts leaves an edge out of the circuit, in the metric's own units: nats for the KL divergence, logits for the logit difference. |
+| `rule` | string | `"toward_source"` or `"either_way"` | Which change is compared with the threshold: `toward_source`, how far removing the edge moves the metric toward the source prompt's (the paper's rule: an edge whose removal moves it the other way always stays removed); `either_way`, how far it moves it in either direction (the absolute value, an option of ACDC's code). |
+
 ## Scope
 
 In a spec at `scope`.
@@ -362,13 +390,14 @@ times the up projection): the input to the MLP's output projection.
 
 ### Scope: graph
 
-The edges of the model's graph, for edge attribution.
+The edges of the model's graph, for edge attribution and ACDC.
 
 The graph's nodes are the embeddings, every attention head (its output, z through its slice of
 the output projection), every MLP and the logits. An edge runs from a node's output to a later
-node's input: a head's query, key or value input (each its own edge), an MLP's input, or the
-logits. `layers` chooses the heads and MLPs whose inputs receive the edges (from every
-earlier node), `null` for every layer; `logits` adds the edges into the logits.
+node's input: a head's query, key or value input (each its own edge; where heads share keys
+and values, a key or value input is a key/value head's), an MLP's input, or the logits.
+`layers` chooses the heads and MLPs whose inputs receive the edges (from every earlier
+node), `null` for every layer; `logits` adds the edges into the logits.
 
 | Field | Type | Allowed values | Description |
 |---|---|---|---|
@@ -621,11 +650,16 @@ One of these, chosen by `kind`: [`head`](#path-receiver-head), [`logits`](#path-
 
 A later attention head whose query, key or value input receives the path.
 
+With grouped-query attention (Llama, Qwen, Mistral, Gemma) a model has fewer key and value
+heads than query heads, and every query head of a group reads its key/value head's key and
+value: a key or value receiver then names the key/value head (results write it "L5 KV1 k"),
+and the path reaches every query head of its group through it, as a k or v site does.
+
 | Field | Type | Allowed values | Description |
 |---|---|---|---|
 | `kind` | string | `"head"` | Which path receiver this is: always `head` here. |
 | `layer` | integer | 0 or more | The receiving head's layer, from 0. |
-| `head` | integer | 0 or more | The receiving head's index in its layer. |
+| `head` | integer | 0 or more | The receiving head's index in its layer: the query head for `q`, the key/value head for `k` and `v` (the same as the query head without grouped-query attention). |
 | `input` | string | `"q"`, `"k"` or `"v"` | The input the path reaches: the head's query, key or value. |
 
 ### Path receiver: logits

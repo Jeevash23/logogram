@@ -461,13 +461,14 @@ def receiver_text(
 
 
 class GraphScope(_Strict):
-    """The edges of the model's graph, for edge attribution.
+    """The edges of the model's graph, for edge attribution and ACDC.
 
     The graph's nodes are the embeddings, every attention head (its output, z through its slice of
     the output projection), every MLP and the logits. An edge runs from a node's output to a later
-    node's input: a head's query, key or value input (each its own edge), an MLP's input, or the
-    logits. ``layers`` chooses the heads and MLPs whose inputs receive the edges (from every
-    earlier node), None for every layer; ``logits`` adds the edges into the logits.
+    node's input: a head's query, key or value input (each its own edge; where heads share keys
+    and values, a key or value input is a key/value head's), an MLP's input, or the logits.
+    ``layers`` chooses the heads and MLPs whose inputs receive the edges (from every earlier
+    node), None for every layer; ``logits`` adds the edges into the logits.
     """
 
     kind: Literal["graph"] = "graph"
@@ -781,8 +782,10 @@ class ACDC(_Strict):
     The receiver prompt runs with every edge of the ``graph`` scope in the circuit. ACDC tests the
     edges in the reverse of the graph's order: the receivers from the logits back toward the
     embeddings (the logits; then each layer from the last, its MLP's input, then its heads from the
-    last, each head's value, key and query), and each receiver's edges from its latest sender back
-    to the embeddings. Every receiver is tested after every receiver its output reaches. Removing
+    last, each head's value, key and query, or where heads share keys and values each key/value
+    head's value and key before its group's queries), and each receiver's edges from its latest
+    sender back to the embeddings. Every receiver is tested after every receiver its output
+    reaches. Removing
     an edge makes it carry its sender's output on the source prompt into its receiver, as edge
     patching does, while the edges of the circuit carry what their senders output in that run.
     When removing an edge changes the mean of the metric over the prompts by less than
@@ -801,9 +804,9 @@ class ACDC(_Strict):
     difference."""
     rule: Literal["toward_source", "either_way"]
     """Which change is compared with the threshold: ``toward_source``, how far removing the edge
-    moves the metric toward the source prompt's (the paper's rule: a removal that moves it the
-    other way always stays); ``either_way``, how far it moves it in either direction (the absolute
-    value, an option of ACDC's code)."""
+    moves the metric toward the source prompt's (the paper's rule: an edge whose removal moves it
+    the other way always stays removed); ``either_way``, how far it moves it in either direction
+    (the absolute value, an option of ACDC's code)."""
 
 
 class MeanDifference(_Strict):

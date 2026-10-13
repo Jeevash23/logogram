@@ -1636,8 +1636,8 @@ def create_app(
 
     @app.get("/api/runs/{run_id}/sites.csv")
     def export_sites(run_id: str) -> Response:
-        """One row per site: its mean, intervals, q-value and counts. For an edge attribution
-        run, one row per edge of the graph (its edges.parquet)."""
+        """One row per site: its mean, intervals, q-value and counts. For an edge attribution or
+        ACDC run, one row per edge of the graph (its edges.parquet)."""
         from logogram.exports import results_csv, sites_csv
         from logogram.report import sites_table
         from logogram.runs import load_summary

@@ -21,7 +21,8 @@ the app would make, and it lands in the project like any other::
     sae = lg.load_sae(release="gpt2-small-res-jb", sae_id="blocks.8.hook_resid_pre", model=model)
     toy = lg.toy_model("induction")   # a model whose circuit is known, with experiments to run
     toy.run("which-heads").sites()    # the planted heads at 1, every other head at 0
-    found.circuit()      # an ACDC run's circuit: the edges it kept, and how faithful they are
+    found = lg.run(acdc_spec, project, model=model)   # ACDC over the graph scope's edges
+    found.circuit()      # the edges it kept, the change each made when removed, its faithfulness
 
 Tables come back as pandas DataFrames when pandas is installed, and as pyarrow Tables otherwise.
 """

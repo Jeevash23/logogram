@@ -222,6 +222,8 @@ def test_keys_and_values_shared_by_query_heads_are_tested_once(
     table = pq.read_table(every.folder / EDGES_FILE).to_pylist()
     shared = [r for r in table if r["receiver"] in ("k", "v")]
     assert shared and all(" KV" in r["label"] and r["receiver_head"] < 2 for r in shared)
+    # The order, in words, says how a layer's key/value heads and queries come.
+    assert "its key/value heads from the last, each one's value and key" in acdc["order"]
     some = _summary(run_spec(on(acdc_spec(spec_factory)), project, backend=backend))["acdc"]
     assert 0 < some["n_kept"] < some["n_edges"]
 
@@ -436,7 +438,7 @@ def test_the_command_line_the_api_and_the_report_read_the_circuit(
 
     import logogram as lg
     from logogram.cli import app as cli
-    from logogram.report import methods_text, run_report
+    from logogram.report import STRONGEST, methods_text, run_report
 
     monkeypatch.setattr(
         "logogram.runner.default_provider", lambda on_event=None: lambda ref: tiny_backend
@@ -467,6 +469,13 @@ def test_the_command_line_the_api_and_the_report_read_the_circuit(
     assert "ACDC (automated circuit discovery)" in text and "The circuit kept" in text
     page = run_report(spec, summary, run.manifest, run.id)
     assert "The circuit ACDC found" in page and "Edges kept" in page
+    # Its tables list the circuit first and mark every edge kept or removed, without sign flips
+    # (an ACDC run's values are changes between circuits, not patched runs of the model).
+    assert "The edges ACDC kept, then the largest changes it removed" in page
+    n_kept = circuit["n_kept"]
+    assert page.count("<td>kept</td>") == min(n_kept, STRONGEST) + n_kept
+    assert page.count("<td>removed</td>") == STRONGEST - min(n_kept, STRONGEST) + 110 - n_kept
+    assert "Sign flips" not in page
 
 
 def test_check_robustness_reruns_with_another_threshold(spec_factory: Any) -> None:

@@ -14,9 +14,11 @@ The order
 ACDC tests the candidate edges in the reverse of the graph's order: the receivers from the logits
 back toward the embeddings (the logits; then each layer from the last: its MLP's input, then its
 heads from the last, each head's value, key and query), and each receiver's edges from its latest
-sender back to the embeddings. A receiver's output reaches only receivers that come after it in
-the graph's order, so each receiver is tested once every receiver its output reaches has been:
-whether it matters to the circuit is settled by then (a reverse topological order).
+sender back to the embeddings. Where heads share keys and values (grouped-query attention), a
+layer's heads come as its key/value heads from the last, each one's value and key, then the
+queries of its group's heads from the last. A receiver's output reaches only receivers that come
+after it in the graph's order, so each receiver is tested once every receiver its output reaches
+has been: whether it matters to the circuit is settled by then (a reverse topological order).
 
 The rule
 --------
@@ -26,11 +28,11 @@ this one, carries its sender's output on the source prompt into its receiver, an
 carries what its sender outputs in that pass. The change is the mean of the metric over the
 prompts minus the current circuit's. With ``rule="toward_source"``, the change counted is how far
 it moves toward the source run, s · change, where s is the sign of the mean of (source − receiver)
-in the metric; a removal that moves the metric away from the source counts as negative, so it
-always stays (the paper's rule: running the clean prompt, with the KL divergence from its own
-prediction, KL(new) − KL(current) < threshold). With ``rule="either_way"``, the change counted is
-its size, |change|. When the change counted is below ``threshold``, the edge stays removed and the
-circuit's metric is the new one; otherwise the edge is put back.
+in the metric; a removal that moves the metric away from the source counts as negative, so that
+edge always stays removed (the paper's rule: running the clean prompt, with the KL divergence from
+its own prediction, KL(new) − KL(current) < threshold). With ``rule="either_way"``, the change
+counted is its size, |change|. When the change counted is below ``threshold``, the edge stays
+removed and the circuit's metric is the new one; otherwise the edge is put back.
 
 Each tested edge costs one forward pass per batch of prompts, in batches of fixed composition (the
 prompts grouped by length, in order), so the same spec gives the same circuit, bit for bit. The
@@ -95,12 +97,25 @@ from logogram.prompts import LengthGroup, PreparedPrompt, UnevenPairs, group_by_
 from logogram.sites import ResolvedSite, ScopeError
 from logogram.spec import ACDC, METRIC_LABELS, GraphScope, Spec
 
-ORDER_TEXT = (
-    "the reverse of the graph's order: the receivers from the logits back toward the embeddings "
-    "(the logits; then each layer from the last: its MLP's input, then its heads from the last, "
-    "each head's value, key and query), and each receiver's edges from its latest sender back to "
-    "the embeddings"
-)
+
+def order_text(grouped: bool = False) -> str:
+    """The order ACDC tests the edges in, in words. ``grouped``: the model's heads share keys and
+    values (grouped-query attention), so a layer's receivers are each key/value head's value and
+    key, then the queries of its group's heads."""
+    heads = (
+        "its key/value heads from the last, each one's value and key, then the queries of its "
+        "group's heads from the last"
+        if grouped
+        else "its heads from the last, each head's value, key and query"
+    )
+    return (
+        "the reverse of the graph's order: the receivers from the logits back toward the "
+        f"embeddings (the logits; then each layer from the last: its MLP's input, then {heads}), "
+        "and each receiver's edges from its latest sender back to the embeddings"
+    )
+
+
+ORDER_TEXT = order_text()
 
 Pair = tuple[Block, Block]
 
@@ -463,7 +478,7 @@ def run_acdc(
         "threshold": exp.threshold,
         "rule": exp.rule,
         "source_sign": sign,
-        "order": ORDER_TEXT,
+        "order": order_text(graph.n_kv_heads != graph.n_heads),
         "n_edges": E,
         "n_kept": len(circuit),
         "n_senders": len(graph.senders),

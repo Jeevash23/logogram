@@ -1545,8 +1545,8 @@ def export(
         bool,
         typer.Option(
             "--sites",
-            help="One row per site instead of per site and prompt (for an edge attribution run, "
-            "every edge of its graph).",
+            help="One row per site instead of per site and prompt (for an edge attribution or "
+            "ACDC run, every edge of its graph).",
         ),
     ] = False,
     prompt_text: Annotated[

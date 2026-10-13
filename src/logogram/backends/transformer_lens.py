@@ -1128,8 +1128,8 @@ class TransformerLensBackend(ModelBackend):
             raise BackendError(
                 f"{info.id}'s heads don't add up to what its attention writes (it normalizes after "
                 f"combining them, or this couldn't be measured when it loaded), {why}. Edge "
-                "attribution needs a model whose heads each write into the residual stream, such "
-                "as GPT-2 or Pythia."
+                "attribution and ACDC need a model whose heads each write into the residual "
+                "stream, such as GPT-2, Pythia, Llama or Qwen 2."
             )
         kv = int(info.extra.get("n_key_value_heads") or info.n_heads)
         if kv < 1 or info.n_heads % kv:

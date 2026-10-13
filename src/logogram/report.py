@@ -200,13 +200,13 @@ def _acdc_method(spec: Spec, e: ACDC, summary: dict[str, Any] | None) -> str:
         "MLP, and an edge runs from a node's output to a later head's query, key or value input, "
         "a later MLP's input, or the logits, each receiver reading its own copy of the residual "
         f"stream, before its normalization. The {receiver} prompts ran with every edge in the "
-        f"circuit, and the edges were tested one at a time in {ORDER_TEXT}. Removing an edge made "
-        f"it carry its sender's output on the {source} prompt into its receiver (the sender's "
-        f"difference, {source} − this pass, added into the receiver's own input), while the edges "
-        "of the circuit carried what their senders output in that pass. An edge stayed removed "
-        f"when removing it moved the mean metric over the prompts {counted} by less than "
-        f"{e.threshold:g}; otherwise it was put back. Each edge's value is the change its "
-        "removal made when it was tested."
+        f"circuit, and the edges were tested one at a time in {acdc.get('order') or ORDER_TEXT}. "
+        f"Removing an edge made it carry its sender's output on the {source} prompt into its "
+        f"receiver (the sender's difference, {source} − this pass, added into the receiver's own "
+        "input), while the edges of the circuit carried what their senders output in that pass. "
+        "An edge stayed removed when removing it moved the mean metric over the prompts "
+        f"{counted} by less than {e.threshold:g}; otherwise it was put back. Each edge's value is "
+        "the change its removal made when it was tested."
     )
     if acdc:
         f = acdc.get("faithfulness") or {}
@@ -1040,27 +1040,39 @@ table.continuations tr.control th, table.continuations tr.control td { color: va
 """
 
 
-def _site_rows(sites: list[dict[str, Any]], ci_level: int) -> str:
+def _site_rows(sites: list[dict[str, Any]], ci_level: int, kept: set[int] | None = None) -> str:
+    """The sites' statistics as a table. ``kept``: an ACDC run's circuit, whose edges the table
+    marks kept and every other edge removed. Its values are the changes the removals made, between
+    circuits rather than patched runs of the whole model, so it counts no sign flips."""
     esc = html.escape
     rows = []
     for s in sites:
         band = s.get("band") or {}
+        circuit = "" if kept is None else f"<td>{'kept' if s['index'] in kept else 'removed'}</td>"
+        flips = "" if kept is not None else f'<td class="num">{s.get("sign_flips", "—")}</td>'
         rows.append(
             "<tr>"
             f"<td>{esc(s['label'])}</td>"
+            f"{circuit}"
             f'<td class="num">{_fmt(s["effect"]["mean"])}</td>'
             f'<td class="num">{_fmt(s["effect"]["lo"])} to {_fmt(s["effect"]["hi"])}</td>'
             f'<td class="num">'
             f"{_fmt(band.get('lo')) + ' to ' + _fmt(band.get('hi')) if band else '—'}</td>"
             f'<td class="num">{_fmt(s.get("q"), 3, sign=False)}</td>'
-            f'<td class="num">{s.get("sign_flips", "—")}</td>'
+            f"{flips}"
             f'<td class="num">{s.get("n", "—")}</td>'
             "</tr>"
         )
+    head = (
+        "<th>Site</th><th class='num'>Effect</th>"
+        if kept is None
+        else "<th>Edge</th><th>Circuit</th><th class='num'>Change when removed</th>"
+    )
+    flips_head = "" if kept is not None else "<th class='num'>Sign flips</th>"
     return (
-        "<table><thead><tr><th>Site</th><th class='num'>Effect</th>"
+        f"<table><thead><tr>{head}"
         f"<th class='num'>{ci_level}% interval</th><th class='num'>Band, all sites</th>"
-        "<th class='num'>q-value</th><th class='num'>Sign flips</th><th class='num'>n</th>"
+        f"<th class='num'>q-value</th>{flips_head}<th class='num'>n</th>"
         f"</tr></thead><tbody>{''.join(rows)}</tbody></table>"
     )
 
@@ -1131,6 +1143,12 @@ def run_report(
     esc = html.escape
     sites = [s for s in summary["sites"] if s["effect"]["mean"] is not None]
     strongest = sorted(sites, key=lambda s: -abs(s["effect"]["mean"]))
+    # An ACDC run lists its circuit first, each edge marked kept or removed.
+    kept = set(summary["acdc"]["kept"]) if summary.get("acdc") else None
+    if kept is not None:
+        strongest = [s for s in strongest if s["index"] in kept] + [
+            s for s in strongest if s["index"] not in kept
+        ]
     ci_level = round(spec.statistics.ci * 100)
     metric = summary.get("metric") or {}
     baseline = summary.get("baseline") or {}
@@ -1201,6 +1219,11 @@ def run_report(
         f"The circuit's edges and the strongest removed, {len(summary['sites']):,} of"
         if summary.get("acdc")
         else f"The {len(summary['sites']):,} strongest of"
+    )
+    strongest_heading = (
+        "The edges ACDC kept, then the largest changes it removed"
+        if kept is not None
+        else f"The strongest {unit}"
     )
     every = (
         f"{listed} {edges['n_edges']:,} edges (edges.parquet holds every edge's statistics)"
@@ -1283,15 +1306,17 @@ def run_report(
         f"{notes}"
         f"<section class='flush'><dl class='figures'>{figure_html}</dl></section>"
         f"{map_html}"
-        f"<section><h2>The strongest {unit}</h2>{_site_rows(strongest[:STRONGEST], ci_level)}"
-        f"<p class='muted'>Effects are normalized: 1 is as far as switching to the other prompt, "
+        f"<section><h2>{strongest_heading}</h2>"
+        f"{_site_rows(strongest[:STRONGEST], ci_level, kept)}"
+        f"<p class='muted'>{'Changes' if kept is not None else 'Effects'} are normalized: 1 is as "
+        "far as switching to the other prompt, "
         f"0 is no change. The band holds for every {unit[:-1]} of the sweep at once; the q-value "
         f"is the share of false findings expected among {unit} this strong.</p></section>"
         f"{_continuations_html(continuations)}"
         f"<section class='methods'><h2>Methods</h2>{methods}</section>"
         + (f"<section><h2>Notes from the run</h2><ul>{warnings}</ul></section>" if warnings else "")
         + f"<section><h2>Every {unit[:-1]}</h2><details><summary>{every}</summary>"
-        + f"{_site_rows(summary['sites'], ci_level)}</details></section>"
+        + f"{_site_rows(summary['sites'], ci_level, kept)}</details></section>"
         f"<section><h2>Where it came from</h2><dl class='provenance'>{provenance_html}</dl>"
         f"<details><summary>The spec</summary><pre>{esc(spec.to_json())}</pre></details></section>"
         f"<footer>Made with Logogram {esc(__version__)}. The per-prompt values behind every "
