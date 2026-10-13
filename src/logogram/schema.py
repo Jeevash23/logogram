@@ -911,6 +911,21 @@ class RunsChanged(_Model):
     deleted: bool = False
 
 
+class DatasetChange(_Model):
+    """A dataset file renamed (``to`` its new path) or deleted (``to`` None)."""
+
+    path: str
+    to: str | None
+
+
+class ProjectChanged(_Model):
+    """The open project renamed, or one of its datasets renamed or deleted: tabs showing it read
+    it again, and a tab showing that dataset follows it."""
+
+    project_session: str
+    dataset: DatasetChange | None = None
+
+
 EVENT_SCHEMAS: dict[str, type[BaseModel]] = {
     "run.started": RunStarted,
     "run.layer": RunLayer,
@@ -921,6 +936,7 @@ EVENT_SCHEMAS: dict[str, type[BaseModel]] = {
     "queue": QueueChanged,
     "queue.skipped": QueueSkipped,
     "runs.changed": RunsChanged,
+    "project.changed": ProjectChanged,
 }
 
 

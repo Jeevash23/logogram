@@ -75,6 +75,10 @@ activations they were trained on, so load the model the way the SAE was trained.
 * **Apple Silicon.** **Automatic** runs models on the CPU: TransformerLens reports that Apple's MPS
   can give silently wrong results, and Logogram hasn't been checked on it, so MPS is used only when
   you choose it under **Device**. It is faster; check results that matter on the CPU.
+* **A device this machine doesn't have.** The model dialog says so as soon as the device is
+  chosen, and keeps **Load** disabled until another is. A model asked for on it anyway (by a
+  spec, another tab or a script) is refused before anything is closed, so the model that is
+  loaded stays loaded.
 
 The same spec on another device can differ in the last digits; see
 [reproducibility](concepts/runs-and-projects.md#reproducibility).

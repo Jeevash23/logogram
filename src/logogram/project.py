@@ -16,12 +16,14 @@ Nothing in a project folder refers to the machine it was made on: paths are proj
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import json
 import math
 import os
 import re
 import shutil
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import resources
 from pathlib import Path
@@ -39,6 +41,8 @@ from logogram.spec import Spec, describe_experiment
 PROJECT_FILE = "project.json"
 GITIGNORE = "# Logogram caches\n.logogram/\n__pycache__/\n"
 APP_NAME = "logogram"
+# The longest name a project has.
+NAME_LIMIT = 200
 # What a failed run kept of the error that stopped it, with this machine's paths scrubbed.
 TRACEBACK_FILE = "traceback.txt"
 TRACEBACK_LIMIT = 1024**2
@@ -48,11 +52,16 @@ class ProjectError(ValueError):
     pass
 
 
+class ProjectMissing(ProjectError):
+    """The project's folder isn't there: moved, renamed, deleted, or on a drive that isn't
+    connected."""
+
+
 class ProjectMeta(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     logogram_project: int = 1
-    name: str = Field(min_length=1, max_length=200)
+    name: str = Field(min_length=1, max_length=NAME_LIMIT)
     description: str = ""
     created: str = ""
 
@@ -167,9 +176,26 @@ class Project:
 
     @classmethod
     def open(cls, path: str | Path) -> Project:
+        """The project in the folder ``path``, with any of its folders and its .gitignore that
+        are missing added."""
+        project = cls.read(path)
+        project.ensure_layout()
+        return project
+
+    @classmethod
+    def read(cls, path: str | Path) -> Project:
+        """The project in the folder ``path``, as its project.json says, read without writing
+        anything into the folder (:meth:`open` adds what is missing). A folder that isn't there
+        raises :class:`ProjectMissing`."""
         root = Path(path).expanduser().resolve()
         meta_path = root / PROJECT_FILE
         if not meta_path.is_file():
+            if not root.exists():
+                raise ProjectMissing(
+                    f"The folder {root} isn't there any more: it was moved, renamed or deleted, "
+                    "or it is on a drive that isn't connected. Connect the drive, or open the "
+                    "project where it is now."
+                )
             raise ProjectError(
                 f"{root.name or root} isn't a Logogram project (there's no project.json). "
                 "Create a project there instead."
@@ -181,9 +207,7 @@ class Project:
             )
         except Exception as exc:
             raise ProjectError(f"project.json can't be read: {exc}") from exc
-        project = cls(root, meta)
-        project.ensure_layout()
-        return project
+        return cls(root, meta)
 
     @classmethod
     def create(cls, parent: str | Path, name: str, folder: str | None = None) -> Project:
@@ -376,6 +400,35 @@ class Project:
             "datasets": self.list_datasets(),
         }
 
+    def rename(self, name: str) -> Project:
+        """Give the project the name ``name`` (one line, at most 200 characters) in its
+        project.json, which keeps whatever else it says; the folder keeps its own name. Returns
+        the project."""
+        text = " ".join((name or "").split())  # one line, however it was typed
+        if not text:
+            raise ProjectError("Give the project a name.")
+        if len(text) > NAME_LIMIT:
+            raise ProjectError(
+                f"A project's name is at most {NAME_LIMIT} characters long; this one has "
+                f"{len(text)}."
+            )
+        current = Project.read(self.root).meta  # as it is now, not as it was opened
+        meta = ProjectMeta.model_validate({**current.model_dump(), "name": text})
+        try:
+            write_text_atomic(
+                self.writable(self.root / PROJECT_FILE),
+                json.dumps(meta.model_dump(), indent=2) + "\n",
+            )
+        except OSError as exc:
+            raise ProjectError(
+                f"Logogram can't write project.json: {exc.strerror or type(exc).__name__}. Check "
+                "that the project folder can be written to."
+            ) from exc
+        self.meta = meta
+        with contextlib.suppress(Exception):  # the recent list names it as it was until reopened
+            _rename_recent(self)
+        return self
+
 
 def layer_profile(summary: dict[str, Any]) -> list[float] | None:
     """Per layer, the measured site with the largest absolute normalized effect, with its sign.
@@ -433,35 +486,272 @@ def recent_file() -> Path:
     return config_dir() / "recent.json"
 
 
-def load_recent() -> list[dict[str, Any]]:
+# How many projects the recent list keeps.
+RECENT_LIMIT = 12
+
+
+def _recent_items() -> list[dict[str, Any]]:
+    """recent.json's entries, last opened first: each a path, the project's name when it was last
+    opened and when that was. Entries that aren't such an object are left out."""
     data = _read_json(recent_file())
-    items = data.get("projects", []) if data else []
+    items = data.get("projects") if data else None
+    out: list[dict[str, Any]] = []
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        path, name, opened = item.get("path"), item.get("name"), item.get("opened")
+        if not isinstance(path, str) or not path or any(i["path"] == path for i in out):
+            continue
+        out.append(
+            {
+                "path": path,
+                "name": name if isinstance(name, str) and name else None,
+                "opened": opened if isinstance(opened, str) else None,
+            }
+        )
+    return out
+
+
+def _save_recent(items: list[dict[str, Any]]) -> None:
+    recent_file().parent.mkdir(parents=True, exist_ok=True)
+    payload = {"projects": items[:RECENT_LIMIT]}
+    write_text_atomic(recent_file(), json.dumps(payload, indent=2) + "\n")
+
+
+def load_recent() -> list[dict[str, Any]]:
+    """The projects opened lately, last opened first: each one's path, name, when it was opened
+    and when it last changed. Listing them writes nothing into them: each project.json is only
+    read. A project whose folder can't be found now (moved, deleted, or on a drive that isn't
+    connected) stays in the list, ``missing``, with ``problem`` saying why, until it is removed
+    from the list (:func:`forget_recent`)."""
     out = []
-    for item in items:
-        path = Path(item.get("path", ""))
+    for item in _recent_items():
+        path = Path(item["path"])
+        entry: dict[str, Any] = {
+            "path": item["path"],
+            "name": item["name"] or path.name or item["path"],
+            "opened": item["opened"],
+            "modified": None,
+            "missing": False,
+            "problem": None,
+        }
         try:
-            if not (path / PROJECT_FILE).is_file():
-                continue
-            project = Project.open(path)
-            out.append(
-                {
-                    "path": str(path),
-                    "name": project.meta.name,
-                    "opened": item.get("opened"),
-                    "modified": project.last_modified(),
-                }
-            )
-        except (ProjectError, OSError):
-            continue  # moved, deleted or unreadable: leave it out of the list
+            project = Project.read(path)
+            entry.update(name=project.meta.name, modified=project.last_modified())
+        except ProjectMissing:
+            entry.update(missing=True, problem="Folder not found")
+        except (ProjectError, OSError) as exc:  # there, but not a project Logogram can read
+            entry.update(missing=True, problem=str(exc).splitlines()[0] if str(exc) else None)
+        out.append(entry)
     return out
 
 
 def remember_recent(project: Project) -> None:
-    items = [i for i in load_recent() if i["path"] != str(project.root)]
-    items.insert(0, {"path": str(project.root), "opened": now_iso()})
-    recent_file().parent.mkdir(parents=True, exist_ok=True)
-    payload = {"projects": [{"path": i["path"], "opened": i.get("opened")} for i in items[:12]]}
-    write_text_atomic(recent_file(), json.dumps(payload, indent=2) + "\n")
+    """Put ``project`` first in the recent list."""
+    items = [i for i in _recent_items() if i["path"] != str(project.root)]
+    items.insert(0, {"path": str(project.root), "name": project.meta.name, "opened": now_iso()})
+    _save_recent(items)
+
+
+def forget_recent(path: str | Path) -> bool:
+    """Take the project at ``path`` out of the recent list (its folder is left as it is). Whether
+    it was listed."""
+    given = str(path)
+    resolved = str(Path(given).expanduser().resolve())
+    items = _recent_items()
+    kept = [i for i in items if i["path"] not in (given, resolved)]
+    if len(kept) == len(items):
+        return False
+    _save_recent(kept)
+    return True
+
+
+def _rename_recent(project: Project) -> None:
+    """The recent list's name for ``project`` (shown while its folder is missing), as it is now."""
+    items = _recent_items()
+    listed = [i for i in items if i["path"] == str(project.root)]
+    if listed and listed[0]["name"] != project.meta.name:
+        listed[0]["name"] = project.meta.name
+        _save_recent(items)
+
+
+# -- deleting a project --------------------------------------------------------------------------
+
+# What Logogram makes at the top of a project's folder. Deleting a project deletes the folder with
+# these in it; a folder that holds anything else is never deleted, since it may be someone's own
+# folder (a repository, say) that a project was made in.
+PROJECT_ENTRIES = frozenset(
+    {
+        PROJECT_FILE,
+        ".gitignore",
+        "research.json",
+        "datasets",
+        "experiments",
+        "directions",
+        "corpora",
+        "saes",
+        "lenses",
+        "activations",
+        ".logogram",
+    }
+)
+# What file browsers leave in the folders they show: nobody's work, so it doesn't stop a deletion.
+SYSTEM_FILES = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
+
+
+class ProjectInUse(ProjectError):
+    """A run is in progress in the project, or its queue is being run: it can't be deleted now."""
+
+
+@dataclass
+class DeletionPlan:
+    """What deleting a project would delete, and what stops it now."""
+
+    path: str
+    name: str
+    runs: int
+    drafts: int
+    datasets: int
+    queued: int
+    # The folder's entries that Logogram doesn't make there: while there are any, it isn't deleted.
+    others: list[str]
+    # Why it can't be deleted now: a run in progress in it, its queue being run.
+    busy: str | None
+
+    @property
+    def problem(self) -> str | None:
+        """Why the project can't be deleted, and what to do; None when it can."""
+        if self.others:
+            listed = ", ".join(self.others[:10]) + (", …" if len(self.others) > 10 else "")
+            return (
+                f"The folder {self.path} also holds what Logogram didn't make ({listed}), so "
+                "Logogram won't delete it. Move those out of the folder, or delete the folder "
+                "yourself."
+            )
+        return self.busy
+
+    @property
+    def text(self) -> str:
+        """What deleting it deletes, and keeps, in words."""
+        held = [
+            plural_text(self.runs, "run"),
+            plural_text(self.drafts, "draft"),
+            plural_text(self.datasets, "dataset"),
+        ]
+        if self.queued:
+            held.append(f"{plural_text(self.queued, 'run')} waiting in its queue")
+        return (
+            f"This deletes the folder {self.path} and everything in it, for good: "
+            f"{', '.join(held[:-1])} and {held[-1]}. It can't be undone. Nothing outside the "
+            "folder is touched: links in it are removed, not followed."
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            **dataclasses.asdict(self),
+            "problem": self.problem,
+            "text": self.text,
+        }
+
+
+def plural_text(n: int, noun: str) -> str:
+    return f"{n:,} {noun}{'' if n == 1 else 's'}"
+
+
+def deletion_plan(project: Project) -> DeletionPlan:
+    """What deleting ``project`` would delete (its runs, drafts, datasets and queue) and what stops
+    it: entries of its folder Logogram doesn't make there, a run in progress in it (here or in
+    another process), or its queue being run."""
+    from logogram import runqueue
+
+    allowed = PROJECT_ENTRIES | SYSTEM_FILES
+    if getattr(project.meta, "toy", None):  # a toy's project keeps the toy's files in model/
+        allowed = allowed | {"model"}
+    try:
+        entries = sorted(project.root.iterdir(), key=lambda p: p.name.lower())
+    except OSError as exc:
+        raise ProjectError(
+            f"Logogram can't read the folder {project.root}: {exc.strerror or exc}."
+        ) from exc
+    others = [
+        f"{p.name}/" if p.is_dir() and not p.is_symlink() else p.name
+        for p in entries
+        if p.name not in allowed
+    ]
+    listings = project.list_runs()
+    try:
+        queued = len(runqueue.read_queue(project))
+    except (runqueue.QueueError, OSError):
+        queued = 0
+    busy = None
+    running = next((r for r in listings if r.status == "running"), None)
+    runner = runqueue.queue_runner(project)
+    if running is not None:
+        where = " in another process" if running.elsewhere else ""
+        busy = (
+            f"“{running.title or running.name}” is running{where}. Wait for it to end, or cancel "
+            "it, before deleting the project."
+        )
+    elif runner is not None:
+        busy = (
+            f"The project's queue is being run by {runqueue.runner_text(runner)}. Pause it, or "
+            "wait for it to finish, before deleting the project."
+        )
+    return DeletionPlan(
+        path=str(project.root),
+        name=project.meta.name,
+        runs=sum(1 for r in listings if r.status != "draft"),
+        drafts=sum(1 for r in listings if r.status == "draft"),
+        datasets=len(project.list_datasets()),
+        queued=queued,
+        others=others,
+        busy=busy,
+    )
+
+
+def delete_project(project: Project) -> None:
+    """Delete the project's folder and everything in it, for good. Refused, saying why, when the
+    folder holds anything Logogram doesn't make there (listing it), and while a run is in progress
+    in it or its queue is being run (:class:`ProjectInUse`). The project leaves the recent list,
+    and a local model added from inside its folder (a toy's) is forgotten.
+
+    Nothing outside the folder is touched: links inside it are removed without being followed,
+    and the folder itself is the project's real folder (a link to it is left dangling)."""
+    plan = deletion_plan(project)
+    if plan.others:
+        raise ProjectError(plan.problem)
+    if plan.busy:
+        raise ProjectInUse(plan.busy)
+    root = project.root
+    inside = _local_models_inside(root)
+    try:
+        shutil.rmtree(root)  # never follows a link, at the top or inside
+    except OSError as exc:
+        what = exc.strerror or type(exc).__name__
+        name = Path(exc.filename).name if isinstance(exc.filename, str) else None
+        raise ProjectError(
+            f"Logogram couldn't delete all of {root}: {what}{f' ({name})' if name else ''}. "
+            "Check that no other program is using its files, then delete it again."
+        ) from exc
+    with contextlib.suppress(Exception):  # it is gone either way
+        forget_recent(root)
+    for name in inside:
+        with contextlib.suppress(Exception):
+            from logogram.local_models import remove_model
+
+            remove_model(name)
+
+
+def _local_models_inside(root: Path) -> list[str]:
+    """The local models added from folders inside ``root``, by name."""
+    try:
+        from logogram.local_models import list_models
+
+        return [
+            m.name for m in list_models() if Path(m.folder).resolve().is_relative_to(root.resolve())
+        ]
+    except Exception:  # noqa: BLE001 - the registry can't be read: nothing to forget
+        return []
 
 
 def default_projects_parent() -> Path:

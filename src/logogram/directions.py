@@ -349,23 +349,92 @@ def list_directions(project: Project) -> list[dict[str, Any]]:
     return out
 
 
+class DirectionInUse(DirectionError):
+    """A saved draft or a queued run names the direction, which it would then fail to find."""
+
+
+def direction_users(project: Project, name: str) -> list[dict[str, Any]]:
+    """The saved drafts and queued runs whose specs name the direction ``name`` without a snapshot
+    of it to fall back on (a spec that pins a hash the project keeps a snapshot of runs on that):
+    each as :func:`logogram.datasets.dataset_users` describes one."""
+    from logogram import runqueue
+    from logogram.spec import Spec
+
+    def names_it(spec: Any) -> bool:
+        for _, ref in direction_refs(spec):
+            if ref.name != name:
+                continue
+            if ref.sha256 is None or not _files(project, ref.sha256, snapshot=True)[1].is_file():
+                return True
+        return False
+
+    out: list[dict[str, Any]] = []
+    for listing in project.list_runs():
+        if listing.status != "draft" or listing.damaged:
+            continue
+        try:
+            data = project.read_json(project.run_dir(listing.id) / "spec.json")
+            spec = Spec.model_validate(data)
+        except (ProjectError, ValidationError, ValueError, OSError):
+            continue
+        if names_it(spec):
+            title = listing.title or listing.name
+            out.append({"kind": "draft", "id": listing.id, "title": title, "queued": False})
+    try:
+        queued = runqueue.read_queue(project)
+    except (runqueue.QueueError, OSError):
+        queued = []
+    drafts = {u["id"]: u for u in out}
+    for item in queued:
+        if item.draft_id is not None and item.draft_id in drafts:
+            drafts[item.draft_id]["queued"] = True
+        elif names_it(item.spec):
+            out.append({"kind": "queued", "id": item.id, "title": item.title, "queued": True})
+    return out
+
+
+def check_unused(project: Project, name: str, action: str) -> None:
+    """Refuse (:class:`DirectionInUse`) to ``action`` ("renamed" or "deleted") the direction
+    ``name`` while a saved draft or a queued run names it, naming them."""
+    from logogram.datasets import users_text
+
+    users = direction_users(project, name)
+    if not users:
+        return
+    one = len(users) == 1
+    steps = []
+    if any(u["queued"] for u in users):
+        steps.append(f"take {'it' if one else 'them'} out of the queue")
+    if any(u["kind"] == "draft" for u in users):
+        steps.append("open the draft in the form to choose another direction, or delete it")
+    raise DirectionInUse(
+        f"The direction {name} can't be {action}: {users_text(users)} "
+        f"{'names' if one else 'name'} it, and {'it' if one else 'they'} would fail. First "
+        f"{' and '.join(steps)}."
+    )
+
+
 def delete_direction(project: Project, name: str) -> None:
-    """Delete the direction ``name``. Runs that used it keep their snapshot."""
+    """Delete the direction ``name``. Runs that used it keep their snapshot. Refused while a
+    saved draft or a queued run names it."""
     check_name(name)
     json_path, tensor_path = _files(project, name)
     if not os.path.lexists(json_path) and not os.path.lexists(tensor_path):
         raise DirectionError(f"This project has no direction called {name}.")
+    check_unused(project, name, "deleted")
     for path in (json_path, tensor_path):
         if os.path.lexists(path):
             remove_file(project.writable(path))
 
 
 def rename_direction(project: Project, name: str, new: str) -> Direction:
-    """Give the direction ``name`` the name ``new``; refuses a name that is taken."""
+    """Give the direction ``name`` the name ``new``; refuses a name that is taken, and while a
+    saved draft or a queued run names it."""
     direction = read_direction(project, name)
     check_name(new)
     if new == name:
         return direction
+    check_unused(project, name, "renamed")
     json_new, tensor_new = _files(project, new)
     if os.path.lexists(json_new) or os.path.lexists(tensor_new):
         raise DirectionError(f"A direction called {new} already exists. Choose another name.")

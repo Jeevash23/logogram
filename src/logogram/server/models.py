@@ -356,7 +356,32 @@ class RecentProject(_Out):
     path: str
     name: str
     opened: str | None
-    modified: str
+    # None when the project can't be read now.
+    modified: str | None
+    # Its folder isn't there now (or holds no project Logogram can read): kept in the list until
+    # it is removed from it, with ``problem`` saying why.
+    missing: bool = False
+    problem: str | None = None
+
+
+class DeletionPlanOut(_Out):
+    """What deleting a project would delete, and what stops it now (see
+    logogram.project.DeletionPlan)."""
+
+    path: str
+    name: str
+    runs: int
+    drafts: int
+    datasets: int
+    queued: int
+    # The folder's entries Logogram doesn't make there: while there are any, it isn't deleted.
+    others: list[str]
+    # Why it can't be deleted now: a run in progress in it, its queue being run.
+    busy: str | None
+    # Why it can't be deleted (others, or busy), and what to do; None when it can.
+    problem: str | None
+    # What deleting it deletes, in words.
+    text: str
 
 
 class ExampleInfo(_Out):
@@ -484,6 +509,13 @@ class DatasetCreated(_Out):
     name: str
     path: str
     n: int
+
+
+class DatasetChanged(_Out):
+    """A dataset file renamed (its new name and path) or deleted (the ones it had)."""
+
+    name: str
+    path: str
 
 
 class IOITemplateOut(_Out):
@@ -919,6 +951,30 @@ class EstimateOut(_Out):
     supported: bool
     support_note: str | None
     estimate: MemoryEstimateOut
+
+
+class Reproduction(_Out):
+    """Whether a rerun reproduced the run it reran, value by value (see
+    logogram.compare.reproduction_of)."""
+
+    run_id: str
+    original: str
+    # Every per-prompt value matches exactly.
+    identical: bool
+    rows: int
+    original_rows: int
+    # The largest change in a per-prompt value; None when the rows differ.
+    largest: float | None
+    text: str
+
+
+class DeviceCheck(_Out):
+    """Whether a device is there to load a model on: what it resolves to here, or why it isn't
+    there and what to choose instead."""
+
+    device: str
+    resolved: str | None
+    error: str | None
 
 
 # -- published SAEs ----------------------------------------------------------------------------

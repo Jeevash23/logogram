@@ -74,9 +74,9 @@ This starts a local server on 127.0.0.1, prints its address and opens your brows
 
    Each run also gets a **logogram**, a circular ink glyph written by its results: layers run
    clockwise from the top, and the ink swells outward (cobalt) where a layer's strongest effect
-   is positive and inward (ochre) where it is negative. A run with a few strong layers reads as
+   is positive and inward (amber) where it is negative. A run with a few strong layers reads as
    a heavy, lopsided ring; a null result as a thin, even one. Logograms appear in the history,
-   on the results page, and beside the model atlas, where each layer number opens that layer's
+   on the results page, and beside the model map, where each layer number opens that layer's
    strongest component.
 4. Press **A** on a head to see its attention pattern, or right-click any cell for **Patch here**,
    **Ablate here** and **Compare across runs**.
@@ -209,6 +209,14 @@ The workbench has three workspaces, described view by view in [the workbench](do
 ```text
 logogram                      start the app and open the browser
 logogram open PATH            start with a project open
+logogram new NAME             create a project and print its folder (--parent DIR)
+logogram projects             the projects opened lately, marking those whose folder can't be found
+logogram projects forget PATH take a project out of that list (its folder stays)
+logogram project rename NAME  give the project another name (its folder keeps its own)
+logogram project delete       delete the project's folder for good, once its name is typed (--yes)
+logogram datasets             the project's datasets, and the drafts and queued runs that name each
+logogram datasets rename NAME NEW   give a dataset another name (runs keep their own copy)
+logogram datasets delete NAME delete a dataset for good, after asking (--yes doesn't ask)
 logogram run SPEC.json        run an experiment headlessly and print a summary
 logogram validate SPEC.json   check a spec without running it, and say what it left out
 logogram list                 the project's runs and drafts, newest first (--archived for all)
@@ -262,6 +270,13 @@ address of a port that forwards to the app, such as an SSH tunnel's (see
 also logs what the server does, with the traceback of each failed run, and `--log-file PATH`
 appends the same to a file. Commands that read runs use the project in the current folder or
 above it, or `--project PATH`; a run is its id or its folder.
+
+Deleting asks first and says what goes. `logogram project delete` deletes nothing while a run or
+the queue is running in the project, nor from a folder that also holds what Logogram doesn't make
+there (a repository's files, say): it lists them instead. A dataset that a saved draft or a
+queued run names can't be renamed, deleted or replaced (`generate --overwrite`) until they no
+longer do: they would fail, or run on other prompts. Finished runs keep their own copy of their
+prompts.
 
 A failed run keeps its traceback in `traceback.txt`, without this machine's paths or names:
 `logogram show RUN` prints it, `logogram run --verbose` prints it as the run fails, and the app
@@ -317,7 +332,7 @@ PyTorch; functions load what they need.
 import logogram as lg
 
 project = lg.open_project("~/Documents/Logogram/ioi-example")
-model = lg.load_model("openai-community/gpt2")   # load once, pass it to every run
+model = lg.load_model("openai-community/gpt2")   # load once, pass it to the runs that name it
 spec = lg.load_spec(project.root / "experiments/ioi-head-patching/spec.json")
 run = lg.run(spec, project, model=model)
 
@@ -358,6 +373,7 @@ lg.train_lens(project, "lens.json", model=model)   # a tuned lens for the layer 
 
 lg.add_local_model("~/models/my-fine-tune", "my-fine-tune")   # hash a model folder, once
 tuned = lg.load_model("my-fine-tune", device="cuda:1")         # a local model, on the second GPU
+lg.run(lg.with_model(spec, tuned), project, model=tuned)       # the same spec, on this model
 toy = lg.toy_model("ioi")        # a model whose circuit is known: project, datasets, experiments
 toy.run("which-heads").sites()   # L1 H1, L2 H3 and L3 H0 at 1.0, every other head at 0
 found = lg.run(lg.load_spec({**toy.specs["which-heads"].model_dump(), "name": "The circuit",
@@ -385,15 +401,21 @@ steered.continuations()   # what the steered model said, prompt by prompt and st
 ```
 
 Tables come back as pandas DataFrames when pandas is installed, and as pyarrow Tables otherwise.
-`lg.list_runs(project)` and `lg.load_run(project, run_id)` read runs made anywhere. A run that
-fails raises `lg.api.LogogramError` with the reason, and `lg.load_run(project, run_id).traceback`
-reads the traceback it kept. Interrupting the kernel records the run as cancelled, keeping what
-finished: `run.partial` says how far a run that stopped early got and what it doesn't keep.
-`run.rename("Name movers")`, `run.star()` and `run.archive()` change what the history shows
-(`run.title`, `run.starred`, `run.archived`), and `lg.delete_run(project, run)` deletes a run's
-folder for good. `lg.sweep` returns a sweep's runs, one per value; a run that fails keeps its
-status there and the next value runs. `sweep.summary()` holds what the app's sweep view shows,
-and `lg.load_sweep(project, sweep.id)` reads a sweep back.
+A model passed to `lg.run` is reused when it is the model the spec names (its files, dtype,
+device and weight processing). One that isn't is refused, with each difference named, rather
+than another copy loaded beside it: `lg.with_model(spec, model)` makes the spec name the model as
+it was loaded. `lg.list_runs(project)` and `lg.load_run(project, run_id)` read runs made
+anywhere. A run that fails raises `lg.api.LogogramError` with the reason, and
+`lg.load_run(project, run_id).traceback` reads the traceback it kept. Interrupting the kernel
+records the run as cancelled, keeping what finished: `run.partial` says how far a run that
+stopped early got and what it doesn't keep. `run.rename("Name movers")`, `run.star()` and
+`run.archive()` change what the history shows (`run.title`, `run.starred`, `run.archived`), and
+`lg.delete_run(project, run)` deletes a run's folder for good. `lg.sweep` returns a sweep's runs,
+one per value; a run that fails keeps its status there and the next value runs.
+`sweep.summary()` holds what the app's sweep view shows, and `lg.load_sweep(project, sweep.id)`
+reads a sweep back. `project.rename(name)`, `lg.rename_dataset(project, name, new)`,
+`lg.delete_dataset(project, name)` and `lg.delete_project(project)` manage projects and datasets
+as the app and the command line do, with the same refusals.
 
 ## Running on a remote GPU
 
@@ -422,7 +444,7 @@ browser on your own computer. Everything still runs on the remote machine, which
    with a new session token:
 
    ```text
-   Logogram 0.3.0 is running at:
+   Logogram <version> is running at:
 
      http://127.0.0.1:8765/?token=…
    ```
@@ -907,6 +929,47 @@ and a value at any position (through the heads that read it, their attention pat
 run). It refuses queries and keys, which act only through the softmax, and neurons of models
 that normalize the MLP's output (Gemma 2, OLMo 2), where no neuron writes a term of its own.
 
+**Probes, directions and learned subspaces.** Much of what interpretability finds is a direction
+in a site's activation space. Logogram keeps directions in the project's `directions/` folder (the
+vectors as orthonormal rows in safetensors, and what made them, where and on which model), and a
+run that uses one pins it by the hash of its file and keeps a copy
+([directions](docs/concepts/directions.md)). They are found by:
+
+* a **linear probe** (`probe`): a logistic regression at each site, at one token, trained on a
+  seeded split of the pairs to read which prompt of a pair it is or a field of the prompts' `meta`,
+  and measured on the held-out pairs beside a probe trained on shuffled labels; selectivity, the
+  difference, has its own interval. A probe's spec has no metric: it reads activations, not the
+  output ([probes](docs/concepts/probes.md));
+* **distributed alignment search** (`das`): a subspace of a stated number of dimensions, learned on
+  training pairs so that patching within it carries as much of a site's effect as it can, and
+  measured on held-out pairs beside patching the whole site and a random subspace of the same size
+  ([distributed alignment search](docs/concepts/das.md));
+* a principal component or a mean difference, from **Explore → Representations**.
+
+**Save as direction** in a probe's or a learned subspace's results (or `logogram directions save`,
+or `run.save_direction`) keeps one, and then:
+
+* **subspace patching** (`subspace_patching`) patches only the component of each site along it,
+  from the other prompt, keeping everything at right angles to it: how much of the site's effect
+  the direction carries;
+* **directional ablation** (an ablation with the `projection` baseline) removes the component along
+  it, or sets it to its mean over the clean or corrupt prompts; the `scale` baseline multiplies a
+  whole activation by a factor;
+* **steering** along it adds its unit vector, scaled by the training pairs' mean difference along
+  it, and says when the pairs differ along it both ways and the mean cancels;
+* a **readout** (`readout` metric) reads its component at a site, layer and token in place of the
+  model's output, so that patching and ablation ask which heads and MLPs write it. A readout reads
+  an MLP neuron or an SAE feature the same way.
+
+These act on one site at a time and on activations as wide as the residual stream (stream sites,
+attention and MLP outputs; a probe also reads a head's output, query, key or value). Tests check
+their identities on tiny models: removing every direction of the space is zero ablation and setting
+it to its mean is mean ablation, patching within the whole space is activation patching, and the
+whole-site column of a learned subspace run is activation patching on the held-out pairs.
+[Find a direction and test it](docs/guides/find-and-test-a-direction.md) walks through it on
+GPT-2 small: a probe reads the subject's gender at every layer, but its direction carries about half
+of the effect only where patching shows the model uses it.
+
 **Sets of sites** test a circuit. A `site_sets` scope lists sets of sites, each intervened on at
 once, in one forward pass: one result per set. A set marked `complement` intervenes on every
 component of the scope's `universe` (every head, or every attention and MLP output, at every
@@ -1004,11 +1067,11 @@ lens. Version 4 also adds methods and sources that a version 3 spec can't name.
 | `tokenization.chat_template` | `null` feeds each prompt as raw text. `{"kind": "user_turn", "system": null}` makes each prompt the person's message in the model's own chat template, so the answer is the first token of the reply; `{"kind": "assistant_prefix", "system": null, "user": "…"}` makes it the start of the model's reply to a fixed message. `system` is an optional system message. The template is the one the tokenizer ships at the model's revision (see [Chat templates](#chat-templates)). With a template, `prepend_bos` is `false`: the template writes the beginning of the text. |
 | `model.process_weights` | Fold LayerNorm and center weights, as TransformerLens does by default. Logit differences don't change. Value biases are folded into the attention output's bias, so zero ablation of head outputs and heads' direct effects do change (by up to several logits in Qwen 2.5, whose value biases are large); a layer's attention output doesn't. |
 | `dataset.sha256` | If set, the run refuses a dataset file that has changed. |
-| `experiment` | `{"kind": "activation_patching", "direction": "clean_to_corrupt" \| "corrupt_to_clean"}`, `{"kind": "ablation", "baseline": …}` with `{"kind": "zero"}`, `{"kind": "mean", "reference": "clean" \| "corrupt"}` or `{"kind": "resample", "pool": "clean" \| "corrupt", "donors": 10, "seed": 0}`, `{"kind": "attribution_patching", "direction": …, "method": "gradient", "steps": null}` (same directions as patching; or `"method": "integrated_gradients", "steps": 8`), `{"kind": "direct_logit_attribution", "prompts": "clean" \| "corrupt"}`, `{"kind": "path_patching", "direction": …, "receivers": [{"kind": "head", "layer": 9, "head": 9, "input": "q" \| "k" \| "v"}, {"kind": "mlp", "layer": 3}, {"kind": "logits"}], "freeze_mlps": false}`, `{"kind": "edge_attribution", "direction": …, "method": "gradient", "steps": null, "curve": {"counts": [10, 100, 1000], "patch": "chosen" \| "rest", "control": {"seed": 0, "draws": 1}}}` (`curve` `null` for none) with a `graph` scope, `{"kind": "acdc", "direction": …, "threshold": 0.1, "rule": "toward_source" \| "either_way"}` with a `graph` scope (`threshold` in the metric's units), or `{"kind": "steering", "apply_to": "clean" \| "corrupt", "direction": {"kind": "mean_difference"}, "coefficients": [-1, 1, 2], "train_fraction": 0.5, "seed": 0, "control": true, "continuations": null}` with a scope of one residual component per layer (`layer_components`) or residual `sites`, at one token. The direction can instead be one SAE feature's decoder direction, `{"kind": "sae_feature", "feature": 1234}` (with the spec's `sae`, and `sites` naming where the SAE writes), and `continuations` can be `{"prompts": 3, "tokens": 20}` to record what the steered model goes on to say |
+| `experiment` | `{"kind": "activation_patching", "direction": "clean_to_corrupt" \| "corrupt_to_clean"}`, `{"kind": "ablation", "baseline": …}` with `{"kind": "zero"}`, `{"kind": "mean", "reference": "clean" \| "corrupt"}` or `{"kind": "resample", "pool": "clean" \| "corrupt", "donors": 10, "seed": 0}`, `{"kind": "attribution_patching", "direction": …, "method": "gradient", "steps": null}` (same directions as patching; or `"method": "integrated_gradients", "steps": 8`), `{"kind": "direct_logit_attribution", "prompts": "clean" \| "corrupt"}`, `{"kind": "path_patching", "direction": …, "receivers": [{"kind": "head", "layer": 9, "head": 9, "input": "q" \| "k" \| "v"}, {"kind": "mlp", "layer": 3}, {"kind": "logits"}], "freeze_mlps": false}`, `{"kind": "edge_attribution", "direction": …, "method": "gradient", "steps": null, "curve": {"counts": [10, 100, 1000], "patch": "chosen" \| "rest", "control": {"seed": 0, "draws": 1}}}` (`curve` `null` for none) with a `graph` scope, `{"kind": "acdc", "direction": …, "threshold": 0.1, "rule": "toward_source" \| "either_way"}` with a `graph` scope (`threshold` in the metric's units), or `{"kind": "steering", "apply_to": "clean" \| "corrupt", "direction": {"kind": "mean_difference"}, "coefficients": [-1, 1, 2], "train_fraction": 0.5, "seed": 0, "control": true, "continuations": null}` with a scope of one residual component per layer (`layer_components`) or residual `sites`, at one token. The direction can instead be one SAE feature's decoder direction, `{"kind": "sae_feature", "feature": 1234}` (with the spec's `sae`, and `sites` naming where the SAE writes), or a saved direction, `{"kind": "direction", "direction": {"name": "…", "sha256": null}}`, and `continuations` can be `{"prompts": 3, "tokens": 20}` to record what the steered model goes on to say. Also `{"kind": "probe", "labels": {"kind": "side"} \| {"kind": "meta", "field": "gender", "prompts": "clean" \| "corrupt" \| "both"}, "train_fraction": 0.5, "seed": 0, "regularization": 0.01, "iterations": 100, "control": true}`, `{"kind": "das", "direction": …, "dimensions": 1, "train_fraction": 0.5, "seed": 0, "steps": 100, "learning_rate": 0.01, "control": true}` and `{"kind": "subspace_patching", "direction": …, "subspace": {"name": "…", "sha256": null}}`, at one site at a time; ablation's baseline can also be `{"kind": "scale", "factor": 0.5}` or `{"kind": "projection", "direction": {"name": "…", "sha256": null}, "reference": null \| "clean" \| "corrupt"}` |
 | `scope` | `{"kind": "heads", "position": …}`, `{"kind": "layer_position", "site": "resid_pre", "positions": "each" \| "labels"}`, `{"kind": "layer_components", "components": ["attn_out", "mlp_out"], "position": …}` `{"kind": "sites", "sites": [{"kind": "head", "layer": 9, "head": 9, "position": {"kind": "label", "label": "end"}}]}` (feature sites are `{"kind": "sae_feature", "layer": 8, "feature": 1234, "position": …}`), `{"kind": "head_inputs", "input": "q" \| "k" \| "v", "position": …}`, `{"kind": "neurons", "layers": [3, 4], "position": …}`, for attribution patching, `{"kind": "features", "position": …, "top": 50, "choose_on": 0.5, "seed": 0}` (`choose_on` and `seed` both `null` to choose and report on every prompt), `{"kind": "site_sets", "universe": ["head"], "sets": [{"label": "circuit", "sites": […], "complement": true}]}`, for edge attribution and ACDC `{"kind": "graph", "layers": null, "logits": true}` (`layers` the heads and MLPs that receive edges, `null` for every layer), or, for path patching edges one at a time, `{"kind": "edges", "edges": [{"sender": {"kind": "head", "layer": 5, "head": 5}, "receiver": {"kind": "head", "layer": 9, "head": 6, "input": "v"}}]}` (senders `{"kind": "embed"}`, heads or `{"kind": "mlp", "layer": 0}`; `freeze_mlps` true, and the experiment's receivers those of the edges; a `k` or `v` receiver's `head` is a key/value head where heads share them) |
 | `sae` | The SAE that feature sites belong to: a published one, `{"repo": "…", "path": "blocks.8.hook_resid_pre", "revision": "…", "source": "hub", "sha256": null}`, whose revision is pinned when a run starts, or one trained in the project, `{"repo": "NAME", "path": "saes/NAME", "revision": null, "source": "project", "sha256": "…"}`, pinned by the hash of its files. |
 | `predictions` | `null`, or the layer prediction diagnostic saved beside the results: `{"method": "final_norm_logit_lens" \| "tuned_lens", "lens": null, "prompt_index": 0, "which": "clean", "position": {"kind": "last"}, "top_k": 5}`, with `lens` `{"name": "NAME", "sha256": "…"}` naming a tuned lens trained in the project, pinned by the hash of its file. |
-| `metric` | `{"kind": "logit_diff" \| "logprob_diff" \| "logprob" \| "prob" \| "prob_diff", "normalization": …}` or `{"kind": "kl", "target": "clean" \| "corrupt", "normalization": …}` |
+| `metric` | `{"kind": "logit_diff" \| "logprob_diff" \| "logprob" \| "prob" \| "prob_diff", "normalization": …}`, `{"kind": "kl", "target": "clean" \| "corrupt", "normalization": …}`, or, for patching, ablation and subspace patching, `{"kind": "readout", "unit": {"kind": "neuron", "layer": 9, "neuron": 652}, "position": {"kind": "last"}, "normalization": …}` (a unit can also be `{"kind": "direction", "direction": {"name": "…", "sha256": null}, "site": "resid_post", "layer": 10}` or `{"kind": "sae_feature", "feature": 1234}`); `null` for a probe |
 | `metric.normalization` | `dataset_gap` or `prompt_gap` |
 | `statistics.cluster` | `null` to resample prompts, or a field of the prompts' `meta` (such as `"template"`) to resample clusters of prompts |
 | `execution.batch_size` | Recorded because batch shape can change floating-point results in the last digits. |
@@ -1071,9 +1134,10 @@ treating them as equivalent.
 manifests, summaries and per-prompt results list, open, compare and export as before. What a
 later release added and an older run didn't measure (corrections for the number of sites, say)
 is left out; runs from 0.1, which measured the logit difference only, read it as their metric.
-Version 1 and version 2 specs both run: a version 1 spec takes version 1's value for each choice
-it left out, `logogram validate` lists them, and its runs say so. The tests keep run folders
-written by 0.1.0 and 0.2.0 to hold every release to this.
+Specs of every earlier version run: what a later version added takes the value that reproduces
+what they did, and a version 1 spec takes version 1's value for each choice it left out, which
+`logogram validate` lists and its runs say. The tests keep run folders written by 0.1.0 and 0.2.0
+to hold every release to this.
 
 **What is bit-identical.** The same spec, on the same machine, with the same versions of
 Logogram, PyTorch, TransformerLens, Transformers and NumPy, gives the same per-prompt values to
@@ -1245,9 +1309,11 @@ The messages people see most often, as Logogram shows them, and what to do. If y
 * *In float16, …'s own forward pass gives values that aren't finite numbers (it overflows), so its
   predictions can't be checked. Load it in bfloat16 or float32, which have a wider range than
   float16.* Pythia is one such model.
-* *The spec asks for CUDA, but PyTorch can't see a CUDA GPU here.* `logogram doctor` names the
-  cause, usually a CPU-only PyTorch, and the command that fixes it. Or set `model.device` to
-  `auto` or `cpu` in the spec.
+* *CUDA was chosen, but PyTorch can't see a CUDA GPU here.* `logogram doctor` names the cause,
+  usually a CPU-only PyTorch, and the command that fixes it. Or choose the device **Automatic**
+  or **CPU** (`auto` or `cpu`, as `model.device` in a spec). A model that is loaded stays loaded:
+  the device is checked before it is closed, and the model dialog keeps **Load** disabled while
+  the device chosen isn't there.
 
 **A model or a run that doesn't fit.** The model dialog estimates, before downloading, the memory
 a model needs against what is free, and the experiment form's summary says whether a batch fits.
@@ -1281,8 +1347,8 @@ pairs can't be used, and why:
 * **Automatic** runs on the CPU: TransformerLens reports that Apple's MPS can give silently wrong
   results, and Logogram hasn't been checked on it, so MPS is used only when you choose it under
   **Device**. Check results that matter by rerunning on the CPU and comparing the two runs.
-* *The spec asks for Apple's MPS, which isn't available here. Set model.device to auto or cpu.*
-  The spec was made on a Mac: change its `model.device`.
+* *Apple's MPS was chosen, but it isn't available here. Choose the device auto or cpu
+  (model.device in a spec).* A spec made on a Mac asks for it: change its `model.device`.
 * `logogram doctor` says *Python is running under Rosetta*: an Intel Python can't use the Apple
   GPU. Install a native arm64 Python and reinstall Logogram with it, as it says.
 * `logogram doctor` says *Apple GPU (MPS) unavailable*: MPS needs macOS 12.3 or later.
@@ -1392,9 +1458,10 @@ runs the small models' SAEs on their models, recording each check in the catalog
 
 Model access goes through `logogram.backends.base.ModelBackend`. TransformerLens is the only
 backend today; remote execution and other libraries can be added behind the same interface.
-Not built yet, with room left for them: chat templates for models made for chat, attribution
-graphs over transcoders, cross-layer transcoders and crosscoders, the first Gemma Scope's NumPy
-SAE files, remote compute, a native desktop wrapper, plugins and assistants.
+Not built yet, with room left for them: attribution graphs over transcoders, cross-layer
+transcoders and crosscoders, the first Gemma Scope's NumPy SAE files, automated labels for
+features, models split across GPUs or quantized, sharing results online, remote compute, a native
+desktop wrapper, plugins and assistants.
 
 ## License
 

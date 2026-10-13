@@ -393,7 +393,50 @@ export interface RecentProject {
   path: string;
   name: string;
   opened: string | null;
-  modified: string;
+  /** Null when the project can't be read now. */
+  modified: string | null;
+  /** Its folder isn't there now (or holds no project Logogram can read): it stays in the list
+   * until it is removed from it, and `problem` says why. */
+  missing?: boolean;
+  problem?: string | null;
+}
+
+/** What deleting a project would delete, and what stops it now (logogram.project.DeletionPlan). */
+export interface DeletionPlan {
+  path: string;
+  name: string;
+  runs: number;
+  drafts: number;
+  datasets: number;
+  queued: number;
+  /** The folder's entries Logogram doesn't make there: while there are any, it isn't deleted. */
+  others: string[];
+  /** Why it can't be deleted now: a run in progress in it, its queue being run. */
+  busy: string | null;
+  /** Why it can't be deleted (others, or busy), and what to do; null when it can. */
+  problem: string | null;
+  /** What deleting it deletes, in words. */
+  text: string;
+}
+
+/** Whether a rerun reproduced the run it reran, value by value (logogram.compare.reproduction_of). */
+export interface Reproduction {
+  run_id: string;
+  original: string;
+  /** Every per-prompt value matches exactly. */
+  identical: boolean;
+  rows: number;
+  original_rows: number;
+  /** The largest change in a per-prompt value; null when the rows differ. */
+  largest: number | null;
+  /** The sentence `logogram run` says it in. */
+  text: string;
+}
+
+/** A dataset file renamed (its new name and path) or deleted (the ones it had). */
+export interface DatasetChanged {
+  name: string;
+  path: string;
 }
 
 /** A bundled example (logogram.gallery): what it asks, the result to expect, and its spec. */
@@ -2083,6 +2126,14 @@ export interface EstimateResponse {
   supported: boolean;
   support_note: string | null;
   estimate: MemoryEstimate;
+}
+
+/** Whether a device is there to load a model on: what it resolves to here, or why it isn't and
+ * what to choose instead. */
+export interface DeviceCheck {
+  device: Device;
+  resolved: string | null;
+  error: string | null;
 }
 
 export interface IOITemplate {

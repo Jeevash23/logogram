@@ -26,6 +26,8 @@ test("an SAE is trained in the project, said what it takes, and loaded", async (
   await trained.getByRole("button", { name: "Train an SAE…" }).click();
 
   const dialog = page.getByRole("dialog", { name: "Train an SAE" });
+  // The fixture's corpus (other checks may have added corpora to the fixture project before).
+  await dialog.getByLabel("Corpus", { exact: true }).selectOption("ioi-texts");
   await expect(dialog.getByLabel("Corpus", { exact: true })).toHaveValue("ioi-texts");
   await dialog.getByLabel("Name", { exact: true }).fill("browser-sae");
   await dialog.getByLabel("Features", { exact: true }).fill("64");
@@ -62,7 +64,12 @@ test("an SAE is trained in the project, said what it takes, and loaded", async (
   // The list beside the published ones has it too, and a feature patched from it names it in the spec.
   await card.getByRole("button", { name: "Load another SAE", exact: true }).click();
   await expect(page.getByRole("list", { name: "SAEs trained in this project" })).toContainText("browser-sae");
-  await page.getByRole("button", { name: "Keep the loaded SAE", exact: true }).click();
+  // The checks after this one read the fixture's SAE: load the published SAE that is the same one.
+  const search = page.getByRole("combobox", { name: "Search" });
+  await search.fill("tiny-res");
+  const chosen = page.getByRole("group", { name: "The chosen SAE: tiny-res, blocks.1.hook_resid_pre" });
+  await chosen.getByRole("button", { name: "Load this SAE" }).click();
+  await expect(card.getByRole("heading", { name: "exact", exact: true })).toBeVisible({ timeout: 30_000 });
   expect(errors).toEqual([]);
 });
 

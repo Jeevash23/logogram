@@ -328,6 +328,25 @@ def test_folder_listing_skips_what_it_cant_enter(client, tmp_path):
         locked.chmod(0o755)
 
 
+@pytest.mark.parametrize(
+    "content",
+    ["null", "[1, 2]", '"dark"', "{not json", "[" * 5000],
+    ids=["null", "a list", "a string", "not json", "too deep"],
+)
+def test_a_settings_file_that_isnt_an_object_reads_as_no_settings(client, tmp_path, content):
+    path = tmp_path / "config" / "settings.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    state = client.get("/api/state", headers=HEADERS)
+    assert state.status_code == 200, state.text
+    assert state.json()["theme"] == "system" and state.json()["first_run"] is True
+    # Changing one replaces the file with an object holding it, written whole.
+    saved = client.post("/api/settings", json={"theme": "dark"}, headers=HEADERS)
+    assert saved.status_code == 200 and saved.json()["theme"] == "dark"
+    assert json.loads(path.read_text(encoding="utf-8")) == {"theme": "dark"}
+    assert sorted(p.name for p in path.parent.iterdir()) == ["settings.json"]
+
+
 def test_creating_a_project_where_you_cant_write_says_so(client, tmp_path):
     blocker = tmp_path / "a-file"
     blocker.write_text("", encoding="utf-8")
@@ -405,6 +424,155 @@ def test_cancelling_a_model_load_leaves_no_model(app, monkeypatch):
         time.sleep(0.01)
     assert job.status == "cancelled"
     assert state.backend is None and state.model_status["state"] == "none"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 GiB."),
+        RuntimeError(
+            "[enforce fail at alloc_cpu.cpp:118] DefaultCPUAllocator: can't allocate memory: you "
+            "tried to allocate 4000000000 bytes."
+        ),
+        MemoryError(),
+    ],
+    ids=["on the gpu", "in the cpu's allocator", "in python"],
+)
+def test_an_analysis_that_runs_out_of_memory_says_what_to_do(
+    app, client, ready, monkeypatch, error
+):
+    import gc
+    import weakref
+
+    released: list[bool] = []
+    monkeypatch.setattr(
+        "logogram.backends.transformer_lens.release_memory", lambda: released.append(True)
+    )
+    held: list[weakref.ref] = []
+
+    def out_of_memory(*args, **kwargs):
+        activations = torch.zeros(16)  # what the analysis held when it ran out
+        held.append(weakref.ref(activations))
+        raise error
+
+    monkeypatch.setattr("logogram.analysis.baseline_report", out_of_memory)
+    monkeypatch.setattr("logogram.inside.look_report", out_of_memory)
+    context = {"prepend_bos": True, "batch_size": 8}
+    metric = {"kind": "logit_diff", "normalization": "dataset_gap"}
+    baseline = {"dataset": "datasets/ioi.jsonl", "metric": metric, **context}
+    r = client.post("/api/baseline", json=baseline, headers=HEADERS)
+    assert r.status_code == 409, r.text
+    assert r.json()["error"] == (
+        "The analysis ran out of memory. Run it on fewer prompts or with a smaller batch size (or "
+        "a shorter text), or load a smaller model or a 16-bit dtype, then try again."
+    )
+    look = {"text": "Hello world", "top_k": 3, **context}
+    r = client.post("/api/look", json=look, headers=HEADERS)
+    assert r.status_code == 409 and "ran out of memory" in r.json()["error"]
+    assert released == [True, True]  # the memory it held is given back, each time
+    error.__traceback__ = None  # the test's own reference to the error, which it raised twice
+    gc.collect()
+    assert held and all(ref() is None for ref in held)  # nothing keeps what the analysis held
+    assert ready.backend is not None  # and the model stays loaded
+
+
+def test_other_errors_in_an_analysis_stay_internal_errors(app, ready, monkeypatch):
+    def broken(*args, **kwargs):
+        raise RuntimeError("a bug")
+
+    monkeypatch.setattr("logogram.analysis.baseline_report", broken)
+    quiet = TestClient(app, base_url=BASE, raise_server_exceptions=False)
+    metric = {"kind": "logit_diff", "normalization": "dataset_gap"}
+    body = {"dataset": "datasets/ioi.jsonl", "metric": metric, "prepend_bos": True, "batch_size": 8}
+    tab = {**HEADERS, "x-logogram-project": ready.project.session_id}
+    assert quiet.post("/api/baseline", json=body, headers=tab).status_code == 500
+    # A conflict is still a conflict, though it is a RuntimeError too.
+    ready.backend, backend = None, ready.backend
+    try:
+        r = quiet.post("/api/baseline", json=body, headers=tab)
+        assert r.status_code == 409 and r.json()["error"] == "Load a model first."
+    finally:
+        ready.backend = backend
+
+
+def _job_ended(client, timeout=60):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        job = client.get("/api/state", headers=HEADERS).json()["job"]
+        if job is not None and job["status"] != "running":
+            return job
+        time.sleep(0.02)
+    raise AssertionError("the job did not end")
+
+
+def test_a_device_that_isnt_here_leaves_the_loaded_model_loaded(
+    app, client, project, tiny_model_dir, spec_factory, monkeypatch
+):
+    from logogram.backends.transformer_lens import TransformerLensBackend, boot_local
+
+    # A model of this test's own: a regression would close it.
+    backend = TransformerLensBackend.from_bridge(
+        boot_local(tiny_model_dir, device="cpu", dtype="float32"),
+        model_id="tiny-gpt2",
+        revision="test",
+        dtype="float32",
+        process_weights=True,
+    )
+    state = app.state.logogram
+    state.backend = backend
+    state.model_status = {"state": "ready"}
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    # The model dialog asks before Load is pressed, and keeps Load disabled.
+    checked = client.get("/api/models/device", params={"device": "cuda"}, headers=HEADERS).json()
+    assert checked["resolved"] is None
+    assert checked["error"].startswith("CUDA was chosen, but PyTorch can't see a CUDA GPU here.")
+    here = client.get("/api/models/device", params={"device": "cpu"}, headers=HEADERS).json()
+    assert here == {"device": "cpu", "resolved": "cpu", "error": None}
+    bad = client.get("/api/models/device", params={"device": "tpu"}, headers=HEADERS)
+    assert bad.status_code == 400
+    # Loaded anyway (from another tab, or a script): refused before the model is closed.
+    ref = {
+        "id": "tiny-gpt2",
+        "source": "hub",
+        "revision": "test",
+        "sha256": None,
+        "dtype": "float32",
+        "device": "cuda",
+        "process_weights": True,
+    }
+    assert client.post("/api/models/load", json=ref, headers=HEADERS).status_code == 200
+    job = _job_ended(client)
+    assert job["status"] == "failed" and job["error"].startswith("CUDA was chosen")
+    assert state.backend is backend and backend.bridge is not None
+    model = client.get("/api/state", headers=HEADERS).json()["model"]
+    assert model["state"] == "ready" and model["info"]["device"] == "cpu"
+    # So is a run whose spec asks for the GPU: it fails, saying why, and the model stays.
+    client.post("/api/projects/open", json={"path": str(project.root)}, headers=HEADERS)
+    spec = spec_factory(model={"id": "tiny-gpt2", "revision": "test", "device": "cuda"})
+    run_id = client.post(
+        "/api/runs", json={"spec": spec.model_dump(mode="json")}, headers=HEADERS
+    ).json()["run_id"]
+    assert _wait(client, run_id) == "failed", _why(client, run_id)
+    assert _why(client, run_id)["error"].startswith("CUDA was chosen")
+    assert state.backend is backend and backend.bridge is not None
+
+
+def test_a_device_that_isnt_here_with_no_model_loaded_says_why(app, monkeypatch):
+    state = app.state.logogram
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    ref = ModelRef(
+        id="some/model",
+        source="hub",
+        revision=None,
+        sha256=None,
+        dtype="float32",
+        device="cuda:1",
+        process_weights=True,
+    )
+    with pytest.raises(BackendError, match="CUDA was chosen"):
+        state.load_model(ref)
+    assert state.backend is None
+    assert state.model_status["state"] == "error" and "CUDA" in state.model_status["error"]
 
 
 def test_a_cancelled_load_stops_before_the_network():

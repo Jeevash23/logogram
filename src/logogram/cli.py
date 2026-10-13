@@ -2,7 +2,9 @@
 commands that read and check runs without the app: ``list``, ``show``, ``compare``, ``diff``,
 ``verify``, ``robustness``, ``sweep``, ``export``, ``validate``, ``tasks`` and ``generate``;
 ``saes``, the published SAEs for a model and what Logogram reads of them;
-commands that manage them: ``rename``, ``star``, ``archive`` and ``delete``; ``models add``,
+commands that manage them: ``rename``, ``star``, ``archive`` and ``delete``; projects: ``new``,
+``projects`` and ``projects forget`` (the recent list), ``project rename`` and ``project delete``;
+datasets: ``datasets``, ``datasets rename`` and ``datasets delete``; ``models add``,
 ``models list`` and ``models remove`` for model folders on this machine; ``toy``, a model whose
 circuit is known; the project's run queue: ``queue add``, ``queue list``, ``queue clear`` and
 ``queue run``; its corpora (``corpora``, ``corpora import``, ``corpora rename`` and ``corpora
@@ -875,24 +877,13 @@ def _print_summary(summary: dict, top: int) -> None:  # type: ignore[type-arg]
 
 
 def _report_reproduction(original: Path, new: Path, original_id: str) -> None:
+    """Whether the new run's per-prompt values match the run its spec came from, as the app says
+    it when a rerun finishes (logogram.compare.reproduction_of)."""
     import pyarrow.parquet as pq
 
-    from logogram.results import largest_change
+    from logogram.compare import reproduction_of
 
-    a = pq.read_table(original)
-    b = pq.read_table(new)
-    largest = largest_change(a, b)
-    if largest is None:
-        typer.echo(f"Differs from {original_id}: {a.num_rows} rows before, {b.num_rows} now.")
-    elif largest == 0.0:
-        typer.echo(
-            f"Identical to {original_id}: all {a.num_rows:,} per-prompt values match exactly."
-        )
-    else:
-        typer.echo(
-            f"Differs from {original_id}: largest change in a per-prompt value is {largest:.3g}. "
-            "Check the device, dtype and library versions in the two manifests."
-        )
+    typer.echo(reproduction_of(pq.read_table(original), pq.read_table(new), original_id)["text"])
 
 
 # -- runs without the app ---------------------------------------------------------------------
@@ -1045,12 +1036,16 @@ def delete(
     project_dir: Annotated[Path | None, ProjectOption] = None,
 ) -> None:
     """Delete a finished, failed or cancelled run, or a draft: its folder and everything in it.
-    There is no undo; `logogram archive` keeps a run out of the way instead."""
-    from logogram.history import delete_run, display_name, reason
+    A run in progress, or a draft waiting in the queue, can't be deleted. There is no undo;
+    `logogram archive` keeps a run out of the way instead."""
+    from logogram.history import check_deletable, delete_run, display_name, reason
 
     project = _open_project(project_dir, Path(run) if Path(run).exists() else None)
     run_id = _named_run(project, run)
-    listing = project.run_listing(run_id)
+    try:
+        listing = check_deletable(project, run_id)  # before asking
+    except ValueError as exc:
+        raise _fail(reason(exc)) from exc
     name = display_name(listing) if listing else run_id
     if not yes:
         derived = [
@@ -1886,8 +1881,10 @@ def generate(
     overwrite: Annotated[bool, typer.Option(help="Replace a dataset of the same name.")] = False,
     project_dir: Annotated[Path | None, ProjectOption] = None,
 ) -> None:
-    """Write a seeded dataset of prompt pairs for a task into the project's datasets folder."""
-    from logogram.datasets import check_dataset_name, write_dataset
+    """Write a seeded dataset of prompt pairs for a task into the project's datasets folder.
+    --overwrite replaces a dataset of the same name, unless a saved draft or a queued run names
+    it (they would fail, or run on other prompts); finished runs keep their own copy."""
+    from logogram.datasets import DatasetError, check_dataset_name, check_unused, write_dataset
     from logogram.tasks import TaskError, generate_task, get_task
 
     project = _open_project(project_dir)
@@ -1900,10 +1897,15 @@ def generate(
         path = project.dataset_file(check_dataset_name(name or task))
     except (TaskError, ValueError) as exc:
         raise _fail(str(exc)) from exc
-    if path.exists() and not overwrite:
-        raise _fail(f"{path.name} already exists. Choose another --name, or pass --overwrite.")
-    write_dataset(path, records)
     rel = path.relative_to(project.root).as_posix()
+    if os.path.lexists(path):
+        if not overwrite:
+            raise _fail(f"{path.name} already exists. Choose another --name, or pass --overwrite.")
+        try:
+            check_unused(project, rel, "replaced")
+        except DatasetError as exc:
+            raise _fail(str(exc)) from exc
+    write_dataset(path, records)
     metric = get_task(task).recommended_metric(options)
     typer.echo(f"Wrote {len(records)} prompt pairs to {rel}.")
     typer.echo(f'Read them with "metric": {{"kind": "{metric}", ...}} in the spec.')
@@ -1933,6 +1935,234 @@ def _cached_tokenizer(model_id: str) -> tuple[Any, Any]:
         return list(tok(text, add_special_tokens=False)["input_ids"])
 
     return (lambda text: len(ids(text)) == 1), (lambda text: len(ids(text)))
+
+
+# -- projects ----------------------------------------------------------------------------------
+
+
+@app.command()
+def new(
+    name: Annotated[str, typer.Argument(help="The project's name; its folder is named after it.")],
+    parent: Annotated[
+        Path | None,
+        typer.Option(
+            "--parent",
+            file_okay=False,
+            help="The folder to make it in (default: the projects folder the app uses, "
+            "Documents/Logogram).",
+        ),
+    ] = None,
+) -> None:
+    """Create a project, as the app's Create project does: a folder named after NAME, with
+    project.json, datasets/ and experiments/. Prints its path."""
+    from logogram.project import Project, ProjectError, default_projects_parent, remember_recent
+
+    try:
+        project = Project.create(parent or default_projects_parent(), name)
+    except ProjectError as exc:
+        raise _fail(str(exc)) from exc
+    with contextlib.suppress(Exception):  # the app lists it among the recent projects
+        remember_recent(project)
+    typer.echo(f"Created the project “{project.meta.name}” in\n\n  {project.root}\n")
+    typer.echo(f"Open it in the app: logogram open {project.root}")
+
+
+projects_app = typer.Typer(
+    add_completion=False,
+    invoke_without_command=True,
+    rich_markup_mode=None,
+    help="The projects opened lately, as the app lists them: list them, or take one out of the "
+    "list.",
+)
+app.add_typer(projects_app, name="projects")
+
+
+@projects_app.callback()
+def projects_list(ctx: typer.Context) -> None:
+    """List the projects opened lately, last opened first. A project whose folder can't be found
+    (moved, deleted, or on a drive that isn't connected) is marked, and stays listed until
+    `logogram projects forget PATH` takes it out."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from logogram.project import load_recent
+
+    listed = load_recent()
+    if not listed:
+        typer.echo(
+            "No projects opened yet. Make one with `logogram new NAME`, or open a folder with "
+            "`logogram open PATH`."
+        )
+        return
+    for item in listed:
+        mark = f"  ({item['problem']})" if item["missing"] else ""
+        typer.echo(f"{item['name']}{mark}\n  {item['path']}")
+
+
+@projects_app.command("forget")
+def projects_forget(
+    path: Annotated[str, typer.Argument(help="The project's folder, as the list shows it.")],
+) -> None:
+    """Take a project out of the recent list. Its folder is left as it is."""
+    from logogram.project import forget_recent
+
+    if not forget_recent(path):
+        raise _fail(f"{path} isn't in the recent list (`logogram projects` lists it).")
+    typer.echo(f"Took {path} out of the recent list. Its folder is left as it is.")
+
+
+project_app = typer.Typer(
+    add_completion=False,
+    no_args_is_help=True,
+    rich_markup_mode=None,
+    help="The project: give it another name, or delete it.",
+)
+app.add_typer(project_app, name="project")
+
+
+@project_app.command("rename")
+def project_rename(
+    name: Annotated[str, typer.Argument(help="The project's new name.")],
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Give the project another name, in its project.json. Its folder keeps its name."""
+    project = _open_project(project_dir)
+    old = project.meta.name
+    try:
+        project.rename(name)
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
+    typer.echo(f"“{old}” is now called “{project.meta.name}”. Its folder keeps its name.")
+
+
+@project_app.command("delete")
+def project_delete(
+    yes: Annotated[
+        bool, typer.Option("--yes", "-y", help="Delete it without asking first.")
+    ] = False,
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Delete the project's folder and everything in it, for good: its runs, drafts, datasets and
+    queue. Asks for the project's name to be typed first, unless --yes. Refused while a run is in
+    progress in it or its queue is being run, and when the folder holds anything Logogram doesn't
+    make there (it may be your own folder), listing it."""
+    from logogram.project import delete_project, deletion_plan
+
+    project = _open_project(project_dir)
+    try:
+        plan = deletion_plan(project)
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
+    if plan.problem:
+        raise _fail(plan.problem)
+    if not yes:
+        typer.echo(plan.text)
+        typed = typer.prompt(
+            f"Type the project's name, {plan.name}, to delete it", default="", show_default=False
+        )
+        if typed.strip() != plan.name:
+            typer.echo("That isn't its name. Nothing was deleted.")
+            raise typer.Exit(1)
+    try:
+        delete_project(project)
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
+    typer.echo(f"Deleted “{plan.name}” ({plan.path}).")
+
+
+# -- datasets ----------------------------------------------------------------------------------
+
+datasets_app = typer.Typer(
+    add_completion=False,
+    invoke_without_command=True,
+    rich_markup_mode=None,
+    help="The project's datasets: list them, rename one, delete one. Runs keep their own copy of "
+    "the prompts they ran on, so neither changes a run.",
+)
+app.add_typer(datasets_app, name="datasets")
+
+
+@datasets_app.callback()
+def datasets_list(
+    ctx: typer.Context, project_dir: Annotated[Path | None, ProjectOption] = None
+) -> None:
+    """List the project's datasets: each file in datasets/, its prompts, and the drafts and queued
+    runs that name it."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from logogram.datasets import dataset_users, users_text
+
+    project = _open_project(project_dir)
+    listed = project.list_datasets()
+    if not listed:
+        typer.echo("No datasets yet. Make one with `logogram generate TASK`, or in the app.")
+        return
+    width = max(len(d["name"]) for d in listed)
+    for d in listed:
+        about = f"error: {d['error']}" if d.get("error") else count_text(d["n"], "prompt pair")
+        typer.echo(f"{d['name']:<{width}}  {about}")
+        users = dataset_users(project, d["path"])
+        if users:
+            typer.echo(f"{'':<{width}}  named by {users_text(users)}")
+
+
+def _dataset_or_fail(project: Any, name: str, action: str) -> Any:
+    """The dataset file ``name``, once checked to be there and free to ``action``."""
+    from logogram.datasets import check_unused, existing_dataset
+
+    try:
+        path = existing_dataset(project, name)
+        check_unused(project, f"datasets/{path.name}", action)
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
+    return path
+
+
+@datasets_app.command("delete")
+def datasets_delete(
+    name: Annotated[str, typer.Argument(help="The dataset's file name, such as ioi.jsonl.")],
+    yes: Annotated[
+        bool, typer.Option("--yes", "-y", help="Delete it without asking first.")
+    ] = False,
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Delete a dataset file from the project, for good. Runs that ran on it keep their own copy
+    of its prompts in datasets/snapshots/. Refused while a saved draft or a queued run names it."""
+    from logogram.datasets import delete_dataset
+
+    project = _open_project(project_dir)
+    path = _dataset_or_fail(project, name, "deleted")
+    if not yes:
+        typer.echo(
+            f"This deletes datasets/{path.name}, for good. Runs that ran on it keep their own copy "
+            "of its prompts, in datasets/snapshots/."
+        )
+        if not typer.confirm("Delete it?", default=False):
+            typer.echo("Nothing was deleted.")
+            raise typer.Exit(1)
+    try:
+        rel = delete_dataset(project, name)
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
+    typer.echo(f"Deleted {rel}.")
+
+
+@datasets_app.command("rename")
+def datasets_rename(
+    name: Annotated[str, typer.Argument(help="The dataset's file name, such as ioi.jsonl.")],
+    new_name: Annotated[str, typer.Argument(metavar="NEW", help="Its new file name.")],
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Give a dataset file another name. Its prompts, and so its hash, stay the same; runs that
+    ran on it keep their own copy. Refused while a saved draft or a queued run names it."""
+    from logogram.datasets import rename_dataset
+
+    project = _open_project(project_dir)
+    path = _dataset_or_fail(project, name, "renamed")
+    try:
+        rel = rename_dataset(project, name, new_name)
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
+    typer.echo(f"Renamed datasets/{path.name} to {rel}.")
 
 
 # -- local models ------------------------------------------------------------------------------

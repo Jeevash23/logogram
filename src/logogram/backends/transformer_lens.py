@@ -1736,9 +1736,11 @@ def full_device(device: str) -> str:
 
 
 def resolve_device(device: str) -> str:
-    """What a spec's model.device runs on here: "cpu", "mps", or one GPU by its index. "cuda" is
-    the default GPU (as torch's current device names it, normally GPU 0), so "cuda" and "cuda:0"
-    resolve alike there and a model loaded with either matches a spec that asks for the other."""
+    """What a device (a spec's model.device, or the one chosen in the app or passed to
+    ``load_model``) runs on here: "cpu", "mps", or one GPU by its index. "cuda" is the default GPU
+    (as torch's current device names it, normally GPU 0), so "cuda" and "cuda:0" resolve alike
+    there and a model loaded with either matches a spec that asks for the other. A device this
+    machine doesn't have is refused, saying what to choose instead."""
     if device == "auto":
         # Apple's MPS only when asked for: TransformerLens reports that it can give silently wrong
         # results, and Logogram hasn't been checked on it yet (see system.MPS_NOTE).
@@ -1746,8 +1748,8 @@ def resolve_device(device: str) -> str:
     if device_type(device) == "cuda":
         if not torch.cuda.is_available():
             raise BackendError(
-                "The spec asks for CUDA, but PyTorch can't see a CUDA GPU here. Run "
-                "`logogram doctor` for the fix, or set model.device to auto or cpu."
+                "CUDA was chosen, but PyTorch can't see a CUDA GPU here. Run `logogram doctor` "
+                "for the fix, or choose the device auto or cpu (model.device in a spec)."
             )
         if device == "cuda":
             return full_device(device)
@@ -1756,8 +1758,8 @@ def resolve_device(device: str) -> str:
         if index >= count:
             have = "one GPU, cuda:0" if count == 1 else f"{count} GPUs, cuda:0 to cuda:{count - 1}"
             raise BackendError(
-                f"The spec asks for GPU {index} ({device}), but this machine has {have}. Set "
-                "model.device to one of them, or to cuda for the default GPU; `logogram doctor` "
+                f"GPU {index} ({device}) was chosen, but this machine has {have}. Choose one of "
+                "them, or cuda for the default GPU (model.device in a spec); `logogram doctor` "
                 "lists them."
             )
         return f"cuda:{index}"
@@ -1765,10 +1767,38 @@ def resolve_device(device: str) -> str:
         getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()
     ):
         raise BackendError(
-            "The spec asks for Apple's MPS, which isn't available here. Set model.device to auto "
-            "or cpu."
+            "Apple's MPS was chosen, but it isn't available here. Choose the device auto or cpu "
+            "(model.device in a spec)."
         )
     return device
+
+
+def check_request(
+    model_id: str,
+    *,
+    revision: str | None,
+    dtype: str,
+    device: str,
+    source: str,
+    sha256: str | None,
+) -> str:
+    """What can be checked about loading a model before anything is downloaded or loaded: the
+    dtype, that the device is there, and for a local model that this machine has it and its folder
+    is still there. Returns the device as it resolves here. The app checks this before it closes
+    the model that is loaded, so a request that can't load (a GPU this machine lacks, say) leaves
+    that model loaded."""
+    if dtype not in DTYPES:
+        raise BackendError(f"Unknown dtype {dtype!r}; use float32, float16 or bfloat16.")
+    resolved = resolve_device(device)
+    if source == "local":
+        from logogram import local_models
+
+        if revision is not None:
+            raise BackendError(
+                "A local model has no revisions: its files are pinned by their hash."
+            )
+        local_models.registered_folder(model_id, sha256)
+    return resolved
 
 
 def load_model(
@@ -1797,16 +1827,12 @@ def load_model(
         if on_progress:
             on_progress({"stage": stage, **data})
 
-    if dtype not in DTYPES:
-        raise BackendError(f"Unknown dtype {dtype!r}; use float32, float16 or bfloat16.")
-    resolved_device = resolve_device(device)
+    resolved_device = check_request(
+        model_id, revision=revision, dtype=dtype, device=device, source=source, sha256=sha256
+    )
     if source == "local":
         from logogram import local_models
 
-        if revision is not None:
-            raise BackendError(
-                "A local model has no revisions: its files are pinned by their hash."
-            )
         emit("checking", model_id=model_id, done=0, total=0, file="")
 
         def on_check(done: int, total: int, file: str) -> None:
@@ -1865,6 +1891,7 @@ def load_model(
         except BackendError:
             backend.close()
             raise
+    backend.requested_device = device
     emit("ready")
     return backend
 
@@ -1890,8 +1917,22 @@ def release_memory() -> None:
         mps.empty_cache()
 
 
+def memory_name(device: str) -> str:
+    """The memory a device computes in, in words: "GPU memory", "unified memory" or "memory"."""
+    return {"cuda": "GPU memory", "mps": "unified memory"}.get(device_type(device), "memory")
+
+
+def analysis_out_of_memory_message(device: str | None) -> str:
+    """What an analysis that ran out of memory says (the app's Explore views, Your text)."""
+    where = memory_name(device) if device is not None else "memory"
+    return (
+        f"The analysis ran out of {where}. Run it on fewer prompts or with a smaller batch size "
+        "(or a shorter text), or load a smaller model or a 16-bit dtype, then try again."
+    )
+
+
 def out_of_memory_message(device: str, process_weights: bool) -> str:
-    where = {"cuda": "GPU memory", "mps": "unified memory"}.get(device_type(device), "memory")
+    where = memory_name(device)
     if process_weights:
         return (
             f"The model doesn't fit in {where} while its weights are processed: processing works "

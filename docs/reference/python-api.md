@@ -14,7 +14,8 @@ import logogram as lg
 project = lg.open_project("~/Documents/Logogram/ioi-example")
 model = lg.load_model("openai-community/gpt2")   # or a local model, by the name it was added under
 spec = lg.load_spec(project.root / "experiments/ioi-head-patching/spec.json")
-run = lg.run(spec, project, model=model)
+run = lg.run(spec, project, model=model)  # reuses the model the spec names; another is refused
+lg.with_model(spec, model)   # the spec, naming this model as it was loaded
 run.sites()          # one row per site: mean effect, interval, q-value, ...
 run.per_prompt()     # one row per site and prompt: everything the statistics came from
 run                  # in a notebook: the method, the strongest sites and a heatmap
@@ -52,6 +53,8 @@ Every public name of `import logogram as lg`, from the docstrings in [`src/logog
 | [`lg.compare_runs`](#lgcompare_runs) | Compare two finished runs of one project: rank correlation, top-k overlap, conclusions that changed, and paired differences where they measured the same prompts. |
 | [`lg.continue_text`](#lgcontinue_text) | What `model` writes after `text`: `tokens` new tokens (1 to 64), each the most likely one (ties to the lowest token id), as the app's Your text view continues it (`plain`). |
 | [`lg.create_project`](#lgcreate_project) | Create a project folder called after `name` inside `parent`. |
+| [`lg.delete_dataset`](#lgdelete_dataset) | Delete the dataset file `name` (such as `ioi.jsonl`) from the project, for good; returns the path it had. |
+| [`lg.delete_project`](#lgdelete_project) | Delete a project's folder (a `Project`, or its folder) and everything in it, for good: its runs, drafts, datasets and queue. |
 | [`lg.delete_run`](#lgdelete_run) | Delete a finished, failed or cancelled run, or a draft (a [`Run`](#lgrun-1) or a run id): its folder and everything in it, for good. |
 | [`lg.edge_verification`](#lgedge_verification) | An edge attribution run's estimates beside their measurements by path patching (the run [`verify_run()`](#lgverify_run) made from it), edge by edge, ranked both ways, with Spearman's rank correlation of the two and how many have the same sign. |
 | [`lg.export_activations`](#lgexport_activations) | Write the activations [`activations()`](#lgactivations) reads to `activations/NAME.safetensors` in the project (one float32 tensor per site, `[rows, width]`, named `"kind:layer"`) and what they are to `activations/NAME.json`: the model, the sites, the position, the dataset or corpus read and its hash, each row's index, side and class (`mark`: `"side"` or `"meta:FIELD"` for a dataset; a corpus's labels), and how texts were tokenized. |
@@ -77,6 +80,7 @@ Every public name of `import logogram as lg`, from the docstrings in [`src/logog
 | [`lg.read_corpus`](#lgread_corpus) | A corpus of the project: its `texts`, its `records` (each text with its label, id and meta), `labels()` (the distinct labels, as text), the `sha256` of its file and `meta` (where its texts came from). |
 | [`lg.read_direction`](#lgread_direction) | A saved direction: its `vectors` (`[k, width]`, orthonormal rows, float32) and `meta` (the model and site it was found on, how it was made, its hash). |
 | [`lg.remove_local_model`](#lgremove_local_model) | Forget a local model. |
+| [`lg.rename_dataset`](#lgrename_dataset) | Give the dataset file `name` the name `new`; returns its new path in the project. |
 | [`lg.run`](#lgrun) | Run a spec and write its experiment folder into `project`, as the app does. |
 | [`lg.save_direction`](#lgsave_direction) | Save `vectors` (one vector `[width]`, or `[k, width]` for a subspace; a NumPy array, a tensor or a list) as the direction `name`, made orthonormal, with the length of each vector before kept. |
 | [`lg.sweep`](#lgsweep) | Run a run's spec (or a spec, into `project`) across `values` of one `field`, one run after another, as `logogram sweep` does: a seed the spec states (`statistics.seed`, `experiment.baseline.seed`, `experiment.seed` or `scope.seed`), the dataset (`dataset.path`: dataset files of the project) or the model's revision (`model.revision`: commits, tags or branches, each run pinning its commit). |
@@ -85,6 +89,7 @@ Every public name of `import logogram as lg`, from the docstrings in [`src/logog
 | [`lg.train_lens`](#lgtrain_lens) | Train a tuned lens in `project`, as the app and `logogram lens train` do: an affine translator per layer, read through the model's final normalization and unembedding, trained against the model's own next-token distribution on a corpus of the project, deterministically, saved as lenses/NAME. |
 | [`lg.train_sae`](#lgtrain_sae) | Train a TopK SAE in `project`, as the app and `logogram sae train` do: on one site of one layer, from a corpus of the project, deterministically, saved as saes/NAME in SAELens's format. |
 | [`lg.verify_run`](#lgverify_run) | Patch, for real, the `top` sites an attribution patching run estimated to matter most; for an edge attribution run, path patch its `top` strongest edges one at a time, at most 50 (compare the two with [`edge_verification()`](#lgedge_verification)). |
+| [`lg.with_model`](#lgwith_model) | The spec with its model replaced by `model` (from [`load_model()`](#lgload_model)): its id and source, the exact revision it loaded (or a local model's hash), its dtype, the device it was loaded with and whether its weights are processed. |
 | [`lg.write_corpus`](#lgwrite_corpus) | Write `texts` as the corpus `name`, each with the label at the same place in `labels` (a string, a whole number or true/false) when they are given; empty texts are left out. |
 | [`lg.write_dataset`](#lgwrite_dataset) | Write prompt pairs into the project's datasets/ folder; returns its path in the project. |
 
@@ -188,7 +193,29 @@ largest activation on the text for reference.
 lg.create_project(parent: str | Path, name: str) -> Project
 ```
 
-Create a project folder called after `name` inside `parent`.
+Create a project folder called after `name` inside `parent`. `project.rename(name)`
+gives a project another name later (its folder keeps its own).
+
+### lg.delete_dataset
+
+```python
+lg.delete_dataset(project: Project, name: str) -> str
+```
+
+Delete the dataset file `name` (such as `ioi.jsonl`) from the project, for good;
+returns the path it had. Runs that ran on it keep their own copy of its prompts, in
+datasets/snapshots/. Refused while a saved draft or a queued run names it, naming them.
+
+### lg.delete_project
+
+```python
+lg.delete_project(project: Project | str | Path) -> None
+```
+
+Delete a project's folder (a `Project`, or its folder) and everything in it, for
+good: its runs, drafts, datasets and queue. Refused while a run is in progress in it or its
+queue is being run, and when the folder holds anything Logogram doesn't make there (it may
+be your own folder), listing it. The project leaves the recent list.
 
 ### lg.delete_run
 
@@ -198,7 +225,8 @@ lg.delete_run(project: Project, run: Run | str) -> None
 
 Delete a finished, failed or cancelled run, or a draft (a [`Run`](#lgrun-1) or a run id): its
 folder and everything in it, for good. Archive a run to keep it out of the way instead. A run
-in progress can't be deleted. Runs derived from it stay, and keep its id in their manifest.
+in progress, or a draft waiting in the queue, can't be deleted. Runs derived from it stay,
+and keep its id in their manifest.
 
 ### lg.edge_verification
 
@@ -412,8 +440,11 @@ lg.load_model(
 ) -> Any
 ```
 
-Download (once) and load a model, checked as the app checks it. Pass it to [`run()`](#lgrun) to
-reuse it across runs; every choice it was loaded with is recorded in each run's spec.
+Download (once) and load a model, checked as the app checks it. Pass it to [`run()`](#lgrun)
+with specs that name it, to reuse it across runs. A spec names a model by its files (id and
+revision, or a local model's hash), dtype, device and weight processing; one that names it
+otherwise is refused, rather than run on another copy of its own model. [`with_model()`](#lgwith_model)
+makes a spec name this model as it was loaded.
 
 `model_id` is a Hugging Face id, or the name a local model was added under (see
 [`add_local_model()`](#lgadd_local_model)): `source` says which ("hub" or "local"); by default a name this
@@ -599,6 +630,16 @@ lg.remove_local_model(name: str) -> None
 
 Forget a local model. Its folder and files are left as they are.
 
+### lg.rename_dataset
+
+```python
+lg.rename_dataset(project: Project, name: str, new: str) -> str
+```
+
+Give the dataset file `name` the name `new`; returns its new path in the project. Its
+prompts, and so its hash, stay the same, and runs that ran on it keep their own copy. Refused
+while a saved draft or a queued run names it, naming them, and when `new` is taken.
+
 ### lg.run
 
 ```python
@@ -613,7 +654,10 @@ lg.run(
 ```
 
 Run a spec and write its experiment folder into `project`, as the app does. `model`
-is reused when it matches the spec (otherwise the spec's model is loaded).
+(from [`load_model()`](#lgload_model)) is reused when it is the model the spec names, by its files,
+dtype, device and weight processing. A model that isn't is refused, naming each difference:
+pass `with_model(spec, model)` to run the spec on it, or no model to load the spec's
+own.
 
 ### lg.save_direction
 
@@ -770,6 +814,16 @@ Patch, for real, the `top` sites an attribution patching run estimated to matter
 for an edge attribution run, path patch its `top` strongest edges one at a time, at most 50
 (compare the two with [`edge_verification()`](#lgedge_verification)).
 
+### lg.with_model
+
+```python
+lg.with_model(experiment: Spec | dict[str, Any], model: Any) -> Spec
+```
+
+The spec with its model replaced by `model` (from [`load_model()`](#lgload_model)): its id and
+source, the exact revision it loaded (or a local model's hash), its dtype, the device it was
+loaded with and whether its weights are processed. `run(with_model(spec, model), project, model=model)` runs the spec on that model, and the run's spec says so.
+
 ### lg.write_corpus
 
 ```python
@@ -800,6 +854,8 @@ lg.write_dataset(
 ```
 
 Write prompt pairs into the project's datasets/ folder; returns its path in the project.
+`overwrite` replaces a dataset of the same name, unless a saved draft or a queued run names
+it (they would fail, or run on other prompts); finished runs keep their own copy.
 
 ## Classes
 

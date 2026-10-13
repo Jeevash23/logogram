@@ -118,8 +118,10 @@ existing ones (attribution patching, steering and path patching are good example
    `uv run python scripts/build_reference.py`, and `tests/test_reference.py` fails until it is
    run again.
 
-A new field on an existing method is required in version 2 specs. For version 1 specs,
-`upgrade_v1` in `spec.py` fills in the value that reproduces what they did before.
+A new field on an existing method is required in specs of the current version (`SPEC_VERSION`
+in `spec.py`). Specs of earlier versions are upgraded as they load, each version's upgrade
+function in turn (`upgrade_v1`, `upgrade_v2`, `upgrade_v3`): the one for the version before the
+current fills in the new field with the value that reproduces what they did before.
 
 ## Pull requests
 

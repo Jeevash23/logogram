@@ -20,6 +20,7 @@ import type {
   QueuedRun,
   QueueState,
   QueueStatus,
+  Reproduction,
   RobustnessChange,
   RunAnnotationsChange,
   RunDetail,
@@ -310,6 +311,9 @@ interface Store {
   refreshProject: () => Promise<void>;
   refreshRuns: () => Promise<void>;
   selectDataset: (path: string | null, source?: "run" | "form") => Promise<void>;
+  /** A dataset file renamed (`to` its new path) or deleted (`to` null), here or in another tab:
+   * the prompts chosen and their unsaved edits follow it. */
+  followDataset: (from: string, to: string | null) => void;
   reloadDataset: () => Promise<void>;
   setPromptIndex: (i: number) => void;
   /** Keep a dataset's unsaved edits, or drop them (null, or edits that change nothing). */
@@ -355,6 +359,9 @@ interface Store {
   startRobustness: (runId: string, change: RobustnessChange) => Promise<void>;
   /** Patch, for real, the strongest sites an attribution patching run estimated. */
   startVerification: (runId: string, top: number) => Promise<void>;
+  /** Run a run's spec again, exactly as it ran, and show the new run as it streams. When it
+   * finishes, a notice says whether its per-prompt values match the original's exactly. */
+  rerunRun: (runId: string) => Promise<void>;
   /** Show a sweep in the sweep view. */
   openSweep: (id: string | null) => void;
   /** Queue a sweep's runs, then show the sweep. Returns whether it was queued. */
@@ -783,6 +790,19 @@ export const useStore = create<Store>((set, get) => ({
     if (detail && seq === datasetSeq && project === projectSeq) set({ dataset: detail });
   },
 
+  followDataset: (from, to) => {
+    const st = get();
+    // Unsaved edits belong to the file's prompts, which a rename keeps and a deletion takes away.
+    const edits = st.datasetEdits[from];
+    if (edits) {
+      const { [from]: _gone, ...rest } = st.datasetEdits;
+      set({ datasetEdits: to ? { ...rest, [to]: edits } : rest });
+    }
+    if (st.datasetPath !== from) return;
+    const next = to ?? st.project?.datasets.find((d) => !d.error && d.path !== from)?.path ?? null;
+    void st.selectDataset(next, st.analysisSource);
+  },
+
   reloadDataset: async () => {
     // Token issues and lengths depend on the loaded model's tokenizer: refetch when it changes.
     const path = get().datasetPath;
@@ -1049,6 +1069,25 @@ export const useStore = create<Store>((set, get) => ({
       live: { ...s.live, [out.run_id]: s.live[out.run_id] ?? emptyLive(out.run_id) },
     }));
     await get().refreshRuns();
+  },
+
+  rerunRun: async (runId) => {
+    const seq = projectSeq;
+    const out = await get().guard(() => api.rerun(runId));
+    if (!out || seq !== projectSeq) return;
+    openSeq += 1; // whatever was being opened gives way to the rerun
+    get().applyJob(out.job);
+    set((s) => ({
+      pendingRunId: out.run_id,
+      activeRunId: out.run_id,
+      analysisSource: "run",
+      view: "results",
+      // The run's first events may already have arrived over the WebSocket; keep them.
+      live: { ...s.live, [out.run_id]: s.live[out.run_id] ?? emptyLive(out.run_id) },
+    }));
+    get().fitSelection();
+    await get().refreshRuns();
+    void get().loadRun(out.run_id, true);
   },
 
   openSweep: (id) => {
@@ -1329,6 +1368,12 @@ export const useStore = create<Store>((set, get) => ({
             const cmp = await api.compare(from.run, runId).catch(() => null);
             if (cmp) set((s) => ({ flags: { ...s.flags, [from.run]: { against: runId, sites: cmp.flagged } } }));
           }
+          // A rerun says whether it reproduced the run it reran, as `logogram run` does.
+          if (status === "finished" && from?.kind === "rerun" && !data.replay) {
+            const project = projectSeq;
+            const found = await api.reproduction(runId).catch(() => null);
+            if (found && project === projectSeq) get().notify(...reproductionNotice(found, from.run));
+          }
         });
         if (status === "cancelled" && !data.replay) {
           const partial = data.partial as PartialRun | null | undefined;
@@ -1360,6 +1405,16 @@ export const useStore = create<Store>((set, get) => ({
         if (data.deleted) forgetRun(String(data.run_id));
         void get().refreshRuns();
         break;
+      case "project.changed": {
+        // The project renamed, or a dataset renamed or deleted, here or in another tab.
+        const change = data.dataset as { path: string; to: string | null } | null | undefined;
+        void get()
+          .refreshProject()
+          .then(() => {
+            if (change) get().followDataset(change.path, change.to);
+          });
+        break;
+      }
       case "queue.skipped":
         get().notify(`“${String(data.title)}” couldn't start and was taken out of the queue. ${String(data.error)}`, "error");
         break;
@@ -1374,7 +1429,8 @@ export const useStore = create<Store>((set, get) => ({
         break;
       }
       case "project": {
-        if (data.session_id !== get().project?.session_id) {
+        // A tab that has already left the project (it closed or deleted it) has nothing to do.
+        if ((data.session_id ?? null) !== (get().project?.session_id ?? null)) {
           // Clear synchronously; stale form actions cannot run while the new project loads.
           get().leaveProject();
           const seq = projectSeq;
@@ -1460,6 +1516,19 @@ function formSent(ran: FormState): void {
     form: { ...s.form, draftId: null },
     formHistory: draftId ? forgetDraft(s.formHistory, draftId) : s.formHistory,
   }));
+}
+
+/** The notice a finished rerun gives, as `logogram run` says it: whether its per-prompt values match
+ * the run it reran exactly. A difference stays until dismissed, with the two runs' comparison a
+ * click away. */
+export function reproductionNotice(found: Reproduction, original: string): [string, Notice["tone"], NoticeOptions] {
+  const text = `Rerun finished. ${found.text}`;
+  if (found.identical) return [text, "info", {}];
+  const compare = () => {
+    useStore.setState({ compareIds: [original, found.run_id], compareMode: "side" });
+    useStore.getState().setView("compare");
+  };
+  return [text, "info", { persist: true, action: { label: "Compare the runs", run: compare } }];
 }
 
 /** What is said about a run, as the server now has it, wherever this tab keeps its listing. */

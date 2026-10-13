@@ -323,3 +323,54 @@ def compare_runs(project: Any, run_a: str, run_b: str) -> dict[str, Any]:
     # What a run that stopped early kept: only those sites are compared.
     result["partial_a"], result["partial_b"] = (s.get("partial") for s in summaries)
     return result
+
+
+# -- reproduction: a rerun against the run it reran ------------------------------------------------
+
+
+def reproduction_of(original: Any, rerun: Any, original_id: str) -> dict[str, Any]:
+    """Whether the results table ``rerun`` reproduces ``original`` (the run ``original_id``'s),
+    value by value: ``identical`` when every per-prompt value matches exactly, else the largest
+    change in one (``largest``; None when the tables don't hold the same rows, or values that
+    aren't numbers differ), with the rows of each and ``text``, the sentence `logogram run` and the
+    app say it in."""
+    from logogram.results import largest_change
+
+    largest = largest_change(original, rerun)
+    if largest is None:
+        text = f"Differs from {original_id}: {original.num_rows} rows before, {rerun.num_rows} now."
+    elif largest == 0.0:
+        text = (
+            f"Identical to {original_id}: all {original.num_rows:,} per-prompt values match "
+            "exactly."
+        )
+    else:
+        text = (
+            f"Differs from {original_id}: largest change in a per-prompt value is {largest:.3g}. "
+            "Check the device, dtype and library versions in the two manifests."
+        )
+    return {
+        "original": original_id,
+        "identical": largest == 0.0,
+        "rows": rerun.num_rows,
+        "original_rows": original.num_rows,
+        "largest": largest if largest is not None and math.isfinite(largest) else None,
+        "text": text,
+    }
+
+
+def reproduction(project: Any, original: str, rerun: str) -> dict[str, Any]:
+    """Whether the run ``rerun`` reproduced the run ``original`` of the project, value by value
+    (see :func:`reproduction_of`). Both need results."""
+    import pyarrow.parquet as pq
+
+    tables = []
+    for run_id in (original, rerun):
+        path = project.run_dir(run_id) / "results.parquet"
+        if not (project.inside(path) and path.is_file()):
+            raise CompareError(
+                f"{run_id} has no results to compare: it is still running, it stopped before "
+                "anything finished, or it was deleted."
+            )
+        tables.append(pq.read_table(project.readable(path)))
+    return reproduction_of(tables[0], tables[1], original)

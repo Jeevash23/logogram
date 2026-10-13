@@ -21,6 +21,8 @@ _API = (
     "compare_runs",
     "continue_text",
     "create_project",
+    "delete_dataset",
+    "delete_project",
     "delete_run",
     "edge_verification",
     "export_activations",
@@ -46,6 +48,7 @@ _API = (
     "read_corpus",
     "read_direction",
     "remove_local_model",
+    "rename_dataset",
     "run",
     "save_direction",
     "sweep",
@@ -55,6 +58,7 @@ _API = (
     "train_sae",
     "verify_run",
     "write_corpus",
+    "with_model",
     "write_dataset",
 )
 

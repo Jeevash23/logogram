@@ -237,27 +237,59 @@ def model_matches(backend: ModelBackend | None, ref: ModelRef) -> bool:
     by id and revision, a local model by the hash of its files, whatever name it was added
     under), dtype, weight processing and device, the device as it resolves here ("cuda" is the
     default GPU, so it matches a model on that GPU however it was asked for)."""
-    if backend is None:
-        return False
+    return backend is not None and not model_differences(backend, ref)
+
+
+def model_differences(backend: ModelBackend, ref: ModelRef) -> list[str]:
+    """How the loaded model differs from the one ``ref`` asks for, one clause each (its files or
+    revision, dtype, device as ``ref``'s resolves here, weight processing); empty when it is that
+    model (see :func:`model_matches`)."""
     from logogram.backends.transformer_lens import resolve_device
 
     info = backend.info
+    out: list[str] = []
+
+    def named(source: str, model_id: str, sha256: str | None) -> str:
+        if source == "local":
+            return f"the local model {model_id} (files {(sha256 or '')[:12]}…)"
+        return f"{model_id} from Hugging Face"
+
+    if info.source != ref.source or (ref.source == "hub" and info.id != ref.id):
+        out.append(
+            f"it is {named(info.source, info.id, info.sha256)}, and the spec names "
+            f"{named(ref.source, ref.id, ref.sha256)}"
+        )
+    elif ref.source == "local" and (ref.sha256 is None or info.sha256 != ref.sha256):
+        out.append(
+            f"its files hash to {(info.sha256 or '')[:12]}…, and the spec names files that hash "
+            f"to {(ref.sha256 or '')[:12]}…"
+        )
+    elif ref.source == "hub" and ref.revision is not None and ref.revision != info.revision:
+        out.append(f"it is at revision {info.revision}, and the spec pins {ref.revision}")
+    if info.dtype != ref.dtype:
+        out.append(f"it runs in {info.dtype}, and the spec in {ref.dtype}")
     try:
         device = resolve_device(ref.device)
-    except Exception:  # noqa: BLE001
-        return False
-    if info.source != ref.source:
-        return False
-    if ref.source == "local":
-        same_files = ref.sha256 is not None and info.sha256 == ref.sha256
+    except Exception:  # noqa: BLE001 - a device this machine lacks matches no model
+        out.append(
+            f"it is on {info.device}, and the spec's device, {ref.device}, isn't available here"
+        )
     else:
-        same_files = info.id == ref.id and (ref.revision is None or ref.revision == info.revision)
-    return (
-        same_files
-        and info.dtype == ref.dtype
-        and info.device == device
-        and info.process_weights == ref.process_weights
-    )
+        if info.device != device:
+            # "auto" and "cuda" name a device by what this machine has: say which that is.
+            asked = (
+                f"the spec's device is {device}"
+                if ref.device == device
+                else f"the spec's device, {ref.device}, is {device} here"
+            )
+            out.append(f"it is on {info.device}, and {asked}")
+    if info.process_weights != ref.process_weights:
+        out.append(
+            "its weights are processed, and the spec's aren't"
+            if info.process_weights
+            else "its weights aren't processed, and the spec's are"
+        )
+    return out
 
 
 def device_provenance(info: Any) -> dict[str, Any]:

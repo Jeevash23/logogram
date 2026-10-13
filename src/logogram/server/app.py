@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import hashlib
 import logging
 import os
@@ -23,8 +24,10 @@ from logogram import __version__
 from logogram.backends.base import BackendError
 from logogram.datasets import (
     DatasetError,
+    DatasetInUse,
     PromptRecord,
     check_dataset_name,
+    check_unused,
     decode_dataset,
     derive_records,
     file_sha256,
@@ -33,12 +36,15 @@ from logogram.datasets import (
     read_dataset_bytes,
     write_dataset,
 )
+from logogram.directions import DirectionInUse
 from logogram.gallery import DEFAULT_EXAMPLE, list_examples
 from logogram.history import RunInUse, RunNotFound
 from logogram.project import (
     Project,
     ProjectError,
+    ProjectInUse,
     default_projects_parent,
+    forget_recent,
     load_recent,
     open_example,
 )
@@ -241,6 +247,18 @@ class CreateProject(BaseModel):
 
 class OpenProject(BaseModel):
     path: str
+
+
+class RenameProject(BaseModel):
+    """The open project's new name (one line; its folder keeps its name)."""
+
+    name: str = Field(min_length=1, max_length=1000)
+
+
+class RenameDataset(BaseModel):
+    """A dataset's new file name, in the project's datasets folder."""
+
+    name: str = Field(min_length=1, max_length=200)
 
 
 class OpenExample(BaseModel):
@@ -701,6 +719,10 @@ class ExportRequest(ReadRequest):
 # -- app factory -------------------------------------------------------------------------------
 
 
+class OutOfMemory(Conflict):
+    """An analysis ran out of memory. The message says what ran out and what to do."""
+
+
 def create_app(
     security: SecurityConfig,
     *,
@@ -741,6 +763,9 @@ def create_app(
     @app.exception_handler(Conflict)
     @app.exception_handler(NoteConflict)
     @app.exception_handler(RunInUse)
+    @app.exception_handler(DatasetInUse)
+    @app.exception_handler(DirectionInUse)
+    @app.exception_handler(ProjectInUse)
     async def _conflict(_: Request, exc: Conflict) -> JSONResponse:
         return JSONResponse({"error": str(exc)}, status_code=409)
 
@@ -761,6 +786,29 @@ def create_app(
         first = exc.errors()[0]
         where = ".".join(str(p) for p in first["loc"])
         return JSONResponse({"error": f"{where}: {first['msg']}"}, status_code=400)
+
+    def releases_memory(endpoint: Callable[..., Any]) -> Callable[..., Any]:
+        """An analysis endpoint that, when it runs out of memory (on the GPU, or in the CPU's
+        allocator), gives the memory back and says what ran out and what to do (a 409), rather
+        than failing with an internal error. Other errors pass as they are."""
+        from logogram.backends import transformer_lens as tl
+
+        @functools.wraps(endpoint)
+        def analysis(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return endpoint(*args, **kwargs)
+            except (MemoryError, RuntimeError) as exc:
+                if not (isinstance(exc, MemoryError) or tl.is_out_of_memory(exc)):
+                    raise
+                log.warning("An analysis ran out of memory: %s", exc)
+            # Out here, the error and the frames holding the analysis's tensors are gone, so their
+            # memory can be given back.
+            tl.release_memory()
+            backend = state.backend
+            device = backend.info.device if backend is not None else None
+            raise OutOfMemory(tl.analysis_out_of_memory_message(device))
+
+        return analysis
 
     # -- state -------------------------------------------------------------------------------
 
@@ -874,6 +922,26 @@ def create_app(
 
     @app.get("/api/projects/recent", response_model=list[M.RecentProject])
     def recent() -> list[dict[str, Any]]:
+        """The projects opened lately; one whose folder is missing is listed as such."""
+        return load_recent()
+
+    @app.delete("/api/projects/recent", response_model=list[M.RecentProject])
+    def forget(path: str) -> list[dict[str, Any]]:
+        """Take a project out of the recent list (its folder is left as it is)."""
+        forget_recent(path)
+        return load_recent()
+
+    @app.get("/api/projects/deletion", response_model=M.DeletionPlanOut)
+    def project_deletion(path: str) -> dict[str, Any]:
+        """What deleting the project in the folder ``path`` would delete, and what stops it: what
+        the app asks about before it deletes anything."""
+        return state.deletion_plan(path).to_dict()
+
+    @app.delete("/api/projects", response_model=list[M.RecentProject])
+    def delete_project_at(path: str, name: str) -> list[dict[str, Any]]:
+        """Delete the project in the folder ``path`` for good, once ``name`` is typed as it is
+        called; the open project is closed first. Returns the recent projects."""
+        state.delete_project(path, name)
         return load_recent()
 
     def _enter(project: Project) -> dict[str, Any]:
@@ -910,6 +978,19 @@ def create_app(
     @app.get("/api/project", response_model=M.ProjectInfo)
     def get_project() -> dict[str, Any]:
         return state.require_project().to_dict()
+
+    @app.patch("/api/project", response_model=M.ProjectInfo)
+    def rename_project(body: RenameProject) -> dict[str, Any]:
+        """Give the open project another name (its project.json; the folder keeps its name)."""
+        return state.rename_project(body.name).to_dict()
+
+    @app.delete("/api/project", response_model=M.OkOut)
+    def delete_open_project(name: str) -> dict[str, bool]:
+        """Close the open project and delete its folder for good, once ``name`` is typed as it is
+        called. Refused while a run is in progress in it or its queue is being run, and when its
+        folder holds anything Logogram didn't make."""
+        state.delete_project(None, name)
+        return {"ok": True}
 
     @app.get("/api/research", response_model=Notebook)
     def research_notes() -> Notebook:
@@ -1132,8 +1213,12 @@ def create_app(
         fix: str = "Choose another name, or replace it explicitly.",
     ) -> dict[str, Any]:
         exists = f"{path.name} already exists. {fix}"
-        if os.path.lexists(path) and not overwrite:
-            raise DatasetError(exists)
+        if os.path.lexists(path):
+            if not overwrite:
+                raise DatasetError(exists)
+            # Never under a draft or a queued run that names it: they would fail, or run on
+            # other prompts.
+            check_unused(state.require_project(), f"datasets/{path.name}", "replaced")
         try:
             write_dataset(path, records, replace=overwrite)
         except FileExistsError:  # created since the check: it is never replaced
@@ -1206,6 +1291,20 @@ def create_app(
                 if not p.even
             ]
         return out
+
+    @app.delete("/api/datasets/{name}", response_model=M.DatasetChanged)
+    def delete_dataset(name: str) -> dict[str, Any]:
+        """Delete a dataset file, for good. Runs that ran on it keep their own copy of its prompts
+        (datasets/snapshots/); refused while a saved draft or a queued run names it."""
+        path = state.delete_dataset(name)
+        return {"name": Path(path).name, "path": path}
+
+    @app.post("/api/datasets/{name}/rename", response_model=M.DatasetChanged)
+    def rename_dataset(name: str, body: RenameDataset) -> dict[str, Any]:
+        """Give a dataset file another name; its prompts and hash stay the same. Refused while a
+        saved draft or a queued run names it, and when the name is taken."""
+        path = state.rename_dataset(name, body.name)
+        return {"name": Path(path).name, "path": path}
 
     @app.get("/api/ioi/templates", response_model=list[M.IOITemplateOut])
     def ioi_templates() -> list[dict[str, Any]]:
@@ -1348,6 +1447,19 @@ def create_app(
     @app.get("/api/models/presets", response_model=M.Presets)
     def presets() -> dict[str, Any]:
         return {"presets": MODEL_PRESETS, "suggestions": MODEL_SUGGESTIONS}
+
+    @app.get("/api/models/device", response_model=M.DeviceCheck)
+    def check_device(device: str) -> dict[str, Any]:
+        """Whether a model can be loaded on ``device`` here (no model is needed): the model
+        dialog keeps Load disabled while the device chosen isn't there, and says why."""
+        from logogram.backends.transformer_lens import resolve_device
+
+        if not DEVICE.match(device):
+            raise ValueError("A device is auto, cpu, cuda, cuda:N (such as cuda:1) or mps.")
+        try:
+            return {"device": device, "resolved": resolve_device(device), "error": None}
+        except BackendError as exc:
+            return {"device": device, "resolved": None, "error": str(exc)}
 
     @app.post("/api/models/estimate", response_model=M.EstimateOut)
     def estimate(body: EstimateRequest) -> dict[str, Any]:
@@ -1567,6 +1679,7 @@ def create_app(
         return backend
 
     @app.post("/api/baseline", response_model=M.BaselineReport)
+    @releases_memory
     def baseline(body: BaselineRequest) -> dict[str, Any]:
         from logogram.analysis import baseline_report
 
@@ -1583,6 +1696,7 @@ def create_app(
             )
 
     @app.post("/api/attention", response_model=M.AttentionData)
+    @releases_memory
     def attention(body: AttentionRequest) -> dict[str, Any]:
         from logogram.analysis import attention_report
 
@@ -1602,6 +1716,7 @@ def create_app(
             )
 
     @app.post("/api/heads/kinds", response_model=M.HeadKinds)
+    @releases_memory
     def head_kinds(body: HeadKindsRequest) -> dict[str, Any]:
         from logogram.heads import HeadKindSettings, head_kind_scores
 
@@ -1622,6 +1737,7 @@ def create_app(
             return head_kind_scores(backend, settings)
 
     @app.post("/api/look", response_model=M.LookReport)
+    @releases_memory
     def look(body: LookPredictionsRequest) -> dict[str, Any]:
         from logogram.inside import look_report
 
@@ -1637,6 +1753,7 @@ def create_app(
             )
 
     @app.post("/api/look/attention", response_model=M.LookAttention)
+    @releases_memory
     def look_attention(body: LookAttentionRequest) -> dict[str, Any]:
         from logogram.inside import look_attention as attention
 
@@ -1652,6 +1769,7 @@ def create_app(
             )
 
     @app.post("/api/look/features", response_model=M.LookFeatures)
+    @releases_memory
     def look_features(body: LookFeaturesRequest) -> dict[str, Any]:
         from logogram.inside import look_features as features
 
@@ -1667,6 +1785,7 @@ def create_app(
             )
 
     @app.post("/api/look/feature", response_model=M.LookFeatureAlong)
+    @releases_memory
     def look_feature(body: LookFeatureRequest) -> dict[str, Any]:
         """One feature's activation at each token of the text, and its largest."""
         from logogram.inside import look_feature as along
@@ -1683,6 +1802,7 @@ def create_app(
             )
 
     @app.post("/api/look/continue", response_model=M.LookContinuation)
+    @releases_memory
     def look_continue(body: LookContinueRequest) -> dict[str, Any]:
         """What the model writes after the text, greedily; with ``steer``, also with a feature of
         the loaded SAE added where the SAE writes."""
@@ -1705,6 +1825,7 @@ def create_app(
             )
 
     @app.post("/api/predictions", response_model=M.PredictionReport)
+    @releases_memory
     def predictions(body: PredictionRequest) -> dict[str, Any]:
         from logogram.analysis import prediction_report
 
@@ -1996,6 +2117,7 @@ def create_app(
         return state.sae
 
     @app.post("/api/sae/fit")
+    @releases_memory
     def sae_fit(body: SAEAnalysisRequest) -> dict[str, Any]:
         from logogram.analysis import sae_fit_report
 
@@ -2014,6 +2136,7 @@ def create_app(
         return fit
 
     @app.post("/api/sae/tokens")
+    @releases_memory
     def sae_tokens(body: TokenFeaturesRequest) -> dict[str, Any]:
         from logogram.analysis import token_features_report
 
@@ -2032,6 +2155,7 @@ def create_app(
             )
 
     @app.post("/api/sae/feature")
+    @releases_memory
     def sae_feature(body: FeatureRequest) -> dict[str, Any]:
         from logogram.analysis import feature_report
 
@@ -2051,6 +2175,7 @@ def create_app(
             )
 
     @app.post("/api/sae/writes")
+    @releases_memory
     def sae_writes(body: FeatureWritesRequest) -> dict[str, Any]:
         """The tokens a feature promotes and suppresses directly, at one token of one prompt."""
         from logogram.analysis import feature_writes_report
@@ -2281,10 +2406,29 @@ def create_app(
 
     @app.post("/api/runs/{run_id}/rerun", response_model=M.StartedRun)
     def rerun(run_id: str) -> dict[str, Any]:
+        """Run a run's spec again, exactly as it ran (its pinned revision and its copy of the
+        prompts): a new run, derived from it as a rerun."""
         project = state.require_project()
         spec = Spec.from_path(project.readable(project.run_dir(run_id) / "spec.json"))
         job = state.run_spec_job(spec, derived_from={"run": run_id, "kind": "rerun"})
         return {"run_id": job.run_id, "job": job.to_dict()}
+
+    @app.get("/api/runs/{run_id}/reproduction", response_model=M.Reproduction)
+    def reproduction(run_id: str) -> dict[str, Any]:
+        """Whether a rerun reproduced the run it reran, value by value: identical when every
+        per-prompt value matches exactly, as `logogram run` says it."""
+        from logogram.compare import reproduction as compare_values
+
+        project = state.require_project()
+        listing = project.run_listing(run_id)
+        if listing is None:
+            raise Missing(f"There is no run {run_id}. It may have been deleted.")
+        derived = listing.derived_from
+        if derived is None or derived.kind != "rerun":
+            raise Conflict(
+                f"{run_id} isn't a rerun of another run, so there is nothing to compare."
+            )
+        return {"run_id": run_id, **compare_values(project, derived.run, run_id)}
 
     @app.post("/api/runs/{run_id}/robustness", response_model=M.StartedRun)
     def robustness(run_id: str, body: RobustnessRequest) -> dict[str, Any]:

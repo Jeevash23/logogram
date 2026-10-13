@@ -65,7 +65,11 @@ a diverging cobalt to amber scale, always with its legend, and nothing else does
   **Generate a task** writes a seeded dataset for one of six classic tasks (IOI, greater-than,
   docstrings, gendered pronouns, subject-verb agreement, factual recall); **Import JSONL** and
   **Single pair** add your own. Edits to pairs stay in the tab until they are saved as a new
-  dataset: a dataset file never changes, since runs record its hash.
+  dataset: a dataset file never changes, since runs record its hash. **Rename…** and
+  **Delete…**, here and in the dataset menu of the header, rename or delete the dataset file
+  chosen. Runs keep their own copy of the prompts they ran on, so neither changes a run. A saved
+  draft or a queued run that names the file keeps it, since it would fail or run on other
+  prompts: the refusal names them, to change or take out of the queue first.
 * **Baseline** runs the model on the clean and corrupt prompts without intervening, to confirm the
   behavior exists before measuring what carries it.
 * **Configure** is the experiment form: the method and its choices, what to sweep, the metric and
@@ -86,9 +90,13 @@ a diverging cobalt to amber scale, always with its legend, and nothing else does
 
 * **Results** shows the open run: its title, method and notes, the figures at a glance, the map
   with its scale, a forest plot of the strongest sites with their intervals, and the actions:
-  **Check robustness**, **Sweep…**, **Verify top 10 by patching** (for attribution patching),
-  **Verify top 20 by path patching** (for edge attribution), **Test the top sites as a circuit**,
-  and **Export** (the HTML report, figures and CSV; see [share a result](guides/share-results.md)).
+  **Check robustness**, **Rerun**, **Sweep…**, **Verify top 10 by patching** (for attribution
+  patching), **Verify top 20 by path patching** (for edge attribution), **Test the top sites as a
+  circuit**, and **Export** (the HTML report, figures and CSV; see
+  [share a result](guides/share-results.md)). **Rerun** runs the spec again exactly as it ran, as
+  a new run: when it finishes, a notice says whether every per-prompt value matches the original
+  exactly, as `logogram run` does, and a difference offers the two runs' comparison. A failed or
+  cancelled run offers **Rerun** too, beside **Edit and rerun**, which opens its spec in the form.
   A run over queries, keys or values shows a layer × head map, a run over neurons each layer's
   strongest neurons beside the distribution of all of them, and an
   [edge attribution](concepts/edge-attribution.md) run its strongest edges drawn between the
@@ -115,12 +123,25 @@ a diverging cobalt to amber scale, always with its legend, and nothing else does
   by their labels and last tokens when the two prompts have different lengths. **[** and **]**
   step through the prompts.
 * **History** lists every run in the project, the queue, and drafts: search by title, name, id,
-  method, model or dataset; rename (F2), star, archive or delete a run from its menu. A run's
-  title, star and archive mark live beside its spec, which never changes. Deleting asks first,
-  then removes the run's folder for good: there is no trash, since a deleted run kept out of sight
-  would still travel with the project when it is shared. Runs derived from a deleted run stay, and
-  say so. A run whose spec can't be read is listed as unreadable, with what is wrong and how to
-  fix it.
+  method, model or dataset; rename (F2), star, archive, rerun or delete a run from its menu. A
+  run's title, star and archive mark live beside its spec, which never changes. Deleting asks
+  first, then removes the run's folder for good: there is no trash, since a deleted run kept out
+  of sight would still travel with the project when it is shared. Runs derived from a deleted run
+  stay, and say so. A run in progress, or a draft waiting in the queue, can't be deleted, from the
+  app, `logogram delete` or Python alike. Taking a run out of the queue asks first too. A run
+  whose spec can't be read is listed as unreadable, with what is wrong and how to fix it.
+* **The project menu**, under the project's name, leads to **All projects**, opens another
+  folder, and renames, closes or deletes the project. **Rename project…** changes the name in
+  its `project.json`; the folder keeps its own. **Delete project…** says what it deletes (the
+  folder and everything in it: its runs, drafts, datasets and queue) and needs the project's name
+  typed. It deletes nothing while a run or its queue is running in the project, and nothing from
+  a folder that also holds what Logogram doesn't make there, such as a repository's own files: it
+  lists them instead.
+* **All projects** lists the projects opened lately. Listing them reads each `project.json`, and
+  writes nothing into them. A project whose folder can't be found (moved, deleted, or on a drive
+  that isn't connected) stays in the list, marked *Folder not found*, until **Remove** takes it
+  out; opening it says so, and offers to. Each other project's menu takes it out of the list (its
+  folder stays as it is) or deletes it.
 * **The address** keeps your place: the view, and the run it shows or the two it compares. Back
   and Forward move between views, a reload comes back to the same place, and **All projects**
   leads back to the open project as you left it.

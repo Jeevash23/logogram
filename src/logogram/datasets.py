@@ -35,14 +35,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from collections.abc import Iterable, Mapping
-from pathlib import Path
-from typing import Annotated, Any
+from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING, Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from logogram.fileio import DATASET_LIMIT, read_limited, size_text, write_text_atomic
+
+if TYPE_CHECKING:
+    from logogram.project import Project
 
 DATASET_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 
@@ -281,3 +285,142 @@ def check_dataset_name(name: str) -> str:
             "letter or digit."
         )
     return stem + ".jsonl"
+
+
+# -- a project's dataset files: what waits on one, replacing, renaming and deleting --------------
+#
+# A run reads its dataset when it starts, and keeps the bytes it read in datasets/snapshots/,
+# named by their hash: a finished run never reads the file again, so changing the file never
+# changes a run. A saved draft and a queued run haven't read it yet: they name the file, often
+# with its hash, so a file replaced, renamed or deleted under them would make them fail, or run
+# on other prompts. Those changes are refused while one names the file.
+
+
+class DatasetInUse(DatasetError):
+    """A saved draft or a queued run names the dataset file, so it can't be replaced, renamed or
+    deleted now. The message names them and says what to do."""
+
+
+def dataset_users(project: Project, path: str) -> list[dict[str, Any]]:
+    """The saved drafts and queued runs that name the dataset file ``path`` (as a spec names it,
+    such as ``datasets/ioi.jsonl``): each one's ``kind`` ("draft" or "queued"), ``id`` (a draft's
+    folder in experiments/, a queued run's place in the queue), ``title``, and for a draft whether
+    it is ``queued`` too. A saved queue that can't be read names nothing (clearing it is what the
+    app offers then)."""
+    from logogram import runqueue
+
+    wanted = PurePosixPath(path)
+    out: list[dict[str, Any]] = []
+    for listing in project.list_runs():
+        draft = listing.status == "draft" and not listing.damaged and bool(listing.dataset)
+        if draft and PurePosixPath(listing.dataset) == wanted:
+            title = listing.title or listing.name
+            out.append({"kind": "draft", "id": listing.id, "title": title, "queued": False})
+    try:
+        queued = runqueue.read_queue(project)
+    except (runqueue.QueueError, OSError):
+        queued = []
+    drafts = {u["id"]: u for u in out}
+    for item in queued:
+        if item.draft_id is not None and item.draft_id in drafts:
+            drafts[item.draft_id]["queued"] = True
+        elif PurePosixPath(item.spec.dataset.path) == wanted:
+            out.append({"kind": "queued", "id": item.id, "title": item.title, "queued": True})
+    return out
+
+
+def users_text(users: list[dict[str, Any]]) -> str:
+    """The drafts and queued runs in words: "the draft “Heads” (experiments/…) and the queued
+    run “Seeds”"."""
+    words = []
+    for u in users:
+        if u["kind"] == "draft":
+            queued = ", queued to run" if u["queued"] else ""
+            words.append(f"the draft “{u['title']}” (experiments/{u['id']}{queued})")
+        else:
+            words.append(f"the queued run “{u['title']}”")
+    if len(words) > 1:
+        return f"{', '.join(words[:-1])} and {words[-1]}"
+    return words[0] if words else ""
+
+
+def check_unused(project: Project, path: str, action: str) -> None:
+    """Refuse (:class:`DatasetInUse`) to ``action`` ("replaced", "renamed" or "deleted") the
+    dataset file ``path`` while a saved draft or a queued run names it, naming them."""
+    users = dataset_users(project, path)
+    if not users:
+        return
+    one = len(users) == 1
+    queued = [u for u in users if u["queued"]]
+    drafts = [u for u in users if u["kind"] == "draft"]
+    steps = []
+    if queued:
+        steps.append(f"take {'it' if len(queued) == 1 else 'them'} out of the queue")
+    if drafts:
+        which = "the draft" if len(drafts) == 1 else "the drafts"
+        steps.append(f"open {which} in the form to choose other prompts, or delete {which}")
+    fix = " and ".join(steps)
+    if action == "replaced":
+        fix = f"Write the new prompts under another name, or first {fix}"
+    else:
+        fix = f"First {fix}"
+    harm = "would fail, or run on other prompts" if action == "replaced" else "would fail"
+    raise DatasetInUse(
+        f"{path} can't be {action}: {users_text(users)} {'names' if one else 'name'} it, and "
+        f"{'it' if one else 'they'} {harm}. {fix}."
+    )
+
+
+def existing_dataset(project: Project, name: str) -> Path:
+    """The dataset file ``name`` (with or without .jsonl) in the project's datasets folder, which
+    must be there, in a folder that is the project's own."""
+    path = project.datasets_dir / check_dataset_name(Path(name).name)
+    if not (path.is_symlink() or path.is_file()):
+        raise DatasetError(f"This project has no dataset called {path.name}.")
+    return project.writable(path)
+
+
+def delete_dataset(project: Project, name: str) -> str:
+    """Delete the dataset file ``name`` from the project's datasets folder, for good; returns its
+    path in the project. Runs that ran on it keep their own copy in datasets/snapshots/. Refused
+    while a saved draft or a queued run names it. A file that is a link is removed as a link:
+    what it points to stays."""
+    from logogram.fileio import remove_file
+
+    path = existing_dataset(project, name)
+    rel = f"datasets/{path.name}"
+    check_unused(project, rel, "deleted")
+    try:
+        remove_file(path)
+    except OSError as exc:
+        raise DatasetError(
+            f"Logogram couldn't delete {rel}: {exc.strerror or type(exc).__name__}. Check that the "
+            "project folder can be written to."
+        ) from exc
+    return rel
+
+
+def rename_dataset(project: Project, name: str, new: str) -> str:
+    """Give the dataset file ``name`` the name ``new`` (a name that is taken is refused); returns
+    its new path in the project. Its prompts, and so its hash, stay the same. Runs that ran on it
+    keep their own copy in datasets/snapshots/. Refused while a saved draft or a queued run names
+    it."""
+    from logogram.fileio import atomic_output, remove_file
+
+    path = existing_dataset(project, name)
+    target = project.dataset_file(check_dataset_name(new))
+    rel = f"datasets/{path.name}"
+    if target.name == path.name:
+        return rel
+    exists = f"{target.name} already exists. Choose another name."
+    if os.path.lexists(target):
+        raise DatasetError(exists)
+    check_unused(project, rel, "renamed")
+    content = read_dataset_bytes(project.readable(path))
+    try:
+        with atomic_output(target, replace=False) as out:  # never replaces a file made meanwhile
+            out.write(content)
+    except FileExistsError:
+        raise DatasetError(exists) from None
+    remove_file(path)
+    return f"datasets/{target.name}"

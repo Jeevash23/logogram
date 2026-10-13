@@ -17,6 +17,9 @@ Commands that read runs use the project in the current folder or above it, or `-
 | [`logogram corpora delete`](#logogram-corpora-delete) | Delete a corpus: its texts and their description. |
 | [`logogram corpora import`](#logogram-corpora-import) | Import texts as a corpus: from a file, from one file of a Hugging Face dataset (downloaded once, at the exact commit its revision names), or from a project dataset's prompts. |
 | [`logogram corpora rename`](#logogram-corpora-rename) | Give a corpus another name. |
+| [`logogram datasets`](#logogram-datasets) | The project's datasets: list them, rename one, delete one. |
+| [`logogram datasets delete`](#logogram-datasets-delete) | Delete a dataset file from the project, for good. |
+| [`logogram datasets rename`](#logogram-datasets-rename) | Give a dataset file another name. |
 | [`logogram delete`](#logogram-delete) | Delete a finished, failed or cancelled run, or a draft: its folder and everything in it. |
 | [`logogram diff`](#logogram-diff) | List every choice that differs between two specs (name and notes aside). |
 | [`logogram directions`](#logogram-directions) | The directions saved in the project (its directions/ folder): probes' weights, learned subspaces, principal components and mean differences. |
@@ -36,7 +39,13 @@ Commands that read runs use the project in the current folder or above it, or `-
 | [`logogram models add`](#logogram-models-add) | Hash a model folder's files and add it under NAME. |
 | [`logogram models list`](#logogram-models-list) | List the model folders added on this machine. |
 | [`logogram models remove`](#logogram-models-remove) | Forget a local model. |
+| [`logogram new`](#logogram-new) | Create a project, as the app's Create project does: a folder named after NAME, with project.json, datasets/ and experiments/. |
 | [`logogram open`](#logogram-open) | Start Logogram with a project open. |
+| [`logogram project`](#logogram-project) | The project: give it another name, or delete it. |
+| [`logogram project delete`](#logogram-project-delete) | Delete the project's folder and everything in it, for good: its runs, drafts, datasets and queue. |
+| [`logogram project rename`](#logogram-project-rename) | Give the project another name, in its project.json. |
+| [`logogram projects`](#logogram-projects) | The projects opened lately, as the app lists them: list them, or take one out of the list. |
+| [`logogram projects forget`](#logogram-projects-forget) | Take a project out of the recent list. |
 | [`logogram queue`](#logogram-queue) | The project's run queue, kept in the project: add specs to it, list it, clear it, and run it to the end without the app (overnight on a remote GPU, say). |
 | [`logogram queue add`](#logogram-queue-add) | Add a spec to the end of the project's queue. |
 | [`logogram queue clear`](#logogram-queue-clear) | Take every run out of the queue. |
@@ -226,9 +235,57 @@ logogram corpora rename [OPTIONS] NAME NEW
 |---|---|---|---|
 | `--project` | path | — | Project folder (default: the one containing the current folder). |
 
+## logogram datasets
+
+The project's datasets: list them, rename one, delete one. Runs keep their own copy of the prompts they ran on, so neither changes a run.
+
+Its commands: [`logogram datasets delete`](#logogram-datasets-delete) and [`logogram datasets rename`](#logogram-datasets-rename).
+
+```text
+logogram datasets [OPTIONS]
+```
+
+| Option | Takes | Default | Description |
+|---|---|---|---|
+| `--project` | path | — | Project folder (default: the one containing the current folder). |
+
+## logogram datasets delete
+
+Delete a dataset file from the project, for good. Runs that ran on it keep their own copy of its prompts in datasets/snapshots/. Refused while a saved draft or a queued run names it.
+
+```text
+logogram datasets delete [OPTIONS] NAME
+```
+
+| Argument | Takes | Description |
+|---|---|---|
+| `NAME` | text | The dataset's file name, such as ioi.jsonl. |
+
+| Option | Takes | Default | Description |
+|---|---|---|---|
+| `--yes` / `-y` | nothing | off | Delete it without asking first. |
+| `--project` | path | — | Project folder (default: the one containing the current folder). |
+
+## logogram datasets rename
+
+Give a dataset file another name. Its prompts, and so its hash, stay the same; runs that ran on it keep their own copy. Refused while a saved draft or a queued run names it.
+
+```text
+logogram datasets rename [OPTIONS] NAME NEW
+```
+
+| Argument | Takes | Description |
+|---|---|---|
+| `NAME` | text | The dataset's file name, such as ioi.jsonl. |
+| `NEW` | text | Its new file name. |
+
+| Option | Takes | Default | Description |
+|---|---|---|---|
+| `--project` | path | — | Project folder (default: the one containing the current folder). |
+
 ## logogram delete
 
-Delete a finished, failed or cancelled run, or a draft: its folder and everything in it. There is no undo; `logogram archive` keeps a run out of the way instead.
+Delete a finished, failed or cancelled run, or a draft: its folder and everything in it. A run in progress, or a draft waiting in the queue, can't be deleted. There is no undo; `logogram archive` keeps a run out of the way instead.
 
 ```text
 logogram delete [OPTIONS] RUN
@@ -375,7 +432,7 @@ logogram export [OPTIONS] RUN
 
 ## logogram generate
 
-Write a seeded dataset of prompt pairs for a task into the project's datasets folder.
+Write a seeded dataset of prompt pairs for a task into the project's datasets folder. --overwrite replaces a dataset of the same name, unless a saved draft or a queued run names it (they would fail, or run on other prompts); finished runs keep their own copy.
 
 ```text
 logogram generate [OPTIONS] TASK
@@ -520,6 +577,22 @@ logogram models remove NAME
 |---|---|---|
 | `NAME` | text | The name it was added under. |
 
+## logogram new
+
+Create a project, as the app's Create project does: a folder named after NAME, with project.json, datasets/ and experiments/. Prints its path.
+
+```text
+logogram new [OPTIONS] NAME
+```
+
+| Argument | Takes | Description |
+|---|---|---|
+| `NAME` | text | The project's name; its folder is named after it. |
+
+| Option | Takes | Default | Description |
+|---|---|---|---|
+| `--parent` | folder | — | The folder to make it in (default: the projects folder the app uses, Documents/Logogram). |
+
 ## logogram open
 
 Start Logogram with a project open.
@@ -539,6 +612,59 @@ logogram open [OPTIONS] PATH
 | `--verbose` / `-v` | nothing | off | Log what the server does, with the traceback of each error. |
 | `--log-file` | file | — | Also append the log to this file. |
 | `--forwarded-port` | integer, 1 to 65,535; repeat it for more | — | A port on the browser's computer that forwards to this server, such as an SSH tunnel's local end (ssh -L 9000:127.0.0.1:8765 HOST): addresses on it are accepted too. Repeat it for several, or list them in LOGOGRAM_FORWARDED_PORTS. |
+
+## logogram project
+
+The project: give it another name, or delete it.
+
+Its commands: [`logogram project delete`](#logogram-project-delete) and [`logogram project rename`](#logogram-project-rename).
+
+## logogram project delete
+
+Delete the project's folder and everything in it, for good: its runs, drafts, datasets and queue. Asks for the project's name to be typed first, unless --yes. Refused while a run is in progress in it or its queue is being run, and when the folder holds anything Logogram doesn't make there (it may be your own folder), listing it.
+
+```text
+logogram project delete [OPTIONS]
+```
+
+| Option | Takes | Default | Description |
+|---|---|---|---|
+| `--yes` / `-y` | nothing | off | Delete it without asking first. |
+| `--project` | path | — | Project folder (default: the one containing the current folder). |
+
+## logogram project rename
+
+Give the project another name, in its project.json. Its folder keeps its name.
+
+```text
+logogram project rename [OPTIONS] NAME
+```
+
+| Argument | Takes | Description |
+|---|---|---|
+| `NAME` | text | The project's new name. |
+
+| Option | Takes | Default | Description |
+|---|---|---|---|
+| `--project` | path | — | Project folder (default: the one containing the current folder). |
+
+## logogram projects
+
+The projects opened lately, as the app lists them: list them, or take one out of the list.
+
+Its commands: [`logogram projects forget`](#logogram-projects-forget).
+
+## logogram projects forget
+
+Take a project out of the recent list. Its folder is left as it is.
+
+```text
+logogram projects forget PATH
+```
+
+| Argument | Takes | Description |
+|---|---|---|
+| `PATH` | text | The project's folder, as the list shows it. |
 
 ## logogram queue
 

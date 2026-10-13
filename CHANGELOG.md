@@ -133,6 +133,31 @@ What changed in each version of Logogram.
 - **Documentation**: pages on training an SAE and on the tuned lens (what is computed, every
   choice, where it can mislead), a guide to training an SAE and a tuned lens and using them, and
   a reference of the training specs, generated from the code.
+- **Managing projects.**
+  - Rename a project: its project.json says the new name, and its folder keeps its own
+    (**Rename project…** in the project menu, `logogram project rename NAME`,
+    `project.rename(name)`).
+  - Delete a project: its folder and everything in it, for good, once its name is typed
+    (**Delete project…** in the project menu and in a recent project's menu, `logogram project
+    delete`, `lg.delete_project`). Refused while a run is in progress in it or its queue is being
+    run, and when the folder holds anything Logogram doesn't make there (a repository, say),
+    listing what.
+  - Take a project out of the recent list; its folder is left as it is (**Remove from the list**
+    in the Projects screen, `logogram projects` and `logogram projects forget PATH`).
+  - `logogram new NAME [--parent DIR]` creates a project, as the app's Create project does.
+- **Managing datasets.** Rename or delete a dataset file: in the dataset menu of the header and
+  in the Prompts view, or with `logogram datasets`, `logogram datasets rename NAME NEW`,
+  `logogram datasets delete NAME`, `lg.rename_dataset` and `lg.delete_dataset`. Runs that ran on
+  it keep their own copy of its prompts. Refused while a saved draft or a queued run names it,
+  naming them. Every tab showing the dataset follows it to its new name.
+- **Rerun** in the app: a run's results and its menu in the history run its spec again, exactly
+  as it ran (a finished, failed or cancelled run; Edit and rerun stays for changing it first). When
+  the rerun finishes, a notice says whether every per-prompt value matches the original exactly,
+  as `logogram run` does, and a difference offers the comparison of the two runs
+  (`GET /api/runs/{id}/reproduction`).
+- `lg.with_model(spec, model)`: the spec with its model replaced by a loaded model, as it was
+  loaded (its files, the exact revision, dtype, device and weight processing), to run the spec on
+  that model.
 
 ### Fixed
 
@@ -145,6 +170,45 @@ What changed in each version of Logogram.
   now chooses the folder in the box, listing it first when it hasn't been.
 - A run the queue started could end before the tabs heard it had started, and the queue then
   read as waiting, with nothing left in it, instead of running.
+- Loading a model on a device this machine doesn't have (CUDA without a GPU, say) unloaded the
+  model that was loaded before it said so. The device, the dtype and a local model's folder are
+  now checked first, and the loaded model stays. The model dialog keeps **Load** disabled while
+  the device chosen isn't there, and the message no longer says "the spec asks for" when no spec
+  is involved.
+- `lg.run(spec, project, model=model)` loaded a second copy of the model, without a word, when
+  `model` wasn't the one the spec names (loaded on another GPU, say, or in bfloat16). It now
+  refuses, naming each difference (the files or revision, the dtype, the device as it resolves
+  here, weight processing), and says what to do: pass `lg.with_model(spec, model)`, or no model
+  to load the spec's own. `lg.verify_run`, `lg.check_robustness` and `lg.sweep` refuse a model
+  passed to them that their runs don't name, and a toy's experiments run on the toy as it was
+  loaded.
+- An analysis in the app that ran out of memory (the baseline, attention, predictions, Your text,
+  an SAE's features, …) failed with "Internal Server Error". It now gives the memory back and
+  says what ran out (GPU memory, or memory) and what to do: fewer prompts, a smaller batch size
+  or a shorter text, or a smaller model or a 16-bit dtype.
+- A project whose folder was missing when the recent projects were listed (on a drive that
+  wasn't connected, say) was dropped from the list for good. It now stays, marked *Folder not
+  found*, until it is removed from the list, and opening it says plainly that its folder isn't
+  there. Listing the recent projects no longer writes into them: it used to add their folders and
+  `.gitignore` when they were missing.
+- Opening a project could fail after the project had been switched, with no tab told, when the
+  recent list couldn't be written (Logogram's settings folder read-only, say) or held entries
+  that aren't objects. The recent list never stops a project opening now, and entries it can't
+  read are left out.
+- `logogram generate --overwrite` and `lg.write_dataset(..., overwrite=True)` replaced a dataset
+  that saved drafts and queued runs named, and they then failed with "has changed since this
+  spec was written". Replacing a dataset, from the app too, is now refused while a draft or a
+  queued run names it, naming them. Finished runs were never affected: each keeps its own copy
+  of the prompts it ran on.
+- `logogram delete` and `lg.delete_run` deleted a draft waiting in the queue, which the app
+  refuses; the queue then failed when its turn came. Every front end now refuses it, saying to take
+  it out of the queue first, and `logogram delete` says so before asking.
+- Taking one run out of the queue, in the history, happened at once and couldn't be undone, while
+  clearing the queue asked first. It now asks too, saying whether its spec is kept (a saved draft
+  stays in the history) or lost.
+- A settings file holding `null`, a list or anything else that isn't an object stopped the app
+  from starting (an internal server error). It now reads as no settings, and settings are written
+  whole, through a temporary file, so an interrupted write never leaves half a file.
 
 ## 0.6.0 (2026-10-12)
 

@@ -45,6 +45,8 @@ batch shape can change floating-point results in the last digits: that is why
 Identical to 20261007-203446-which-heads-restore-the-answer: all 4,608 per-prompt values match exactly.
 ```
 
+So does **Rerun** in the app: when the rerun finishes, a notice says the same.
+
 On another device (the CPU, CUDA, MPS or another GPU) or with other library versions, results can
 differ in the last digits, because the same sums run in another order. Each manifest records the
 versions of Logogram, Python, PyTorch, TransformerLens, Transformers, NumPy and pyarrow, the device
@@ -81,9 +83,32 @@ holds the process's id and start time and a random token, nothing about you or t
 that a run whose process stopped (closed, killed or crashed) is told apart from one still going:
 it is marked failed, with its spec ready to run again.
 
+## Renaming and deleting
+
+Everything that changes or deletes a project's files says first what goes and what stays, and
+refuses what would break a run that hasn't happened yet:
+
+* **A project** is renamed in its `project.json`; its folder keeps its name, so its path doesn't
+  change. Deleting it deletes its folder and everything in it, for good, once its name is typed
+  (in the app, or at `logogram project delete`'s question). It is refused while a run is in
+  progress in it or its queue is being run, and whenever the folder holds anything besides what
+  Logogram makes there (`project.json`, `.gitignore`, `research.json`, `datasets/`,
+  `experiments/`, `.logogram/` and the folders later versions keep), so that a project made inside
+  your own folder, a repository say, is never wiped: the refusal lists what else is there. A
+  local model added from inside the folder (a toy's) is forgotten with it.
+* **A dataset** can be renamed or deleted. A run keeps its own copy of the prompts it ran on, in
+  `datasets/snapshots/`, so neither changes a run. A saved draft or a queued run hasn't read its
+  dataset yet: while one names the file, renaming, deleting or replacing the file is refused,
+  naming them, since it would fail when it runs, or run on other prompts.
+* **A run** is deleted with its folder (see `logogram delete`); one in progress, or a draft
+  waiting in the queue, isn't.
+* **The recent projects** live in Logogram's settings folder, not in any project. Listing them
+  reads each one's `project.json` and writes nothing. One whose folder can't be found stays listed
+  until it is taken out, so a project on a drive that isn't connected comes back with it.
+
 ## Stability
 
 Each release reads the run folders earlier releases wrote: their specs, manifests, summaries and
 per-prompt results list, open, compare and export as before, and the tests keep runs written by
-0.1.0 and 0.2.0 to hold every release to this. Version 1 and 2 specs still run (see
+0.1.0 and 0.2.0 to hold every release to this. Specs of every earlier version still run (see
 [the spec reference](../reference/spec.md)).

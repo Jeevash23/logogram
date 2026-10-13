@@ -642,3 +642,53 @@ def test_steering_says_when_the_pairs_differ_both_ways_along_a_direction(project
     assert abs(both.summary["steering"]["direction"]["along"][0]) < abs(
         same.summary["steering"]["direction"]["along"][0]
     )
+
+
+def test_a_direction_a_draft_or_queued_run_names_is_neither_renamed_nor_deleted(project):
+    from logogram import runqueue
+    from logogram.directions import (
+        DirectionInUse,
+        delete_direction,
+        pin_direction,
+        rename_direction,
+    )
+    from logogram.runner import write_json
+
+    def save_draft(project: Any, spec: Any) -> str:
+        run_id, folder = project.new_run_dir(spec.name)
+        write_json(folder / "spec.json", spec.model_dump(mode="json"))
+        return run_id
+
+    _save_basis(project, "u", torch.eye(4)[0])
+    removing = make_spec(
+        name="Remove u",
+        experiment={
+            "kind": "ablation",
+            "baseline": {
+                "kind": "projection",
+                "direction": {"name": "u", "sha256": None},
+                "reference": None,
+            },
+        },
+        scope=STREAM,
+    )
+    draft = save_draft(project, removing)
+    with pytest.raises(DirectionInUse, match="the draft “Remove u”"):
+        delete_direction(project, "u")
+    with pytest.raises(DirectionInUse, match="can't be renamed"):
+        rename_direction(project, "u", "v")
+    # A queued run that names it, once the draft is gone.
+    import shutil
+
+    shutil.rmtree(project.run_dir(draft))
+    runqueue.add_to_queue(project, removing)
+    with pytest.raises(DirectionInUse, match=r"the queued run “Remove u”.*out of the queue"):
+        delete_direction(project, "u")
+    runqueue.clear_queue(project)
+    # A spec pinned to a snapshot the project keeps runs on that: the name can go.
+    pinned = pin_direction(project, "u", None)
+    pinned_spec = removing.model_copy(deep=True)
+    pinned_spec.experiment.baseline.direction.sha256 = pinned.sha256  # type: ignore[union-attr]
+    runqueue.add_to_queue(project, pinned_spec)
+    rename_direction(project, "u", "v")
+    delete_direction(project, "v")

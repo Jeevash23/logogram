@@ -141,6 +141,7 @@
   display: flex;
   flex-direction: column;
   gap: 18px;
+  container-type: inline-size;
 }
 
 .pageTitle {
@@ -265,7 +266,8 @@
   margin-top: 14px;
 }
 
-@media (max-width: 760px) {
+/* Recent projects need the room for their names and actions: below this, the columns stack. */
+@container (max-width: 640px) {
   .projectGrid {
     grid-template-columns: 1fr;
   }
@@ -293,43 +295,64 @@
   border-top: 2px solid var(--text);
 }
 
-.recentItem {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+/* A recent project: opening it, then its actions. */
+.recentRow {
+  display: flex;
   align-items: center;
-  gap: 2px 14px;
-  width: 100%;
+  gap: 4px;
+  padding-right: 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.recentRow:hover {
+  background: var(--hover);
+}
+
+.recentItem {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 14px;
   padding: 12px 8px;
   border: 0;
-  border-bottom: 1px solid var(--line);
   background: transparent;
   text-align: left;
 }
 
-.recentItem:hover {
-  background: var(--hover);
+.recentGlyph {
+  flex: none;
+  color: var(--text);
 }
 
-.recentGlyph {
-  grid-row: 1 / span 2;
-  color: var(--text);
+.recentText {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.recentHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  column-gap: 14px;
 }
 
 .recentName {
   font-weight: 600;
   font-size: var(--text-md);
+  overflow-wrap: anywhere;
 }
 
 .recentTime {
-  grid-row: 1;
-  grid-column: 3;
   color: var(--faint);
   font-size: var(--text-xs);
-  align-self: center;
 }
 
 .recentPath {
-  grid-column: 2 / -1;
   color: var(--faint);
   font-size: var(--text-xs);
   overflow: hidden;
@@ -337,6 +360,16 @@
   white-space: nowrap;
   direction: rtl;
   text-align: left;
+}
+
+/* Its folder can't be found now: listed, quieter, until it is removed from the list. */
+.recentMissing .recentName,
+.recentMissing .recentGlyph {
+  color: var(--muted);
+}
+
+.recentMissing .recentTime {
+  color: var(--alert);
 }
 
 .side {
