@@ -220,6 +220,13 @@ CARRIED = {
     "mean": "Mean ablation carries each activation's mean over other prompts into the prompt",
     "resample": "Resample ablation carries each activation from other prompts into the prompt",
     "steer": "Steering by the mean difference compares each prompt with the other of its pair",
+    "subspace": "Subspace patching carries each activation's component along a direction from "
+    "one prompt of a pair into the other",
+    "projection": "Directional ablation to a mean carries each activation's mean component along "
+    "a direction over other prompts into the prompt",
+    "das": "Distributed alignment search carries each activation's component within a learned "
+    "subspace from one prompt of a pair into the other",
+    "probe": "A probe reads the activation at one position of each prompt",
 }
 
 

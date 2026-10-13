@@ -21,26 +21,41 @@ from typing import Any, cast
 import numpy as np
 import torch
 
-from logogram.backends.base import UNIT_KINDS, Cancelled, ModelBackend, Patch, Patches
-from logogram.metrics import Scorer
+from logogram.backends.base import STREAM_KINDS, UNIT_KINDS, Cancelled, ModelBackend, Patch, Patches
+from logogram.metrics import Reading, Scorer
 from logogram.prompts import LengthGroup, PreparedPrompt, group_by_length, side_groups
-from logogram.sites import ResolvedSite, check_lined_up, expand_scope, resolve_position, site_unit
+from logogram.sites import (
+    ResolvedSite,
+    ScopeError,
+    check_lined_up,
+    expand_scope,
+    resolve_position,
+    site_unit,
+)
 from logogram.spec import (
     METRIC_LABELS,
     Ablation,
     ActivationPatching,
     AllPositions,
     AttributionPatching,
+    DirectionReadout,
     DirectLogitAttribution,
+    DistributedAlignmentSearch,
     EdgeAttribution,
+    FeatureReadout,
     FeaturesScope,
     MeanBaseline,
     PathPatching,
+    Probe,
+    ProjectionBaseline,
+    ReadoutMetric,
     ResampleBaseline,
+    ScaleBaseline,
     SiteSetsScope,
     SitesScope,
     Spec,
     Steering,
+    SubspacePatching,
     ZeroBaseline,
 )
 
@@ -147,46 +162,116 @@ def answer_tensors(
     )
 
 
-def make_scorer(spec: Spec, prompts: list[PreparedPrompt]) -> Scorer:
-    return Scorer(spec.metric, prompts)
+def make_scorer(
+    spec: Spec,
+    prompts: list[PreparedPrompt],
+    *,
+    sae: Any = None,
+    directions: dict[str, Any] | None = None,
+) -> Scorer:
+    """The spec's metric as a scorer; a readout also gets what it reads: the SAE, or the saved
+    direction (pinned by the runner)."""
+    metric = spec.scored
+    reading = None
+    if isinstance(metric, ReadoutMetric):
+        unit = metric.unit
+        vector = None
+        if isinstance(unit, DirectionReadout):
+            vector = _direction_vector(directions, unit.direction.name, "A direction readout")
+        reading = Reading(
+            metric, prompts, sae=sae if isinstance(unit, FeatureReadout) else None, direction=vector
+        )
+    return Scorer(metric, prompts, reading)
+
+
+def _direction_vector(directions: dict[str, Any] | None, name: str, what: str) -> torch.Tensor:
+    """The unit vector of a saved direction of one dimension."""
+    direction = (directions or {}).get(name)
+    if direction is None:
+        raise EngineError(f"{what} needs the direction {name}, which this run didn't load.")
+    if direction.dimensions != 1:
+        raise EngineError(
+            f"{what} reads one dimension, and the direction {name} has {direction.dimensions}. "
+            "Save one of its vectors as a direction of its own."
+        )
+    return direction.vectors[0]
+
+
+class _Forward:
+    """A forward pass with ``patch`` applied, as the scorer calls it. With a readout (``reading``),
+    it also keeps the activations the readout reads from its last pass (``reads``)."""
+
+    def __init__(self, backend: ModelBackend, patch: Patches, reading: Reading | None) -> None:
+        self.backend = backend
+        self.patch = patch
+        self.reading = reading
+        self.reads: dict[tuple[str, int], torch.Tensor] | None = None
+
+    def run(self, tokens: torch.Tensor, patch: Patches, keep: int) -> torch.Tensor:
+        if self.reading is None:
+            return self.backend.logits(tokens, patch, keep)
+        logits, self.reads = self.backend.logits_and_reads(tokens, patch, keep, self.reading.sites)
+        return logits
+
+    def __call__(self, tokens: torch.Tensor, keep: int) -> torch.Tensor:
+        return self.run(tokens, self.patch, keep)
 
 
 def patched_forward(
-    backend: ModelBackend, patch: Patches
+    backend: ModelBackend, patch: Patches, reading: Reading | None = None
 ) -> Callable[[torch.Tensor, int], torch.Tensor]:
     """A forward pass with ``patch`` applied, as the scorer calls it."""
-
-    def forward(tokens: torch.Tensor, keep: int) -> torch.Tensor:
-        return backend.logits(tokens, patch, keep)
-
-    return forward
+    return _Forward(backend, patch, reading)
 
 
-def continued_forward(
-    backend: ModelBackend, patch: Patch, source: torch.Tensor | None
-) -> Callable[[torch.Tensor, int], torch.Tensor]:
-    """A forward pass with ``patch``, where a patch of every position also covers tokens appended
-    to read a continuation: their positions take the source prompt's own values with the same
-    continuation appended (zeros for zero ablation), so patching every position of a layer still
-    reproduces the source run. ``source``: each row's source prompt ``[B, L]``, or None for zeros.
-    """
+# Makes the values of positions appended to read a continuation from the source prompt's values
+# there and the receiver's own (None when they aren't needed): a scale, a projection, a patch
+# within a subspace.
+Combine = Callable[[torch.Tensor, torch.Tensor | None], torch.Tensor]
 
-    def forward(tokens: torch.Tensor, keep: int) -> torch.Tensor:
+
+class _ContinuedForward(_Forward):
+    def __init__(
+        self,
+        backend: ModelBackend,
+        patch: Patch,
+        source: torch.Tensor | None,
+        reading: Reading | None,
+        combine: Combine | None,
+        own: torch.Tensor | None,
+    ) -> None:
+        super().__init__(backend, patch, reading)
+        self.whole = patch
+        self.source = source
+        self.combine = combine
+        self.own = own
+
+    def _appended(self, prompts: torch.Tensor, tail: torch.Tensor, length: int) -> torch.Tensor:
+        patch = self.whole
+        key = (patch.kind, patch.layer)
+        full = self.backend.capture(torch.cat([prompts, tail.to(prompts.device)], dim=1), [key])[
+            key
+        ]
+        units = patch.units()
+        if units is not None:  # a head's (or key/value head's) vectors, or a neuron's values
+            rows = torch.arange(full.shape[0], device=full.device)
+            full = full[rows, :, units.to(full.device)]
+        return full[:, length:].to(dtype=patch.values.dtype, device=patch.values.device)
+
+    def __call__(self, tokens: torch.Tensor, keep: int) -> torch.Tensor:
+        patch = self.whole
         length = patch.values.shape[1]
         if patch.positions is not None or tokens.shape[1] == length:
-            return backend.logits(tokens, patch, keep)
+            return self.run(tokens, patch, keep)
         tail = tokens[:, length:]
-        if source is None:
+        if self.source is None:
             shape = (patch.values.shape[0], tail.shape[1], *patch.values.shape[2:])
             extra = torch.zeros(shape, dtype=patch.values.dtype, device=patch.values.device)
         else:
-            key = (patch.kind, patch.layer)
-            full = backend.capture(torch.cat([source, tail.to(source.device)], dim=1), [key])[key]
-            units = patch.units()
-            if units is not None:  # a head's (or key/value head's) vectors, or a neuron's values
-                rows = torch.arange(full.shape[0], device=full.device)
-                full = full[rows, :, units.to(full.device)]
-            extra = full[:, length:].to(dtype=patch.values.dtype, device=patch.values.device)
+            extra = self._appended(self.source, tail, length)
+        if self.combine is not None:
+            own = None if self.own is None else self._appended(self.own, tail, length)
+            extra = self.combine(extra, own)
         values = torch.cat([patch.values, extra], dim=1)
         whole = Patch(
             kind=patch.kind,
@@ -195,9 +280,26 @@ def continued_forward(
             heads=patch.heads,
             neurons=patch.neurons,
         )
-        return backend.logits(tokens, whole, keep)
+        return self.run(tokens, whole, keep)
 
-    return forward
+
+def continued_forward(
+    backend: ModelBackend,
+    patch: Patch,
+    source: torch.Tensor | None,
+    reading: Reading | None = None,
+    *,
+    combine: Combine | None = None,
+    own: torch.Tensor | None = None,
+) -> Callable[[torch.Tensor, int], torch.Tensor]:
+    """A forward pass with ``patch``, where a patch of every position also covers tokens appended
+    to read a continuation: their positions take the source prompt's own values with the same
+    continuation appended (zeros for zero ablation), so patching every position of a layer still
+    reproduces the source run. ``source``: each row's source prompt ``[B, L]``, or None for zeros.
+    With ``combine``, the appended positions' values are made from the source's values there and,
+    with ``own`` (each row's receiver prompt), the receiver's own, as the patch's values were.
+    """
+    return _ContinuedForward(backend, patch, source, reading, combine, own)
 
 
 def check_mean_continuations(scorer: Scorer, every_position: bool) -> None:
@@ -242,7 +344,7 @@ def compute_baselines(
         k: np.zeros(n)
         for k in ("clean", "corrupt", "clean_prob", "corrupt_prob", "clean_pref", "corrupt_pref")
     }
-    plain = patched_forward(backend, None)
+    plain = patched_forward(backend, None, scorer.reading)
     for which in ("clean", "corrupt"):
         for group in side_groups(groups, prompts, which):
             tokens = group.tokens(which)
@@ -250,7 +352,7 @@ def compute_baselines(
                 if cancel is not None and cancel.is_set():
                     raise Cancelled()
                 idx = group.members[sl]
-                scores = scorer.score(plain, tokens[sl], idx)
+                scores = scorer.score(plain, tokens[sl], idx, which)
                 out[which][idx] = scores.metric
                 out[f"{which}_prob"][idx] = scores.prob
                 out[f"{which}_pref"][idx] = scores.pref
@@ -313,7 +415,7 @@ def check_gap(
     """Refuse a normalization the gap can't support, and warn when it is unreliable."""
     warnings: list[str] = behavior_warnings(baselines)
     n = len(prompts)
-    what = METRIC_LABELS[spec.metric.kind]
+    what = METRIC_LABELS[spec.scored.kind]
     gap = baselines.metric(reference) - baselines.metric(receiver)
     mean_gap = float(gap.mean())
     if not np.isfinite(mean_gap):
@@ -321,7 +423,7 @@ def check_gap(
             f"The clean–corrupt gap in the {what} isn't a finite number, so effects can't be "
             "normalized. Run the baseline check, and use float32 if the model overflows."
         )
-    if spec.metric.normalization == "dataset_gap":
+    if spec.normalization == "dataset_gap":
         if abs(mean_gap) < 1e-3:
             raise EngineError(
                 f"The clean and corrupt prompts give almost the same {what} "
@@ -336,7 +438,7 @@ def check_gap(
                     f"error ({se:.3f}), so normalized effects and their intervals are unreliable. "
                     "Use more prompts, or check the baseline."
                 )
-    if spec.metric.normalization == "prompt_gap":
+    if spec.normalization == "prompt_gap":
         zero = [p.index for p, g in zip(prompts, gap, strict=True) if abs(g) < 1e-6]
         if zero:
             raise EngineError(
@@ -501,6 +603,16 @@ def run_experiment(
     in one pass per batch of prompts report the prompts they finish through ``on_prompts``."""
     sae = kwargs.pop("sae", None)
     on_prompts: PromptsFn | None = kwargs.pop("on_prompts", None)
+    # The saved directions the spec names, pinned by the runner (logogram.directions).
+    directions: dict[str, Any] = kwargs.pop("directions", None) or {}
+    if isinstance(spec.experiment, Probe):
+        from logogram.probes import run_probe
+
+        return run_probe(spec, backend, prompts, **kwargs)
+    if isinstance(spec.experiment, DistributedAlignmentSearch):
+        from logogram.das import run_das
+
+        return run_das(spec, backend, prompts, **kwargs)
     if isinstance(spec.scope, FeaturesScope) or (
         isinstance(spec.scope, SitesScope)
         and any(s.kind == "sae_feature" for s in spec.scope.sites)
@@ -526,7 +638,7 @@ def run_experiment(
         from logogram.steering import run_steering
 
         # Steering along an SAE feature adds its decoder direction where the SAE writes.
-        return run_steering(spec, backend, prompts, sae=sae, **kwargs)
+        return run_steering(spec, backend, prompts, sae=sae, directions=directions, **kwargs)
     if isinstance(spec.experiment, PathPatching):
         from logogram.paths import run_path_patching
 
@@ -535,7 +647,28 @@ def run_experiment(
         from logogram.circuits import run_site_sets
 
         return run_site_sets(spec, backend, prompts, **kwargs)
-    return run_engine(spec, backend, prompts, **kwargs)
+    return run_engine(spec, backend, prompts, sae=sae, directions=directions, **kwargs)
+
+
+def _subspace(
+    directions: dict[str, Any], name: str, info: Any, device: torch.device
+) -> torch.Tensor:
+    """The rows ``[k, d_model]`` (orthonormal, float32, on ``device``) of a saved direction that a
+    run projects onto, checked against the model's width."""
+    from logogram.directions import check_fits
+
+    direction = directions.get(name)
+    if direction is None:
+        raise EngineError(f"This run needs the direction {name}, which it didn't load.")
+    check_fits(direction, info, "the residual stream")
+    return direction.vectors.to(device=device, dtype=torch.float32)
+
+
+def _project(values: torch.Tensor, basis: torch.Tensor) -> torch.Tensor:
+    """The component of ``values`` (``[..., d]``) within the span of ``basis``'s orthonormal rows
+    ``[k, d]``, in float32."""
+    v = values.float()
+    return (v @ basis.T) @ basis
 
 
 def run_engine(
@@ -549,6 +682,8 @@ def run_engine(
     on_start: Callable[[list[ResolvedSite], dict[str, Any]], None] | None = None,
     receiver_override: str | None = None,
     source_override: str | None = None,
+    sae: Any = None,
+    directions: dict[str, Any] | None = None,
 ) -> EngineResult:
     """Run the sweep described by ``spec`` on already-prepared prompts.
 
@@ -557,15 +692,24 @@ def run_engine(
     """
     info = backend.info
     batch_size = spec.execution.batch_size
+    directions = directions or {}
     sites, layout = expand_scope(spec, info, prompts)
     exp = spec.experiment
     baseline_kind: str
-    if isinstance(exp, ActivationPatching):
+    # Directional ablation and subspace patching replace an activation's component within the
+    # span of a saved direction's rows; scaling multiplies it.
+    basis: torch.Tensor | None = None
+    factor = 1.0
+    mean_side: str | None = None
+    if isinstance(exp, ActivationPatching | SubspacePatching):
         receiver, source = (
             ("corrupt", "clean") if exp.direction == "clean_to_corrupt" else ("clean", "corrupt")
         )
         reference = source
         baseline_kind = "patch"
+        if isinstance(exp, SubspacePatching):
+            baseline_kind = "subspace"
+            basis = _subspace(directions, exp.subspace.name, info, backend.device)
     elif isinstance(exp, Ablation):
         receiver, reference = "clean", "corrupt"
         b = exp.baseline
@@ -575,16 +719,54 @@ def run_engine(
             source, baseline_kind = b.reference, "mean"
         elif isinstance(b, ResampleBaseline):
             source, baseline_kind = b.pool, "resample"
+        elif isinstance(b, ScaleBaseline):
+            source, baseline_kind, factor = receiver, "scale", float(b.factor)
+        elif isinstance(b, ProjectionBaseline):
+            source, baseline_kind = receiver, "projection"
+            basis = _subspace(directions, b.direction.name, info, backend.device)
+            mean_side = b.reference
         else:  # pragma: no cover
             raise EngineError(f"Unknown baseline {b!r}")
     else:  # pragma: no cover
         raise EngineError(f"Unknown experiment {exp!r}")
     receiver = receiver_override or receiver
     source = source_override or source
+    if basis is not None:
+        wide = [s for s in sites if s.kind not in STREAM_KINDS]
+        if wide:
+            what = "Subspace patching" if baseline_kind == "subspace" else "Directional ablation"
+            raise ScopeError(
+                f"{what} works on activations as wide as the residual stream (stream sites, "
+                f"attention and MLP outputs); {wide[0].label} isn't one. Choose stream sites."
+            )
     # Between prompts of different lengths, a value is carried at a label or the last token only.
-    # (Zero ablation carries nothing, and a prompt patched into itself lines up with itself.)
-    if baseline_kind != "zero" and not (baseline_kind == "patch" and source == receiver):
-        check_lined_up([s.site.position for s in sites], prompts, baseline_kind)
+    # (Zero ablation, scaling and removing a direction carry nothing between prompts, and a prompt
+    # patched into itself lines up with itself.)
+    carries = {
+        "zero": False,
+        "scale": False,
+        "projection": mean_side is not None,
+        "patch": source != receiver,
+    }.get(baseline_kind, True)
+    if carries:
+        check_lined_up(
+            [s.site.position for s in sites],
+            prompts,
+            baseline_kind,
+        )
+    scorer = make_scorer(spec, prompts, sae=sae, directions=directions)
+    warnings: list[str] = []
+    if scorer.reading is not None:
+        warnings += _after_the_readout(sites, scorer.reading.site)
+    if basis is not None:
+        name = (
+            exp.subspace.name
+            if isinstance(exp, SubspacePatching)
+            else cast(ProjectionBaseline, cast(Ablation, exp).baseline).direction.name
+        )
+        from logogram.directions import check_fits
+
+        warnings += check_fits(directions[name], info, "the residual stream")
     if on_start is not None:
         on_start(sites, layout)
     # The receivers run in batches of their own length.
@@ -592,9 +774,7 @@ def run_engine(
     group_of = {i: gi for gi, g in enumerate(groups) for i in g.members}
     local_of = {i: li for g in groups for li, i in enumerate(g.members)}
     n = len(prompts)
-    warnings: list[str] = []
 
-    scorer = make_scorer(spec, prompts)
     baselines = compute_baselines(backend, prompts, groups, batch_size, cancel, scorer)
     check_finite(baselines, info.dtype)
     warnings.extend(check_gap(spec, baselines, prompts, receiver, reference))
@@ -606,11 +786,13 @@ def run_engine(
         k = exp.baseline.donors
         same_length = any(isinstance(s.site.position, AllPositions) for s in sites)
         donors = draw_donors(prompts, groups, k, exp.baseline.seed, same_length)
-    if baseline_kind == "mean":
+    if baseline_kind == "mean" or mean_side is not None:
         check_mean_continuations(
             scorer, any(isinstance(s.site.position, AllPositions) for s in sites)
         )
-    if baseline_kind == "mean" and any(isinstance(s.site.position, AllPositions) for s in sites):
+    if (baseline_kind == "mean" or mean_side is not None) and any(
+        isinstance(s.site.position, AllPositions) for s in sites
+    ):
         alone = sum(1 for g in groups if len(g.members) == 1)
         if alone:
             warnings.append(
@@ -648,6 +830,18 @@ def run_engine(
             if baseline_kind != "zero"
             else None
         )
+        # Patching within a subspace also needs the receivers' own activations; ablating a
+        # direction to a mean needs the reference prompts' mean.
+        own = (
+            _LayerSources(backend, prompts, groups, layer, kinds, receiver, batch_size, cancel)
+            if baseline_kind == "subspace"
+            else sources
+        )
+        means = (
+            _LayerSources(backend, prompts, groups, layer, kinds, mean_side, batch_size, cancel)
+            if mean_side is not None
+            else None
+        )
         for gi, group in enumerate(groups):
             receiver_tokens = group.tokens(receiver)
             # Rows are grouped by (kind, all-positions?) so one hook serves the whole batch.
@@ -666,36 +860,67 @@ def run_engine(
                     if cancel is not None and cancel.is_set():
                         raise Cancelled()
                     chunk = rows[sl]
-                    patch = _build_patch(
-                        chunk,
-                        kind,
-                        layer,
-                        all_pos,
-                        baseline_kind,
-                        sources,
-                        gi,
-                        group.length,
-                        group_of,
-                        local_of,
-                        prompts,
-                        info.d_model,
-                        info.d_head,
-                        model_dtype,
-                        backend.device,
-                        receiver=receiver,
-                    )
+
+                    common: dict[str, Any] = {
+                        "group_index": gi,
+                        "length": group.length,
+                        "group_of": group_of,
+                        "local_of": local_of,
+                        "prompts": prompts,
+                        "d_model": info.d_model,
+                        "d_head": info.d_head,
+                        "dtype": model_dtype,
+                        "device": backend.device,
+                        "receiver": receiver,
+                    }
+                    pick = (chunk, kind, layer, all_pos)
+
+                    combine: Combine | None = None
+                    if baseline_kind in ("scale", "projection", "subspace"):
+                        # Built from the receivers' own activations ("patch" from themselves).
+                        patch = _build_patch(*pick, "patch", own, **common)
+                        combine = _combiner(baseline_kind, factor, basis)
+                        mean = (
+                            None
+                            if means is None
+                            else _build_patch(*pick, "mean", means, **common).values
+                        )
+                        source_values = (
+                            _build_patch(*pick, "patch", sources, **common).values
+                            if baseline_kind == "subspace"
+                            else None
+                        )
+                        patch.values = _combined(
+                            baseline_kind, patch.values, source_values, mean, factor, basis
+                        )
+                    else:
+                        patch = _build_patch(*pick, baseline_kind, sources, **common)
                     local_idx = torch.tensor([r.local for r in chunk], dtype=torch.long)
-                    if baseline_kind in ("patch", "resample") and all_pos:
+                    reading = scorer.reading
+                    if baseline_kind in ("patch", "resample", "subspace") and all_pos:
                         # Every position lines up: pairs of equal length, or a prompt with itself.
                         donor = [r.prompt if r.donor is None else r.donor for r in chunk]
-                        own = group.tokens(source)[torch.tensor([local_of[p] for p in donor])]
-                        forward = continued_forward(backend, patch, own)
+                        donors_tokens = group.tokens(source)[
+                            torch.tensor([local_of[p] for p in donor])
+                        ]
+                        forward = continued_forward(
+                            backend,
+                            patch,
+                            donors_tokens,
+                            reading,
+                            combine=combine,
+                            own=receiver_tokens[local_idx] if combine is not None else None,
+                        )
+                    elif baseline_kind in ("scale", "projection") and all_pos:
+                        forward = continued_forward(
+                            backend, patch, receiver_tokens[local_idx], reading, combine=combine
+                        )
                     elif baseline_kind == "zero" and all_pos:
-                        forward = continued_forward(backend, patch, None)
+                        forward = continued_forward(backend, patch, None, reading)
                     else:
-                        forward = patched_forward(backend, patch)
+                        forward = patched_forward(backend, patch, reading)
                     scores = scorer.score(
-                        forward, receiver_tokens[local_idx], [r.prompt for r in chunk]
+                        forward, receiver_tokens[local_idx], [r.prompt for r in chunk], receiver
                     )
                     for r, value, prob, pref in zip(
                         chunk, scores.metric, scores.prob, scores.pref, strict=True
@@ -817,3 +1042,70 @@ def _build_patch(
 def _table_row(table: torch.Tensor, prompt: int, unit: int | None) -> torch.Tensor:
     row = table[prompt]
     return row[unit] if unit is not None else row
+
+
+def _combined(
+    kind: str,
+    own: torch.Tensor,
+    source: torch.Tensor | None,
+    mean: torch.Tensor | None,
+    factor: float,
+    basis: torch.Tensor | None,
+) -> torch.Tensor:
+    """A patch's values made from the receivers' own activations: scaled, with a direction's
+    component removed (or set to the reference prompts' ``mean`` component), or with the
+    component within a subspace taken from the ``source`` prompts."""
+    if kind == "scale":
+        return (own.float() * factor).to(own.dtype)
+    assert basis is not None
+    if kind == "projection":
+        out = own.float() - _project(own, basis)
+        if mean is not None:
+            out = out + _project(mean, basis)
+        return out.to(own.dtype)
+    assert source is not None
+    return (own.float() + _project(source.float() - own.float(), basis)).to(own.dtype)
+
+
+def _combiner(kind: str, factor: float, basis: torch.Tensor | None) -> Combine:
+    """How appended positions' values are made, as :func:`_combined` makes the prompt's."""
+
+    def combine(source: torch.Tensor, own: torch.Tensor | None) -> torch.Tensor:
+        if kind == "subspace":
+            assert own is not None
+            return _combined(kind, own, source, None, factor, basis)
+        return _combined(kind, source, None, None, factor, basis)
+
+    return combine
+
+
+# Where each kind of site is computed within a layer: a site can only change what is computed
+# after it, in its own layer or a later one.
+_ORDER = {
+    "resid_pre": 0,
+    "q": 1,
+    "k": 1,
+    "v": 1,
+    "head": 2,
+    "attn_out": 3,
+    "resid_mid": 4,
+    "mlp_in": 5,
+    "neuron": 6,
+    "mlp_out": 7,
+    "resid_post": 8,
+}
+
+
+def _after_the_readout(sites: list[ResolvedSite], read: tuple[str, int]) -> list[str]:
+    """Warn that sites computed after what a readout reads can't change it: their effects are 0.
+    (A layer whose attention and MLP run in parallel computes its MLP from resid_pre; the order
+    here is the sequential one, so a parallel layer's MLP may read as after its attention.)"""
+    kind, layer = read
+    at = (layer, _ORDER.get(kind, 0))
+    after = [s for s in sites if (s.layer, _ORDER.get(s.kind, 0)) > at]
+    if not after:
+        return []
+    return [
+        f"{len(after)} of the {len(sites)} sites are computed after what the readout reads "
+        f"({kind} in layer {layer}), so they can't change it: their effects are 0."
+    ]

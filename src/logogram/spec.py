@@ -567,6 +567,33 @@ Scope = Annotated[
 ]
 
 
+DIRECTION_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
+
+
+class DirectionRef(_Strict):
+    """A direction (or a subspace of a few) saved in the project's directions folder: a probe's
+    weights, a learned subspace, a principal component or a mean difference. A run pins it by the
+    hash of its tensor file and keeps a copy, so saving another direction under the same name
+    later never changes the run."""
+
+    name: str
+    """The direction's name in the project's directions folder."""
+    sha256: str | None
+    """The hash of its tensor file; null uses the direction as saved when a run starts, and the
+    run's spec pins it."""
+
+    @model_validator(mode="after")
+    def _named(self) -> DirectionRef:
+        if not DIRECTION_NAME.match(self.name) or self.name == "snapshots":
+            raise ValueError(
+                "a direction's name is letters, digits, dots, dashes and underscores, starting "
+                "with a letter or digit"
+            )
+        if self.sha256 is not None and not SHA256.match(self.sha256):
+            raise ValueError("a direction's sha256 is 64 lowercase hex digits")
+        return self
+
+
 # ---------------------------------------------------------------------------------------------
 # Experiments
 
@@ -628,7 +655,40 @@ class ResampleBaseline(_Strict):
     """The seed of the draw."""
 
 
-Baseline = Annotated[ZeroBaseline | MeanBaseline | ResampleBaseline, Field(discriminator="kind")]
+class ScaleBaseline(_Strict):
+    """Multiply the activation by a factor: 0 removes it, as zero ablation does; 2 doubles it;
+    -1 turns it around. Appended tokens read to score an answer of several tokens are scaled
+    too, when every position is."""
+
+    kind: Literal["scale"] = "scale"
+    factor: float
+    """What the activation is multiplied by."""
+
+    @model_validator(mode="after")
+    def _finite(self) -> ScaleBaseline:
+        if self.factor != self.factor or self.factor in (float("inf"), float("-inf")):
+            raise ValueError("the scale factor must be a finite number")
+        return self
+
+
+class ProjectionBaseline(_Strict):
+    """Directional ablation: replace the component of the activation along a saved direction
+    (or within a saved subspace) and keep everything at right angles to it. With no reference the
+    component is removed (set to zero); with one, it is set to its mean over those prompts (at
+    the same position, as mean ablation takes it). Only activations as wide as the residual
+    stream have such a component: stream sites and attention and MLP outputs."""
+
+    kind: Literal["projection"] = "projection"
+    direction: DirectionRef
+    """The direction or subspace whose component is replaced."""
+    reference: Literal["clean", "corrupt"] | None
+    """The prompts whose mean component replaces it, or null to remove it."""
+
+
+Baseline = Annotated[
+    ZeroBaseline | MeanBaseline | ResampleBaseline | ScaleBaseline | ProjectionBaseline,
+    Field(discriminator="kind"),
+]
 
 
 class Ablation(_Strict):
@@ -772,7 +832,19 @@ class FeatureDirection(_Strict):
     """The feature's index in the spec's SAE."""
 
 
-SteeringDirection = Annotated[MeanDifference | FeatureDirection, Field(discriminator="kind")]
+class SavedDirection(_Strict):
+    """A direction saved in the project (one dimension), added where the steered site is. A
+    strength of 1 moves an activation's component along it as far as the mean difference between
+    the two prompts of each training pair does."""
+
+    kind: Literal["direction"] = "direction"
+    direction: DirectionRef
+    """The saved direction; it must have one dimension and the residual stream's width."""
+
+
+SteeringDirection = Annotated[
+    MeanDifference | FeatureDirection | SavedDirection, Field(discriminator="kind")
+]
 
 
 class Continuations(_Strict):
@@ -853,6 +925,107 @@ class PathPatching(_Strict):
         return self
 
 
+# ---------------------------------------------------------------------------------------------
+# Methods that find directions, and patching along them (version 4)
+
+
+class SubspacePatching(_Strict):
+    """Patch only the component of each site's activation along a saved direction (or within a
+    saved subspace) from the other prompt of each pair; everything at right angles to it keeps
+    the receiver's own value. Beside activation patching of the whole site, it says how much of
+    the site's effect that direction carries."""
+
+    kind: Literal["subspace_patching"] = "subspace_patching"
+    direction: Direction
+    subspace: DirectionRef
+    """The direction or subspace patched."""
+
+
+class DistributedAlignmentSearch(_Strict):
+    """Learn, at each site, a subspace of a few dimensions whose patching restores (or breaks)
+    the behavior (distributed alignment search, DAS: Geiger et al. 2023), on a training split of
+    the pairs, and measure it on the held-out rest.
+
+    At each site, an orthonormal basis of ``dimensions`` vectors is trained by Adam to maximize
+    the normalized effect of patching only the component within it, from the source prompt into
+    the receiver run, over the training pairs (all of them at each step, in their batches). The
+    held-out pairs are then patched within the learned subspace, beside patching the whole site
+    and, with ``control``, a random subspace of the same size. A learned subspace can find an
+    effect that the model doesn't use as a variable (an interpretability illusion, Makelov et al.
+    2023): compare it with the whole site, and check it on other prompts."""
+
+    kind: Literal["das"] = "das"
+    direction: Direction
+    dimensions: int = Field(ge=1, le=64)
+    """How many dimensions the learned subspace has."""
+    train_fraction: float = Field(gt=0.0, lt=1.0)
+    """The share of pairs, drawn with seed, that train the subspace; the rest measure it."""
+    seed: Seed
+    """The seed of the split, of the subspace's starting point and of the random control."""
+    steps: int = Field(ge=1, le=10_000)
+    """How many steps of Adam train each site's subspace, each over every training pair."""
+    learning_rate: float = Field(gt=0.0, le=1.0)
+    """Adam's learning rate."""
+    control: bool
+    """Also patch a random subspace of the same number of dimensions."""
+
+
+class SideLabels(_Strict):
+    """Each pair gives two examples: its clean prompt, labelled clean, and its corrupt prompt,
+    labelled corrupt. The probe reads which of the two prompts the model is reading."""
+
+    kind: Literal["side"] = "side"
+
+
+class MetaLabels(_Strict):
+    """Each prompt is labelled by a field of its pair's ``meta``, such as a template, a number
+    or a gender."""
+
+    kind: Literal["meta"] = "meta"
+    field: str
+    """The field of each pair's meta whose value is the label."""
+    prompts: Literal["clean", "corrupt", "both"]
+    """Which prompts of each pair are examples, each with the pair's label."""
+
+    @model_validator(mode="after")
+    def _field(self) -> MetaLabels:
+        if not CLUSTER_KEY.match(self.field):
+            raise ValueError("labels.field must name a field of the prompts' meta")
+        return self
+
+
+ProbeLabels = Annotated[SideLabels | MetaLabels, Field(discriminator="kind")]
+
+
+class Probe(_Strict):
+    """Train a linear probe at each site: logistic regression that reads a label from the
+    activation, on a training split of the pairs, then measure its accuracy on the held-out rest.
+
+    Each site's activations are standardized with the training examples' mean and spread, and
+    the probe (a weight vector per class and a bias) is fitted by L-BFGS to the mean cross-entropy
+    plus ``regularization`` / 2 times the squared length of the weights, from zero, for
+    ``iterations`` iterations, in float64. Pairs are split, not examples, so the two prompts of a
+    pair are never on both sides. A probe shows that a label can be read from a site, not that the
+    model reads it: patch the site, or patch along the probe's direction, to test that. With
+    ``control``, a second probe is trained on the training labels shuffled with ``seed`` (a
+    control task, as in Hewitt and Liang 2019), and measured on the true held-out labels: how far a
+    probe gets from what it can memorize."""
+
+    kind: Literal["probe"] = "probe"
+    labels: ProbeLabels
+    """What each example is labelled with."""
+    train_fraction: float = Field(gt=0.0, lt=1.0)
+    """The share of pairs, drawn with seed, that train the probes; the rest measure them."""
+    seed: Seed
+    """The seed of the split, and of the control's shuffle."""
+    regularization: float = Field(ge=0.0, le=1e6)
+    """The weight of the squared length of the weights in the loss (L2); 0 for none."""
+    iterations: int = Field(ge=1, le=1000)
+    """How many iterations of L-BFGS fit each probe."""
+    control: bool
+    """Also fit a probe on shuffled labels, a control for what a probe can memorize."""
+
+
 Experiment = Annotated[
     ActivationPatching
     | Ablation
@@ -860,9 +1033,17 @@ Experiment = Annotated[
     | AttributionPatching
     | Steering
     | PathPatching
-    | EdgeAttribution,
+    | EdgeAttribution
+    | SubspacePatching
+    | DistributedAlignmentSearch
+    | Probe,
     Field(discriminator="kind"),
 ]
+
+# Methods whose per-prompt values aren't read from the model's output: no metric.
+NO_METRIC_KINDS = ("probe",)
+# Methods that can read a readout metric (an internal value) instead of the output.
+READOUT_KINDS = ("activation_patching", "ablation", "subspace_patching")
 
 
 def strength_text(coefficient: float) -> str:
@@ -1000,33 +1181,6 @@ class SAERef(_Strict):
         return self
 
 
-DIRECTION_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
-
-
-class DirectionRef(_Strict):
-    """A direction (or a subspace of a few) saved in the project's directions folder: a probe's
-    weights, a learned subspace, a principal component or a mean difference. A run pins it by the
-    hash of its tensor file and keeps a copy, so saving another direction under the same name
-    later never changes the run."""
-
-    name: str
-    """The direction's name in the project's directions folder."""
-    sha256: str | None
-    """The hash of its tensor file; null uses the direction as saved when a run starts, and the
-    run's spec pins it."""
-
-    @model_validator(mode="after")
-    def _named(self) -> DirectionRef:
-        if not DIRECTION_NAME.match(self.name) or self.name == "snapshots":
-            raise ValueError(
-                "a direction's name is letters, digits, dots, dashes and underscores, starting "
-                "with a letter or digit"
-            )
-        if self.sha256 is not None and not SHA256.match(self.sha256):
-            raise ValueError("a direction's sha256 is 64 lowercase hex digits")
-        return self
-
-
 class UserTurn(_Strict):
     """The prompt is the person's message. The template then opens the model's reply, so the
     answer is the first token of the reply."""
@@ -1146,8 +1300,68 @@ class KLMetric(_Strict):
     normalization: Normalization
 
 
+class NeuronReadout(_Strict):
+    """One MLP neuron's activation, after its nonlinearity (for a gated MLP, the gate's
+    activation times the up projection)."""
+
+    kind: Literal["neuron"] = "neuron"
+    layer: int = Field(ge=0)
+    """The neuron's layer, from 0."""
+    neuron: int = Field(ge=0)
+    """The neuron's index among its layer's MLP neurons."""
+
+
+class DirectionReadout(_Strict):
+    """An activation's component along a saved direction of one dimension: its dot product with
+    the direction's unit vector, at a stream site and layer you choose."""
+
+    kind: Literal["direction"] = "direction"
+    direction: DirectionRef
+    """The saved direction, of one dimension and the residual stream's width."""
+    site: StreamSiteKind
+    """The activation it is read from."""
+    layer: int = Field(ge=0)
+    """The layer, from 0."""
+
+
+class FeatureReadout(_Strict):
+    """One feature of the spec's SAE: its activation, as the SAE encodes the activation it reads
+    (a transcoder, its MLP's input)."""
+
+    kind: Literal["sae_feature"] = "sae_feature"
+    feature: int = Field(ge=0)
+    """The feature's index in the spec's SAE."""
+
+
+Readout = Annotated[NeuronReadout | DirectionReadout | FeatureReadout, Field(discriminator="kind")]
+
+
+class ReadoutMetric(_Strict):
+    """A value inside the model instead of its output: a neuron's activation, an activation's
+    component along a saved direction, or an SAE feature's activation, at one position of each
+    prompt. Patching and ablation then ask what drives that value.
+
+    Normalized like the other metrics, an effect of 1 means the intervention moves the value as
+    far as switching from the receiver prompt to the other prompt does. A site later in the model
+    than the value (a later layer, or a later part of the same layer) can't change it, so its
+    effect is exactly 0."""
+
+    kind: Literal["readout"] = "readout"
+    unit: Readout
+    """What is read."""
+    position: Annotated[LastPosition | IndexPosition | LabelPosition, Field(discriminator="kind")]
+    """The token of each prompt where it is read."""
+    normalization: Normalization
+
+
 Metric = Annotated[
-    LogitDiffMetric | LogProbDiffMetric | LogProbMetric | ProbMetric | ProbDiffMetric | KLMetric,
+    LogitDiffMetric
+    | LogProbDiffMetric
+    | LogProbMetric
+    | ProbMetric
+    | ProbDiffMetric
+    | KLMetric
+    | ReadoutMetric,
     Field(discriminator="kind"),
 ]
 
@@ -1158,17 +1372,39 @@ METRIC_LABELS: dict[str, str] = {
     "prob": "answer probability",
     "prob_diff": "probability difference",
     "kl": "KL divergence",
+    "readout": "readout",
 }
+
+
+def readout_text(unit: NeuronReadout | DirectionReadout | FeatureReadout) -> str:
+    """What a readout reads, in words, for example 'neuron 1234 of L5's MLP'."""
+    if isinstance(unit, NeuronReadout):
+        return f"neuron {unit.neuron} of L{unit.layer}'s MLP"
+    if isinstance(unit, DirectionReadout):
+        return f"the {unit.site} of L{unit.layer} along the direction {unit.direction.name}"
+    return f"SAE feature {unit.feature}"
+
 
 # Metrics that read answers at the last position only: they can't score continuations of several
 # tokens. (The KL divergence reads no answer; the preference it reports beside it reads them.)
 SINGLE_POSITION_METRICS = ("logit_diff",)
 
 
+def reads_continuations(metric: Any) -> bool:
+    """Whether a run with this metric reads answers of several tokens: every metric but the logit
+    difference does. A probe has no metric: the baselines beside it read answers as
+    log-probabilities, which read any answer."""
+    return metric is None or metric.kind not in SINGLE_POSITION_METRICS
+
+
 def describe_metric(metric: Any) -> str:
     """The metric in words, for example 'KL divergence from the clean prompt's prediction'."""
+    if metric is None:
+        return "no metric: the probes read the activations, not the output"
     if metric.kind == "kl":
         return f"KL divergence from the {metric.target} prompt's next-token distribution"
+    if metric.kind == "readout":
+        return f"{readout_text(metric.unit)} at {describe_position(metric.position)}"
     return {
         "logit_diff": "logit(answer) − logit(distractor) at the last position",
         "logprob_diff": "log P(answer) − log P(distractor)",
@@ -1247,8 +1483,9 @@ class Spec(_Strict):
     """The method, with every choice that changes its numbers."""
     scope: Scope
     """The sites the method measures: one result per site."""
-    metric: Metric
-    """What is read from the model's output, and how effects are normalized."""
+    metric: Metric | None
+    """What is read from the model's output (or, as a readout, from inside it), and how effects
+    are normalized; null for probes, which read activations instead."""
     statistics: Statistics
     """The intervals' bootstrap, confidence level and seed."""
     execution: Execution
@@ -1282,6 +1519,29 @@ class Spec(_Strict):
     def upgraded_fields(self) -> list[str]:
         return list(self._upgraded)
 
+    @property
+    def scored(
+        self,
+    ) -> (
+        LogitDiffMetric
+        | LogProbDiffMetric
+        | LogProbMetric
+        | ProbMetric
+        | ProbDiffMetric
+        | KLMetric
+        | ReadoutMetric
+    ):
+        """The metric of a method that reads one: every method but probes."""
+        if self.metric is None:
+            raise ValueError("A probe has no metric: it reads activations, not the output.")
+        return self.metric
+
+    @property
+    def normalization(self) -> Literal["dataset_gap", "prompt_gap"]:
+        """How effects are normalized. A probe's held-out accuracy isn't normalized: its values
+        go through the statistics as they are (divided by a gap of 1)."""
+        return "dataset_gap" if self.metric is None else self.metric.normalization
+
     @model_validator(mode="after")
     def _features_have_an_sae(self) -> Spec:
         uses = (
@@ -1297,6 +1557,31 @@ class Spec(_Strict):
         )
         if uses and self.sae is None:
             raise ValueError("SAE features need the spec's sae: the SAE they belong to")
+        return self
+
+    @model_validator(mode="after")
+    def _metric_fits(self) -> Spec:
+        kind = self.experiment.kind
+        if kind in NO_METRIC_KINDS and self.metric is not None:
+            raise ValueError(
+                "a probe reads activations, not the model's output: set metric to null"
+            )
+        if kind not in NO_METRIC_KINDS and self.metric is None:
+            raise ValueError("this method reads the model's output: the spec needs a metric")
+        metric = self.metric
+        if isinstance(metric, ReadoutMetric):
+            if kind not in READOUT_KINDS:
+                raise ValueError(
+                    "a readout metric is read by activation patching, ablation and subspace "
+                    "patching; use another metric with this method"
+                )
+            if isinstance(self.scope, FeaturesScope | SiteSetsScope):
+                raise ValueError(
+                    "a readout metric is read site by site: use a scope of single sites, not "
+                    "sets of sites or SAE features"
+                )
+            if isinstance(metric.unit, FeatureReadout) and self.sae is None:
+                raise ValueError("an SAE feature readout needs the spec's sae")
         return self
 
     @model_validator(mode="after")
@@ -1472,6 +1757,14 @@ def describe_curve(curve: FaithfulnessCurve) -> str:
     return f"faithfulness of the {span} strongest edges, {patched} ({control})"
 
 
+def labels_text(labels: SideLabels | MetaLabels) -> str:
+    """What a probe reads, for example 'which prompt (clean or corrupt)'."""
+    if isinstance(labels, SideLabels):
+        return "which prompt it is (clean or corrupt)"
+    prompts = {"clean": "clean prompts", "corrupt": "corrupt prompts", "both": "both prompts"}
+    return f"meta.{labels.field} ({prompts[labels.prompts]})"
+
+
 def describe_intervention(
     exp: ActivationPatching
     | Ablation
@@ -1479,9 +1772,29 @@ def describe_intervention(
     | AttributionPatching
     | Steering
     | PathPatching
-    | EdgeAttribution,
+    | EdgeAttribution
+    | SubspacePatching
+    | DistributedAlignmentSearch
+    | Probe,
 ) -> str:
     """The intervention in a few words, for example 'Resample-ablate (10 corrupt donors, seed 0)'."""
+    if isinstance(exp, Probe):
+        control = ", against shuffled labels" if exp.control else ""
+        return (
+            f"Linear probe for {labels_text(exp.labels)} ({exp.train_fraction:.0%} of pairs "
+            f"train, seed {exp.seed}, L2 {exp.regularization:g}{control})"
+        )
+    if isinstance(exp, SubspacePatching):
+        arrow = "clean → corrupt" if exp.direction == "clean_to_corrupt" else "corrupt → clean"
+        return f"Patch {arrow} along the direction {exp.subspace.name}"
+    if isinstance(exp, DistributedAlignmentSearch):
+        arrow = "clean → corrupt" if exp.direction == "clean_to_corrupt" else "corrupt → clean"
+        dims = f"{exp.dimensions} dimension{'s' if exp.dimensions != 1 else ''}"
+        control = ", random control" if exp.control else ""
+        return (
+            f"Learn a subspace of {dims} and patch {arrow} within it ({exp.train_fraction:.0%} "
+            f"of pairs train, {exp.steps} steps, seed {exp.seed}{control})"
+        )
     if isinstance(exp, ActivationPatching):
         return (
             "Patch clean → corrupt"
@@ -1514,6 +1827,12 @@ def describe_intervention(
         toward = "corrupt" if exp.apply_to == "clean" else "clean"
         strengths = ", ".join(strength_text(c) for c in exp.coefficients)
         control = ", random control" if exp.control else ""
+        if isinstance(exp.direction, SavedDirection):
+            return (
+                f"Steer {exp.apply_to} prompts along the direction {exp.direction.direction.name} "
+                f"({strengths}; strength 1 is the pairs' mean difference along it on "
+                f"{exp.train_fraction:.0%} of the pairs, seed {exp.seed}{control})"
+            )
         if isinstance(exp.direction, FeatureDirection):
             return (
                 f"Steer {exp.apply_to} prompts along SAE feature {exp.direction.feature} "
@@ -1529,6 +1848,11 @@ def describe_intervention(
         return "Zero-ablate"
     if isinstance(b, MeanBaseline):
         return f"Mean-ablate ({b.reference} mean)"
+    if isinstance(b, ScaleBaseline):
+        return f"Scale by {b.factor:g}".replace("-", "−")
+    if isinstance(b, ProjectionBaseline):
+        to = "removed" if b.reference is None else f"set to its {b.reference} mean"
+        return f"Ablate the direction {b.direction.name} ({to})"
     return f"Resample-ablate ({b.donors} {b.pool} donors, seed {b.seed})"
 
 
@@ -1590,7 +1914,12 @@ def describe_experiment(spec: Spec) -> str:
         where = f"{n} edge{'s' if n != 1 else ''}, one at a time"
     else:
         where = f"{len(scope.sites)} chosen site{'s' if len(scope.sites) != 1 else ''}"
-    metric = "" if spec.metric.kind == "logit_diff" else f" · {METRIC_LABELS[spec.metric.kind]}"
+    if spec.metric is None or spec.metric.kind == "logit_diff":
+        metric = ""
+    elif isinstance(spec.metric, ReadoutMetric):
+        metric = f" · reading {readout_text(spec.metric.unit)}"
+    else:
+        metric = f" · {METRIC_LABELS[spec.metric.kind]}"
     chat = spec.tokenization.chat_template
     wrapped = (
         ""

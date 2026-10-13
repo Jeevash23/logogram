@@ -109,6 +109,11 @@ class Layout(_Model):
         # there are too many to list as columns.
         "neurons",
         "edges",
+        # A probe at each site (a row), and its control (a column each).
+        "probe",
+        # Distributed alignment search: each site (a row), patched within the learned subspace, as
+        # a whole and within a random subspace (a column each).
+        "das",
     ]
     site: str | None = None
     row_title: str
@@ -229,6 +234,14 @@ class SteeringFeature(_Model):
     measured: list[int]
 
 
+class SavedSteering(_Model):
+    """Steering along a saved direction: which, and how far strength 1 moves along it."""
+
+    name: str
+    sha256: str
+    along: list[float]
+
+
 class SteeringInfo(_Model):
     """Which prompts trained the steering directions and which measured them, and how long each
     site's vector is at strength 1 (one per row of the layout)."""
@@ -239,6 +252,9 @@ class SteeringInfo(_Model):
     control: list[ControlComparison] | None = None
     # Along an SAE feature; None for the mean difference.
     feature: SteeringFeature | None = None
+    # Along a saved direction: its name and hash, and the mean difference between the two prompts
+    # of the training pairs along it (one per row of the layout), which strength 1 adds.
+    direction: SavedSteering | None = None
 
 
 class FeatureRun(_Model):
@@ -362,6 +378,67 @@ class EdgeRun(_Model):
     corrections: EdgeCorrections | None = None
 
 
+class ProbeSite(_Model):
+    """A probe at one site of the layout (its index): its accuracy on the training examples and
+    on the held-out ones, and whether it is the control, trained on shuffled labels."""
+
+    index: int
+    control: bool
+    train_accuracy: float
+    test_accuracy: float
+
+
+class ProbeSelectivity(_Model):
+    """A site's probe against its control, pair by pair: the difference of their held-out
+    accuracies, with its interval; selective where the interval lies above zero."""
+
+    row: int
+    index: int
+    control_index: int
+    difference: float | None
+    lo: float | None
+    hi: float | None
+    selective: bool
+
+
+class ProbeRun(_Model):
+    """What a probe run read: the labels and their classes, the accuracy of always answering the
+    most common training class (chance), the split, and each site's probe."""
+
+    labels: str
+    classes: list[str]
+    chance: float
+    train: list[int]
+    test: list[int]
+    examples: dict[str, int]
+    # The scope's own layout of the sites (a layer x head grid, say), where each site is in it.
+    grid: dict[str, Any]
+    sites: list[ProbeSite]
+    selectivity: list[ProbeSelectivity] = []
+
+
+class LearnedSubspace(_Model):
+    """One site's learned subspace (the layout's ``index``, of row ``row``): the mean normalized
+    effect on the training pairs after each step, and after the last."""
+
+    index: int
+    row: int
+    curve: list[float]
+    train_effect: float | None
+
+
+class DASRun(_Model):
+    """A distributed alignment search: the subspace's size, how it was trained, the split, and
+    each site's training."""
+
+    dimensions: int
+    steps: int
+    learning_rate: float
+    train: list[int]
+    test: list[int]
+    sites: list[LearnedSubspace]
+
+
 class ChatTemplateInfo(_Model):
     """How the prompts were wrapped in the model's own chat template (logogram.chat): as the
     person's message, or as the start of the model's reply to a fixed message; the template's
@@ -418,7 +495,7 @@ class Summary(_Model):
     receiver: Literal["clean", "corrupt"]
     reference: Literal["clean", "corrupt"]
     # What each per-prompt value is: a patched run, an estimate of one, or a term of a split.
-    measure: Literal["intervention", "estimate", "attribution"] = "intervention"
+    measure: Literal["intervention", "estimate", "attribution", "probe"] = "intervention"
     metric: MetricInfo
     statistics: StatisticsInfo
     baseline: BaselineSummary
@@ -432,6 +509,8 @@ class Summary(_Model):
     circuit: CircuitInfo | None = None
     attribution: AttributionInfo | None = None
     edges: EdgeRun | None = None
+    probe: ProbeRun | None = None
+    das: DASRun | None = None
     chat_template: ChatTemplateInfo | None = None
     # A run that stopped before the end: what it kept. None for a finished run.
     partial: PartialRun | None = None
@@ -529,6 +608,18 @@ class SweepMember(_Model):
 Derivation = Annotated[DerivedFrom | SweepMember, Field(discriminator="kind")]
 
 
+class DirectionProvenance(_Model):
+    """A saved direction a run used: its name, the hash of its tensor file, the snapshot the run
+    read, and how it was made."""
+
+    name: str
+    sha256: str
+    path: str
+    dimensions: int
+    method: str
+    made_from: str | None
+
+
 class Manifest(_Model):
     logogram_manifest: Literal[1] = 1
     run_id: str
@@ -546,7 +637,18 @@ class Manifest(_Model):
     sae: dict[str, Any] | None = None
     # The chat template the prompts were wrapped in: how, and its SHA-256.
     chat_template: ChatTemplateProvenance | None = None
+    # The saved directions the spec names, as the run pinned them (logogram.directions).
+    directions: list[DirectionProvenance] | None = None
 
+
+# -- vectors.safetensors -----------------------------------------------------------------------
+
+# What a probe or a learned subspace found at each of a run's sites, beside its summary: for site
+# i of the layout, ``site{i}`` holds its vectors ``[k, width]`` (a probe's weights per class, in
+# the activation's own units; a subspace's orthonormal rows). A probe's file also holds
+# ``site{i}.bias`` ``[k]``. Saving one as a direction copies it into the project's directions
+# (logogram.directions.save_run_direction).
+VECTORS_FILE = "vectors.safetensors"
 
 # -- edges.parquet -----------------------------------------------------------------------------
 

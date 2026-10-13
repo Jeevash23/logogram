@@ -45,8 +45,14 @@ from logogram.results import (
     site_payload,
     write_results,
 )
-from logogram.schema import CONTINUATIONS_FILE, EDGES_FILE, ContinuationsFile, Manifest
-from logogram.spec import SINGLE_POSITION_METRICS, EdgeAttribution, ModelRef, SAERef, Spec
+from logogram.schema import (
+    CONTINUATIONS_FILE,
+    EDGES_FILE,
+    VECTORS_FILE,
+    ContinuationsFile,
+    Manifest,
+)
+from logogram.spec import EdgeAttribution, ModelRef, SAERef, Spec, reads_continuations
 
 EventFn = Callable[[str, dict[str, Any]], None]
 ModelProvider = Callable[[ModelRef], ModelBackend]
@@ -387,7 +393,7 @@ def run_spec(
         # A run that kept what finished keeps the predictions it measured before the sweep too.
         # Continuations come after the sweep, so a run that stopped never has them.
         names = (
-            ("results.parquet", "summary.json", "predictions.json", EDGES_FILE)
+            ("results.parquet", "summary.json", "predictions.json", EDGES_FILE, VECTORS_FILE)
             if kept is None
             else ()
         )
@@ -516,6 +522,15 @@ def run_spec(
             }
             write_manifest(folder / "manifest.json", manifest)
 
+        # The saved directions the spec names, pinned by their hash: the run reads its own copy.
+        from logogram.directions import pin_spec, provenance
+
+        spec, directions = pin_spec(spec, project)
+        if directions:
+            write_json(folder / "spec.json", spec.model_dump(mode="json"))
+            manifest["directions"] = provenance(directions)
+            write_manifest(folder / "manifest.json", manifest)
+
         # The model's own chat template, when the spec wraps prompts in it: the same text around
         # every prompt, recorded so the methods can say what the model read.
         chat = chat_wrapper(backend, spec.tokenization.chat_template)
@@ -526,7 +541,7 @@ def run_spec(
             backend,
             records,
             spec.tokenization.prepend_bos,
-            continuations=spec.metric.kind not in SINGLE_POSITION_METRICS,
+            continuations=reads_continuations(spec.metric),
             chat=chat,
         )
         # Bootstrap resamples over the prompts a method measures (steering measures held-out
@@ -644,6 +659,7 @@ def run_spec(
             on_prompts=progress.finished_prompts,
             cancel=cancel,
             sae=sae,
+            directions=directions,
         )
         progress.complete = True
         result.warnings[:0] = notes
@@ -659,6 +675,12 @@ def run_spec(
             chat_template=chat.to_dict() if chat is not None else None,
         )
         write_results(folder / "results.parquet", results_table(result, stats))
+        # What a probe or a learned subspace found at each site: vectors to save as directions.
+        learned = result.extra.pop("vectors", None)
+        if learned is not None:
+            from logogram.directions import write_vectors
+
+            write_vectors(project.writable(folder / VECTORS_FILE), learned)
         if "edges" in result.extra:
             from logogram.edges import write_edge_table
 

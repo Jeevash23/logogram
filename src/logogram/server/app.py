@@ -64,7 +64,6 @@ from logogram.server.state import AppState, Conflict, EventHub, Job, Missing, re
 from logogram.spec import (
     DEVICE,
     SHA256,
-    SINGLE_POSITION_METRICS,
     ChatTemplate,
     Metric,
     ModelRef,
@@ -73,6 +72,7 @@ from logogram.spec import (
     Scope,
     Spec,
     read_chat_template,
+    reads_continuations,
 )
 from logogram.sweeps import SweepNotFound
 from logogram.system import SystemReport
@@ -319,7 +319,7 @@ class TokenizeRequest(AnalysisRequest):
     index: int = 0
     record: PromptRecord | None = None
     # The metric the prompts are for: it decides whether answers of several tokens can be read.
-    metric: Metric
+    metric: Metric | None
 
 
 class EstimateRequest(BaseModel):
@@ -369,7 +369,7 @@ class RunMemoryRequest(BaseModel):
 
 class BaselineRequest(AnalysisRequest):
     dataset: str
-    metric: Metric
+    metric: Metric | None
 
 
 class AttentionRequest(AnalysisRequest):
@@ -1004,7 +1004,7 @@ def create_app(
             backend,
             record,
             body.prepend_bos,
-            continuations=body.metric.kind not in SINGLE_POSITION_METRICS,
+            continuations=reads_continuations(body.metric),
             chat_template=body.chat_template,
         )
 
@@ -1177,7 +1177,7 @@ def create_app(
         from logogram.datasets import decode_dataset, parse_jsonl, read_dataset_bytes
         from logogram.edges import edge_plan
         from logogram.prompts import prepare_prompts
-        from logogram.spec import SINGLE_POSITION_METRICS, EdgeAttribution
+        from logogram.spec import EdgeAttribution
 
         spec = Spec.model_validate(body.spec)
         if not isinstance(spec.experiment, EdgeAttribution):
@@ -1197,7 +1197,7 @@ def create_app(
                 backend,
                 records,
                 spec.tokenization.prepend_bos,
-                continuations=spec.metric.kind not in SINGLE_POSITION_METRICS,
+                continuations=reads_continuations(spec.metric),
                 chat=chat_wrapper(backend, spec.tokenization.chat_template),
             )
         except (ValueError, BackendError) as exc:

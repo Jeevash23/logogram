@@ -213,9 +213,25 @@ class ModelBackend(ABC):
     def token_str(self, token_id: int) -> str: ...
 
     @abstractmethod
-    def logits(self, tokens: torch.Tensor, patch: Patches = None, keep: int = 1) -> torch.Tensor:
+    def logits(
+        self, tokens: torch.Tensor, patch: Patches = None, keep: int = 1, grad: bool = False
+    ) -> torch.Tensor:
         """Logits at the last ``keep`` positions, ``[B, keep, vocab]`` in float32, with the patches
-        applied (all at once)."""
+        applied (all at once). With ``grad``, the pass keeps its graph, so a gradient can be taken
+        through the patches' values to whatever they were computed from (a learned subspace)."""
+
+    def logits_and_reads(
+        self,
+        tokens: torch.Tensor,
+        patch: Patches,
+        keep: int,
+        reads: list[tuple[str, int]],
+    ) -> tuple[torch.Tensor, dict[tuple[str, int], torch.Tensor]]:
+        """Logits as :meth:`logits` gives them, and the activations at ``reads`` (``(kind,
+        layer)``, shaped as :meth:`capture` gives them, and ``"mlp_in"`` for the MLP's input as a
+        transcoder reads it) from the same forward pass, after any patch at the same place: what a
+        readout metric reads."""
+        raise BackendError("Reading activations in a patched pass isn't supported by this backend.")
 
     def final_logits(self, tokens: torch.Tensor, patch: Patches = None) -> torch.Tensor:
         """Logits at the last position, ``[B, vocab]`` in float32."""

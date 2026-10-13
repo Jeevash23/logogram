@@ -74,7 +74,7 @@ def compute_stats(
         reference=result.reference_metric,
         receiver_prob=result.receiver_prob,
         receiver_pref=result.receiver_pref,
-        normalization=spec.metric.normalization,
+        normalization=spec.normalization,
         counts=counts,
         ci=spec.statistics.ci,
         delta=None if result.delta is None else result.delta[rows],
@@ -226,10 +226,16 @@ def build_summary(
     # What compares sites by their index reads the statistics laid out by site.
     aligned = stats if kept is None else by_site(stats, indices, len(result.sites))
     reported = set(indices)
-    normalization = spec.metric.normalization
-    label = METRIC_LABELS[spec.metric.kind]
+    normalization = spec.normalization
+    label = "held-out accuracy" if spec.metric is None else METRIC_LABELS[spec.metric.kind]
     description = describe_metric(spec.metric)
-    if result.measure == "attribution":
+    if result.measure == "probe":
+        description = (
+            "whether a linear probe reads each held-out example's label correctly: each held-out "
+            "pair's value is the share of its examples it labels correctly"
+        )
+        norm_text = "held-out accuracy, not normalized (0 to 1)"
+    elif result.measure == "attribution":
         description = (
             "direct contribution to logit(answer) − logit(distractor) at the last position, with "
             "the final normalization's scale held at its value in the run"
@@ -267,6 +273,14 @@ def build_summary(
         warnings += control_warnings(
             control, spec.statistics.ci, feature=steering.get("feature") is not None
         )
+    if "probe" in result.extra:
+        from logogram.probes import selectivity
+
+        result.extra["probe"]["selectivity"] = [
+            c
+            for c in selectivity(result, aligned, spec.statistics.ci)
+            if c["index"] in reported and c["control_index"] in reported
+        ]
     if "circuit" in result.extra:
         from logogram.circuits import circuit_summary
 
@@ -324,7 +338,7 @@ def build_summary(
         "reference": result.reference,
         "measure": result.measure,
         "metric": {
-            "kind": spec.metric.kind,
+            "kind": "probe" if spec.metric is None else spec.metric.kind,
             "target": getattr(spec.metric, "target", None),
             "label": label,
             "normalization": normalization,
@@ -366,6 +380,8 @@ def build_summary(
         **({"circuit": result.extra["circuit"]} if "circuit" in result.extra else {}),
         **({"attribution": result.extra["attribution"]} if "attribution" in result.extra else {}),
         **({"edges": result.extra["edges"]} if "edges" in result.extra else {}),
+        **({"probe": result.extra["probe"]} if "probe" in result.extra else {}),
+        **({"das": result.extra["das"]} if "das" in result.extra else {}),
         **({"chat_template": chat_template} if chat_template is not None else {}),
         **({"partial": partial} if partial is not None else {}),
     }

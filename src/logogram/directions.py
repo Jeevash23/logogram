@@ -425,6 +425,182 @@ def pin_direction(project: Project, name: str, sha256: str | None) -> Direction:
     return _read_files(project, snap_json, snap_tensor, name)
 
 
+def write_vectors(path: Path, tensors: dict[str, torch.Tensor]) -> None:
+    """A run's vectors file (schema.VECTORS_FILE): float32 tensors by name, written atomically.
+    ``path`` comes from ``Project.writable``."""
+    from safetensors.torch import save
+
+    data = save(
+        {
+            k: v.detach().to(device="cpu", dtype=torch.float32).contiguous()
+            for k, v in tensors.items()
+        },
+        metadata={"format": "pt"},
+    )
+    with atomic_output(path) as out:
+        out.write(data)
+
+
+def read_vectors(project: Project, run_id: str) -> dict[str, torch.Tensor]:
+    """The vectors a probe or a learned subspace run kept, by name (see schema.VECTORS_FILE)."""
+    from safetensors.torch import load
+
+    from logogram.schema import VECTORS_FILE
+
+    path = project.run_dir(run_id) / VECTORS_FILE
+    if not os.path.lexists(path):
+        raise DirectionError(
+            f"{run_id} kept no vectors: only a probe or a learned subspace (DAS) run does."
+        )
+    data = read_limited(project.readable(path), TENSOR_LIMIT * 64, "Run the spec again.")
+    try:
+        return dict(load(data))
+    except Exception as exc:  # any malformed file
+        raise DirectionError(f"{run_id}'s vectors file isn't safetensors. Run it again.") from exc
+
+
+def save_run_direction(
+    project: Project,
+    run_id: str,
+    site: int,
+    name: str,
+    *,
+    row: int | None = None,
+    notes: str = "",
+    replace: bool = False,
+) -> Direction:
+    """Save what a probe or a learned subspace run found at its site ``site`` (an index into the
+    run's layout of sites) as the direction ``name``: a subspace's rows, or a probe's weights
+    (with two classes, the second class's weights minus the first's: the direction toward the
+    second; with more, the weights of class ``row``). The direction's JSON file names the run."""
+    summary = project.read_json(project.run_dir(run_id) / "summary.json")
+    spec = project.read_json(project.run_dir(run_id) / "spec.json")
+    assert summary is not None and spec is not None
+    method = "probe" if summary.get("probe") else "das" if summary.get("das") else None
+    if method is None:
+        raise DirectionError(
+            f"{run_id} isn't a probe or a learned subspace run, so it found no direction to save."
+        )
+    sites = {s["index"]: s for s in summary.get("sites", [])}
+    if site not in sites:
+        raise DirectionError(f"{run_id} has no site {site}.")
+    entry = sites[site]
+    vectors = read_vectors(project, run_id)
+    key = f"site{site}"
+    if key not in vectors:
+        raise DirectionError(f"{run_id} kept no vectors for {entry['label']}.")
+    found = vectors[key]
+    detail = f"{entry['label']} of {summary.get('name', run_id)}"
+    if method == "probe":
+        classes = list((summary.get("probe") or {}).get("classes") or [])
+        if row is None:
+            if found.shape[0] != 2:
+                raise DirectionError(
+                    f"The probe tells {found.shape[0]} classes apart: choose which class's "
+                    "weights to save."
+                )
+            found = found[1] - found[0]
+            if len(classes) == 2:
+                detail = f"toward {classes[1]} from {classes[0]}, {detail}"
+        else:
+            if not 0 <= row < found.shape[0]:
+                raise DirectionError(f"The probe has {found.shape[0]} classes; there is no {row}.")
+            found = found[row]
+            if row < len(classes):
+                detail = f"toward {classes[row]}, {detail}"
+    elif row is not None:
+        if not 0 <= row < found.shape[0]:
+            raise DirectionError(
+                f"The subspace has {found.shape[0]} dimensions; there is no {row}."
+            )
+        found = found[row]
+    model = (summary.get("model") or {}).get("id")
+    pinned = spec.get("model") or {}
+    return save_direction(
+        project,
+        name,
+        found,
+        model={
+            "id": pinned.get("id", model),
+            "source": pinned.get("source", "hub"),
+            "revision": pinned.get("revision"),
+            "sha256": pinned.get("sha256"),
+        },
+        site={"kind": entry["kind"], "layer": entry["layer"]},
+        method=method,
+        run=run_id,
+        detail=detail,
+        notes=notes,
+        replace=replace,
+    )
+
+
+def direction_refs(spec: Any) -> list[tuple[str, Any]]:
+    """The saved directions a spec names, each with where (in words, as a path): directional
+    ablation's, subspace patching's, steering's and a readout's."""
+    from logogram.spec import (
+        Ablation,
+        DirectionReadout,
+        ProjectionBaseline,
+        ReadoutMetric,
+        SavedDirection,
+        Steering,
+        SubspacePatching,
+    )
+
+    out: list[tuple[str, Any]] = []
+    exp = spec.experiment
+    if isinstance(exp, Ablation) and isinstance(exp.baseline, ProjectionBaseline):
+        out.append(("experiment.baseline.direction", exp.baseline.direction))
+    if isinstance(exp, SubspacePatching):
+        out.append(("experiment.subspace", exp.subspace))
+    if isinstance(exp, Steering) and isinstance(exp.direction, SavedDirection):
+        out.append(("experiment.direction.direction", exp.direction.direction))
+    metric = spec.metric
+    if isinstance(metric, ReadoutMetric) and isinstance(metric.unit, DirectionReadout):
+        out.append(("metric.unit.direction", metric.unit.direction))
+    return out
+
+
+def pin_spec(spec: Any, project: Project) -> tuple[Any, dict[str, Direction]]:
+    """``spec`` with each direction it names pinned by its hash (see :func:`pin_direction`), and
+    the directions it names, by name, as the run reads them."""
+    found: dict[str, Direction] = {}
+    for _where, ref in direction_refs(spec):
+        direction = pin_direction(project, ref.name, ref.sha256)
+        if ref.name in found and found[ref.name].sha256 != direction.sha256:
+            raise DirectionError(
+                f"The spec names the direction {ref.name} twice, pinned to different hashes. Name "
+                "one direction once."
+            )
+        found[ref.name] = direction
+    if not found:
+        return spec, found
+    data = spec.model_dump(mode="json")
+    for where, ref in direction_refs(spec):
+        node = data
+        *parents, last = where.split(".")
+        for key in parents:
+            node = node[key]
+        node[last] = {"name": ref.name, "sha256": found[ref.name].sha256}
+    return type(spec).model_validate(data), found
+
+
+def provenance(directions: dict[str, Direction]) -> list[dict[str, Any]]:
+    """What a run's manifest records of the directions it used."""
+    return [
+        {
+            "name": name,
+            "sha256": d.sha256,
+            "path": d.path,
+            "dimensions": d.dimensions,
+            "method": d.meta.made_by.method,
+            "made_from": d.meta.made_by.run,
+        }
+        for name, d in directions.items()
+    ]
+
+
 def model_of(info: Any) -> dict[str, Any]:
     """A loaded model as a direction's JSON file names it."""
     return {

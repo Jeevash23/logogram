@@ -952,7 +952,7 @@ def faithfulness_curve(
             "weren't measured: every edge is the curve's last point."
         )
     gap = baselines.metric(source) - baselines.metric(receiver)
-    effect, _ = normalize(estimate, gap, spec.metric.normalization)
+    effect, _ = normalize(estimate, gap, spec.normalization)
     with np.errstate(invalid="ignore"):
         strongest = _ranking(effect.mean(axis=1))
     orders = random_orders(E, curve.control.seed, curve.control.draws)
@@ -1071,7 +1071,7 @@ def _faithfulness(
         reference=high,
         receiver_prob=np.full(len(low), np.nan),
         receiver_pref=np.full(len(low), np.nan),
-        normalization=spec.metric.normalization,
+        normalization=spec.normalization,
         counts=counts,
         ci=spec.statistics.ci,
     )
@@ -1091,7 +1091,7 @@ def _mean_faithfulness(
 ) -> float | None:
     from logogram.stats import normalize
 
-    effect, _ = normalize((row - low)[None, :], high - low, spec.metric.normalization)
+    effect, _ = normalize((row - low)[None, :], high - low, spec.normalization)
     return _finite(effect.mean())
 
 

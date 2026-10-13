@@ -867,11 +867,13 @@ class TransformerLensBackend(ModelBackend):
 
     # -- forward passes ----------------------------------------------------------------------
 
-    def logits(self, tokens: torch.Tensor, patch: Patches = None, keep: int = 1) -> torch.Tensor:
+    def logits(
+        self, tokens: torch.Tensor, patch: Patches = None, keep: int = 1, grad: bool = False
+    ) -> torch.Tensor:
         kwargs: dict[str, Any] = {"return_type": "logits"}
         if self._logits_to_keep:
             kwargs["logits_to_keep"] = keep
-        with self.lock, torch.no_grad():
+        with self.lock, torch.enable_grad() if grad else torch.no_grad():
             bridge = self._bridge()
             tokens = tokens.to(self.device)
             hooks = _patch_hooks(patch)
@@ -880,6 +882,42 @@ class TransformerLensBackend(ModelBackend):
             else:
                 logits = bridge.run_with_hooks(tokens, fwd_hooks=hooks, **kwargs)
             return logits[:, -keep:, :].float()
+
+    def logits_and_reads(
+        self,
+        tokens: torch.Tensor,
+        patch: Patches,
+        keep: int,
+        reads: list[tuple[str, int]],
+    ) -> tuple[torch.Tensor, dict[tuple[str, int], torch.Tensor]]:
+        seen: dict[tuple[str, int], torch.Tensor] = {}
+
+        def read(site: tuple[str, int]) -> Callable[..., torch.Tensor]:
+            def fn(act: torch.Tensor, hook: Any = None) -> torch.Tensor:
+                seen[site] = act.detach()
+                return act
+
+            return fn
+
+        # A read at a patched hook comes after the patch: _combine keeps the order given.
+        hooks = _combine(
+            _patch_hooks(patch)
+            + [(hook_name(kind, layer), read((kind, layer))) for kind, layer in reads]
+        )
+        kwargs: dict[str, Any] = {"return_type": "logits"}
+        if self._logits_to_keep:
+            kwargs["logits_to_keep"] = keep
+        with self.lock, torch.no_grad():
+            logits = self._bridge().run_with_hooks(
+                tokens.to(self.device), fwd_hooks=hooks, **kwargs
+            )
+            missing = [site for site in reads if site not in seen]
+            if missing:
+                raise BackendError(
+                    f"{self.info.id} never computed {missing[0][0]} in layer {missing[0][1]}, so it "
+                    "can't be read there."
+                )
+            return logits[:, -keep:, :].float(), seen
 
     def capture(
         self, tokens: torch.Tensor, sites: list[tuple[str, int]]

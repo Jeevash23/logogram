@@ -141,7 +141,7 @@ def run_direct_effects(
     prompts that finished."""
     exp = spec.experiment
     assert isinstance(exp, DirectLogitAttribution)
-    if spec.metric.kind != "logit_diff":
+    if spec.scored.kind != "logit_diff":
         raise ScopeError(
             "Direct logit attribution splits the logit difference, the one metric that is a sum "
             "of what each component writes. Choose the logit difference as the metric."
@@ -261,13 +261,13 @@ def _direct_result(
     gap = baselines.metric(which)
     warnings: list[str] = behavior_warnings(baselines)
     mean_gap = float(gap.mean())
-    if spec.metric.normalization == "dataset_gap" and abs(mean_gap) < 1e-3:
+    if spec.normalization == "dataset_gap" and abs(mean_gap) < 1e-3:
         raise EngineError(
             f"The {which} prompts' mean logit difference is almost zero ({mean_gap:.4f}), so a "
             "share of it is undefined. Normalize by each prompt's own logit difference, or check "
             "the baseline."
         )
-    if spec.metric.normalization == "prompt_gap":
+    if spec.normalization == "prompt_gap":
         zero = [p.index for p, g in zip(prompts, gap, strict=True) if abs(g) < 1e-6]
         if zero:
             raise EngineError(

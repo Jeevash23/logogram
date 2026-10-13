@@ -341,7 +341,7 @@ def methods_text(
     first = f", the first {d.limit} of the file" if d.limit else ""
     normalized = (
         "Effects were normalized by the mean clean–corrupt gap over the dataset"
-        if spec.metric.normalization == "dataset_gap"
+        if spec.normalization == "dataset_gap"
         else "Effects were normalized by each prompt's own clean–corrupt gap"
     )
     formula = ((summary or {}).get("metric") or {}).get("normalized_effect")
