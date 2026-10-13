@@ -201,6 +201,14 @@ The workbench has three workspaces, described view by view in [the workbench](do
 ```text
 logogram                      start the app and open the browser
 logogram open PATH            start with a project open
+logogram new NAME             create a project and print its folder (--parent DIR)
+logogram projects             the projects opened lately, marking those whose folder can't be found
+logogram projects forget PATH take a project out of that list (its folder stays)
+logogram project rename NAME  give the project another name (its folder keeps its own)
+logogram project delete       delete the project's folder for good, once its name is typed (--yes)
+logogram datasets             the project's datasets, and the drafts and queued runs that name each
+logogram datasets rename NAME NEW   give a dataset another name (runs keep their own copy)
+logogram datasets delete NAME delete a dataset for good, after asking (--yes doesn't ask)
 logogram run SPEC.json        run an experiment headlessly and print a summary
 logogram validate SPEC.json   check a spec without running it, and say what it left out
 logogram list                 the project's runs and drafts, newest first (--archived for all)
@@ -244,6 +252,13 @@ address of a port that forwards to the app, such as an SSH tunnel's (see
 also logs what the server does, with the traceback of each failed run, and `--log-file PATH`
 appends the same to a file. Commands that read runs use the project in the current folder or
 above it, or `--project PATH`; a run is its id or its folder.
+
+Deleting asks first and says what goes. `logogram project delete` deletes nothing while a run or
+the queue is running in the project, nor from a folder that also holds what Logogram doesn't make
+there (a repository's files, say): it lists them instead. A dataset that a saved draft or a
+queued run names can't be renamed, deleted or replaced (`generate --overwrite`) until they no
+longer do: they would fail, or run on other prompts. Finished runs keep their own copy of their
+prompts.
 
 A failed run keeps its traceback in `traceback.txt`, without this machine's paths or names:
 `logogram show RUN` prints it, `logogram run --verbose` prints it as the run fails, and the app
@@ -363,13 +378,16 @@ device and weight processing). One that isn't is refused, with each difference n
 than another copy loaded beside it: `lg.with_model(spec, model)` makes the spec name the model as
 it was loaded. `lg.list_runs(project)` and `lg.load_run(project, run_id)` read runs made
 anywhere. A run that fails raises `lg.api.LogogramError` with the reason, and
-`lg.load_run(project, run_id).traceback` reads the traceback it kept. Interrupting the kernel records the run as cancelled, keeping what
-finished: `run.partial` says how far a run that stopped early got and what it doesn't keep.
-`run.rename("Name movers")`, `run.star()` and `run.archive()` change what the history shows
-(`run.title`, `run.starred`, `run.archived`), and `lg.delete_run(project, run)` deletes a run's
-folder for good. `lg.sweep` returns a sweep's runs, one per value; a run that fails keeps its
-status there and the next value runs. `sweep.summary()` holds what the app's sweep view shows,
-and `lg.load_sweep(project, sweep.id)` reads a sweep back.
+`lg.load_run(project, run_id).traceback` reads the traceback it kept. Interrupting the kernel
+records the run as cancelled, keeping what finished: `run.partial` says how far a run that
+stopped early got and what it doesn't keep. `run.rename("Name movers")`, `run.star()` and
+`run.archive()` change what the history shows (`run.title`, `run.starred`, `run.archived`), and
+`lg.delete_run(project, run)` deletes a run's folder for good. `lg.sweep` returns a sweep's runs,
+one per value; a run that fails keeps its status there and the next value runs.
+`sweep.summary()` holds what the app's sweep view shows, and `lg.load_sweep(project, sweep.id)`
+reads a sweep back. `project.rename(name)`, `lg.rename_dataset(project, name, new)`,
+`lg.delete_dataset(project, name)` and `lg.delete_project(project)` manage projects and datasets
+as the app and the command line do, with the same refusals.
 
 ## Running on a remote GPU
 
