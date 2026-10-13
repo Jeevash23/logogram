@@ -19,6 +19,7 @@ method comes from.
 
 | Page | What it covers |
 |---|---|
+| [Choosing a method](concepts/choosing-a-method.md) | Which method answers which question (where, how it flows, what a site represents, what steering does), what each costs and where it misleads |
 | [Activation patching](concepts/activation-patching.md) | Copying an activation from one prompt into the run on the other; denoising and noising; what an effect of 1 means; sites (queries, keys, values and neurons too) and positions; pairs of different lengths |
 | [Ablation](concepts/ablation.md) | Replacing an activation with zeros, a mean or other prompts' values, and why the baseline has no default |
 | [Metrics and normalization](concepts/metrics.md) | The logit difference and the other metrics, answers of several tokens, the normalized effect |

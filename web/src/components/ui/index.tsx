@@ -3,6 +3,7 @@ import * as RadixTooltip from "@radix-ui/react-tooltip";
 import {
   createContext,
   forwardRef,
+  Fragment,
   useContext,
   useId,
   useRef,
@@ -224,7 +225,9 @@ export function Choices<T extends string>({
   columns = 1,
 }: {
   value: T | null;
-  options: { value: T; title: ReactNode; detail?: ReactNode; disabled?: boolean }[];
+  /** With ``group``, options are shown under the heading of their group, in the order given;
+   * the arrow keys still move through every option, as one radio group. */
+  options: { value: T; title: ReactNode; detail?: ReactNode; disabled?: boolean; group?: string }[];
   onChange: (v: T) => void;
   label: string;
   columns?: number;
@@ -238,20 +241,22 @@ export function Choices<T extends string>({
       style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
     >
       {options.map((o, i) => (
-        <button
-          key={o.value}
-          type="button"
-          role="radio"
-          aria-checked={value === o.value}
-          className={s.choice}
-          disabled={o.disabled}
-          onClick={() => onChange(o.value)}
-          {...radio(i)}
-        >
-          <span className={s.radioDot} />
-          <span className={s.choiceTitle}>{o.title}</span>
-          {o.detail && <span className={s.choiceDetail}>{o.detail}</span>}
-        </button>
+        <Fragment key={o.value}>
+          {o.group && o.group !== options[i - 1]?.group && <span className={s.choiceGroup}>{o.group}</span>}
+          <button
+            type="button"
+            role="radio"
+            aria-checked={value === o.value}
+            className={s.choice}
+            disabled={o.disabled}
+            onClick={() => onChange(o.value)}
+            {...radio(i)}
+          >
+            <span className={s.radioDot} />
+            <span className={s.choiceTitle}>{o.title}</span>
+            {o.detail && <span className={s.choiceDetail}>{o.detail}</span>}
+          </button>
+        </Fragment>
       ))}
     </div>
   );
