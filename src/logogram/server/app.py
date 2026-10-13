@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import hashlib
 import logging
 import os
@@ -551,6 +552,10 @@ class ReportRequest(BaseModel):
 # -- app factory -------------------------------------------------------------------------------
 
 
+class OutOfMemory(Conflict):
+    """An analysis ran out of memory. The message says what ran out and what to do."""
+
+
 def create_app(
     security: SecurityConfig,
     *,
@@ -611,6 +616,29 @@ def create_app(
         first = exc.errors()[0]
         where = ".".join(str(p) for p in first["loc"])
         return JSONResponse({"error": f"{where}: {first['msg']}"}, status_code=400)
+
+    def releases_memory(endpoint: Callable[..., Any]) -> Callable[..., Any]:
+        """An analysis endpoint that, when it runs out of memory (on the GPU, or in the CPU's
+        allocator), gives the memory back and says what ran out and what to do (a 409), rather
+        than failing with an internal error. Other errors pass as they are."""
+        from logogram.backends import transformer_lens as tl
+
+        @functools.wraps(endpoint)
+        def analysis(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return endpoint(*args, **kwargs)
+            except (MemoryError, RuntimeError) as exc:
+                if not (isinstance(exc, MemoryError) or tl.is_out_of_memory(exc)):
+                    raise
+                log.warning("An analysis ran out of memory: %s", exc)
+            # Out here, the error and the frames holding the analysis's tensors are gone, so their
+            # memory can be given back.
+            tl.release_memory()
+            backend = state.backend
+            device = backend.info.device if backend is not None else None
+            raise OutOfMemory(tl.analysis_out_of_memory_message(device))
+
+        return analysis
 
     # -- state -------------------------------------------------------------------------------
 
@@ -1250,6 +1278,7 @@ def create_app(
         return backend
 
     @app.post("/api/baseline", response_model=M.BaselineReport)
+    @releases_memory
     def baseline(body: BaselineRequest) -> dict[str, Any]:
         from logogram.analysis import baseline_report
 
@@ -1266,6 +1295,7 @@ def create_app(
             )
 
     @app.post("/api/attention", response_model=M.AttentionData)
+    @releases_memory
     def attention(body: AttentionRequest) -> dict[str, Any]:
         from logogram.analysis import attention_report
 
@@ -1285,6 +1315,7 @@ def create_app(
             )
 
     @app.post("/api/heads/kinds", response_model=M.HeadKinds)
+    @releases_memory
     def head_kinds(body: HeadKindsRequest) -> dict[str, Any]:
         from logogram.heads import HeadKindSettings, head_kind_scores
 
@@ -1305,6 +1336,7 @@ def create_app(
             return head_kind_scores(backend, settings)
 
     @app.post("/api/look", response_model=M.LookReport)
+    @releases_memory
     def look(body: LookPredictionsRequest) -> dict[str, Any]:
         from logogram.inside import look_report
 
@@ -1320,6 +1352,7 @@ def create_app(
             )
 
     @app.post("/api/look/attention", response_model=M.LookAttention)
+    @releases_memory
     def look_attention(body: LookAttentionRequest) -> dict[str, Any]:
         from logogram.inside import look_attention as attention
 
@@ -1335,6 +1368,7 @@ def create_app(
             )
 
     @app.post("/api/look/features", response_model=M.LookFeatures)
+    @releases_memory
     def look_features(body: LookFeaturesRequest) -> dict[str, Any]:
         from logogram.inside import look_features as features
 
@@ -1350,6 +1384,7 @@ def create_app(
             )
 
     @app.post("/api/look/feature", response_model=M.LookFeatureAlong)
+    @releases_memory
     def look_feature(body: LookFeatureRequest) -> dict[str, Any]:
         """One feature's activation at each token of the text, and its largest."""
         from logogram.inside import look_feature as along
@@ -1366,6 +1401,7 @@ def create_app(
             )
 
     @app.post("/api/look/continue", response_model=M.LookContinuation)
+    @releases_memory
     def look_continue(body: LookContinueRequest) -> dict[str, Any]:
         """What the model writes after the text, greedily; with ``steer``, also with a feature of
         the loaded SAE added where the SAE writes."""
@@ -1388,6 +1424,7 @@ def create_app(
             )
 
     @app.post("/api/predictions", response_model=M.PredictionReport)
+    @releases_memory
     def predictions(body: PredictionRequest) -> dict[str, Any]:
         from logogram.analysis import prediction_report
 
@@ -1461,6 +1498,7 @@ def create_app(
         return state.sae
 
     @app.post("/api/sae/fit")
+    @releases_memory
     def sae_fit(body: SAEAnalysisRequest) -> dict[str, Any]:
         from logogram.analysis import sae_fit_report
 
@@ -1479,6 +1517,7 @@ def create_app(
         return fit
 
     @app.post("/api/sae/tokens")
+    @releases_memory
     def sae_tokens(body: TokenFeaturesRequest) -> dict[str, Any]:
         from logogram.analysis import token_features_report
 
@@ -1497,6 +1536,7 @@ def create_app(
             )
 
     @app.post("/api/sae/feature")
+    @releases_memory
     def sae_feature(body: FeatureRequest) -> dict[str, Any]:
         from logogram.analysis import feature_report
 
@@ -1516,6 +1556,7 @@ def create_app(
             )
 
     @app.post("/api/sae/writes")
+    @releases_memory
     def sae_writes(body: FeatureWritesRequest) -> dict[str, Any]:
         """The tokens a feature promotes and suppresses directly, at one token of one prompt."""
         from logogram.analysis import feature_writes_report

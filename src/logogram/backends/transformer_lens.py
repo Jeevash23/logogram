@@ -1838,8 +1838,22 @@ def release_memory() -> None:
         mps.empty_cache()
 
 
+def memory_name(device: str) -> str:
+    """The memory a device computes in, in words: "GPU memory", "unified memory" or "memory"."""
+    return {"cuda": "GPU memory", "mps": "unified memory"}.get(device_type(device), "memory")
+
+
+def analysis_out_of_memory_message(device: str | None) -> str:
+    """What an analysis that ran out of memory says (the app's Explore views, Your text)."""
+    where = memory_name(device) if device is not None else "memory"
+    return (
+        f"The analysis ran out of {where}. Run it on fewer prompts or with a smaller batch size "
+        "(or a shorter text), or load a smaller model or a 16-bit dtype, then try again."
+    )
+
+
 def out_of_memory_message(device: str, process_weights: bool) -> str:
-    where = {"cuda": "GPU memory", "mps": "unified memory"}.get(device_type(device), "memory")
+    where = memory_name(device)
     if process_weights:
         return (
             f"The model doesn't fit in {where} while its weights are processed: processing works "

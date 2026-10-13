@@ -426,6 +426,75 @@ def test_cancelling_a_model_load_leaves_no_model(app, monkeypatch):
     assert state.backend is None and state.model_status["state"] == "none"
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 GiB."),
+        RuntimeError(
+            "[enforce fail at alloc_cpu.cpp:118] DefaultCPUAllocator: can't allocate memory: you "
+            "tried to allocate 4000000000 bytes."
+        ),
+        MemoryError(),
+    ],
+    ids=["on the gpu", "in the cpu's allocator", "in python"],
+)
+def test_an_analysis_that_runs_out_of_memory_says_what_to_do(
+    app, client, ready, monkeypatch, error
+):
+    import gc
+    import weakref
+
+    released: list[bool] = []
+    monkeypatch.setattr(
+        "logogram.backends.transformer_lens.release_memory", lambda: released.append(True)
+    )
+    held: list[weakref.ref] = []
+
+    def out_of_memory(*args, **kwargs):
+        activations = torch.zeros(16)  # what the analysis held when it ran out
+        held.append(weakref.ref(activations))
+        raise error
+
+    monkeypatch.setattr("logogram.analysis.baseline_report", out_of_memory)
+    monkeypatch.setattr("logogram.inside.look_report", out_of_memory)
+    context = {"prepend_bos": True, "batch_size": 8}
+    metric = {"kind": "logit_diff", "normalization": "dataset_gap"}
+    baseline = {"dataset": "datasets/ioi.jsonl", "metric": metric, **context}
+    r = client.post("/api/baseline", json=baseline, headers=HEADERS)
+    assert r.status_code == 409, r.text
+    assert r.json()["error"] == (
+        "The analysis ran out of memory. Run it on fewer prompts or with a smaller batch size (or "
+        "a shorter text), or load a smaller model or a 16-bit dtype, then try again."
+    )
+    look = {"text": "Hello world", "top_k": 3, **context}
+    r = client.post("/api/look", json=look, headers=HEADERS)
+    assert r.status_code == 409 and "ran out of memory" in r.json()["error"]
+    assert released == [True, True]  # the memory it held is given back, each time
+    error.__traceback__ = None  # the test's own reference to the error, which it raised twice
+    gc.collect()
+    assert held and all(ref() is None for ref in held)  # nothing keeps what the analysis held
+    assert ready.backend is not None  # and the model stays loaded
+
+
+def test_other_errors_in_an_analysis_stay_internal_errors(app, ready, monkeypatch):
+    def broken(*args, **kwargs):
+        raise RuntimeError("a bug")
+
+    monkeypatch.setattr("logogram.analysis.baseline_report", broken)
+    quiet = TestClient(app, base_url=BASE, raise_server_exceptions=False)
+    metric = {"kind": "logit_diff", "normalization": "dataset_gap"}
+    body = {"dataset": "datasets/ioi.jsonl", "metric": metric, "prepend_bos": True, "batch_size": 8}
+    tab = {**HEADERS, "x-logogram-project": ready.project.session_id}
+    assert quiet.post("/api/baseline", json=body, headers=tab).status_code == 500
+    # A conflict is still a conflict, though it is a RuntimeError too.
+    ready.backend, backend = None, ready.backend
+    try:
+        r = quiet.post("/api/baseline", json=body, headers=tab)
+        assert r.status_code == 409 and r.json()["error"] == "Load a model first."
+    finally:
+        ready.backend = backend
+
+
 def _job_ended(client, timeout=60):
     deadline = time.time() + timeout
     while time.time() < deadline:

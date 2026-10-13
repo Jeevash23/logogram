@@ -33,6 +33,10 @@ What changed in each version of Logogram.
   to load the spec's own. `lg.verify_run`, `lg.check_robustness` and `lg.sweep` refuse a model
   passed to them that their runs don't name, and a toy's experiments run on the toy as it was
   loaded.
+- An analysis in the app that ran out of memory (the baseline, attention, predictions, Your text,
+  an SAE's features, …) failed with "Internal Server Error". It now gives the memory back and
+  says what ran out (GPU memory, or memory) and what to do: fewer prompts, a smaller batch size
+  or a shorter text, or a smaller model or a 16-bit dtype.
 - A settings file holding `null`, a list or anything else that isn't an object stopped the app
   from starting (an internal server error). It now reads as no settings, and settings are written
   whole, through a temporary file, so an interrupted write never leaves half a file.
