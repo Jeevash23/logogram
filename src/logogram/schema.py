@@ -204,9 +204,14 @@ class ControlComparison(_Model):
 
 
 class SAESource(_Model):
+    """An SAE as a spec names it: published (by its revision) or trained in the project (by the
+    hash of its files; summaries written before those existed name published ones only)."""
+
     repo: str
     path: str
-    revision: str
+    revision: str | None
+    source: Literal["hub", "project"] = "hub"
+    sha256: str | None = None
 
 
 class SteeringFeature(_Model):
@@ -546,6 +551,8 @@ class Manifest(_Model):
     sae: dict[str, Any] | None = None
     # The chat template the prompts were wrapped in: how, and its SHA-256.
     chat_template: ChatTemplateProvenance | None = None
+    # The tuned lens the prediction diagnostic read: its name, hash, layers and model.
+    lens: dict[str, Any] | None = None
 
 
 # -- edges.parquet -----------------------------------------------------------------------------

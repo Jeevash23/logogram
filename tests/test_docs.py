@@ -113,5 +113,11 @@ def test_the_specs_the_docs_show_are_valid(page: Path):
             "sae_feature" in json.dumps(data) or data.get("scope", {}).get("kind") == "features"
         )
         if uses_sae and merged.get("sae") is None:
-            merged["sae"] = {"repo": "an/sae", "path": "", "revision": None}
+            merged["sae"] = {
+                "repo": "an/sae",
+                "path": "",
+                "revision": None,
+                "source": "hub",
+                "sha256": None,
+            }
         Spec.model_validate(merged)

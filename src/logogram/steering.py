@@ -385,7 +385,7 @@ def run_steering(
     if feature is not None:
         steering["feature"] = {
             "feature": feature,
-            "sae": {"repo": sae.repo, "path": sae.path, "revision": sae.revision},
+            "sae": sae.ref(),
             "site": str(sae.site),
             "layer": int(sae.layer),
             "transcoder": bool(sae.transcoder),

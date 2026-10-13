@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import threading
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -186,6 +186,11 @@ class ModelBackend(ABC):
 
     @abstractmethod
     def tokenize(self, text: str, prepend_bos: bool) -> Tokenized: ...
+
+    def tokenize_many(self, texts: Sequence[str], prepend_bos: bool) -> list[list[int]]:
+        """The token ids of each of ``texts``, as :meth:`tokenize` gives them (a corpus's texts
+        are many: backends may read them in one call)."""
+        return [self.tokenize(text, prepend_bos).ids for text in texts]
 
     @property
     def chat_template(self) -> str | None:
@@ -383,13 +388,31 @@ class ModelBackend(ABC):
         check_model measures when a model loads (``checks.heads``)."""
         raise BackendError("Reading heads' writes isn't supported by this model backend.")
 
-    def layer_logits(self, tokens: torch.Tensor, position: int, row: int) -> torch.Tensor:
+    def layer_logits(
+        self,
+        tokens: torch.Tensor,
+        position: int,
+        row: int,
+        translators: Mapping[int, tuple[torch.Tensor, torch.Tensor]] | None = None,
+    ) -> torch.Tensor:
         """Final-norm logit lens at resid_post, ``[layer, vocab]`` for one row, on CPU.
 
         Preserve the supplied batch composition. Backends must opt in rather than assuming
-        that every model has the same normalization and vocabulary projection.
+        that every model has the same normalization and vocabulary projection. With
+        ``translators`` (a tuned lens's: layer to ``(weight [d_model, d_model], bias
+        [d_model])``, float32), each of those layers' resid_post is read as ``resid_post @ weight
+        + bias`` first.
         """
         raise BackendError("Per-layer predictions aren't supported by this model backend.")
+
+    def read_out(self, residual: torch.Tensor) -> torch.Tensor:
+        """What the model does after its last layer to ``residual`` (``[..., d_model]``, the
+        residual stream entering the final normalization): the final normalization, recomputed
+        from ``residual`` as the logit lens does, the unembedding and any soft cap on the logits.
+        Logits ``[..., vocab]`` in float32, differentiable with respect to ``residual``: a tuned
+        lens is trained through it (logogram.lenses). Backends must opt in, as for
+        :meth:`layer_logits`."""
+        raise BackendError("Reading the residual stream into logits isn't supported here.")
 
     @property
     def device(self) -> torch.device:

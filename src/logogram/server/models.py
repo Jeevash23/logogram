@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from logogram.schema import (
     ContinuationsFile,
@@ -623,6 +623,18 @@ class PredictionLayer(_Out):
     answer_prob: float
     distractor_prob: float
     logit_diff: float
+    # How the layer was read: through a tuned lens's translator, or as the logit lens reads it.
+    readout: Literal["logit_lens", "tuned_lens"] = "logit_lens"
+
+
+class PredictionLens(_Out):
+    """The tuned lens a report read, as it was: its name, hash, layers, width and model."""
+
+    name: str
+    sha256: str
+    layers: list[int]
+    width: int
+    model: dict[str, Any]
 
 
 class PredictionReport(_Out):
@@ -630,6 +642,8 @@ class PredictionReport(_Out):
     position: int
     tokens: list[str]
     settings: PredictionSettings
+    # The tuned lens read, with the tuned_lens method; None for the logit lens.
+    lens: PredictionLens | None = None
     layers: list[PredictionLayer]
     batch_members: list[int]
     answer: str
@@ -637,6 +651,15 @@ class PredictionReport(_Out):
     # How the lens reads the answer: one token, a set (summed), or a continuation's first token.
     answer_reading: Literal["token", "set", "first_token"] = "token"
     issues: list[PromptIssue]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _before_lenses(cls, data: Any) -> Any:
+        # predictions.json written before tuned lenses: the logit lens, with no lens to name.
+        settings = data.get("settings") if isinstance(data, dict) else None
+        if isinstance(settings, dict) and "lens" not in settings:
+            data = {**data, "settings": {**settings, "lens": None}}
+        return data
 
 
 class Presets(_Out):

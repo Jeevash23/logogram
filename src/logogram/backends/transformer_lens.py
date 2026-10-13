@@ -12,7 +12,7 @@ import math
 import re
 import threading
 import warnings
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from importlib.metadata import version
 from pathlib import Path
@@ -812,6 +812,20 @@ class TransformerLensBackend(ModelBackend):
         tokens = [self.token_str(i) for i in ids]
         return Tokenized(ids=ids, tokens=tokens, offsets=offsets)  # type: ignore[arg-type]
 
+    def tokenize_many(self, texts: Sequence[str], prepend_bos: bool) -> list[list[int]]:
+        if not texts:
+            return []
+        bos = self.bos_token_id
+        if prepend_bos and bos is None:
+            raise BackendError(
+                "This model's tokenizer has no beginning-of-sequence token. Set prepend_bos to "
+                "false."
+            )
+        # One call for every text: the same ids as tokenize gives, one text at a time.
+        encoded = self.tokenizer(list(texts), add_special_tokens=False)["input_ids"]
+        first = [int(bos)] if prepend_bos and bos is not None else []
+        return [first + [int(i) for i in ids] for ids in encoded]
+
     @property
     def chat_template(self) -> str | None:
         return self._chat_template
@@ -1577,7 +1591,28 @@ class TransformerLensBackend(ModelBackend):
             w_o = float64(self._bridge().blocks[layer].attn.W_O.detach())  # [H, d_head, d_model]
             return torch.einsum("khd,hdm->km", float64(z).to(w_o.device), w_o).cpu()
 
-    def layer_logits(self, tokens: torch.Tensor, position: int, row: int) -> torch.Tensor:
+    def read_out(self, residual: torch.Tensor) -> torch.Tensor:
+        if self.info.extra.get("prediction_method") != "final_norm_logit_lens":
+            raise BackendError(
+                "Reading the residual stream into logits needs the model's final normalization "
+                "and unembedding to reproduce its output, and for this model they didn't when it "
+                "loaded."
+            )
+        with self.lock:
+            bridge = self._bridge()
+            shape = residual.shape
+            stream = residual.to(device=self.device, dtype=DTYPES[self.info.dtype])
+            # As the logit lens reads a token: one position of a batch, [rows, 1, d_model].
+            logits = final_projection(bridge, stream.reshape(-1, 1, shape[-1]))
+            return logits.float().reshape(*shape[:-1], logits.shape[-1])
+
+    def layer_logits(
+        self,
+        tokens: torch.Tensor,
+        position: int,
+        row: int,
+        translators: Mapping[int, tuple[torch.Tensor, torch.Tensor]] | None = None,
+    ) -> torch.Tensor:
         if self.info.extra.get("prediction_method") != "final_norm_logit_lens":
             raise BackendError(
                 "Per-layer predictions need the model's final normalization and unembedding to "
@@ -1586,6 +1621,7 @@ class TransformerLensBackend(ModelBackend):
             )
         if not 0 <= position < tokens.shape[1] or not 0 <= row < tokens.shape[0]:
             raise ValueError("The prediction token position or batch row is out of range.")
+        lens = dict(translators or {})
         with self.lock, torch.no_grad():
             bridge = self._bridge()
             captured: dict[int, torch.Tensor] = {}
@@ -1596,6 +1632,11 @@ class TransformerLensBackend(ModelBackend):
                     # would implement attribution, not the logit lens. Keep the original
                     # batch shape and dtype through both modules, including learned biases.
                     residual = act[:, position : position + 1, :]
+                    if layer in lens:
+                        # A tuned lens's affine translator, in float32, before the readout.
+                        weight, bias = lens[layer]
+                        moved = residual.float() @ weight.to(act.device) + bias.to(act.device)
+                        residual = moved.to(act.dtype)
                     logits = final_projection(bridge, residual)
                     captured[layer] = logits[row, 0].detach().float().cpu()
                     return act

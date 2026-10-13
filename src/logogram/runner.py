@@ -494,25 +494,36 @@ def run_spec(
         if spec.sae is not None:
             from logogram.sae import load_sae, sae_matches
 
-            if not sae_matches(sae, spec.sae):
+            if not sae_matches(sae, spec.sae, project):
                 emit("status", {"message": f"Loading the SAE {spec.sae.repo}"})
-                sae = (
-                    sae_provider(spec.sae, backend)
-                    if sae_provider is not None
-                    else load_sae(spec.sae, info.device, cancel=cancel)
-                )
-            spec = spec.model_copy(
-                update={"sae": spec.sae.model_copy(update={"revision": sae.revision})}
+                if sae_provider is not None:
+                    sae = sae_provider(spec.sae, backend)
+                elif spec.sae.source == "project":
+                    from logogram.sae_training import load_project_sae
+
+                    sae = load_project_sae(project, spec.sae, info.device, info)
+                else:
+                    sae = load_sae(spec.sae, info.device, cancel=cancel)
+            # Pinned to what was loaded: a published SAE by its revision, one trained in the
+            # project by the hash of its files.
+            pinned = (
+                {"sha256": sae.sha256}
+                if spec.sae.source == "project"
+                else {"revision": sae.revision}
             )
+            spec = spec.model_copy(update={"sae": spec.sae.model_copy(update=pinned)})
             write_json(folder / "spec.json", spec.model_dump(mode="json"))
             manifest["sae"] = {
                 "repo": sae.repo,
                 "path": sae.path,
                 "revision": sae.revision,
+                "source": sae.source,
+                "sha256": sae.sha256,
                 "format": sae.params.format,
                 "site": sae.site,
                 "layer": sae.layer,
                 "d_sae": sae.d_sae,
+                **({"trained": sae.trained} if sae.trained else {}),
             }
             write_manifest(folder / "manifest.json", manifest)
 
@@ -557,15 +568,27 @@ def run_spec(
             from logogram.analysis import prediction_report
 
             emit("status", {"message": "Measuring the configured layer predictions"})
+            settings, lens = spec.predictions, None
+            if settings.lens is not None:
+                from logogram.lenses import pin_lens
+
+                # A tuned lens trained in the project, pinned by the hash of its file.
+                lens = pin_lens(project, settings.lens, info)
+                settings = settings.model_copy(update={"lens": lens.ref()})
+                spec = spec.model_copy(update={"predictions": settings})
+                write_json(folder / "spec.json", spec.model_dump(mode="json"))
+                manifest["lens"] = lens.describe()
+                write_manifest(folder / "manifest.json", manifest)
             with backend.lock:
                 predictions = prediction_report(
                     backend,
                     records,
-                    index=spec.predictions.prompt_index,
-                    settings=spec.predictions,
+                    index=settings.prompt_index,
+                    settings=settings,
                     prepend_bos=spec.tokenization.prepend_bos,
                     batch_size=spec.execution.batch_size,
                     chat_template=spec.tokenization.chat_template,
+                    lens=lens,
                 )
             if cancel is not None and cancel.is_set():
                 raise Cancelled()
