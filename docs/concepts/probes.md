@@ -46,6 +46,15 @@ the dimensions alone. **Selectivity**, the probe's accuracy minus its control's,
 by pair on the same resamples, with its own interval; a probe is selective where that interval
 lies above zero.
 
+![A probe's results: the subject's gender read from the residual stream after each of GPT-2
+small's layers, at the name and at the last token, as held-out accuracy](../images/probe.png)
+
+Above, probes for the subject's gender on the gendered pronoun example's 64 pairs, half of them
+held out. They read it at the name from layer 0 on, and at the last token with an accuracy of 0.97
+after layers 0 and 1 and 1.00 after the rest; always answering the most common training class
+scores 0.44. That it can be read everywhere doesn't say where the model uses it: [Find a
+direction and test it](../guides/find-and-test-a-direction.md) patches the same sites to ask.
+
 ## Where it can mislead
 
 * A high accuracy says the label is linearly readable, not that the model reads it, and not that

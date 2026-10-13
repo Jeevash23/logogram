@@ -104,6 +104,16 @@ direction separating two classes, and a strong baseline for linear representatio
 Tegmark, 2023), but that it separates them shows only that the information is there, not that the
 model reads it. Steer along a direction, or ablate it, to test whether it matters.
 
+![The gendered pronoun example's 64 clean prompts on the first and third principal components of
+the last token's residual stream after GPT-2 small's layer 10, male subjects as dots and female
+as squares](../images/representations.png)
+
+Above, the gendered pronoun example's 64 clean prompts at the last token after layer 10. The
+residual stream there varies most with the sentence, not the subject: the first component (78% of
+the variance) separates the prompts that end *wasn't* from those that end *isn't*, the second
+(12%) the two sentences that end *isn't*, and only the third (5.6%) the subject's gender, male
+above and female below in every sentence.
+
 ## Directions
 
 A direction is a vector, or a few orthonormal vectors spanning a subspace, saved in the project's

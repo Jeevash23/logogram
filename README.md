@@ -1,21 +1,42 @@
 # Logogram
 
-A local workbench for causal experiments inside language models.
+A local workbench for mechanistic interpretability: causal experiments inside language models,
+with the statistics to read them by.
+
+![GPT-2 small's attention heads patched one by one on the IOI prompts: each layer's results paint
+onto the model map as it finishes, then a head's evidence opens in the
+inspector](docs/images/sweep.gif)
 
 In *Arrival*, an unfamiliar language is decoded by running small, controlled experiments and
-watching what changes. Activation patching works the same way: replace one activation with its
-value from a different input, and measure what happens to the output. Logogram makes those
-experiments visual, fast and rigorous. Load GPT-2, set up a clean/corrupted prompt pair, sweep
-every attention head, watch the results paint onto a map of the model, then click a head and see
-the evidence behind its number.
+watching what changes. Interpretability works the same way: replace one activation with its value
+from a different input, remove a direction, add a feature, and measure what happens. Logogram
+makes those experiments visual, fast and rigorous, and asks the questions interpretability asks:
+
+* **Where is it computed?** Activation patching and ablation (zero, mean, resample, scaled or
+  along a direction), attribution patching with integrated gradients, and direct logit
+  attribution, over residual streams, heads, queries, keys, values, neurons and SAE features.
+* **How does it flow?** Path patching, edge attribution (EAP and EAP-IG) with its faithfulness
+  curve, and ACDC, which finds a circuit by removing edges one at a time.
+* **What does a site represent?** Linear probes against shuffled-label controls, distributed
+  alignment search, and directions saved in the project and tested by patching along them,
+  removing them, steering along them and reading them out; where a neuron, feature or direction
+  is most active in your own texts; the principal components of activations over prompts or texts;
+  SAEs, published or trained in the project; the logit lens, and a tuned lens trained in the
+  project.
+* **What does adding a direction do?** Steering along a mean difference, an SAE feature or a saved
+  direction, on held-out prompts, against a random direction.
+
+Load GPT-2 (or Llama, Qwen, Gemma, Pythia and others, on a CPU, a GPU or Apple's MPS), set up
+prompt pairs from a task or your own file, run a sweep, watch the results paint onto a map of the
+model, then click a site and see the evidence behind its number.
 
 * **A research instrument, not a demo.** Every number is traceable to the method that produced
   it: the intervention, baseline, direction, position, metric, normalization, n and confidence
   interval are always shown.
 * **Local-first.** No account, no cloud, no telemetry. Everything runs on your machine.
 * **Plain files.** Experiments are folders you can commit, share and rerun.
-* **One spec, two front ends.** The app and `logogram run` execute the same `spec.json`, and
-  produce identical results on the same machine.
+* **One spec, three front ends.** The app, `logogram run` and the Python API execute the same
+  `spec.json`, and produce identical results on the same machine.
 
 The [documentation](docs/README.md) teaches the app and the methods, from a first run to the exact
 definition of every number.
@@ -203,6 +224,10 @@ The workbench has three workspaces, described view by view in [the workbench](do
   per-prompt evidence for any site, [comparisons](docs/guides/compare-runs.md) between runs,
   [sweeps](docs/guides/sweeps.md) of one spec across seeds, datasets or checkpoints, and research
   notes.
+
+![A run's results in the Evidence workspace: GPT-2 small's 144 heads patched on the IOI prompts,
+their effects as a heatmap and a strip of means, the strongest effects with their intervals, and
+the inspector's per-prompt evidence for L9 H9](docs/images/results.png)
 
 ## Command line
 

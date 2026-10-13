@@ -1,12 +1,15 @@
 /* The run's header: its logogram, what it is, how it was measured. */
+/* The run's glyph beside its title and methods, and the actions on a row of their own below them,
+   so that however many there are they never squeeze the title. */
 .hero {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr);
   gap: 4px 26px;
   align-items: center;
 }
 
 .glyph {
+  grid-row: 1 / span 2;
   color: var(--text);
   margin: 4px 2px 4px 6px;
 }
@@ -26,12 +29,13 @@
 }
 
 .heroActions {
+  grid-column: 2;
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  justify-content: flex-start;
   align-self: start;
-  padding-top: 4px;
+  padding-top: 8px;
 }
 
 .methods {

@@ -159,6 +159,13 @@ act through saturated attention, ACDC finds them, at the cost of a pass for ever
   attribution over the same graph, to compare its estimates with the edges ACDC kept. The HTML
   report draws the circuit.
 
+![ACDC's results on the IOI example: the circuit drawn between GPT-2 small's layers, left to right,
+and its edges listed strongest first with whether each was kept](../images/acdc.png)
+
+Above, ACDC on the IOI example's 32 prompts with GPT-2 small, clean → corrupt, over the 206 edges
+into the first layer and the logits, with a threshold of 0.05 logits toward the source: it kept 23
+edges. L10 H7's edge into the logits, which works against the answer, was removed.
+
 ## In a spec
 
 ```json

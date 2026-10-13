@@ -9,6 +9,9 @@ from Python, and reports per-prompt values with bootstrap intervals. None of the
 its own: a finding that holds under another method, another baseline and other prompts is one
 you can trust ([Check a finding's robustness](../guides/check-robustness.md)).
 
+![The experiment form's methods, grouped by the question each answers: where is it computed, how
+does it flow, what does a site represent, and what does adding a direction do](../images/methods.png)
+
 ## Where is it computed?
 
 Which components, positions and neurons the behavior depends on.
@@ -28,7 +31,7 @@ Which paths carry the information from one component to another, and the circuit
 |---|---|---|---|
 | [Path patching](path-patching.md) | A component's effect through chosen receivers only | One forward pass per sender and batch | Holding the other heads is part of the question |
 | [Edge attribution](edge-attribution.md) | Every edge of the model's graph estimated from gradients (EAP, EAP-IG), the strongest verified as a circuit | A few passes for all edges, then a curve of patched circuits | Read the faithfulness curve against random circuits of the same size |
-| [ACDC](edge-attribution.md) | A circuit found by removing edges one at a time while the output stays close | One forward pass per edge tried | The threshold decides the circuit's size: compare a few |
+| [ACDC](acdc.md) | A circuit found by removing edges one at a time while the output stays close | One forward pass per edge tried | The threshold decides the circuit's size: compare a few |
 
 ## What does a site represent?
 
@@ -42,7 +45,7 @@ What can be read from an activation, along which direction, and whether the mode
 | [Directional ablation](ablation.md) | What the output loses without a saved direction's component | One forward pass per site and batch | A direction found on some prompts can mean something else on others |
 | [Readouts](metrics.md#readouts) | What drives a neuron, a direction or an SAE feature, instead of the output | As patching or ablation | Sites after the readout can't change it |
 | [SAE features](sae-features.md) | Patching and attribution of a sparse autoencoder's features | As patching, or attribution, per feature | An SAE that fits badly describes something else: measure the fit first |
-| [Representations](../workbench.md#explore-look-inside-the-model) | The texts that most activate a neuron, a direction or a feature; principal components of a site | One forward pass over a corpus | Top examples show what a unit responds to most, not everything it does |
+| [Corpora and representations](corpora-and-representations.md) | The texts that most activate a neuron, a direction or a feature; principal components of a site | One forward pass over a corpus | Top examples show what a unit responds to most, not everything it does |
 
 ## What does adding a direction do?
 
@@ -53,7 +56,7 @@ What can be read from an activation, along which direction, and whether the mode
 ## Seeing what a model does
 
 Before choosing a method, look: **Explore → Your text** shows any text's predictions, the logit
-lens (each layer's prediction, through a [tuned lens](logit-lens-and-model-checks.md) when you
+lens (each layer's prediction, through a [tuned lens](tuned-lens.md) when you
 have trained one), attention and SAE features; **Attention** finds previous-token, duplicate-token
 and induction heads; **Corpus** and **Representations** read activations over many texts. These
 are explorations, not experiments: they suggest what to test.

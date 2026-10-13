@@ -159,6 +159,19 @@ What changed in each version of Logogram.
   loaded (its files, the exact revision, dtype, device and weight processing), to run the spec on
   that model.
 
+### Changed
+
+- The experiment form groups its methods by the question each answers: where is it computed, how
+  does it flow, what does a site represent, and what does adding a direction do. A new page,
+  [Choosing a method](docs/concepts/choosing-a-method.md), says what each measures, what it costs
+  and what it can't tell you.
+- A workspace's views that don't fit beside the tabs go under a menu at the end of the row,
+  named **More**, or after the open view when it is one of them.
+- A run's results put their actions (**Test the top sites as a circuit**, **Check robustness**,
+  **Rerun**, **Sweep…**, **Export**) in a row under the title, beside the run's glyph.
+- The README and the documentation show the app: a sweep painting onto the model map, a run's
+  results, the method picker, an ACDC circuit, a probe and a principal components plot.
+
 ### Fixed
 
 - When edge attribution's batch didn't fit in memory, the batch size it suggested could still be
