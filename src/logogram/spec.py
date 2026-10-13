@@ -1561,6 +1561,28 @@ class Spec(_Strict):
         return self
 
     @model_validator(mode="after")
+    def _sets_fit(self) -> Spec:
+        """Sets of sites are replaced at once with values computed before the forward pass: the
+        methods that compute their values from the run's own activations, or that learn or read
+        one site at a time, act on single sites."""
+        if not isinstance(self.scope, SiteSetsScope):
+            return self
+        exp = self.experiment
+        if isinstance(exp, Ablation) and isinstance(
+            exp.baseline, ScaleBaseline | ProjectionBaseline
+        ):
+            raise ValueError(
+                "sets of sites are ablated with a zero, mean or resample baseline; scaling and "
+                "directional ablation act on one site at a time"
+            )
+        if isinstance(exp, Probe | DistributedAlignmentSearch | SubspacePatching):
+            raise ValueError(
+                "probes, distributed alignment search and subspace patching act on one site at a "
+                "time: use a scope of single sites, not sets of sites"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _metric_fits(self) -> Spec:
         kind = self.experiment.kind
         if kind in NO_METRIC_KINDS and self.metric is not None:

@@ -32,7 +32,7 @@ function IntervalBar({ mean, low, high, lo, hi, signs }: { mean: number | null; 
 }
 
 /** Save what a run found at one of its sites as a direction of the project. */
-function SaveDirection({ runId, site, suggested, row }: { runId: string; site: number; suggested: string; row?: number | null }) {
+function SaveDirection({ runId, site, label, suggested, row }: { runId: string; site: number; label: string; suggested: string; row?: number | null }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState(suggested);
   const [state, setState] = useState<{ busy: boolean; error: string | null; saved: string | null }>({ busy: false, error: null, saved: null });
@@ -51,24 +51,42 @@ function SaveDirection({ runId, site, suggested, row }: { runId: string; site: n
   };
   if (!open) {
     return (
-      <Button size="small" variant="ghost" onClick={() => setOpen(true)}>
+      <Button size="small" variant="ghost" onClick={() => setOpen(true)} aria-label={state.saved ? `${label}: saved as ${state.saved}` : `Save ${label} as a direction`}>
         {state.saved ? `Saved as ${state.saved}` : "Save as direction"}
       </Button>
     );
   }
   return (
     <span className={s.row}>
-      <Input value={name} onChange={(ev) => setName(ev.target.value)} aria-label="Direction name" style={{ width: 160 }} />
+      <Input
+        value={name}
+        onChange={(ev) => setName(ev.target.value)}
+        onKeyDown={(ev) => {
+          if (ev.key === "Enter" && name.trim() && !state.busy) void save();
+          if (ev.key === "Escape") setOpen(false);
+        }}
+        aria-label={`Name of the direction from ${label}`}
+        style={{ width: 160 }}
+        autoFocus
+      />
       <Button size="small" variant="primary" disabled={!name.trim() || state.busy} onClick={() => void save()}>
         Save
       </Button>
       <Button size="small" variant="ghost" onClick={() => setOpen(false)}>
         Cancel
       </Button>
-      {state.error && <span className={s.small}>{state.error}</span>}
+      {state.error && (
+        <span className={s.small} role="alert">
+          {state.error}
+        </span>
+      )}
     </span>
   );
 }
+
+// Activations as wide as the residual stream, where saved directions are used
+// (STREAM_SITES in src/logogram/directions.py).
+const STREAM_SITES = new Set(["resid_pre", "resid_mid", "resid_post", "attn_out", "mlp_out"]);
 
 /** A name for a site's direction: the run's site, with letters, digits and dashes only. */
 function suggestedName(prefix: string, site: SiteBase): string {
@@ -159,7 +177,7 @@ export function ProbeResults({
           <p className={s.small}>Ink from chance ({num(chance, 2)}, blank) to every held-out example right (1).</p>
         </div>
       )}
-      <table className={s.table}>
+      <table className={s.table} aria-label="Probes by site">
         <caption className="visually-hidden">Each site's probe, its control and their difference</caption>
         <thead>
           <tr>
@@ -167,7 +185,9 @@ export function ProbeResults({
             <th>Held-out accuracy · {ciLevel}% CI</th>
             <th>Control (shuffled labels)</th>
             <th>Selectivity · {ciLevel}% CI</th>
-            <th />
+            <th>
+              <span className="visually-hidden">Save as direction</span>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -197,7 +217,9 @@ export function ProbeResults({
                     <span className={c.faint}>{finished ? "—" : "after the run"}</span>
                   )}
                 </td>
-                <td>{finished && <SaveDirection runId={runId} site={site.index} suggested={suggestedName("probe", site)} />}</td>
+                <td>
+                  {finished && STREAM_SITES.has(site.kind) && <SaveDirection runId={runId} site={site.index} label={site.label} suggested={suggestedName("probe", site)} />}
+                </td>
               </tr>
             );
           })}
@@ -207,7 +229,9 @@ export function ProbeResults({
         Selectivity is the probe's accuracy minus its control's, measured on the same held-out pairs: how much of what the probe
         reads it couldn't have memorized. A probe shows what can be read at a site, not what the model uses: save its direction and
         patch along it, or ablate it, to test that. With two classes, the saved direction points from the first class toward the
-        second.
+        second.{" "}
+        {probes.some((x) => !STREAM_SITES.has(x.kind)) &&
+          "Directions are saved from probes of whole activations (residual stream sites, attention and MLP outputs), as wide as the residual stream where they are used; a head's output, query, key or value is narrower."}
       </p>
     </div>
   );
@@ -259,7 +283,7 @@ export function DASResults({
           ({das.steps} steps of Adam, learning rate {das.learning_rate}), measured on the {das.test.length} held-out pairs.
         </p>
       )}
-      <table className={s.table}>
+      <table className={s.table} aria-label="Learned subspaces by site">
         <caption className="visually-hidden">Each site patched within the learned subspace, as a whole and within a random subspace</caption>
         <thead>
           <tr>
@@ -269,7 +293,9 @@ export function DASResults({
             <th>Random subspace</th>
             <th className={s.num}>Share of the whole</th>
             <th className={s.num}>Training effect</th>
-            <th />
+            <th>
+              <span className="visually-hidden">Save as direction</span>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -291,7 +317,7 @@ export function DASResults({
                 <td>{cell(v.random)}</td>
                 <td className={s.num}>{share === null ? "—" : num(share, 2)}</td>
                 <td className={s.num}>{t?.train_effect != null ? num(t.train_effect, 2) : "—"}</td>
-                <td>{finished && v.learned && <SaveDirection runId={runId} site={v.learned.index} suggested={suggestedName("das", v.learned)} />}</td>
+                <td>{finished && v.learned && <SaveDirection runId={runId} site={v.learned.index} label={`the subspace at ${label}`} suggested={suggestedName("das", v.learned)} />}</td>
               </tr>
             );
           })}

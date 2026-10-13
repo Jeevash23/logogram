@@ -8,6 +8,7 @@ import { api } from "../api/client";
 import type { DirectionListing } from "../api/types";
 import { useStore } from "../store/app";
 import { plural } from "./format";
+import { KIND_SHORT } from "./sites";
 
 const CHANGED = "logogram:directions";
 
@@ -50,11 +51,11 @@ const MADE_BY: Record<NonNullable<DirectionListing["made_by"]>["method"], string
 };
 
 /** A direction in a few words: its size, where it was found and how, for example
- * "1 dimension · resid_post L6 · from a probe". */
+ * "1 dimension · L6 resid post · from a probe". */
 export function directionText(d: DirectionListing): string {
   if (d.error) return d.error;
   const parts = [plural(d.dimensions ?? 1, "dimension")];
-  if (d.site) parts.push(`${d.site.kind} L${d.site.layer}`);
+  if (d.site) parts.push(`L${d.site.layer} ${KIND_SHORT[d.site.kind as keyof typeof KIND_SHORT] ?? d.site.kind}`);
   if (d.made_by) parts.push(`from ${MADE_BY[d.made_by.method] ?? d.made_by.method}`);
   return parts.join(" · ");
 }

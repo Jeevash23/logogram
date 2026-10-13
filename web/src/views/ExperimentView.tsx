@@ -287,6 +287,7 @@ export function ExperimentView() {
             model={arch}
             saeLoaded={saeInfo}
             steersFeature={form.kind === "steering" && steersFeature}
+            baseline={form.kind === "ablation" ? (form.baseline?.kind ?? null) : null}
             scope={form.scope}
             onChange={(scope) => setForm({ scope })}
             labels={labels}
@@ -974,14 +975,15 @@ function PositionPicker({
   value,
   onChange,
   labels,
-  allowAll = true,
+  oneToken = null,
   unlined = null,
 }: {
   value: PositionSpec;
   onChange: (p: PositionSpec) => void;
   labels: string[];
-  /** Steering adds at one token of each prompt, so "all positions" doesn't apply. */
-  allowAll?: boolean;
+  /** Why the method reads or adds at one token of each prompt, so "all positions" doesn't apply
+   * (steering, probes, distributed alignment search), or null. */
+  oneToken?: string | null;
   /** Why every position and token indices can't be used here (prompts of different lengths). */
   unlined?: string | null;
 }) {
@@ -1000,8 +1002,8 @@ function PositionPicker({
           {
             value: "all",
             label: "All positions",
-            disabled: !allowAll || !!unlined,
-            reason: !allowAll ? "Steering adds the direction at one token of each prompt, so it can't use all positions." : unlined ?? undefined,
+            disabled: !!oneToken || !!unlined,
+            reason: oneToken ?? unlined ?? undefined,
           },
           { value: "last", label: "Last token" },
           { value: "label", label: "Named position", disabled: labels.length === 0, reason: "This dataset has no named positions." },
@@ -1151,6 +1153,7 @@ function ScopeEditor({
   model,
   saeLoaded,
   steersFeature,
+  baseline,
   scope,
   onChange,
   labels,
@@ -1167,6 +1170,8 @@ function ScopeEditor({
   saeLoaded: SAEInfo | null;
   /** Steering along an SAE feature: added where its SAE writes, at one site. */
   steersFeature: boolean;
+  /** An ablation's baseline: scaling and removing a direction act on one site at a time. */
+  baseline: BaselineSpec["kind"] | null;
   scope: ScopeSpec;
   onChange: (s: ScopeSpec) => void;
   labels: string[];
@@ -1199,10 +1204,33 @@ function ScopeEditor({
   // Paths start at heads, attention outputs or MLP outputs.
   const paths = method === "path_patching";
   const verb = method === "ablation" ? "Ablate" : "Patch";
-  // Sets of sites are intervened on together, which patching and ablation do.
-  const setsAllowed = method === "activation_patching" || method === "ablation";
+  // A probe reads whole activations, or one head's output, query, key or value; a saved or
+  // learned direction lives in activations as wide as the residual stream.
+  const probe = method === "probe";
+  const directional = method === "das" || method === "subspace_patching" || (method === "ablation" && baseline === "projection");
+  // Sets of sites are intervened on together, which patching and ablation do, with values made
+  // before the forward pass (not scaled or projected from the run's own).
+  const setsAllowed = method === "activation_patching" || (method === "ablation" && baseline !== "scale" && baseline !== "projection");
+  // Methods that read or add at one token of each prompt.
+  const oneToken = steering
+    ? "Steering adds the direction at one token of each prompt, so it can't use all positions."
+    : probe
+      ? "A probe reads one token of each prompt: the last token, a named position or a token index."
+      : method === "das"
+        ? "Distributed alignment search learns a subspace at one token of each prompt: the last token, a named position or a token index."
+        : null;
+  // New sweeps start where they can run: at the last token, for direct effects, for methods that
+  // read one token of each prompt and for prompts of different lengths.
+  const position = (p: PositionSpec) =>
+    direct || (oneToken && p.kind === "all") || (unlined && (p.kind === "all" || p.kind === "index")) ? ({ kind: "last" } as PositionSpec) : p;
   // Why some scopes can't be chosen with this method, said once under the choices.
-  const unavailable = steersFeature
+  const unavailable = directional
+    ? "A direction lives in activations as wide as the residual stream: stream sites, attention outputs and MLP outputs, one site at a time."
+    : probe
+    ? "A probe reads whole activations, or one head's output, query, key or value, one site at a time: not neurons or sets of sites."
+    : method === "ablation" && baseline === "scale"
+    ? "Scaling acts on one site at a time, not on sets of sites."
+    : steersFeature
     ? "Steering along an SAE feature adds it where the SAE writes, at one token: one site of one layer."
     : steering
     ? "Steering adds a direction to the residual stream at one token, so it sweeps no heads, positions, queries, keys, values, neurons or sets of sites."
@@ -1214,9 +1242,7 @@ function ScopeEditor({
   // Queries, keys and values (the loaded model may offer only some), and neurons.
   const inputsMissing = missingNote(model, "q") && missingNote(model, "k") && missingNote(model, "v");
   const neuronsMissing = missingNote(model, "neuron");
-  // New sweeps start where they can run: at the last token, for direct effects and for prompts of
-  // different lengths.
-  const position = (p: PositionSpec) => (direct || (unlined && (p.kind === "all" || p.kind === "index")) ? ({ kind: "last" } as PositionSpec) : p);
+
   return (
     <div className={e.stack}>
       <Segmented
@@ -1237,16 +1263,21 @@ function ScopeEditor({
           } else if (k === "neurons") onChange({ kind: "neurons", layers: [], position: position({ kind: "all" }) });
         }}
         options={[
-          { value: "heads", label: "Layer × head", disabled: steering, reason: unavailable },
+          { value: "heads", label: "Layer × head", disabled: steering || directional, reason: unavailable },
           { value: "layer_position", label: "Layer × position", disabled: direct || steering || paths, reason: unavailable },
           { value: "layer_components", label: steering ? "One site in every layer" : "Attention and MLP per layer", disabled: steersFeature, reason: unavailable },
           {
             value: "head_inputs" as const,
             label: "Queries, keys, values",
-            disabled: steering || paths || !!inputsMissing,
+            disabled: steering || paths || directional || !!inputsMissing,
             reason: inputsMissing || unavailable,
           },
-          { value: "neurons" as const, label: "Neurons", disabled: steering || paths || !!neuronsMissing, reason: neuronsMissing || unavailable },
+          {
+            value: "neurons" as const,
+            label: "Neurons",
+            disabled: steering || paths || directional || probe || !!neuronsMissing,
+            reason: neuronsMissing || unavailable,
+          },
           ...(method === "attribution_patching" && (saeLoaded || kind === "features")
             ? [{ value: "features" as const, label: "Every SAE feature" }]
             : []),
@@ -1292,7 +1323,7 @@ function ScopeEditor({
           </Field>
         ) : (
           <Field label={`${verb} each head's output (z) at`}>
-            <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} unlined={unlined} />
+            <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} oneToken={oneToken} unlined={unlined} />
           </Field>
         ))}
       {scope.kind === "head_inputs" && (
@@ -1318,7 +1349,7 @@ function ScopeEditor({
           </Field>
           <p className={s.small}>{scope.input === "q" ? "A query site is one head's query, as its projection computes it, before any rotary embedding." : groupText(model)}</p>
           <Field label={`${direct ? "Read" : verb} each ${scope.input === "q" ? "query" : scope.input === "k" ? "key" : "value"} at`}>
-            <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} />
+            <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} oneToken={oneToken} />
           </Field>
           {direct && (
             <p className={s.small}>
@@ -1367,7 +1398,7 @@ function ScopeEditor({
             </Select>
           </Field>
           <Field label="Add the direction at">
-            <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} allowAll={false} unlined={unlined} />
+            <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} oneToken={oneToken} unlined={unlined} />
           </Field>
         </div>
       )}
@@ -1396,7 +1427,7 @@ function ScopeEditor({
             {direct ? (
               <p className={s.small}>{LAST_TOKEN_NOTE} Residual stream states aren't written by a component, so they have no direct effect.</p>
             ) : (
-              <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} unlined={unlined} />
+              <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} oneToken={oneToken} unlined={unlined} />
             )}
           </Field>
         </>
@@ -1440,7 +1471,7 @@ function ScopeEditor({
               <PositionPicker
                 value={site.position}
                 labels={labels}
-                allowAll={!steering}
+                oneToken={oneToken}
                 unlined={unlined}
                 onChange={(position) =>
                   onChange({ kind: "sites", sites: scope.sites.map((x, j) => (j === i ? { ...x, position } : x)) })

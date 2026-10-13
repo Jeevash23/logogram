@@ -871,10 +871,17 @@ function RunOverview() {
   const select = useStore((st) => st.select);
   const summary = run.detail?.summary;
   const short = metricWords(summary?.metric ?? run.detail?.spec.metric).short;
+  // A probe's values are accuracies, not effects: the most accurate probes, controls aside. A
+  // learned subspace run lists its learned subspaces.
+  const probe = run.detail?.spec.experiment.kind === "probe";
+  const das = run.detail?.spec.experiment.kind === "das";
   const top = useMemo(() => {
-    const list = Object.values(run.results).filter((x) => x.effect.mean !== null);
-    return list.sort((a, b) => Math.abs(b.effect.mean ?? 0) - Math.abs(a.effect.mean ?? 0)).slice(0, 5);
-  }, [run.results]);
+    const list = Object.values(run.results).filter(
+      (x) => x.effect.mean !== null && !(probe && x.variant?.control) && !(das && x.variant?.subspace !== "learned"),
+    );
+    const size = (x: (typeof list)[number]) => (probe ? (x.effect.mean ?? 0) : Math.abs(x.effect.mean ?? 0));
+    return list.sort((a, b) => size(b) - size(a)).slice(0, 5);
+  }, [run.results, probe, das]);
 
   if (!run.id) {
     return (
@@ -909,7 +916,7 @@ function RunOverview() {
       )}
       {top.length > 0 && (
         <section className={s.section}>
-          <h3 className={s.sectionTitle}>Largest effects</h3>
+          <h3 className={s.sectionTitle}>{probe ? "Most accurate probes" : das ? "Strongest learned subspaces" : "Largest effects"}</h3>
           {top.map((site) => (
             <button
               key={site.index}
@@ -918,7 +925,7 @@ function RunOverview() {
               onClick={() => select(selectionOfSite(site))}
             >
               <span>{site.label}</span>
-              <span className={s.topValue}>{signed(site.effect.mean, 3)}</span>
+              <span className={s.topValue}>{probe ? num(site.effect.mean, 3) : signed(site.effect.mean, 3)}</span>
               <span className={s.muted}>{ci(site.effect.lo, site.effect.hi)}</span>
             </button>
           ))}

@@ -104,6 +104,16 @@ test("subspace patching, scaling and directional ablation name the saved directi
   expect(refused(form({ kind: "ablation", baseline: { kind: "projection", direction: { name: "", sha256: null }, reference: null }, scope: atLast })))
     .toContain("Choose the saved direction to remove");
 
+  // Sets of sites take values made before the forward pass: these act on one site at a time.
+  const sets = {
+    kind: "site_sets" as const,
+    universe: null,
+    sets: [{ label: "early", complement: false, sites: [{ kind: "resid_post" as const, layer: 0, head: null, position: { kind: "last" as const } }] }],
+  };
+  expect(refused(form({ kind: "ablation", baseline: { kind: "scale", factor: 0.5 }, scope: sets }))).toContain("scaling and removing a direction act on one site at a time");
+  expect(refused({ ...subspace, subspace: toward, scope: sets })).toContain("act on one site at a time");
+  expect(built(form({ kind: "ablation", baseline: { kind: "zero" }, scope: sets })).scope).toEqual(sets);
+
   const steer = form({
     kind: "steering", steerApplyTo: "corrupt", steerDirection: "direction",
     scope: { kind: "sites", sites: [{ kind: "resid_pre", layer: 1, head: null, position: { kind: "last" } }] },

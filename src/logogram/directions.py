@@ -459,6 +459,10 @@ def read_vectors(project: Project, run_id: str) -> dict[str, torch.Tensor]:
         raise DirectionError(f"{run_id}'s vectors file isn't safetensors. Run it again.") from exc
 
 
+# Activations as wide as the residual stream: where saved directions are used.
+STREAM_SITES = ("resid_pre", "resid_mid", "resid_post", "attn_out", "mlp_out")
+
+
 def save_run_direction(
     project: Project,
     run_id: str,
@@ -485,6 +489,12 @@ def save_run_direction(
     if site not in sites:
         raise DirectionError(f"{run_id} has no site {site}.")
     entry = sites[site]
+    if entry["kind"] not in STREAM_SITES:
+        raise DirectionError(
+            f"{entry['label']} isn't as wide as the residual stream, where steering, directional "
+            "ablation, subspace patching and readouts use a direction. Save one from a probe of a "
+            "residual stream site, an attention output or an MLP output."
+        )
     vectors = read_vectors(project, run_id)
     key = f"site{site}"
     if key not in vectors:

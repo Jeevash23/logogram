@@ -105,9 +105,12 @@ export function ResultsView() {
   const words = measureWords(spec?.experiment, metricSpec);
   const measured = metricWords(metricSpec);
   const attribution = measureOf(spec?.experiment) === "attribution";
+  // A probe's values are accuracies: the most accurate, not the largest in size. A learned
+  // subspace run is about its learned subspaces, beside the whole site and a random subspace.
+  const accuracy = layout?.kind === "probe";
   const strongest = resultList
-    .filter((x) => x.effect.mean !== null && !x.variant?.control)
-    .sort((a, b) => Math.abs(b.effect.mean ?? 0) - Math.abs(a.effect.mean ?? 0))[0];
+    .filter((x) => x.effect.mean !== null && !x.variant?.control && (layout?.kind !== "das" || x.variant?.subspace === "learned"))
+    .sort((a, b) => (accuracy ? (b.effect.mean ?? 0) - (a.effect.mean ?? 0) : Math.abs(b.effect.mean ?? 0) - Math.abs(a.effect.mean ?? 0)))[0];
   const provenance = [
     status === "running" ? (elsewhere ? "Running in another process" : "Running") : status === "finished" ? `Finished ${ago(manifest?.finished_at)}` : status === "draft" ? "Not run yet" : status === "failed" ? "Failed" : "Cancelled",
     manifest?.wall_time_s !== undefined && manifest?.wall_time_s !== null ? duration(manifest.wall_time_s) : null,
@@ -287,6 +290,21 @@ export function ResultsView() {
                 </>
               )}
             </>
+          ) : summary.probe ? (
+            <>
+              <div>
+                <dt>Chance: the most common training class</dt>
+                <dd className="figure">{num(summary.probe.chance, 2)}</dd>
+              </div>
+              <div>
+                <dt>Held-out pairs measured</dt>
+                <dd className="figure">{count(summary.probe.test.length)}</dd>
+              </div>
+              <div>
+                <dt>Pairs that trained the probes</dt>
+                <dd className="figure">{count(summary.probe.train.length)}</dd>
+              </div>
+            </>
           ) : summary.steering ? (
             <>
               <div>
@@ -359,9 +377,19 @@ export function ResultsView() {
               </div>
             </>
           )}
-          {strongest && (
+          {strongest && summary.probe && (
             <div className={r.wide}>
-              <dt>{attribution ? "Largest direct effect" : "Strongest effect"}</dt>
+              <dt>Most accurate probe</dt>
+              <dd className="figure">
+                <button type="button" className={r.figureLink} onClick={() => select(selectionOfSite(strongest))}>
+                  {strongest.label} <span className={r.figureValue}>{num(strongest.effect.mean, 2)}</span>
+                </button>
+              </dd>
+            </div>
+          )}
+          {strongest && !summary.probe && (
+            <div className={r.wide}>
+              <dt>{attribution ? "Largest direct effect" : layout?.kind === "das" ? "Strongest learned subspace" : "Strongest effect"}</dt>
               <dd className="figure">
                 <button type="button" className={r.figureLink} onClick={() => select(selectionOfSite(strongest))}>
                   <span className={r.swatch} style={{ background: color(siteValue(strongest, metric) ?? 0) }} aria-hidden="true" />
@@ -373,7 +401,7 @@ export function ResultsView() {
         </dl>
       )}
       {run.id && ranked.length > 0 && <CircuitDialog open={circuitOpen} onOpenChange={setCircuitOpen} ranked={ranked} runId={run.id} />}
-      {layout && layout.kind !== "site_sets" && layout.kind !== "edges" && <div className={r.controls}>
+      {layout && layout.kind !== "site_sets" && layout.kind !== "edges" && layout.kind !== "probe" && <div className={r.controls}>
         <Segmented label="Result values" value={metric} onChange={mapMetric => useStore.setState({ mapMetric })} options={[{ value: "effect", label: words.effect }, { value: "delta", label: words.delta }]} />
         <Segmented label="Result scale" value={scaleMode} onChange={scaleMode => useStore.setState({ scaleMode })} options={[{ value: "auto", label: "Fit" }, { value: "unit", label: "±1", disabled: metric !== "effect" }]} />
         {layout.kind !== "neurons" && <Checkbox checked={cellValues} onChange={(v) => useStore.setState({ cellValues: v })}>Show values</Checkbox>}
@@ -547,6 +575,8 @@ function SteeredFeature({ feature, trained }: { feature: SteeringFeature; traine
 function Corrections({ summary }: { summary: Summary }) {
   const st = summary.statistics;
   if (st.band_level === null || st.band_level === undefined) return null;
+  // A probe's accuracy is never below zero: what it is tested against is its control (selectivity).
+  if (summary.layout.kind === "probe") return null;
   const alpha = Math.round((1 - st.ci) * 1000) / 1000;
   // The corrections cover every row the run reports, steering's random controls included, as the
   // server computes them and the command line counts them. An edge attribution run lists only its

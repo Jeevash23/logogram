@@ -478,6 +478,19 @@ def test_probe_and_das_runs_read_from_python_the_command_line_and_the_report(pro
     assert saved["name"] == "toward-at-api" and saved["dimensions"] == 1
     with pytest.raises(lg.api.LogogramError, match="isn't a distributed alignment search run"):
         probe.subspaces()
+    # A head's output is narrower than the residual stream, where directions are used.
+    heads = lg.run(
+        make_spec(
+            dataset={"path": "datasets/endings.jsonl"},
+            experiment={**PROBE, "control": False},
+            metric=None,
+            scope={"kind": "heads", "position": {"kind": "last"}},
+        ),
+        project,
+        model=tiny_backend,
+    )
+    with pytest.raises(lg.api.LogogramError, match="isn't as wide as the residual stream"):
+        heads.save_direction(0, "a-head")
 
     shown = CliRunner().invoke(app, ["show", probe.id, "--project", str(project.root)])
     assert shown.exit_code == 0, shown.output
@@ -519,3 +532,36 @@ def test_probe_and_das_runs_read_from_python_the_command_line_and_the_report(pro
     assert len(rows) == tiny_backend.info.n_layers
     page = run_report(das.spec, das.summary, das.manifest, das.id)
     assert "learned" in page.lower()
+
+
+def test_methods_of_one_site_at_a_time_refuse_sets_of_sites():
+    sets = {
+        "kind": "site_sets",
+        "universe": None,
+        "sets": [
+            {
+                "label": "early",
+                "sites": [{"kind": "resid_post", "layer": 0, "position": {"kind": "last"}}],
+                "complement": False,
+            }
+        ],
+    }
+    toward = {"name": "u", "sha256": None}
+    scaled = {"kind": "ablation", "baseline": {"kind": "scale", "factor": 0.5}}
+    with pytest.raises(ValueError, match="scaling and directional ablation act on one site"):
+        make_spec(experiment=scaled, scope=sets)
+    removed = {
+        "kind": "ablation",
+        "baseline": {"kind": "projection", "direction": toward, "reference": None},
+    }
+    with pytest.raises(ValueError, match="scaling and directional ablation act on one site"):
+        make_spec(experiment=removed, scope=sets)
+    along = {"kind": "subspace_patching", "direction": "clean_to_corrupt", "subspace": toward}
+    with pytest.raises(ValueError, match="subspace patching act on one site at a time"):
+        make_spec(experiment=along, scope=sets)
+    with pytest.raises(ValueError, match="subspace patching act on one site at a time"):
+        make_spec(experiment=DAS, scope=sets)
+    with pytest.raises(ValueError, match="subspace patching act on one site at a time"):
+        make_spec(experiment=PROBE, metric=None, scope=sets)
+    # Zero, mean and resample ablation of sets are as before.
+    make_spec(experiment={"kind": "ablation", "baseline": {"kind": "zero"}}, scope=sets)

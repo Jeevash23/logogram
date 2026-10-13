@@ -437,6 +437,15 @@ export function buildSpec(
   if (reads && everyPosition(form.scope)) {
     return { error: `${experiment.kind === "probe" ? "A probe" : "Distributed alignment search"} reads one position of each prompt. Choose the last token, a token index or a named position under What to sweep.` };
   }
+  // Sets of sites take values made before the forward pass (src/logogram/spec.py _sets_fit).
+  if (form.scope.kind === "site_sets") {
+    if (experiment.kind === "ablation" && (experiment.baseline.kind === "scale" || experiment.baseline.kind === "projection")) {
+      return { error: "Sets of sites are ablated with a zero, mean or resample baseline: scaling and removing a direction act on one site at a time. Choose single sites under What to sweep, or another baseline." };
+    }
+    if (experiment.kind === "probe" || experiment.kind === "das" || experiment.kind === "subspace_patching") {
+      return { error: "Probes, distributed alignment search and subspace patching act on one site at a time. Choose single sites under What to sweep." };
+    }
+  }
   const kinds = scopeKinds(form.scope);
   const directional =
     experiment.kind === "das" || experiment.kind === "subspace_patching" || (experiment.kind === "ablation" && experiment.baseline.kind === "projection");
