@@ -2,7 +2,13 @@
 
 What changed in each version of Logogram.
 
-## Unreleased
+## 0.7.0 (2026-10-13)
+
+Methods that find directions in the model and test them: linear probes, distributed alignment
+search, subspace patching, directional ablation, steering along a saved direction and readouts.
+ACDC, and edges into shared keys and values. Corpora of plain text, where a unit is most active in
+them, and principal components. SAEs and tuned lenses trained in the project. Projects, datasets
+and runs renamed, deleted and rerun from the app.
 
 ### Added
 
