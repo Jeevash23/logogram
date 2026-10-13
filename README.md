@@ -74,9 +74,9 @@ This starts a local server on 127.0.0.1, prints its address and opens your brows
 
    Each run also gets a **logogram**, a circular ink glyph written by its results: layers run
    clockwise from the top, and the ink swells outward (cobalt) where a layer's strongest effect
-   is positive and inward (ochre) where it is negative. A run with a few strong layers reads as
+   is positive and inward (amber) where it is negative. A run with a few strong layers reads as
    a heavy, lopsided ring; a null result as a thin, even one. Logograms appear in the history,
-   on the results page, and beside the model atlas, where each layer number opens that layer's
+   on the results page, and beside the model map, where each layer number opens that layer's
    strongest component.
 4. Press **A** on a head to see its attention pattern, or right-click any cell for **Patch here**,
    **Ablate here** and **Compare across runs**.
@@ -398,7 +398,7 @@ browser on your own computer. Everything still runs on the remote machine, which
    with a new session token:
 
    ```text
-   Logogram 0.3.0 is running at:
+   Logogram <version> is running at:
 
      http://127.0.0.1:8765/?token=…
    ```
@@ -959,9 +959,10 @@ treating them as equivalent.
 manifests, summaries and per-prompt results list, open, compare and export as before. What a
 later release added and an older run didn't measure (corrections for the number of sites, say)
 is left out; runs from 0.1, which measured the logit difference only, read it as their metric.
-Version 1 and version 2 specs both run: a version 1 spec takes version 1's value for each choice
-it left out, `logogram validate` lists them, and its runs say so. The tests keep run folders
-written by 0.1.0 and 0.2.0 to hold every release to this.
+Specs of every earlier version run: what a later version added takes the value that reproduces
+what they did, and a version 1 spec takes version 1's value for each choice it left out, which
+`logogram validate` lists and its runs say. The tests keep run folders written by 0.1.0 and 0.2.0
+to hold every release to this.
 
 **What is bit-identical.** The same spec, on the same machine, with the same versions of
 Logogram, PyTorch, TransformerLens, Transformers and NumPy, gives the same per-prompt values to
@@ -1282,9 +1283,9 @@ runs the small models' SAEs on their models, recording each check in the catalog
 
 Model access goes through `logogram.backends.base.ModelBackend`. TransformerLens is the only
 backend today; remote execution and other libraries can be added behind the same interface.
-Not built yet, with room left for them: chat templates for models made for chat, attribution
-graphs over transcoders, cross-layer transcoders and crosscoders, the first Gemma Scope's NumPy
-SAE files, remote compute, a native desktop wrapper, plugins and assistants.
+Not built yet, with room left for them: attribution graphs over transcoders, cross-layer
+transcoders and crosscoders, the first Gemma Scope's NumPy SAE files, remote compute, a native
+desktop wrapper, plugins and assistants.
 
 ## License
 
