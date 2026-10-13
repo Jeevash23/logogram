@@ -89,6 +89,35 @@ corrupt prompt's, against 0.38 for mean-ablating the whole site over the clean p
 11, 0.27 against 0.50. The direction is part of what the model uses at these sites, not all of
 it.
 
+## 7. Learn a direction instead
+
+A probe's direction is the one that best separates the genders, not necessarily the one the model
+reads. **Learned subspace (DAS)** looks for the one-dimensional subspace whose patching moves the
+answer most, trained on half of the pairs, and measures it on the other half beside the whole
+site and a random subspace of the same size:
+
+```json
+"experiment": {"kind": "das", "direction": "clean_to_corrupt", "dimensions": 1,
+               "train_fraction": 0.5, "seed": 0, "steps": 100,
+               "learning_rate": 0.01, "control": true},
+"scope": {"kind": "sites", "sites": [
+  {"kind": "resid_post", "layer": 10, "position": {"kind": "label", "label": "end"}},
+  {"kind": "resid_post", "layer": 11, "position": {"kind": "label", "label": "end"}}]}
+```
+
+| Layer | Whole site | Learned direction | Probe's direction | Random direction |
+|---|---|---|---|---|
+| 10 | 0.80 | 0.55 [0.54, 0.55] | 0.38 | 0.00 |
+| 11 | 1.00 | 0.63 [0.63, 0.63] | 0.55 | 0.00 |
+
+(The whole site's and the learned direction's numbers are on the 120 held-out pairs; the probe's
+are on all 240, so they compare closely, not exactly.) The learned direction carries more than
+the probe's, and its training curve was still rising after 100 steps. That is what it is trained
+for: a direction chosen to move the answer can move it by a route the model doesn't use as a
+variable (Makelov et al., 2023), so read it beside the probe's direction, which was found without
+looking at the answer, and beside the random one. **Save as direction** keeps it, to remove or
+read out like the probe's.
+
 ## What to take from it
 
 * A probe finds where something can be read, which can be everywhere. Patching finds where the
