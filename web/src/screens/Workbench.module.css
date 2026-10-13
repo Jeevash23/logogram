@@ -30,11 +30,15 @@
   outline: none;
 }
 
+/* The tabs and, beside them, the context (the next step, the model, the prompts). When the tabs
+   would get less than their minimum beside the context, the context moves to a line of its own. */
 .subbar {
+  position: relative;
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
-  gap: 12px;
+  gap: 0 12px;
   min-height: 48px;
   padding: 0 14px 0 22px;
   border-bottom: 1px solid var(--line);
@@ -43,11 +47,26 @@
 
 .tabs {
   display: flex;
+  flex: 1 1 520px;
   gap: 24px;
   overflow-x: auto;
-  min-width: 0;
+  min-width: min(520px, 100%);
+  min-height: 48px;
   scrollbar-width: none;
   align-self: stretch;
+}
+
+/* Hidden copies of the tabs, measured to see which fit in the row (ViewTabs). */
+.tabRuler {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  gap: 24px;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .tab {
@@ -99,6 +118,8 @@
   align-items: center;
   gap: 6px;
   min-width: 0;
+  margin-left: auto;
+  padding: 6px 0;
 }
 
 .body {

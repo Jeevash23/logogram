@@ -13,6 +13,7 @@ import { SweepDialog } from "../components/SweepDialog";
 import { TrainDialog } from "../components/TrainDialog";
 import { TokenStrip } from "../components/TokenStrip";
 import { TopBar } from "../components/TopBar";
+import { ViewTabs } from "../components/ViewTabs";
 import { Button, Dialog, escapeStaysInFields, Icon, Tip } from "../components/ui";
 import { useAnalysisContext } from "../lib/hooks";
 import { useStore, workspaceFor, WORKSPACE_VIEWS, type View, type Workspace } from "../store/app";
@@ -85,7 +86,14 @@ export function Workbench() {
     <a href="#main" className={s.skip} onClick={(e) => { e.preventDefault(); document.getElementById("main")?.focus(); }}>Skip to the view</a>
     <TopBar workspace={workspace} onWorkspace={goWorkspace} onHistory={() => setDrawer("history")} runs={runs} staged={staged} />
     <div className={s.subbar}>
-      <nav className={s.tabs} aria-label={`${workspace} views`}>{WORKSPACE_VIEWS.find(w => w.id === workspace)?.views.map((v, i) => <button key={v.id} type="button" className={s.tab} data-tour={`tab-${v.id}`} aria-current={view === v.id ? "page" : undefined} aria-keyshortcuts={singleKeys ? String(i + 1) : undefined} onClick={() => setView(v.id)}>{v.label}{v.id === "heads" && pins > 0 && <span className={s.count}>{pins}/2</span>}</button>)}</nav>
+      <ViewTabs
+        label={`${workspace} views`}
+        views={WORKSPACE_VIEWS.find((w) => w.id === workspace)?.views ?? []}
+        view={view}
+        onView={setView}
+        shortcuts={singleKeys}
+        badge={(id) => (id === "heads" && pins > 0 ? <span className={s.count}>{pins}/2</span> : null)}
+      />
       <div className={s.context}>
         <NextStep />
         <ModelChip />
