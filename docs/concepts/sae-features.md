@@ -49,8 +49,8 @@ by their weights file's header, and 16, on GPT-2 small, Pythia-70m and Gemma 3 2
 weights and their fit to the model. An SAE that SAELens's registry reads with settings its own
 configuration doesn't state (Mistral 7B's, which SAELens rescales) is refused before anything
 downloads, also when it is named by its repository and folder: its files alone don't say what it
-computes. However an SAE is chosen, a spec records its repository, folder and revision, never its
-release and id.
+computes. However an SAE is chosen, a spec records its repository, folder and revision, with
+`source` `hub`, never its release and id.
 
 ## Loading an SAE
 
@@ -73,6 +73,17 @@ it explains, how many features fire per token, and the logit difference with the
 reconstruction spliced in place of the activation. A poor fit, for example with
 TransformerLens's weight processing set the other way from training, shows before anything else.
 The fit is the last check: a file can be trained on something its configuration doesn't record.
+
+## SAEs trained in the project
+
+When no published SAE fits the model, the site or the text, Logogram trains a TopK SAE in the
+project, on a corpus of its texts, deterministically: **Train an SAE…** in Features, `logogram
+sae train` or `lg.train_sae` (see [training an SAE](sae-training.md) and the
+[guide](../guides/train-an-sae.md)). It is saved as `saes/NAME` in SAELens's format, read by the
+same reader as published SAEs, and listed under **Trained in this project**. A spec names it with
+`source` `project`, its name and folder, and `sha256`, the hash of its files, which a run pins when
+it starts. It is read from the project's files, never downloaded, and one trained on another model
+loads with a warning.
 
 ## Transcoders
 
@@ -134,7 +145,8 @@ them on a seeded share of the prompts and report them only on the rest:
 
 ```json
 "scope": {"kind": "features", "position": {"kind": "last"}, "top": 50, "choose_on": 0.5, "seed": 0},
-"sae": {"repo": "jbloom/GPT2-Small-SAEs-Reformatted", "path": "blocks.8.hook_resid_pre", "revision": null}
+"sae": {"repo": "jbloom/GPT2-Small-SAEs-Reformatted", "path": "blocks.8.hook_resid_pre",
+        "revision": null, "source": "hub", "sha256": null}
 ```
 
 **Steering** can add a feature's decoder direction instead of a mean difference: see

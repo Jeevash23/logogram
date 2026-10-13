@@ -91,14 +91,86 @@ def _logp_of(lp: torch.Tensor, b: int, target: Target) -> torch.Tensor:
     return lp[b, steps, ids].sum()
 
 
+class Reading:
+    """What a readout metric reads (``spec.ReadoutMetric``): the activation it needs from each
+    forward pass, and the value there at each row's position.
+
+    A neuron is read from its MLP's hidden activation, a direction as the dot product of its unit
+    vector with the activation at its site, and an SAE feature by encoding the activation the SAE
+    reads (``sae``). Values are float64."""
+
+    def __init__(
+        self,
+        metric: Any,
+        prompts: list[Any],
+        *,
+        sae: Any = None,
+        direction: torch.Tensor | None = None,
+    ) -> None:
+        self.metric = metric
+        self.prompts = prompts
+        unit = metric.unit
+        self.sae = sae
+        self.vector = direction
+        if unit.kind == "neuron":
+            self.site = ("neuron", int(unit.layer))
+        elif unit.kind == "direction":
+            if direction is None:
+                raise ValueError("A direction readout needs its direction.")
+            self.site = (str(unit.site), int(unit.layer))
+        else:
+            if sae is None:
+                raise ValueError("An SAE feature readout needs the SAE.")
+            self.site = (str(sae.site_in), int(sae.layer))
+
+    @property
+    def sites(self) -> list[tuple[str, int]]:
+        return [self.site]
+
+    def positions(self, rows: list[int], side: str) -> list[int]:
+        from logogram.sites import resolve_position
+
+        out = []
+        for r in rows:
+            pos = resolve_position(self.metric.position, self.prompts[r], side)
+            assert pos is not None  # a readout reads one position
+            out.append(pos)
+        return out
+
+    def values(
+        self, acts: dict[tuple[str, int], torch.Tensor] | None, rows: list[int], side: str
+    ) -> np.ndarray:
+        """The value read in each row, from the activations a forward pass kept."""
+        if acts is None or self.site not in acts:
+            raise ValueError("The forward pass kept nothing for the readout to read.")
+        act = acts[self.site]
+        at = torch.tensor(self.positions(rows, side), dtype=torch.long, device=act.device)
+        picked = act[torch.arange(act.shape[0], device=act.device), at]  # [B, ...] at each position
+        unit = self.metric.unit
+        if unit.kind == "neuron":
+            return float64(picked[:, int(unit.neuron)]).cpu().numpy()
+        if unit.kind == "direction":
+            assert self.vector is not None
+            vector = float64(self.vector.to(picked.device))
+            return (float64(picked) @ vector).cpu().numpy()
+        x = self.sae.reads(picked).to(self.sae.device).float()
+        features, _stats = self.sae.encode(x)
+        return float64(features[:, int(unit.feature)]).cpu().numpy()
+
+
 class Scorer:
     """Scores forward passes with a spec's metric. ``prompts`` are the run's prepared prompts;
-    rows of a batch are given as indices into them."""
+    rows of a batch are given as indices into them. A readout metric reads the activations each
+    forward pass keeps (``reading``); the answer's probability and the preference are read from
+    the logits all the same."""
 
-    def __init__(self, metric: Any, prompts: list[Any]) -> None:
+    def __init__(self, metric: Any, prompts: list[Any], reading: Reading | None = None) -> None:
         self.metric = metric
         self.kind: str = metric.kind
         self.prompts = prompts
+        self.reading = reading
+        if self.kind == "readout" and reading is None:
+            raise ValueError("A readout metric needs what it reads.")
         # KL: the target prompts' next-token logits, by prompt index (float32, on the CPU).
         self.target_logits: dict[int, torch.Tensor] = {}
 
@@ -123,8 +195,11 @@ class Scorer:
 
     # -- scoring ------------------------------------------------------------------------------
 
-    def score(self, forward: Forward, tokens: torch.Tensor, rows: list[int]) -> Scores:
-        """Run the batch (``tokens``: the prompts, ``rows``: their prompt indices) and score it."""
+    def score(
+        self, forward: Forward, tokens: torch.Tensor, rows: list[int], side: str = "clean"
+    ) -> Scores:
+        """Run the batch (``tokens``: the prompts, ``rows``: their prompt indices, ``side``: which
+        prompt of each pair they are) and score it."""
         answers = [self.answer(r) for r in rows]
         distractors = [self.distractor(r) for r in rows]
         width_a = max(t.positions for t in answers)
@@ -161,7 +236,12 @@ class Scorer:
         if pref is None or prob is None:
             pref = (logp_answer - logp_distractor).numpy()
             prob = logp_answer.exp().numpy()
-        metric = self._metric(first, rows, logp_answer, logp_distractor)
+        if self.kind == "readout":
+            assert self.reading is not None
+            # The prompt's positions are the same in both passes: appended tokens come after.
+            metric = self.reading.values(getattr(forward, "reads", None), rows, side)
+        else:
+            metric = self._metric(first, rows, logp_answer, logp_distractor)
         return Scores(metric=metric, prob=prob, pref=pref)
 
     def _metric(
@@ -203,6 +283,8 @@ class Scorer:
         first = logits[:, 0].float()
         answers = [self.answer(r) for r in rows]
         distractors = [self.distractor(r) for r in rows]
+        if self.kind == "readout":
+            raise ValueError("A readout metric has no gradient through the logits.")
         if self.kind == "kl":
             if part != "answer":
                 return torch.zeros(B, device=logits.device)

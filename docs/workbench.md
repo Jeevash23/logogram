@@ -31,18 +31,30 @@ a diverging cobalt to amber scale, always with its legend, and nothing else does
   intervention to measure.
 * **Layer predictions** reads what each layer would predict through the model's final
   normalization and unembedding, the [logit lens](concepts/logit-lens-and-model-checks.md), for
-  models where that reproduces their output.
+  models where that reproduces their output, or through a [tuned lens](concepts/tuned-lens.md)
+  trained in the project (**Train a tuned lens…**).
 * **Features** finds a published sparse autoencoder or transcoder by its release and id, in the
   catalogue of SAELens's registry that ships with Logogram, or by its Hugging Face repository and
-  folder, loads it, measures how well it fits your prompts, and lists the features that fire on
-  each token, with what one feature writes into the logits and the prompts where it fires most
-  (see [SAE features](concepts/sae-features.md)).
+  folder, or one [trained in the project](concepts/sae-training.md) (**Train an SAE…**), loads
+  it, measures how well it fits your prompts, and lists the features that fire on each token, with
+  what one feature writes into the logits and the prompts where it fires most (see
+  [SAE features](concepts/sae-features.md)).
 * **Your text** reads any text without making a dataset: its tokens and the model's most likely
   next tokens after each, what each layer would predict at a chosen token, where a head attends,
   the SAE's features when one is loaded, and **Continue the text**, which shows what the model
   writes next: 1 to 64 new tokens, each the most likely one (a tie goes to the lowest token id),
   the whole text read again for each, and, with an SAE loaded, a second continuation with one of
   its features added (see [steering](concepts/steering.md)). Nothing is saved.
+* **Corpus** keeps plain texts in the project, from a file, a Hugging Face dataset's file or a
+  dataset's prompts, pages and searches them, and finds where a unit is most active in them: an MLP
+  neuron, a feature of the loaded SAE, a saved direction or an attention head, with a histogram of
+  its values and the tokens around each example shaded by its value (see
+  [corpora and representations](concepts/corpora-and-representations.md)). An example opens in
+  **Your text**.
+* **Representations** reads the activation at one site and token of each prompt or text, draws
+  them on two of their principal components, saves a component or the difference between two
+  classes' means as a direction, and exports the activations. It lists the project's directions,
+  with what made each, where and on which model, and renames and deletes them.
 
 ## Experiment: set up what runs
 
@@ -53,14 +65,19 @@ a diverging cobalt to amber scale, always with its legend, and nothing else does
   **Generate a task** writes a seeded dataset for one of six classic tasks (IOI, greater-than,
   docstrings, gendered pronouns, subject-verb agreement, factual recall); **Import JSONL** and
   **Single pair** add your own. Edits to pairs stay in the tab until they are saved as a new
-  dataset: a dataset file never changes, since runs record its hash.
+  dataset: a dataset file never changes, since runs record its hash. **Rename…** and
+  **Delete…**, here and in the dataset menu of the header, rename or delete the dataset file
+  chosen. Runs keep their own copy of the prompts they ran on, so neither changes a run. A saved
+  draft or a queued run that names the file keeps it, since it would fail or run on other
+  prompts: the refusal names them, to change or take out of the queue first.
 * **Baseline** runs the model on the clean and corrupt prompts without intervening, to confirm the
   behavior exists before measuring what carries it.
 * **Configure** is the experiment form: the method and its choices, what to sweep, the metric and
   its normalization, the statistics, and the data and model (with the chat template, for models
   made for chat). Beside it, a summary says what will run, how much work it is (for edge
-  attribution, the graph's size and the passes and memory a batch needs), whether a batch fits in
-  memory, whether the baseline was checked, and what is still missing, above **Run**.
+  attribution, the graph's size and the passes and memory a batch needs; for ACDC, the passes
+  and about how long they take here), whether a batch fits in memory, whether the baseline was
+  checked, and what is still missing, above **Run**.
   While another job runs, **Run** reads **Queue**. Ctrl/⌘ Z and Ctrl/⌘ Shift Z undo and redo
   changes to the form. When an action elsewhere replaces the form (**Patch here**, **Edit and
   rerun**, staged sites), a notice offers to undo it. A form that isn't saved is kept in this
@@ -73,13 +90,19 @@ a diverging cobalt to amber scale, always with its legend, and nothing else does
 
 * **Results** shows the open run: its title, method and notes, the figures at a glance, the map
   with its scale, a forest plot of the strongest sites with their intervals, and the actions:
-  **Check robustness**, **Sweep…**, **Verify top 10 by patching** (for attribution patching),
-  **Verify top 20 by path patching** (for edge attribution), **Test the top sites as a circuit**,
-  and **Export** (the HTML report, figures and CSV; see [share a result](guides/share-results.md)).
+  **Check robustness**, **Rerun**, **Sweep…**, **Verify top 10 by patching** (for attribution
+  patching), **Verify top 20 by path patching** (for edge attribution), **Test the top sites as a
+  circuit**, and **Export** (the HTML report, figures and CSV; see
+  [share a result](guides/share-results.md)). **Rerun** runs the spec again exactly as it ran, as
+  a new run: when it finishes, a notice says whether every per-prompt value matches the original
+  exactly, as `logogram run` does, and a difference offers the two runs' comparison. A failed or
+  cancelled run offers **Rerun** too, beside **Edit and rerun**, which opens its spec in the form.
   A run over queries, keys or values shows a layer × head map, a run over neurons each layer's
   strongest neurons beside the distribution of all of them, and an
   [edge attribution](concepts/edge-attribution.md) run its strongest edges drawn between the
-  components, its faithfulness curve and their verification by path patching.
+  components, its faithfulness curve and their verification by path patching. An
+  [ACDC](concepts/acdc.md) run draws the circuit it found the same way, with the edges it kept and
+  the circuit's faithfulness, and lists every edge with whether it was kept.
 * **Compare runs** puts two runs side by side, or their difference, with paired differences
   prompt by prompt where they measured the same prompts (see
   [compare two runs](guides/compare-runs.md)).
@@ -100,12 +123,25 @@ a diverging cobalt to amber scale, always with its legend, and nothing else does
   by their labels and last tokens when the two prompts have different lengths. **[** and **]**
   step through the prompts.
 * **History** lists every run in the project, the queue, and drafts: search by title, name, id,
-  method, model or dataset; rename (F2), star, archive or delete a run from its menu. A run's
-  title, star and archive mark live beside its spec, which never changes. Deleting asks first,
-  then removes the run's folder for good: there is no trash, since a deleted run kept out of sight
-  would still travel with the project when it is shared. Runs derived from a deleted run stay, and
-  say so. A run whose spec can't be read is listed as unreadable, with what is wrong and how to
-  fix it.
+  method, model or dataset; rename (F2), star, archive, rerun or delete a run from its menu. A
+  run's title, star and archive mark live beside its spec, which never changes. Deleting asks
+  first, then removes the run's folder for good: there is no trash, since a deleted run kept out
+  of sight would still travel with the project when it is shared. Runs derived from a deleted run
+  stay, and say so. A run in progress, or a draft waiting in the queue, can't be deleted, from the
+  app, `logogram delete` or Python alike. Taking a run out of the queue asks first too. A run
+  whose spec can't be read is listed as unreadable, with what is wrong and how to fix it.
+* **The project menu**, under the project's name, leads to **All projects**, opens another
+  folder, and renames, closes or deletes the project. **Rename project…** changes the name in
+  its `project.json`; the folder keeps its own. **Delete project…** says what it deletes (the
+  folder and everything in it: its runs, drafts, datasets and queue) and needs the project's name
+  typed. It deletes nothing while a run or its queue is running in the project, and nothing from
+  a folder that also holds what Logogram doesn't make there, such as a repository's own files: it
+  lists them instead.
+* **All projects** lists the projects opened lately. Listing them reads each `project.json`, and
+  writes nothing into them. A project whose folder can't be found (moved, deleted, or on a drive
+  that isn't connected) stays in the list, marked *Folder not found*, until **Remove** takes it
+  out; opening it says so, and offers to. Each other project's menu takes it out of the list (its
+  folder stays as it is) or deletes it.
 * **The address** keeps your place: the view, and the run it shows or the two it compares. Back
   and Forward move between views, a reload comes back to the same place, and **All projects**
   leads back to the open project as you left it.

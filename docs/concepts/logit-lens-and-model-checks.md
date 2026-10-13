@@ -28,13 +28,15 @@ On a short fixed input, every model is checked for four things:
   queries and keys together, so it offers values and neurons only. Whether each head's output is
   its attention pattern times its values, and each MLP's output the neurons' writes plus its bias,
   is measured too, for direct logit attribution.
-* **The lens.** The logit lens below is offered when the model's final normalization and
-  unembedding, with any soft cap on its logits, reproduce its own output.
+* **The lens.** The logit lens below, and a [tuned lens](tuned-lens.md), are offered when the
+  model's final normalization and unembedding, with any soft cap on its logits, reproduce its own
+  output.
 
-[Edge attribution](edge-attribution.md#limits) relies on more, measured the first time it plans
-or runs on a model: that giving each receiver its own copy of the residual stream doesn't change
-what the model predicts, that every copy is read before its normalization, and that changing one
-head's copy changes no other head.
+[Edge attribution](edge-attribution.md#limits) and [ACDC](acdc.md) rely on more, measured the
+first time either plans or runs on a model: that giving each receiver its own copy of the residual
+stream doesn't change what the model predicts, that every copy is read before its normalization,
+and that changing one head's copy changes no other head's (with grouped-query attention, one
+key/value head's key or value copy changes no other key/value head's).
 
 The measured layer structure is kept with each run's results, so a saved run's map can be drawn
 without loading the model. A model that looks made for chat (its name says so, such as `-Instruct`, or it stops generating at the token
@@ -56,16 +58,20 @@ stream after the layer, at one token, through the model's final normalization an
   difference, and the top tokens at each layer.
 
 The lens is descriptive: it shows what a layer's residual stream points to through the final
-layers' readout, not what the layer causes, and early layers' predictions aren't calibrated. No
-lens is trained, as the tuned lens of Belrose et al. (2023) does. At an earlier position, the
+layers' readout, not what the layer causes, and early layers' predictions aren't calibrated. A
+[tuned lens](tuned-lens.md) (Belrose et al., 2023), trained in the project, translates each
+layer's residual stream before reading it, and reads early layers more faithfully; **Layer
+predictions** reads through one when its method is **Tuned lens**. At an earlier position, the
 answer and distractor are still the dataset's, not the token expected there.
 
 Measuring adds an optional diagnostic to the experiment form, which a run saves beside its
-results as `predictions.json` without changing the intervention:
+results as `predictions.json` without changing the intervention (with a tuned lens, `method` is
+`tuned_lens` and `lens` names it):
 
 ```json
 "predictions": {
   "method": "final_norm_logit_lens",
+  "lens": null,
   "prompt_index": 0,
   "which": "clean",
   "position": {"kind": "last"},

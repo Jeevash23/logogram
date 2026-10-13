@@ -4,7 +4,7 @@
 
 Every experiment is a `spec.json`: the single description of an experiment, which the app, `logogram run` and the Python API all run the same way. Nothing that can change a number is left implicit. A spec states every such field, and a spec that leaves one out is refused with the field's name. This page lists every field, from the models in [`src/logogram/spec.py`](https://github.com/Jeevash23/logogram/blob/main/src/logogram/spec.py).
 
-This is version 3. Version 1 specs (Logogram 0.1) still run: each choice one leaves out takes the value version 1 gave it, the run's first warning lists those values, and `logogram validate SPEC.json` shows them without running anything. Version 2 specs (Logogram 0.2 to 0.4) read as version 3 with what version 3 added turned off, which is what they did: no chat template, a model from Hugging Face, and steering along the mean difference without continuations.
+This is version 4. Version 1 specs (Logogram 0.1) still run: each choice one leaves out takes the value version 1 gave it, the run's first warning lists those values, and `logogram validate SPEC.json` shows them without running anything. Version 2 specs (Logogram 0.2 to 0.4) read with what version 3 added turned off, which is what they did: no chat template, a model from Hugging Face, and steering along the mean difference without continuations. Version 3 specs (Logogram 0.5 and 0.6) read as version 4 with what version 4 adds turned off: the SAE a spec names is a published one, and the layer predictions read the logit lens. Version 4 also adds methods and sources that a version 3 spec can't name.
 
 Objects that come in several kinds (an experiment, a scope, a position, ...) say which with their `kind`, and each kind has fields of its own.
 
@@ -12,7 +12,7 @@ The bundled IOI example's spec:
 
 ```json
 {
-  "logogram_spec": 3,
+  "logogram_spec": 4,
   "name": "Which heads restore the answer?",
   "notes": "Run each corrupt prompt (the subject is replaced by the indirect object, so the model should prefer the other name) and patch in one head's output from the clean prompt at every position. A normalized effect of 1 means that head alone restores the clean behavior; negative values mean the head works against the answer.",
   "model": {
@@ -67,15 +67,15 @@ An experiment: what runs, on which model and prompts, and how its numbers are me
 
 | Field | Type | Allowed values | Description |
 |---|---|---|---|
-| `logogram_spec` | integer | `3` | The spec's version. Version 1 and 2 specs are read too, as version 3. |
+| `logogram_spec` | integer | `4` | The spec's version. Version 1, 2 and 3 specs are read too, as version 4. |
 | `name` | string | 1 to 200 characters | What the experiment is called, in the history and the results. |
 | `notes` (optional, default `""`) | string | any | What you expect and why, saved with the spec and shown beside the results. |
 | `model` | object | [Model](#model) | The model, exactly: its files, precision, device and weight processing. |
 | `dataset` | object | [Dataset](#dataset) | The prompt pairs. |
 | `tokenization` | object | [Tokenization](#tokenization) | How each prompt becomes tokens. |
-| `experiment` | object | one of [`activation_patching`](#experiment-activation_patching), [`ablation`](#experiment-ablation), [`direct_logit_attribution`](#experiment-direct_logit_attribution), [`attribution_patching`](#experiment-attribution_patching), [`steering`](#experiment-steering), [`path_patching`](#experiment-path_patching) or [`edge_attribution`](#experiment-edge_attribution) ([Experiment](#experiment)) | The method, with every choice that changes its numbers. |
+| `experiment` | object | one of [`activation_patching`](#experiment-activation_patching), [`ablation`](#experiment-ablation), [`direct_logit_attribution`](#experiment-direct_logit_attribution), [`attribution_patching`](#experiment-attribution_patching), [`steering`](#experiment-steering), [`path_patching`](#experiment-path_patching), [`edge_attribution`](#experiment-edge_attribution), [`acdc`](#experiment-acdc), [`subspace_patching`](#experiment-subspace_patching), [`das`](#experiment-das) or [`probe`](#experiment-probe) ([Experiment](#experiment)) | The method, with every choice that changes its numbers. |
 | `scope` | object | one of [`heads`](#scope-heads), [`layer_position`](#scope-layer_position), [`layer_components`](#scope-layer_components), [`sites`](#scope-sites), [`features`](#scope-features), [`site_sets`](#scope-site_sets), [`head_inputs`](#scope-head_inputs), [`neurons`](#scope-neurons), [`graph`](#scope-graph) or [`edges`](#scope-edges) ([Scope](#scope)) | The sites the method measures: one result per site. |
-| `metric` | object | one of [`logit_diff`](#metric-logit_diff), [`logprob_diff`](#metric-logprob_diff), [`logprob`](#metric-logprob), [`prob`](#metric-prob), [`prob_diff`](#metric-prob_diff) or [`kl`](#metric-kl) ([Metric](#metric)) | What is read from the model's output, and how effects are normalized. |
+| `metric` | object or null | one of [`logit_diff`](#metric-logit_diff), [`logprob_diff`](#metric-logprob_diff), [`logprob`](#metric-logprob), [`prob`](#metric-prob), [`prob_diff`](#metric-prob_diff), [`kl`](#metric-kl) or [`readout`](#metric-readout) ([Metric](#metric)), or `null` | What is read from the model's output (or, as a readout, from inside it), and how effects are normalized; `null` for probes, which read activations instead. |
 | `statistics` | object | [Statistics](#statistics) | The intervals' bootstrap, confidence level and seed. |
 | `execution` | object | [Execution](#execution) | How the work is batched. |
 | `predictions` (optional, default `null`) | object or null | [Prediction settings](#prediction-settings), or `null` | An optional logit lens saved beside the results; it never changes an intervention. |
@@ -124,7 +124,7 @@ How each prompt becomes the tokens the model reads.
 
 In a spec at `experiment`.
 
-One of these, chosen by `kind`: [`activation_patching`](#experiment-activation_patching), [`ablation`](#experiment-ablation), [`direct_logit_attribution`](#experiment-direct_logit_attribution), [`attribution_patching`](#experiment-attribution_patching), [`steering`](#experiment-steering), [`path_patching`](#experiment-path_patching) or [`edge_attribution`](#experiment-edge_attribution).
+One of these, chosen by `kind`: [`activation_patching`](#experiment-activation_patching), [`ablation`](#experiment-ablation), [`direct_logit_attribution`](#experiment-direct_logit_attribution), [`attribution_patching`](#experiment-attribution_patching), [`steering`](#experiment-steering), [`path_patching`](#experiment-path_patching), [`edge_attribution`](#experiment-edge_attribution), [`acdc`](#experiment-acdc), [`subspace_patching`](#experiment-subspace_patching), [`das`](#experiment-das) or [`probe`](#experiment-probe).
 
 ### Experiment: activation_patching
 
@@ -146,7 +146,7 @@ Run the clean prompt and replace the activation with a baseline value.
 | Field | Type | Allowed values | Description |
 |---|---|---|---|
 | `kind` | string | `"ablation"` | Which experiment this is: always `ablation` here. |
-| `baseline` | object | one of [`zero`](#baseline-zero), [`mean`](#baseline-mean) or [`resample`](#baseline-resample) ([Baseline](#baseline)) | What replaces the activation. It changes the result, so there is no default. |
+| `baseline` | object | one of [`zero`](#baseline-zero), [`mean`](#baseline-mean), [`resample`](#baseline-resample), [`scale`](#baseline-scale) or [`projection`](#baseline-projection) ([Baseline](#baseline)) | What replaces the activation. It changes the result, so there is no default. |
 
 ### Experiment: direct_logit_attribution
 
@@ -200,7 +200,7 @@ runs alongside. With `continuations`, the run also records what the model goes o
 |---|---|---|---|
 | `kind` | string | `"steering"` | Which experiment this is: always `steering` here. |
 | `apply_to` | string | `"clean"` or `"corrupt"` | The prompts the direction is added to; it steers them toward the other prompts. |
-| `direction` | object | one of [`mean_difference`](#steering-direction-mean_difference) or [`sae_feature`](#steering-direction-sae_feature) ([Steering direction](#steering-direction)) | What is added: the mean difference between the prompts of each training pair, or one SAE feature's decoder direction. |
+| `direction` | object | one of [`mean_difference`](#steering-direction-mean_difference), [`sae_feature`](#steering-direction-sae_feature) or [`direction`](#steering-direction-direction) ([Steering direction](#steering-direction)) | What is added: the mean difference between the prompts of each training pair, or one SAE feature's decoder direction. |
 | `coefficients` | list of numbers | 1 to 16 items | The strengths: 1 adds the whole mean difference (or the feature at its typical activation), negative values push the other way. |
 | `train_fraction` | number | more than 0 and less than 1 | The share of pairs, drawn with seed, that compute the direction; the rest measure it. |
 | `seed` | integer | 0 to 4,294,967,295 | The seed of the split into training and held-out pairs, and of the random control. |
@@ -251,6 +251,97 @@ together, edge by edge, for a faithfulness curve beside edges chosen at random.
 | `method` | string | `"gradient"` or `"integrated_gradients"` | One gradient at the receiver run, or gradients averaged along the way between the two prompts' input embeddings (integrated gradients). |
 | `steps` | integer or null | 2 to 64, or `null` | The points along the way, for integrated gradients; `null` for a single gradient. |
 | `curve` | object or null | [Faithfulness curve](#faithfulness-curve), or `null` | Patch the strongest edges together for a faithfulness curve; `null` to only estimate. |
+
+### Experiment: acdc
+
+Find a circuit by removing the edges of the model's graph one at a time (automated circuit
+discovery, ACDC, as in Conmy et al. 2023).
+
+The receiver prompt runs with every edge of the `graph` scope in the circuit. ACDC tests the
+edges in the reverse of the graph's order: the receivers from the logits back toward the
+embeddings (the logits; then each layer from the last, its MLP's input, then its heads from the
+last, each head's value, key and query, or where heads share keys and values each key/value
+head's value and key before its group's queries), and each receiver's edges from its latest
+sender back to the embeddings. Every receiver is tested after every receiver its output
+reaches. Removing
+an edge makes it carry its sender's output on the source prompt into its receiver, as edge
+patching does, while the edges of the circuit carry what their senders output in that run.
+When removing an edge changes the mean of the metric over the prompts by less than
+`threshold`, counted as `rule` says, it stays removed; otherwise it is put back. The
+circuit is the edges left. ACDC itself runs the clean prompt with removed edges carrying the
+corrupt prompt's values: `direction` `corrupt_to_clean`, with the KL divergence from the
+clean prompt's own prediction as the metric. Each edge costs one forward pass per batch of
+prompts.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `kind` | string | `"acdc"` | Which experiment this is: always `acdc` here. |
+| `direction` | string | `"clean_to_corrupt"` or `"corrupt_to_clean"` | `clean_to_corrupt` runs the corrupt prompt with clean activations (does this restore the behavior?); `corrupt_to_clean` runs the clean prompt with corrupt ones (does this break it?). |
+| `threshold` | number | more than 0 | How small a change in the metric's mean over the prompts leaves an edge out of the circuit, in the metric's own units: nats for the KL divergence, logits for the logit difference. |
+| `rule` | string | `"toward_source"` or `"either_way"` | Which change is compared with the threshold: `toward_source`, how far removing the edge moves the metric toward the source prompt's (the paper's rule: an edge whose removal moves it the other way always stays removed); `either_way`, how far it moves it in either direction (the absolute value, an option of ACDC's code). |
+
+### Experiment: subspace_patching
+
+Patch only the component of each site's activation along a saved direction (or within a
+saved subspace) from the other prompt of each pair; everything at right angles to it keeps
+the receiver's own value. Beside activation patching of the whole site, it says how much of
+the site's effect that direction carries.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `kind` | string | `"subspace_patching"` | Which experiment this is: always `subspace_patching` here. |
+| `direction` | string | `"clean_to_corrupt"` or `"corrupt_to_clean"` | `clean_to_corrupt` runs the corrupt prompt with clean activations (does this restore the behavior?); `corrupt_to_clean` runs the clean prompt with corrupt ones (does this break it?). |
+| `subspace` | object | [Direction](#direction) | The direction or subspace patched. |
+
+### Experiment: das
+
+Learn, at each site, a subspace of a few dimensions whose patching restores (or breaks)
+the behavior (distributed alignment search, DAS: Geiger et al. 2023), on a training split of
+the pairs, and measure it on the held-out rest.
+
+At each site, an orthonormal basis of `dimensions` vectors is trained by Adam to maximize
+the normalized effect of patching only the component within it, from the source prompt into
+the receiver run, over the training pairs (all of them at each step, in their batches). The
+held-out pairs are then patched within the learned subspace, beside patching the whole site
+and, with `control`, a random subspace of the same size. A learned subspace can find an
+effect that the model doesn't use as a variable (an interpretability illusion, Makelov et al.
+2023): compare it with the whole site, and check it on other prompts.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `kind` | string | `"das"` | Which experiment this is: always `das` here. |
+| `direction` | string | `"clean_to_corrupt"` or `"corrupt_to_clean"` | `clean_to_corrupt` runs the corrupt prompt with clean activations (does this restore the behavior?); `corrupt_to_clean` runs the clean prompt with corrupt ones (does this break it?). |
+| `dimensions` | integer | 1 to 64 | How many dimensions the learned subspace has. |
+| `train_fraction` | number | more than 0 and less than 1 | The share of pairs, drawn with seed, that train the subspace; the rest measure it. |
+| `seed` | integer | 0 to 4,294,967,295 | The seed of the split, of the subspace's starting point and of the random control. |
+| `steps` | integer | 1 to 10,000 | How many steps of Adam train each site's subspace, each over every training pair. |
+| `learning_rate` | number | more than 0 and at most 1 | Adam's learning rate. |
+| `control` | boolean | `true` or `false` | Also patch a random subspace of the same number of dimensions. |
+
+### Experiment: probe
+
+Train a linear probe at each site: logistic regression that reads a label from the
+activation, on a training split of the pairs, then measure its accuracy on the held-out rest.
+
+Each site's activations are standardized with the training examples' mean and spread, and
+the probe (a weight vector per class and a bias) is fitted by L-BFGS to the mean cross-entropy
+plus `regularization` / 2 times the squared length of the weights, from zero, for
+`iterations` iterations, in float64. Pairs are split, not examples, so the two prompts of a
+pair are never on both sides. A probe shows that a label can be read from a site, not that the
+model reads it: patch the site, or patch along the probe's direction, to test that. With
+`control`, a second probe is trained on the training labels shuffled with `seed` (a
+control task, as in Hewitt and Liang 2019), and measured on the true held-out labels: how far a
+probe gets from what it can memorize.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `kind` | string | `"probe"` | Which experiment this is: always `probe` here. |
+| `labels` | object | one of [`side`](#probe-labels-side) or [`meta`](#probe-labels-meta) ([Probe labels](#probe-labels)) | What each example is labelled with. |
+| `train_fraction` | number | more than 0 and less than 1 | The share of pairs, drawn with seed, that train the probes; the rest measure them. |
+| `seed` | integer | 0 to 4,294,967,295 | The seed of the split, and of the control's shuffle. |
+| `regularization` | number | at least 0 and at most 1e+06 | The weight of the squared length of the weights in the loss (L2); 0 for none. |
+| `iterations` | integer | 1 to 1,000 | How many iterations of L-BFGS fit each probe. |
+| `control` | boolean | `true` or `false` | Also fit a probe on shuffled labels, a control for what a probe can memorize. |
 
 ## Scope
 
@@ -362,13 +453,14 @@ times the up projection): the input to the MLP's output projection.
 
 ### Scope: graph
 
-The edges of the model's graph, for edge attribution.
+The edges of the model's graph, for edge attribution and ACDC.
 
 The graph's nodes are the embeddings, every attention head (its output, z through its slice of
 the output projection), every MLP and the logits. An edge runs from a node's output to a later
-node's input: a head's query, key or value input (each its own edge), an MLP's input, or the
-logits. `layers` chooses the heads and MLPs whose inputs receive the edges (from every
-earlier node), `null` for every layer; `logits` adds the edges into the logits.
+node's input: a head's query, key or value input (each its own edge; where heads share keys
+and values, a key or value input is a key/value head's), an MLP's input, or the logits.
+`layers` chooses the heads and MLPs whose inputs receive the edges (from every earlier
+node), `null` for every layer; `logits` adds the edges into the logits.
 
 | Field | Type | Allowed values | Description |
 |---|---|---|---|
@@ -390,7 +482,7 @@ into its receiver alone, with every head and MLP held (see PathPatching).
 
 In a spec at `metric`.
 
-One of these, chosen by `kind`: [`logit_diff`](#metric-logit_diff), [`logprob_diff`](#metric-logprob_diff), [`logprob`](#metric-logprob), [`prob`](#metric-prob), [`prob_diff`](#metric-prob_diff) or [`kl`](#metric-kl).
+One of these, chosen by `kind`: [`logit_diff`](#metric-logit_diff), [`logprob_diff`](#metric-logprob_diff), [`logprob`](#metric-logprob), [`prob`](#metric-prob), [`prob_diff`](#metric-prob_diff), [`kl`](#metric-kl) or [`readout`](#metric-readout).
 
 ### Metric: logit_diff
 
@@ -455,6 +547,24 @@ the source prompt predicts.
 | `target` | string | `"clean"` or `"corrupt"` | The prompt whose own next-token distribution the divergence is measured from. |
 | `normalization` | string | `"dataset_gap"` or `"prompt_gap"` | What an effect is divided by: the gap between the two prompts' metric, averaged over the dataset (`dataset_gap`) or each prompt's own (`prompt_gap`). |
 
+### Metric: readout
+
+A value inside the model instead of its output: a neuron's activation, an activation's
+component along a saved direction, or an SAE feature's activation, at one position of each
+prompt. Patching and ablation then ask what drives that value.
+
+Normalized like the other metrics, an effect of 1 means the intervention moves the value as
+far as switching from the receiver prompt to the other prompt does. A site later in the model
+than the value (a later layer, or a later part of the same layer) can't change it, so its
+effect is 0.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `kind` | string | `"readout"` | Which metric this is: always `readout` here. |
+| `unit` | object | one of [`neuron`](#readout-neuron), [`direction`](#readout-direction) or [`sae_feature`](#readout-sae_feature) ([Readout](#readout)) | What is read. |
+| `position` | object | one of [`last`](#position-last), [`index`](#position-index) or [`label`](#position-label) ([Position](#position)) | The token of each prompt where it is read. |
+| `normalization` | string | `"dataset_gap"` or `"prompt_gap"` | What an effect is divided by: the gap between the two prompts' metric, averaged over the dataset (`dataset_gap`) or each prompt's own (`prompt_gap`). |
+
 ## Statistics
 
 In a spec at `statistics`.
@@ -488,7 +598,8 @@ An optional, explicitly configured diagnostic; it never changes an intervention.
 
 | Field | Type | Allowed values | Description |
 |---|---|---|---|
-| `method` | string | `"final_norm_logit_lens"` | Each layer's resid_post read through the final normalization and the unembedding. |
+| `method` | string | `"final_norm_logit_lens"` or `"tuned_lens"` | Each layer's resid_post read through the final normalization and the unembedding (`final_norm_logit_lens`), or first through that layer's affine translator from a tuned lens trained in the project (`tuned_lens`; layers it has no translator for are read as the logit lens reads them). |
+| `lens` | object or null | [Lens](#lens), or `null` | The tuned lens, for the tuned_lens method; `null` for the logit lens. |
 | `prompt_index` | integer | 0 or more | The prompt pair's index in the dataset, from 0. |
 | `which` | string | `"clean"` or `"corrupt"` | The pair's clean or corrupt prompt. |
 | `position` | object | one of [`last`](#position-last) or [`index`](#position-index) ([Position](#position)) | The token whose next-token predictions are read. |
@@ -498,14 +609,18 @@ An optional, explicitly configured diagnostic; it never changes an intervention.
 
 In a spec at `sae`.
 
-A published sparse autoencoder (or transcoder) on Hugging Face: the repository, the folder
-holding it (empty for the top level) and the exact commit, pinned when a run starts.
+A sparse autoencoder (or transcoder): one published on Hugging Face, named by the
+repository, the folder holding it (empty for the top level) and the exact commit, pinned when a
+run starts; or one trained in the project, named by its folder in `saes/` and pinned by the
+hash of its files.
 
 | Field | Type | Allowed values | Description |
 |---|---|---|---|
-| `repo` | string | not empty | The Hugging Face repository, such as jbloom/GPT2-Small-SAEs-Reformatted. |
-| `path` | string | any | The folder in the repository that holds the SAE, such as blocks.8.hook_resid_pre; empty for the top level. |
-| `revision` | string or null | any | The exact commit; `null` resolves the main branch when a run starts, and the run's spec pins it. |
+| `repo` | string | not empty | The Hugging Face repository, such as jbloom/GPT2-Small-SAEs-Reformatted; for an SAE trained in the project, its name. |
+| `path` | string | any | The folder in the repository that holds the SAE, such as blocks.8.hook_resid_pre, empty for the top level; for an SAE trained in the project, saes/ and its name. |
+| `revision` | string or null | any | The exact commit; `null` resolves the main branch when a run starts, and the run's spec pins it. Always `null` for an SAE trained in the project. |
+| `source` | string | `"hub"` or `"project"` | Where the SAE comes from: Hugging Face, or the project's saes folder (trained there). |
+| `sha256` | string or null | any | For an SAE trained in the project, the hash of its cfg.json and weights file (see logogram.sae_training); `null` uses the SAE as it is when a run starts, and the run's spec pins it. Always `null` for Hugging Face, where the revision pins the files. |
 
 ## Chat template
 
@@ -538,7 +653,7 @@ so the model goes on with it as its reply.
 
 In a spec at `experiment.baseline` (experiment `ablation`).
 
-One of these, chosen by `kind`: [`zero`](#baseline-zero), [`mean`](#baseline-mean) or [`resample`](#baseline-resample).
+One of these, chosen by `kind`: [`zero`](#baseline-zero), [`mean`](#baseline-mean), [`resample`](#baseline-resample), [`scale`](#baseline-scale) or [`projection`](#baseline-projection).
 
 ### Baseline: zero
 
@@ -575,11 +690,36 @@ Each prompt draws `donors` donors from the pool without replacement, never itsel
 | `donors` | integer | 1 to 1,000 | How many donors each prompt draws. |
 | `seed` | integer | 0 to 4,294,967,295 | The seed of the draw. |
 
+### Baseline: scale
+
+Multiply the activation by a factor: 0 removes it, as zero ablation does; 2 doubles it;
+-1 turns it around. Appended tokens read to score an answer of several tokens are scaled
+too, when every position is.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `kind` | string | `"scale"` | Which baseline this is: always `scale` here. |
+| `factor` | number | any | What the activation is multiplied by. |
+
+### Baseline: projection
+
+Directional ablation: replace the component of the activation along a saved direction
+(or within a saved subspace) and keep everything at right angles to it. With no reference the
+component is removed (set to zero); with one, it is set to its mean over those prompts (at
+the same position, as mean ablation takes it). Only activations as wide as the residual
+stream have such a component: stream sites and attention and MLP outputs.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `kind` | string | `"projection"` | Which baseline this is: always `projection` here. |
+| `direction` | object | [Direction](#direction) | The direction or subspace whose component is replaced. |
+| `reference` | string or null | `"clean"` or `"corrupt"`, or `null` | The prompts whose mean component replaces it, or `null` to remove it. |
+
 ## Steering direction
 
 In a spec at `experiment.direction` (experiment `steering`).
 
-One of these, chosen by `kind`: [`mean_difference`](#steering-direction-mean_difference) or [`sae_feature`](#steering-direction-sae_feature).
+One of these, chosen by `kind`: [`mean_difference`](#steering-direction-mean_difference), [`sae_feature`](#steering-direction-sae_feature) or [`direction`](#steering-direction-direction).
 
 ### Steering direction: mean_difference
 
@@ -598,6 +738,17 @@ The decoder direction of one feature of the spec's SAE, added where the SAE read
 |---|---|---|---|
 | `kind` | string | `"sae_feature"` | Which steering direction this is: always `sae_feature` here. |
 | `feature` | integer | 0 or more | The feature's index in the spec's SAE. |
+
+### Steering direction: direction
+
+A direction saved in the project (one dimension), added where the steered site is. A
+strength of 1 moves an activation's component along it as far as the mean difference between
+the two prompts of each training pair does.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `kind` | string | `"direction"` | Which steering direction this is: always `direction` here. |
+| `direction` | object | [Direction](#direction) | The saved direction; it must have one dimension and the residual stream's width. |
 
 ## Continuations
 
@@ -621,11 +772,16 @@ One of these, chosen by `kind`: [`head`](#path-receiver-head), [`logits`](#path-
 
 A later attention head whose query, key or value input receives the path.
 
+With grouped-query attention (Llama, Qwen, Mistral, Gemma) a model has fewer key and value
+heads than query heads, and every query head of a group reads its key/value head's key and
+value: a key or value receiver then names the key/value head (results write it "L5 KV1 k"),
+and the path reaches every query head of its group through it, as a k or v site does.
+
 | Field | Type | Allowed values | Description |
 |---|---|---|---|
 | `kind` | string | `"head"` | Which path receiver this is: always `head` here. |
 | `layer` | integer | 0 or more | The receiving head's layer, from 0. |
-| `head` | integer | 0 or more | The receiving head's index in its layer. |
+| `head` | integer | 0 or more | The receiving head's index in its layer: the query head for `q`, the key/value head for `k` and `v` (the same as the query head without grouped-query attention). |
 | `input` | string | `"q"`, `"k"` or `"v"` | The input the path reaches: the head's query, key or value. |
 
 ### Path receiver: logits
@@ -663,9 +819,49 @@ every edge chosen that the chosen edges close: 0 with none, 1 with every edge of
 | `patch` | string | `"chosen"` or `"rest"` | Which edges carry the source prompt's values: the chosen ones, or every other one. |
 | `control` | object | [Random edges](#random-edges) | The same counts of edges chosen at random, the curve to compare with. |
 
+## Direction
+
+In a spec at `experiment.subspace` (experiment `subspace_patching`), `experiment.baseline.direction` (experiment `ablation`; baseline `projection`), `experiment.direction.direction` (experiment `steering`; steering direction `direction`) and `metric.unit.direction` (metric `readout`; readout `direction`).
+
+A direction (or a subspace of a few) saved in the project's directions folder: a probe's
+weights, a learned subspace, a principal component or a mean difference. A run pins it by the
+hash of its tensor file and keeps a copy, so saving another direction under the same name
+later never changes the run.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `name` | string | any | The direction's name in the project's directions folder. |
+| `sha256` | string or null | any | The hash of its tensor file; `null` uses the direction as saved when a run starts, and the run's spec pins it. |
+
+## Probe labels
+
+In a spec at `experiment.labels` (experiment `probe`).
+
+One of these, chosen by `kind`: [`side`](#probe-labels-side) or [`meta`](#probe-labels-meta).
+
+### Probe labels: side
+
+Each pair gives two examples: its clean prompt, labelled clean, and its corrupt prompt,
+labelled corrupt. The probe reads which of the two prompts the model is reading.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `kind` | string | `"side"` | Which probe labels this is: always `side` here. |
+
+### Probe labels: meta
+
+Each prompt is labelled by a field of its pair's `meta`, such as a template, a number
+or a gender.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `kind` | string | `"meta"` | Which probe labels this is: always `meta` here. |
+| `field` | string | any | The field of each pair's meta whose value is the label. |
+| `prompts` | string | `"clean"`, `"corrupt"` or `"both"` | Which prompts of each pair are examples, each with the pair's label. |
+
 ## Position
 
-In a spec at `scope.position` (scope `heads`, `layer_components`, `features`, `head_inputs` or `neurons`), `predictions.position`, `scope.sites[].position` (scope `sites`) and `scope.sets[].sites[].position` (scope `site_sets`).
+In a spec at `scope.position` (scope `heads`, `layer_components`, `features`, `head_inputs` or `neurons`), `metric.position` (metric `readout`), `predictions.position`, `scope.sites[].position` (scope `sites`) and `scope.sets[].sites[].position` (scope `site_sets`).
 
 One of these, chosen by `kind`: [`all`](#position-all), [`last`](#position-last), [`index`](#position-index) or [`label`](#position-label).
 
@@ -745,6 +941,57 @@ A sender's output read directly by one receiver's input, through the residual st
 |---|---|---|---|
 | `sender` | object | [Edge sender](#edge-sender) | Where the edge starts. |
 | `receiver` | object | one of [`head`](#path-receiver-head), [`logits`](#path-receiver-logits) or [`mlp`](#path-receiver-mlp) ([Path receiver](#path-receiver)) | Where the edge ends: a later head's query, key or value, a later MLP's input, or the logits. |
+
+## Readout
+
+In a spec at `metric.unit` (metric `readout`).
+
+One of these, chosen by `kind`: [`neuron`](#readout-neuron), [`direction`](#readout-direction) or [`sae_feature`](#readout-sae_feature).
+
+### Readout: neuron
+
+One MLP neuron's activation, after its nonlinearity (for a gated MLP, the gate's
+activation times the up projection).
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `kind` | string | `"neuron"` | Which readout this is: always `neuron` here. |
+| `layer` | integer | 0 or more | The neuron's layer, from 0. |
+| `neuron` | integer | 0 or more | The neuron's index among its layer's MLP neurons. |
+
+### Readout: direction
+
+An activation's component along a saved direction of one dimension: its dot product with
+the direction's unit vector, at a stream site and layer you choose.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `kind` | string | `"direction"` | Which readout this is: always `direction` here. |
+| `direction` | object | [Direction](#direction) | The saved direction, of one dimension and the residual stream's width. |
+| `site` | string | `"resid_pre"`, `"resid_mid"`, `"resid_post"`, `"attn_out"` or `"mlp_out"` | The activation it is read from. |
+| `layer` | integer | 0 or more | The layer, from 0. |
+
+### Readout: sae_feature
+
+One feature of the spec's SAE: its activation, as the SAE encodes the activation it reads
+(a transcoder, its MLP's input).
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `kind` | string | `"sae_feature"` | Which readout this is: always `sae_feature` here. |
+| `feature` | integer | 0 or more | The feature's index in the spec's SAE. |
+
+## Lens
+
+In a spec at `predictions.lens`.
+
+A tuned lens trained in the project (its folder in `lenses/`), pinned by the hash of its
+translators' file, lens.safetensors, when a run starts.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `name` | string | any | The lens's name in the project's lenses folder. |
+| `sha256` | string or null | any | The hash of its lens.safetensors; `null` uses the lens as it is when a run starts, and the run's spec pins it. |
 
 ## Random edges
 

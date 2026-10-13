@@ -232,7 +232,8 @@ def test_an_sae_its_registry_reads_otherwise_is_refused_before_anything_download
 
     monkeypatch.setattr("logogram.backends.saes.download_sae", never)
     with pytest.raises(BackendError, match="constant_norm_rescale"):
-        load_sae(SAERef(repo=entry.repo, path=entry.folder, revision=None), "cpu")
+        ref = SAERef(repo=entry.repo, path=entry.folder, revision=None, source="hub", sha256=None)
+        load_sae(ref, "cpu")
     assert registry_refusal("jbloom/GPT2-Small-SAEs-Reformatted", "blocks.8.hook_resid_pre") is None
 
 

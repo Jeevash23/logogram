@@ -127,7 +127,7 @@ test("values still waiting in the queue, and values without results, say so", ()
 
 test("a revision's run opened at a site keeps the site, though the run shown before was another revision's", async () => {
   const spec = (revision: string): Spec => ({
-    logogram_spec: 3, name: `Pythia heads · revision ${revision}`, notes: "",
+    logogram_spec: 4, name: `Pythia heads · revision ${revision}`, notes: "",
     model: { id: "EleutherAI/pythia-70m", source: "hub", revision, sha256: null, device: "auto", dtype: "float32", process_weights: true },
     dataset: { path: "datasets/ioi.jsonl", sha256: "abc", limit: null }, tokenization: { prepend_bos: true, chat_template: null },
     experiment: { kind: "activation_patching", direction: "clean_to_corrupt" }, scope: { kind: "heads", position: { kind: "all" } },

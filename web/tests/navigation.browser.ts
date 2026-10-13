@@ -47,3 +47,35 @@ test("the Projects screen leads back to the open project as you left it", async 
   await page.getByRole("button", { name: /^Browser fixture/ }).click();
   await expect(tab("Research notes")).toHaveAttribute("aria-current", "page");
 });
+
+test("views that don't fit beside the tabs are under More, which names the open one", async ({ page }) => {
+  await page.setViewportSize({ width: 1200, height: 800 });
+  await page.goto("/?token=browser-test-token");
+  await expect(page.getByRole("main").getByRole("heading", { name: "tiny-gpt2", exact: true })).toBeVisible();
+  const views = page.getByRole("navigation", { name: "explore views" });
+  const more = views.getByRole("button", { name: /more views$/ });
+  await expect(more).toHaveText("More");
+  await expect(views.getByRole("button", { name: "Model", exact: true })).toHaveAttribute("aria-current", "page");
+  // Chosen from the menu with the keyboard, a view takes More's place, named and marked open.
+  await more.focus();
+  await page.keyboard.press("Enter");
+  const menu = page.getByRole("menu");
+  await expect(menu.getByRole("menuitem").first()).toBeFocused();
+  await page.keyboard.press("End");
+  await expect(menu.getByRole("menuitem", { name: "Representations" })).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/#\/representations/);
+  const open = views.getByRole("button", { name: /^Representations, and \d more views$/ });
+  await expect(open).toHaveAttribute("aria-current", "page");
+  // The keyboard comes back to the menu's button, named for the view now open.
+  await expect(open).toBeFocused();
+  // The number keys reach every view, in the row or not, from the view itself.
+  await page.locator("#main").focus();
+  await expect(page.locator("#main")).toBeFocused();
+  await page.keyboard.press("1");
+  await expect(views.getByRole("button", { name: "Model", exact: true })).toHaveAttribute("aria-current", "page");
+  // Too narrow for the tabs beside the context, the tabs take a line of their own: every view fits.
+  await page.setViewportSize({ width: 1000, height: 800 });
+  await expect(views.getByRole("button", { name: "Representations", exact: true })).toBeVisible();
+  await expect(more).toHaveCount(0);
+});

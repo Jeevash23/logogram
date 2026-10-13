@@ -84,6 +84,11 @@ def main() -> None:
         )
         project = projects.Project.create(root / "projects", "Browser fixture")
         write_dataset(project.dataset_file("ioi.jsonl"), generate_ioi(8, seed=0))
+        # Plain texts the tiny model reads word by word, to train SAEs and lenses on.
+        from logogram.corpora import CorpusSource, TextRecord, write_corpus
+
+        texts = [TextRecord(text=t) for r in generate_ioi(30, seed=1) for t in (r.clean, r.corrupt)]
+        write_corpus(project, "ioi-texts", texts, CorpusSource(kind="texts", detail="IOI prompts"))
         spec = make_spec(
             name="Without BOS",
             model={"id": f"tiny-{arch}", "revision": "test", "device": "cpu"},

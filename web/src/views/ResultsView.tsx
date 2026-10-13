@@ -11,7 +11,7 @@ import { ago, capitalize, ci, count, duration, num, pct, plural, qText, shortRev
 import { modelName, siteValue, useActiveRun, useArchitecture, useRunProfile } from "../lib/hooks";
 import { findSite, gridKey, layoutTitle, queryHeadsText, selectionOfSite, siteGrid, type Selection } from "../lib/sites";
 import { metricWords } from "../lib/metrics";
-import { baselineText, chatTemplateText, experimentText, graphText, layersText, measureOf, measureWords, positionText, receiverLabel, saeWritesText } from "../lib/spec";
+import { baselineText, chatTemplateText, experimentText, graphText, layersText, measureOf, measureWords, positionText, readoutText, receiverLabel, saeWritesText, sharesKeys } from "../lib/spec";
 import { useStore } from "../store/app";
 import { Distribution } from "../components/Distribution";
 import { api } from "../api/client";
@@ -23,6 +23,7 @@ import { CircuitDialog } from "../components/CircuitDialog";
 import { rankedSites, universeText } from "../lib/circuits";
 import { membershipText, sweepsOf, sweepsOfRun } from "../lib/sweeps";
 import { CircuitResults } from "./CircuitResults";
+import { DASResults, ProbeResults } from "./DirectionResults";
 import { EdgeResults } from "./EdgeResults";
 import { Continuations } from "./Continuations";
 import { FlagMark, Forest } from "./Forest";
@@ -104,9 +105,12 @@ export function ResultsView() {
   const words = measureWords(spec?.experiment, metricSpec);
   const measured = metricWords(metricSpec);
   const attribution = measureOf(spec?.experiment) === "attribution";
+  // A probe's values are accuracies: the most accurate, not the largest in size. A learned
+  // subspace run is about its learned subspaces, beside the whole site and a random subspace.
+  const accuracy = layout?.kind === "probe";
   const strongest = resultList
-    .filter((x) => x.effect.mean !== null && !x.variant?.control)
-    .sort((a, b) => Math.abs(b.effect.mean ?? 0) - Math.abs(a.effect.mean ?? 0))[0];
+    .filter((x) => x.effect.mean !== null && !x.variant?.control && (layout?.kind !== "das" || x.variant?.subspace === "learned"))
+    .sort((a, b) => (accuracy ? (b.effect.mean ?? 0) - (a.effect.mean ?? 0) : Math.abs(b.effect.mean ?? 0) - Math.abs(a.effect.mean ?? 0)))[0];
   const provenance = [
     status === "running" ? (elsewhere ? "Running in another process" : "Running") : status === "finished" ? `Finished ${ago(manifest?.finished_at)}` : status === "draft" ? "Not run yet" : status === "failed" ? "Failed" : "Cancelled",
     manifest?.wall_time_s !== undefined && manifest?.wall_time_s !== null ? duration(manifest.wall_time_s) : null,
@@ -127,7 +131,7 @@ export function ResultsView() {
           <span className="eyebrow">{provenance}</span>
           <h1 className={r.title}>{title || spec?.name || run.id}</h1>
           {title && spec && title !== spec.name && <p className={r.specName}>Spec name: {spec.name}</p>}
-          {spec && <MethodsLine spec={spec} n={summary?.n_prompts ?? run.live?.nPrompts} clusters={summary?.statistics.clusters} />}
+          {spec && <MethodsLine spec={spec} n={summary?.n_prompts ?? run.live?.nPrompts} clusters={summary?.statistics.clusters} grouped={sharesKeys(summary?.model)} />}
           {spec?.notes?.trim() && <RunNotes text={spec.notes.trim()} />}
           <SweepNote runId={run.id} />
           {environmentText && (
@@ -172,6 +176,7 @@ export function ResultsView() {
               <Button onClick={() => useStore.setState({ robustnessDialogOpen: true })} icon="refresh" data-tour="robustness">
                 Check robustness
               </Button>
+              <RerunButton runId={run.id} busy={job?.status === "running"} />
               <Button
                 onClick={() => useStore.setState({ sweepDialogRun: run.id })}
                 tip="Run this spec once for each of several seeds, datasets or revisions, and see which sites hold"
@@ -197,6 +202,7 @@ export function ResultsView() {
               {status === "draft" ? "Open in the form" : "Edit and rerun"}
             </Button>
           )}
+          {spec && (status === "failed" || status === "cancelled") && <RerunButton runId={run.id} busy={job?.status === "running"} />}
         </div>
       </div>
 
@@ -244,7 +250,28 @@ export function ResultsView() {
 
       {summary && (
         <dl className={r.figures} aria-label="The run at a glance">
-          {summary.features ? (
+          {summary.acdc ? (
+            <>
+              <div>
+                <dt>Edges ACDC kept</dt>
+                <dd className="figure">
+                  {count(summary.acdc.n_kept)}
+                  <span className={r.figureOf}> of {count(summary.acdc.n_edges)}</span>
+                </dd>
+              </div>
+              <div>
+                <dt>Faithfulness of the circuit</dt>
+                <dd className="figure" title={`${run.ciLevel}% CI ${ci(summary.acdc.faithfulness.lo, summary.acdc.faithfulness.hi, 3)}`}>
+                  {num(summary.acdc.faithfulness.mean, 2)}
+                  <span className={r.figureOf}> {ci(summary.acdc.faithfulness.lo, summary.acdc.faithfulness.hi, 2)}</span>
+                </dd>
+              </div>
+              <div>
+                <dt>Threshold, in the {measured.short}</dt>
+                <dd className="figure">{summary.acdc.threshold}</dd>
+              </div>
+            </>
+          ) : summary.features ? (
             <>
               <div>
                 <dt>SAE variance explained</dt>
@@ -285,6 +312,21 @@ export function ResultsView() {
                   </div>
                 </>
               )}
+            </>
+          ) : summary.probe ? (
+            <>
+              <div>
+                <dt>Chance: the most common training class</dt>
+                <dd className="figure">{num(summary.probe.chance, 2)}</dd>
+              </div>
+              <div>
+                <dt>Held-out pairs measured</dt>
+                <dd className="figure">{count(summary.probe.test.length)}</dd>
+              </div>
+              <div>
+                <dt>Pairs that trained the probes</dt>
+                <dd className="figure">{count(summary.probe.train.length)}</dd>
+              </div>
             </>
           ) : summary.steering ? (
             <>
@@ -358,9 +400,19 @@ export function ResultsView() {
               </div>
             </>
           )}
-          {strongest && (
+          {strongest && summary.probe && (
             <div className={r.wide}>
-              <dt>{attribution ? "Largest direct effect" : "Strongest effect"}</dt>
+              <dt>Most accurate probe</dt>
+              <dd className="figure">
+                <button type="button" className={r.figureLink} onClick={() => select(selectionOfSite(strongest))}>
+                  {strongest.label} <span className={r.figureValue}>{num(strongest.effect.mean, 2)}</span>
+                </button>
+              </dd>
+            </div>
+          )}
+          {strongest && !summary.probe && (
+            <div className={r.wide}>
+              <dt>{attribution ? "Largest direct effect" : summary.acdc ? "Largest change when removed" : layout?.kind === "das" ? "Strongest learned subspace" : "Strongest effect"}</dt>
               <dd className="figure">
                 <button type="button" className={r.figureLink} onClick={() => select(selectionOfSite(strongest))}>
                   <span className={r.swatch} style={{ background: color(siteValue(strongest, metric) ?? 0) }} aria-hidden="true" />
@@ -372,7 +424,7 @@ export function ResultsView() {
         </dl>
       )}
       {run.id && ranked.length > 0 && <CircuitDialog open={circuitOpen} onOpenChange={setCircuitOpen} ranked={ranked} runId={run.id} />}
-      {layout && layout.kind !== "site_sets" && layout.kind !== "edges" && <div className={r.controls}>
+      {layout && layout.kind !== "site_sets" && layout.kind !== "edges" && layout.kind !== "probe" && <div className={r.controls}>
         <Segmented label="Result values" value={metric} onChange={mapMetric => useStore.setState({ mapMetric })} options={[{ value: "effect", label: words.effect }, { value: "delta", label: words.delta }]} />
         <Segmented label="Result scale" value={scaleMode} onChange={scaleMode => useStore.setState({ scaleMode })} options={[{ value: "auto", label: "Fit" }, { value: "unit", label: "±1", disabled: metric !== "effect" }]} />
         {layout.kind !== "neurons" && <Checkbox checked={cellValues} onChange={(v) => useStore.setState({ cellValues: v })}>Show values</Checkbox>}
@@ -424,10 +476,12 @@ export function ResultsView() {
           runId={run.id}
           finished={status === "finished"}
           edges={summary?.edges ?? null}
+          acdc={summary?.acdc ?? null}
           sites={run.sites}
           results={run.results}
           nLayers={summary?.model?.n_layers ?? arch?.nLayers ?? 1}
           nHeads={summary?.model?.n_heads ?? arch?.nHeads ?? 1}
+          nKvHeads={summary?.model?.n_key_value_heads ?? summary?.model?.n_heads ?? arch?.nHeads ?? 1}
           theme={theme}
           effectLabel={words.effect}
           ciLevel={run.ciLevel}
@@ -437,7 +491,31 @@ export function ResultsView() {
           source={summary?.reference ?? "source"}
         />
       )}
-      {layout && layout.kind !== "sites" && layout.kind !== "site_sets" && layout.kind !== "neurons" && layout.kind !== "edges" && (
+      {layout?.kind === "probe" && run.id && (
+        <ProbeResults
+          runId={run.id}
+          probe={summary?.probe}
+          sites={run.sites}
+          results={run.results}
+          ciLevel={run.ciLevel}
+          theme={theme}
+          selectedIndex={selectedSite?.index ?? null}
+          onSelect={(site) => select(selectionOfSite(site))}
+          finished={status === "finished"}
+        />
+      )}
+      {layout?.kind === "das" && run.id && (
+        <DASResults
+          runId={run.id}
+          das={summary?.das}
+          sites={run.sites}
+          results={run.results}
+          selectedIndex={selectedSite?.index ?? null}
+          onSelect={(site) => select(selectionOfSite(site))}
+          finished={status === "finished"}
+        />
+      )}
+      {layout && layout.kind !== "sites" && layout.kind !== "site_sets" && layout.kind !== "neurons" && layout.kind !== "edges" && layout.kind !== "probe" && (
         <div className={r.grid}>
           <div className={r.heat} data-tour="map">
             <div className={r.heatHead}>
@@ -455,7 +533,7 @@ export function ResultsView() {
               results={run.results}
               metric={metric}
               experiment={spec?.experiment}
-              measuredBy={metricSpec}
+              measuredBy={metricSpec ?? undefined}
               color={color}
               theme={theme}
               flagged={flagged}
@@ -522,12 +600,14 @@ function SteeredFeature({ feature, trained }: { feature: SteeringFeature; traine
 function Corrections({ summary }: { summary: Summary }) {
   const st = summary.statistics;
   if (st.band_level === null || st.band_level === undefined) return null;
+  // A probe's accuracy is never below zero: what it is tested against is its control (selectivity).
+  if (summary.layout.kind === "probe") return null;
   const alpha = Math.round((1 - st.ci) * 1000) / 1000;
   // The corrections cover every row the run reports, steering's random controls included, as the
   // server computes them and the command line counts them. An edge attribution run lists only its
   // strongest edges, so the server counts them over every edge.
   const sites = summary.sites;
-  const edges = summary.edges?.corrections;
+  const edges = summary.edges?.corrections ?? summary.acdc?.corrections;
   const banded = edges ? edges.banded : sites.filter((x) => x.band && (x.band.lo > 0 || x.band.hi < 0)).length;
   const discoveries = edges ? edges.discoveries : sites.filter((x) => x.q !== null && x.q !== undefined && x.q < alpha).length;
   const single = edges ? edges.single : sites.filter((x) => x.effect.lo !== null && x.effect.hi !== null && (x.effect.lo > 0 || x.effect.hi < 0)).length;
@@ -668,7 +748,7 @@ function ResultsHeatmap({
 }
 
 /** The method as one quiet line: every choice that can change a number, in reading order. */
-function MethodsLine({ spec, n, clusters }: { spec: Spec; n: number | undefined; clusters?: number | null }) {
+function MethodsLine({ spec, n, clusters, grouped = false }: { spec: Spec; n: number | undefined; clusters?: number | null; grouped?: boolean }) {
   const e = spec.experiment;
   const scope = spec.scope;
   const site =
@@ -713,18 +793,24 @@ function MethodsLine({ spec, n, clusters }: { spec: Spec; n: number | undefined;
             : e.kind === "attribution_patching"
               ? `${experimentText(e)} (attribution patching)`
               : e.kind === "path_patching"
-                ? `Path patching ${e.direction === "clean_to_corrupt" ? "clean → corrupt" : "corrupt → clean"} into ${e.receivers.map(receiverLabel).join(", ")}${e.freeze_mlps ? ", MLPs held" : ""}`
+                ? `Path patching ${e.direction === "clean_to_corrupt" ? "clean → corrupt" : "corrupt → clean"} into ${e.receivers.map((x) => receiverLabel(x, grouped)).join(", ")}${e.freeze_mlps ? ", MLPs held" : ""}`
                 : e.kind === "steering"
                 ? `Steer ${e.apply_to} ${e.direction?.kind === "sae_feature" ? `along SAE feature ${e.direction.feature}` : `→ ${e.apply_to === "clean" ? "corrupt" : "clean"}`} (${e.coefficients.map((c) => `×${c}`.replace("-", "−")).join(", ")}${e.control ? ", random control" : ""})`
                 : e.kind === "edge_attribution"
                   ? `${experimentText(e)} (edge attribution)`
-                  : `Ablate (${baselineText(e.baseline)})`}
+                  : e.kind === "acdc" || e.kind === "probe" || e.kind === "das" || e.kind === "subspace_patching"
+                    ? experimentText(e)
+                    : `Ablate (${baselineText(e.baseline)})`}
       </strong>
-      {" "}{site}{scope.kind === "site_sets" ? ", each intervened on at once" : scope.kind === "graph" ? ", summed over every position" : ` at ${position}`}
+      {" "}{site}{scope.kind === "site_sets" ? ", each intervened on at once" : scope.kind === "graph" ? (e.kind === "acdc" ? ", removed one at a time" : ", summed over every position") : ` at ${position}`}
       <span className={r.sep}>·</span>
       {e.kind === "direct_logit_attribution"
-        ? `logit difference, as a share of ${spec.metric.normalization === "dataset_gap" ? "the mean" : "each prompt's"}`
-        : `${metricWords(spec.metric).label}, normalized by ${spec.metric.normalization === "dataset_gap" ? "the dataset gap" : "each prompt's gap"}`}
+        ? `logit difference, as a share of ${spec.metric?.normalization === "dataset_gap" ? "the mean" : "each prompt's"}`
+        : !spec.metric
+          ? "held-out accuracy, against chance and shuffled labels"
+          : spec.metric.kind === "readout"
+            ? `reading ${readoutText(spec.metric)}, normalized by ${spec.metric.normalization === "dataset_gap" ? "the dataset gap" : "each prompt's gap"}`
+            : `${metricWords(spec.metric).label}, normalized by ${spec.metric.normalization === "dataset_gap" ? "the dataset gap" : "each prompt's gap"}`}
       {n !== undefined && <><span className={r.sep}>·</span>n = {count(n)}</>}
       {spec.tokenization.chat_template && <><span className={r.sep}>·</span>prompts {chatTemplateText(spec.tokenization.chat_template)}</>}
       <span className={r.sep}>·</span>{Math.round(spec.statistics.ci * 100)}% CI{spec.statistics.cluster ? `, resampling ${clusters ? `${count(clusters)} clusters` : "clusters"} of prompts with the same ${spec.statistics.cluster}` : ""}, {count(spec.statistics.bootstrap)} resamples, seed {spec.statistics.seed}
@@ -785,11 +871,29 @@ function RunNotes({ text }: { text: string }) {
   );
 }
 
+/** Run the spec again, exactly as it ran: a new run, which says when it finishes whether every
+ * per-prompt value matches. */
+function RerunButton({ runId, busy }: { runId: string; busy: boolean }) {
+  return (
+    <Button
+      disabled={busy}
+      onClick={() => void useStore.getState().rerunRun(runId)}
+      tip={
+        busy
+          ? "A run is in progress. This can start when it finishes."
+          : "Run this spec again, exactly as it ran, and say whether every per-prompt value matches"
+      }
+    >
+      Rerun
+    </Button>
+  );
+}
+
 /** Exports in one place: the per-prompt table, the figure, and the methods text. */
 function ExportMenu({ runId, detail }: { runId: string; detail: NonNullable<ReturnType<typeof useActiveRun>["detail"]> }) {
   const kind = detail.summary?.layout.kind;
   const hasMap = !!kind && kind !== "sites" && kind !== "site_sets" && kind !== "edges";
-  const everyEdge = !!detail.summary?.edges;
+  const everyEdge = !!detail.summary?.edges || !!detail.summary?.acdc;
   const metric = useStore((st) => st.mapMetric);
   const scaleMode = useStore((st) => st.scaleMode);
   const guard = useStore((st) => st.guard);
@@ -862,12 +966,15 @@ function RunningBanner() {
   const run = useActiveRun();
   const p = run.live?.progress;
   const model = useStore((st) => st.model);
-  const edges = run.detail?.spec?.experiment.kind === "edge_attribution";
+  const kind = run.detail?.spec?.experiment.kind;
+  const edges = kind === "edge_attribution";
   return (
     <div className={r.running}>
       <div className={r.runningText}>
         {p && edges
           ? `Estimating every edge, then the curve · ${count(p.done)} of ${count(p.total)} steps · ${pct(p.done / p.total)}`
+          : p && kind === "acdc"
+          ? `Testing the edges one at a time, from the logits back · layer ${p.layer} · ${count(p.done)} of ${count(p.total)} passes · ${pct(p.done / p.total)}`
           : p
           ? `Layer ${p.layer} · ${count(p.done)} of ${count(p.total)} rows · ${pct(p.done / p.total)}`
           : model.state === "loading"

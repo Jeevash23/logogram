@@ -9,10 +9,13 @@ import type {
   PathReceiverSpec,
   ExperimentSpec,
   Measure,
+  MetricSpec,
   ModelInfo,
+  ProbeLabels,
   ModelRef,
   PositionSpec,
   SAEInfo,
+  SAERef,
   ScopeSpec,
   Side,
   SiteSpec,
@@ -21,7 +24,7 @@ import type {
 } from "../api/types";
 import { count, plural } from "./format";
 import { metricWords } from "./metrics";
-import type { Selection } from "./sites";
+import { KIND_SHORT, type Selection } from "./sites";
 
 export function positionText(p: PositionSpec): string {
   switch (p.kind) {
@@ -44,21 +47,49 @@ export function baselineText(b: BaselineSpec): string {
       return `mean over ${b.reference} prompts`;
     case "resample":
       return `resample from ${b.donors} ${b.pool} donor${b.donors === 1 ? "" : "s"}, seed ${b.seed}`;
+    case "scale":
+      return `scale by ${String(b.factor).replace("-", "−")}`;
+    case "projection":
+      return b.reference === null ? `remove the direction ${b.direction.name}` : `set the direction ${b.direction.name} to its ${b.reference} mean`;
   }
 }
 
-/** A path's receiver as the results write it, for example "L9 H9 q", "L3 MLP" or "logits". */
-export function receiverLabel(r: PathReceiverSpec): string {
-  if (r.kind === "logits") return "logits";
-  if (r.kind === "mlp") return `L${r.layer} MLP`;
-  return `L${r.layer} H${r.head} ${r.input}`;
+/** What a probe reads, in words (src/logogram/spec.py labels_text). */
+export function labelsText(labels: ProbeLabels): string {
+  if (labels.kind === "side") return "which prompt it is (clean or corrupt)";
+  const prompts = { clean: "clean prompts", corrupt: "corrupt prompts", both: "both prompts" }[labels.prompts];
+  return `meta.${labels.field} (${prompts})`;
 }
 
-/** A path's receiver in words, for example "L9 H9 query" or "L3 MLP input". */
-export function receiverWords(r: PathReceiverSpec): string {
+/** Whether a model's heads share keys and values (grouped-query attention): it has fewer
+ * key/value heads than query heads, as a run's summary or the loaded model says. */
+export function sharesKeys(model: { n_heads: number; n_key_value_heads?: number | null; extra?: { n_key_value_heads?: number } } | null | undefined): boolean {
+  if (!model) return false;
+  const kv = model.n_key_value_heads ?? model.extra?.n_key_value_heads ?? model.n_heads;
+  return kv < model.n_heads;
+}
+
+/** A head receiver's head as the results write it: "H9", or "KV1" for a key or value on a model
+ * whose heads share keys and values (`grouped`: grouped-query attention), where it names the
+ * key/value head. */
+function receiverHead(r: Extract<PathReceiverSpec, { kind: "head" }>, grouped: boolean): string {
+  return grouped && r.input !== "q" ? `KV${r.head}` : `H${r.head}`;
+}
+
+/** A path's receiver as the results write it, for example "L9 H9 q", "L3 MLP", "logits", or
+ * "L9 KV1 k" for a key/value head's key with grouped-query attention (src/logogram/spec.py
+ * receiver_text). */
+export function receiverLabel(r: PathReceiverSpec, grouped = false): string {
+  if (r.kind === "logits") return "logits";
+  if (r.kind === "mlp") return `L${r.layer} MLP`;
+  return `L${r.layer} ${receiverHead(r, grouped)} ${r.input}`;
+}
+
+/** A path's receiver in words, for example "L9 H9 query", "L9 KV1 key" or "L3 MLP input". */
+export function receiverWords(r: PathReceiverSpec, grouped = false): string {
   if (r.kind === "logits") return "Logits, read directly";
   if (r.kind === "mlp") return `L${r.layer} MLP input`;
-  return `L${r.layer} H${r.head} ${{ q: "query", k: "key", v: "value" }[r.input]}`;
+  return `L${r.layer} ${receiverHead(r, grouped)} ${{ q: "query", k: "key", v: "value" }[r.input]}`;
 }
 
 /** An edge's sender as the results write it, for example "L5 H5", "L0 MLP" or "embeddings". */
@@ -74,16 +105,16 @@ export function senderWords(s: EdgeSenderSpec): string {
 }
 
 /** What an edge's receiver reads, in words, for example "L9 H6's query input". */
-export function receiverInputWords(r: PathReceiverSpec): string {
+export function receiverInputWords(r: PathReceiverSpec, grouped = false): string {
   if (r.kind === "logits") return "the logits";
   if (r.kind === "mlp") return `L${r.layer} MLP's input`;
-  return `L${r.layer} H${r.head}'s ${{ q: "query", k: "key", v: "value" }[r.input]} input`;
+  return `L${r.layer} ${receiverHead(r, grouped)}'s ${{ q: "query", k: "key", v: "value" }[r.input]} input`;
 }
 
-/** An edge as the results write it, for example "L5 H5 → L9 H6 q" (src/logogram/spec.py
- * edge_text). */
-export function edgeLabel(e: EdgeSpec): string {
-  return `${senderLabel(e.sender)} → ${receiverLabel(e.receiver)}`;
+/** An edge as the results write it, for example "L5 H5 → L9 H6 q", or "L5 H5 → L9 KV1 k" into a
+ * key/value head's key with grouped-query attention (src/logogram/spec.py edge_text). */
+export function edgeLabel(e: EdgeSpec, grouped = false): string {
+  return `${senderLabel(e.sender)} → ${receiverLabel(e.receiver, grouped)}`;
 }
 
 /** The graph a graph scope covers, in words (as src/logogram/spec.py graph_text says it). */
@@ -142,21 +173,37 @@ export function experimentText(e: ExperimentSpec): string {
       ? `Estimate patching ${arrow} with integrated gradients (${e.steps} steps)`
       : `Estimate patching ${arrow}`;
   }
+  if (e.kind === "probe") {
+    return `Linear probe for ${labelsText(e.labels)} (${Math.round(e.train_fraction * 100)}% of pairs train, seed ${e.seed}${e.control ? ", against shuffled labels" : ""})`;
+  }
+  if (e.kind === "das") {
+    const arrow = e.direction === "clean_to_corrupt" ? "clean → corrupt" : "corrupt → clean";
+    return `Learn a subspace of ${plural(e.dimensions, "dimension")} and patch ${arrow} within it (${e.steps} steps${e.control ? ", random control" : ""})`;
+  }
+  if (e.kind === "subspace_patching") {
+    const arrow = e.direction === "clean_to_corrupt" ? "clean → corrupt" : "corrupt → clean";
+    return `Patch ${arrow} along the direction ${e.subspace.name}`;
+  }
   if (e.kind === "steering") {
     const strengths = `${e.coefficients.map(strengthText).join(", ")}${e.control ? ", random control" : ""}`;
     if (e.direction.kind === "sae_feature") return `Steer ${e.apply_to} prompts along SAE feature ${e.direction.feature} (${strengths})`;
+    if (e.direction.kind === "direction") return `Steer ${e.apply_to} prompts along the direction ${e.direction.direction.name} (${strengths})`;
     const toward = e.apply_to === "clean" ? "corrupt" : "clean";
     return `Steer ${e.apply_to} prompts toward ${toward} (${strengths})`;
   }
   if (e.kind === "path_patching") {
     const arrow = e.direction === "clean_to_corrupt" ? "clean → corrupt" : "corrupt → clean";
-    const names = e.receivers.slice(0, 4).map(receiverLabel).join(", ") + (e.receivers.length > 4 ? ` and ${e.receivers.length - 4} more` : "");
+    const names = e.receivers.slice(0, 4).map((r) => receiverLabel(r)).join(", ") + (e.receivers.length > 4 ? ` and ${e.receivers.length - 4} more` : "");
     return `Path patching ${arrow} into ${names} (${e.freeze_mlps ? "heads and MLPs" : "other heads"} held)`;
   }
   if (e.kind === "edge_attribution") {
     const arrow = e.direction === "clean_to_corrupt" ? "clean → corrupt" : "corrupt → clean";
     const how = e.method === "integrated_gradients" ? ` with integrated gradients (${e.steps} steps)` : "";
     return `Estimate each edge ${arrow}${how}${e.curve ? ", then patch the strongest for a faithfulness curve" : ""}`;
+  }
+  if (e.kind === "acdc") {
+    const arrow = e.direction === "clean_to_corrupt" ? "clean → corrupt" : "corrupt → clean";
+    return `ACDC, threshold ${e.threshold} on changes ${e.rule === "toward_source" ? "toward the source" : "either way"} (${arrow})`;
   }
   switch (e.baseline.kind) {
     case "zero":
@@ -165,6 +212,10 @@ export function experimentText(e: ExperimentSpec): string {
       return `Mean-ablate (${e.baseline.reference} mean)`;
     case "resample":
       return `Resample-ablate (${e.baseline.donors} ${e.baseline.pool} donors, seed ${e.baseline.seed})`;
+    case "scale":
+      return `Scale by ${String(e.baseline.factor).replace("-", "−")}`;
+    case "projection":
+      return `Ablate the direction ${e.baseline.direction.name} (${e.baseline.reference === null ? "removed" : `set to its ${e.baseline.reference} mean`})`;
   }
 }
 
@@ -177,8 +228,12 @@ export function experimentShort(e: ExperimentSpec): string {
     const arrow = e.direction === "clean_to_corrupt" ? "clean→corrupt" : "corrupt→clean";
     return e.method === "integrated_gradients" ? `Estimated ${arrow}, integrated gradients` : `Estimated ${arrow}`;
   }
+  if (e.kind === "probe") return e.labels.kind === "side" ? "Probe for the prompt" : `Probe for ${e.labels.field}`;
+  if (e.kind === "das") return `Learned subspace, ${e.dimensions}d`;
+  if (e.kind === "subspace_patching") return `Patch along ${e.subspace.name}`;
   if (e.kind === "steering") {
     if (e.direction?.kind === "sae_feature") return `Steer ${e.apply_to} along F${e.direction.feature}`;
+    if (e.direction?.kind === "direction") return `Steer ${e.apply_to} along ${e.direction.direction.name}`;
     return `Steer ${e.apply_to}→${e.apply_to === "clean" ? "corrupt" : "clean"}`;
   }
   if (e.kind === "path_patching") return `Paths ${e.direction === "clean_to_corrupt" ? "clean→corrupt" : "corrupt→clean"}`;
@@ -186,11 +241,25 @@ export function experimentShort(e: ExperimentSpec): string {
     const arrow = e.direction === "clean_to_corrupt" ? "clean→corrupt" : "corrupt→clean";
     return e.method === "integrated_gradients" ? `Edges ${arrow}, integrated gradients` : `Edges ${arrow}`;
   }
-  return { zero: "Zero ablation", mean: "Mean ablation", resample: "Resample ablation" }[e.baseline.kind];
+  if (e.kind === "acdc") return `ACDC ${e.direction === "clean_to_corrupt" ? "clean→corrupt" : "corrupt→clean"}, threshold ${e.threshold}`;
+  return { zero: "Zero ablation", mean: "Mean ablation", resample: "Resample ablation", scale: "Scaled", projection: "Directional ablation" }[e.baseline.kind];
+}
+
+/** A readout metric's unit, in words (src/logogram/spec.py readout_text). */
+export function readoutText(metric: Extract<MetricSpec, { kind: "readout" }>): string {
+  const u = metric.unit;
+  const what =
+    u.kind === "neuron"
+      ? `neuron ${u.neuron} of L${u.layer}'s MLP`
+      : u.kind === "direction"
+        ? `L${u.layer} ${KIND_SHORT[u.site]} along the direction ${u.direction.name}`
+        : `SAE feature ${u.feature}`;
+  return `${what} at ${positionText(metric.position)}`;
 }
 
 /** What a method's per-prompt values are (see Summary.measure). */
 export function measureOf(e: ExperimentSpec | null | undefined): Measure {
+  if (e?.kind === "probe") return "probe";
   if (e?.kind === "direct_logit_attribution") return "attribution";
   if (e?.kind === "attribution_patching" || e?.kind === "edge_attribution") return "estimate";
   return "intervention";
@@ -209,8 +278,26 @@ export function measureWords(e: ExperimentSpec | null | undefined, metric?: { ki
       deltaLegend: "What the component writes directly into the logit difference (answer − distractor), in logits.",
     };
   }
+  if (e?.kind === "probe") {
+    return {
+      effect: "Held-out accuracy",
+      delta: "Held-out accuracy",
+      mean: "held-out accuracy",
+      effectLegend: "The share of held-out examples whose label the site's probe reads correctly. Compare it with chance and with the control probe, trained on shuffled labels.",
+      deltaLegend: "The share of held-out examples whose label the site's probe reads correctly.",
+    };
+  }
   const m = metricWords(metric);
   const delta = `Δ ${m.short}`;
+  if (e?.kind === "das") {
+    return {
+      effect: "Normalized effect",
+      delta,
+      mean: "mean normalized effect",
+      effectLegend: `Normalized effect on held-out pairs of patching within the learned subspace, the whole site, or a random subspace: 1 means it ${e.direction === "clean_to_corrupt" ? "restores the clean behavior" : "shifts the output as far as the corrupt prompt does"}.`,
+      deltaLegend: `Change in the ${m.label} (${m.formula}) caused by the patch.`,
+    };
+  }
   if (e?.kind === "steering") {
     return {
       effect: "Normalized effect",
@@ -229,8 +316,18 @@ export function measureWords(e: ExperimentSpec | null | undefined, metric?: { ki
       deltaLegend: `Change in the ${m.label} (${m.formula}) when only the receivers' inputs are patched.`,
     };
   }
+  if (e?.kind === "acdc") {
+    const source = e.direction === "clean_to_corrupt" ? "clean" : "corrupt";
+    return {
+      effect: "Change when removed",
+      delta: `${delta} when removed`,
+      mean: "mean normalized change",
+      effectLegend: `Normalized change in the metric when ACDC removed the edge from the circuit as it stood then: 1 means removing it moved the metric as far as switching to the ${source} prompt; 0 means no change.`,
+      deltaLegend: `Change in the ${m.label} (${m.formula}) when ACDC removed the edge from the circuit as it stood then.`,
+    };
+  }
   const restores =
-    (e?.kind === "activation_patching" || e?.kind === "attribution_patching" || e?.kind === "edge_attribution") &&
+    (e?.kind === "activation_patching" || e?.kind === "attribution_patching" || e?.kind === "edge_attribution" || e?.kind === "subspace_patching") &&
     e.direction === "clean_to_corrupt";
   if (e?.kind === "edge_attribution") {
     return {
@@ -442,7 +539,7 @@ export function workload(
     return spec.experiment.method === "integrated_gradients" ? n * (spec.experiment.steps ?? 1) : n;
   }
   const s = spec.scope;
-  if (s.kind === "graph") return null; // only edge attribution estimates the graph
+  if (s.kind === "graph") return null; // ACDC's passes are the edge plan's to count
   if (s.kind === "edges") return s.edges.length * n;
   if (spec.experiment.kind === "steering") {
     const e = spec.experiment;
@@ -504,6 +601,28 @@ export function workloadText(spec: Spec, rows: number): string {
 /** Where steering along a feature of this SAE adds its decoder direction, as a scope names it: the
  * site the SAE writes. An SAE on the heads' outputs (z) writes them before the output projection,
  * which turns them into the layer's attention output, so its scope names that. */
+/** The loaded SAE as a spec names it: a published one by its repository, folder and revision, one
+ * trained in the project by its name and the hash of its files. */
+export function saeRefOf(info: Pick<SAEInfo, "repo" | "path" | "revision" | "source" | "sha256">): SAERef {
+  return { repo: info.repo, path: info.path, revision: info.revision, source: info.source ?? "hub", sha256: info.sha256 ?? null };
+}
+
+/** Whether the loaded SAE is the one `ref` names: from the same place, and the same files where
+ * `ref` pins them (a published SAE's revision, a trained one's hash). */
+export function sameSae(ref: SAERef, info: Pick<SAERef, "repo" | "path" | "revision" | "source" | "sha256">): boolean {
+  const trim = (path: string) => path.replace(/^\/+|\/+$/g, "");
+  if ((ref.source ?? "hub") !== (info.source ?? "hub")) return false;
+  if (ref.source === "project") return ref.repo === info.repo && (!ref.sha256 || ref.sha256 === info.sha256);
+  return ref.repo === info.repo && trim(ref.path) === trim(info.path) && (!ref.revision || ref.revision === info.revision);
+}
+
+/** An SAE in words: a published one by its repository and folder, a trained one by its name. */
+export function saeName(ref: Pick<SAERef, "repo" | "path" | "source">): string {
+  if (ref.source === "project") return `${ref.repo}, trained in this project`;
+  const path = ref.path.replace(/^\/+|\/+$/g, "");
+  return `${ref.repo}${path ? `/${path}` : ""}`;
+}
+
 export function steerSiteOf(info: Pick<SAEInfo, "site" | "layer">): { kind: StreamKind; layer: number } {
   return { kind: info.site === "head" ? "attn_out" : info.site, layer: info.layer };
 }
@@ -533,8 +652,8 @@ export function saeWritesText(info: Pick<SAEInfo, "site" | "layer" | "transcoder
  * (`steerSite`, where its SAE writes) adds it at that one site. */
 export function scopeFor(kind: ExperimentKind, scope: ScopeSpec, steerSite: { kind: StreamKind; layer: number } | null = null): ScopeSpec {
   const last: PositionSpec = { kind: "last" };
-  // Edge attribution estimates the edges of the model's graph, and nothing else does.
-  if (kind === "edge_attribution") return scope.kind === "graph" ? scope : { kind: "graph", layers: null, logits: true };
+  // Edge attribution and ACDC measure the edges of the model's graph, and nothing else does.
+  if (kind === "edge_attribution" || kind === "acdc") return scope.kind === "graph" ? scope : { kind: "graph", layers: null, logits: true };
   if (scope.kind === "graph") return scopeFor(kind, { kind: "heads", position: { kind: "all" } }, steerSite);
   // Edges one at a time are path patching's (a verification of edge attribution).
   if (scope.kind === "edges" && kind !== "path_patching") return scopeFor(kind, { kind: "heads", position: { kind: "all" } }, steerSite);
@@ -577,6 +696,24 @@ export function scopeFor(kind: ExperimentKind, scope: ScopeSpec, steerSite: { ki
       if (sites.length) return { kind: "sites", sites };
     }
     return { kind: "layer_components", components: ["resid_pre"], position: last };
+  }
+  if (kind === "probe" || kind === "das" || kind === "subspace_patching") {
+    // A probe and a learned subspace read one token of each prompt; a direction lives in the
+    // stream, attention outputs and MLP outputs (a probe also reads heads' outputs).
+    const streams = (c: string) => c === "resid_pre" || c === "resid_mid" || c === "resid_post" || c === "attn_out" || c === "mlp_out";
+    const one = kind !== "subspace_patching";
+    const single = (p: PositionSpec) => (one && p.kind === "all" ? last : p);
+    if (scope.kind === "layer_position") return scope;
+    if (scope.kind === "layer_components") {
+      const components = scope.components.filter(streams);
+      return { kind: "layer_components", components: components.length ? components : ["resid_post"], position: single(scope.position) };
+    }
+    if (scope.kind === "heads" && kind === "probe") return { kind: "heads", position: single(scope.position) };
+    if (scope.kind === "sites") {
+      const sites = scope.sites.filter((x) => streams(x.kind) || (kind === "probe" && x.kind === "head")).map((x) => ({ ...x, position: single(x.position) }));
+      if (sites.length) return { kind: "sites", sites };
+    }
+    return { kind: "layer_components", components: ["resid_post"], position: last };
   }
   if (kind === "path_patching") {
     // Paths start at heads, attention outputs or MLP outputs.

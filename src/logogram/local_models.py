@@ -354,15 +354,9 @@ def missing_message(name: str, sha256: str | None) -> str:
     )
 
 
-def checked_folder(
-    name: str,
-    sha256: str | None,
-    on_progress: ProgressFn | None = None,
-    cancel: threading.Event | None = None,
-) -> Path:
-    """The folder of the local model whose files hash to ``sha256``, once its files are checked
-    to be the ones hashed: a file whose size or modification time changed is hashed again, and a
-    folder whose files changed is refused, naming them."""
+def registered_folder(name: str, sha256: str | None) -> tuple[LocalModel, Path]:
+    """The local model whose files hash to ``sha256``, and its folder, when this machine has it
+    and the folder is still there. Its files aren't read: :func:`checked_folder` checks them."""
     if sha256 is None:
         raise BackendError("A local model is found by the hash of its files: give model.sha256.")
     model = find_model(sha256=sha256)
@@ -375,6 +369,19 @@ def checked_folder(
             f"the model again where it is now (logogram models add PATH --name {model.name}, "
             f"after logogram models remove {model.name})."
         )
+    return model, folder
+
+
+def checked_folder(
+    name: str,
+    sha256: str | None,
+    on_progress: ProgressFn | None = None,
+    cancel: threading.Event | None = None,
+) -> Path:
+    """The folder of the local model whose files hash to ``sha256``, once its files are checked
+    to be the ones hashed: a file whose size or modification time changed is hashed again, and a
+    folder whose files changed is refused, naming them."""
+    model, folder = registered_folder(name, sha256)
     current = model_files(folder)
     recorded = {f.path: f for f in model.files}
     added = [n for n in current if n not in recorded]

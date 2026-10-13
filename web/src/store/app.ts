@@ -10,6 +10,7 @@ import type {
   DatasetDetail,
   Environment,
   Job,
+  LensRef,
   SAEStatus,
   Layout,
   ModelShape,
@@ -19,6 +20,7 @@ import type {
   QueuedRun,
   QueueState,
   QueueStatus,
+  Reproduction,
   RobustnessChange,
   RunAnnotationsChange,
   RunDetail,
@@ -73,7 +75,9 @@ export type View =
   | "compare"
   | "sweep"
   | "spec"
-  | "text";
+  | "text"
+  | "corpus"
+  | "representations";
 
 export type Workspace = "explore" | "experiment" | "evidence";
 
@@ -89,6 +93,8 @@ export const WORKSPACE_VIEWS: { id: Workspace; views: { id: View; label: string 
       { id: "predictions", label: "Layer predictions" },
       { id: "features", label: "Features" },
       { id: "text", label: "Your text" },
+      { id: "corpus", label: "Corpus" },
+      { id: "representations", label: "Representations" },
     ],
   },
   {
@@ -116,7 +122,7 @@ export const VIEWS: { id: View; label: string }[] = WORKSPACE_VIEWS.flatMap((w) 
 /** A sweep over sets of sites, each intervened on at once. */
 export type SiteSetsScope = Extract<ScopeSpec, { kind: "site_sets" }>;
 export function workspaceFor(view: View): Workspace {
-  if (["explore", "attention", "heads", "predictions", "features", "text"].includes(view)) return "explore";
+  if (["explore", "attention", "heads", "predictions", "features", "text", "corpus", "representations"].includes(view)) return "explore";
   if (["prompts", "baseline", "experiment", "spec"].includes(view)) return "experiment";
   return "evidence";
 }
@@ -186,6 +192,13 @@ interface Store {
   stagedSites: SiteSpec[];
   headPins: Selection[];
   researchVersion: number;
+  /** Bumped when the project's corpora or directions change (here, in another tab, or by a job),
+   * so the lists that show them are read again. */
+  corporaVersion: number;
+  directionsVersion: number;
+  /** How far a long analysis has got (a corpus's top examples, representations, an export), as
+   * the server reports it while the request is answered. */
+  analysisProgress: { what: string; done: number; total: number } | null;
   noteEditor: { value: NoteInput; edit?: { id: string; revision: number } } | null;
   /** The event stream. "ended": the server no longer accepts this tab's session, so it stopped. */
   connection: "connecting" | "connected" | "reconnecting" | "ended";
@@ -261,6 +274,12 @@ interface Store {
   robustnessDialogOpen: boolean;
   /** The run whose spec the sweep dialog sweeps, while it is open. */
   sweepDialogRun: string | null;
+  /** Training an SAE or a tuned lens in the project, while its dialog is open. */
+  trainDialog: "sae" | "lens" | null;
+  /** Counts the trainings that have finished, so lists of what the project trained read again. */
+  trainedVersion: number;
+  /** A tuned lens just trained, for the layer predictions to read next. */
+  chosenLens: LensRef | null;
   /** Asking whether to cancel the running job (it keeps what finished). */
   cancelConfirmOpen: boolean;
   /** The sheet of keyboard shortcuts (? or the command palette). */
@@ -292,6 +311,9 @@ interface Store {
   refreshProject: () => Promise<void>;
   refreshRuns: () => Promise<void>;
   selectDataset: (path: string | null, source?: "run" | "form") => Promise<void>;
+  /** A dataset file renamed (`to` its new path) or deleted (`to` null), here or in another tab:
+   * the prompts chosen and their unsaved edits follow it. */
+  followDataset: (from: string, to: string | null) => void;
   reloadDataset: () => Promise<void>;
   setPromptIndex: (i: number) => void;
   /** Keep a dataset's unsaved edits, or drop them (null, or edits that change nothing). */
@@ -337,6 +359,9 @@ interface Store {
   startRobustness: (runId: string, change: RobustnessChange) => Promise<void>;
   /** Patch, for real, the strongest sites an attribution patching run estimated. */
   startVerification: (runId: string, top: number) => Promise<void>;
+  /** Run a run's spec again, exactly as it ran, and show the new run as it streams. When it
+   * finishes, a notice says whether its per-prompt values match the original's exactly. */
+  rerunRun: (runId: string) => Promise<void>;
   /** Show a sweep in the sweep view. */
   openSweep: (id: string | null) => void;
   /** Queue a sweep's runs, then show the sweep. Returns whether it was queued. */
@@ -420,6 +445,9 @@ export const useStore = create<Store>((set, get) => ({
   stagedSites: [],
   headPins: [],
   researchVersion: 0,
+  corporaVersion: 0,
+  directionsVersion: 0,
+  analysisProgress: null,
   noteEditor: null,
   connection: "connecting",
   connectionError: null,
@@ -476,6 +504,9 @@ export const useStore = create<Store>((set, get) => ({
   modelDialogOpen: false,
   robustnessDialogOpen: false,
   sweepDialogRun: null,
+  trainDialog: null,
+  trainedVersion: 0,
+  chosenLens: null,
   cancelConfirmOpen: false,
   shortcutsOpen: false,
   helpDialog: null,
@@ -629,6 +660,7 @@ export const useStore = create<Store>((set, get) => ({
       inspectorFocus: null,
       robustnessDialogOpen: false,
       sweepDialogRun: null,
+      trainDialog: null,
       cancelConfirmOpen: false,
       notices: [],
       screen: "workbench",
@@ -710,7 +742,7 @@ export const useStore = create<Store>((set, get) => ({
       runs: [], runDetails: {}, activeRunId: null, pendingRunId: null, live: {}, selection: null,
       compareIds: [null, null], sweepId: null, entering: false, flags: {}, form: DEFAULT_FORM, formHistory: EMPTY_HISTORY, baselines: {}, specSource: "run",
       analysisSource: "form", view: "prompts", inspectorFocus: null, robustnessDialogOpen: false, sweepDialogRun: null,
-      cancelConfirmOpen: false, notices: [],
+      trainDialog: null, cancelConfirmOpen: false, notices: [],
     });
   },
 
@@ -756,6 +788,19 @@ export const useStore = create<Store>((set, get) => ({
     const { prepend_bos, chat_template } = analysisContext(get()).options;
     const detail = await get().guard(() => api.dataset(path, prepend_bos, chat_template ?? null));
     if (detail && seq === datasetSeq && project === projectSeq) set({ dataset: detail });
+  },
+
+  followDataset: (from, to) => {
+    const st = get();
+    // Unsaved edits belong to the file's prompts, which a rename keeps and a deletion takes away.
+    const edits = st.datasetEdits[from];
+    if (edits) {
+      const { [from]: _gone, ...rest } = st.datasetEdits;
+      set({ datasetEdits: to ? { ...rest, [to]: edits } : rest });
+    }
+    if (st.datasetPath !== from) return;
+    const next = to ?? st.project?.datasets.find((d) => !d.error && d.path !== from)?.path ?? null;
+    void st.selectDataset(next, st.analysisSource);
   },
 
   reloadDataset: async () => {
@@ -1026,6 +1071,25 @@ export const useStore = create<Store>((set, get) => ({
     await get().refreshRuns();
   },
 
+  rerunRun: async (runId) => {
+    const seq = projectSeq;
+    const out = await get().guard(() => api.rerun(runId));
+    if (!out || seq !== projectSeq) return;
+    openSeq += 1; // whatever was being opened gives way to the rerun
+    get().applyJob(out.job);
+    set((s) => ({
+      pendingRunId: out.run_id,
+      activeRunId: out.run_id,
+      analysisSource: "run",
+      view: "results",
+      // The run's first events may already have arrived over the WebSocket; keep them.
+      live: { ...s.live, [out.run_id]: s.live[out.run_id] ?? emptyLive(out.run_id) },
+    }));
+    get().fitSelection();
+    await get().refreshRuns();
+    void get().loadRun(out.run_id, true);
+  },
+
   openSweep: (id) => {
     set({ sweepId: id });
     get().setView("sweep");
@@ -1183,6 +1247,15 @@ export const useStore = create<Store>((set, get) => ({
       case "research.updated":
         set((st) => ({ researchVersion: st.researchVersion + 1 }));
         break;
+      case "corpora.changed":
+        set((st) => ({ corporaVersion: st.corporaVersion + 1 }));
+        break;
+      case "directions.changed":
+        set((st) => ({ directionsVersion: st.directionsVersion + 1 }));
+        break;
+      case "analysis.progress":
+        set({ analysisProgress: { what: String(data.what), done: Number(data.done), total: Number(data.total) } });
+        break;
       case "model": {
         const { type: _type, ...rest } = event;
         const model = rest as unknown as ModelStatus;
@@ -1212,6 +1285,19 @@ export const useStore = create<Store>((set, get) => ({
           if (job.kind === "load_model" && job.status === "finished") get().notify("Model loaded.");
           if (job.kind === "add_model" && job.status === "finished") get().notify(`${job.title.replace(/^Add /, "Added ")}. Choose it in Load a model.`);
           if (job.kind === "load_sae" && job.status === "finished") get().notify("SAE loaded. Measure its fit on these prompts before trusting its features.", "info", { persist: true });
+          if (job.kind === "import_corpus" && job.status === "finished") get().notify(`Imported the corpus ${String(job.progress.corpus ?? "")}.`);
+          if (job.kind === "train_sae" || job.kind === "train_lens") {
+            // However it ended, what the project has trained is read again.
+            set((st) => ({ trainedVersion: st.trainedVersion + 1 }));
+            const name = String(job.progress.name ?? "");
+            if (job.status === "finished") {
+              get().notify(
+                job.kind === "train_sae"
+                  ? `Trained the SAE ${name}. Load it in Features, under Trained in this project.`
+                  : `Trained the tuned lens ${name}. Choose it in Layer predictions.`,
+              );
+            }
+          }
         }
         break;
       }
@@ -1282,6 +1368,12 @@ export const useStore = create<Store>((set, get) => ({
             const cmp = await api.compare(from.run, runId).catch(() => null);
             if (cmp) set((s) => ({ flags: { ...s.flags, [from.run]: { against: runId, sites: cmp.flagged } } }));
           }
+          // A rerun says whether it reproduced the run it reran, as `logogram run` does.
+          if (status === "finished" && from?.kind === "rerun" && !data.replay) {
+            const project = projectSeq;
+            const found = await api.reproduction(runId).catch(() => null);
+            if (found && project === projectSeq) get().notify(...reproductionNotice(found, from.run));
+          }
         });
         if (status === "cancelled" && !data.replay) {
           const partial = data.partial as PartialRun | null | undefined;
@@ -1313,6 +1405,16 @@ export const useStore = create<Store>((set, get) => ({
         if (data.deleted) forgetRun(String(data.run_id));
         void get().refreshRuns();
         break;
+      case "project.changed": {
+        // The project renamed, or a dataset renamed or deleted, here or in another tab.
+        const change = data.dataset as { path: string; to: string | null } | null | undefined;
+        void get()
+          .refreshProject()
+          .then(() => {
+            if (change) get().followDataset(change.path, change.to);
+          });
+        break;
+      }
       case "queue.skipped":
         get().notify(`“${String(data.title)}” couldn't start and was taken out of the queue. ${String(data.error)}`, "error");
         break;
@@ -1327,7 +1429,8 @@ export const useStore = create<Store>((set, get) => ({
         break;
       }
       case "project": {
-        if (data.session_id !== get().project?.session_id) {
+        // A tab that has already left the project (it closed or deleted it) has nothing to do.
+        if ((data.session_id ?? null) !== (get().project?.session_id ?? null)) {
           // Clear synchronously; stale form actions cannot run while the new project loads.
           get().leaveProject();
           const seq = projectSeq;
@@ -1413,6 +1516,19 @@ function formSent(ran: FormState): void {
     form: { ...s.form, draftId: null },
     formHistory: draftId ? forgetDraft(s.formHistory, draftId) : s.formHistory,
   }));
+}
+
+/** The notice a finished rerun gives, as `logogram run` says it: whether its per-prompt values match
+ * the run it reran exactly. A difference stays until dismissed, with the two runs' comparison a
+ * click away. */
+export function reproductionNotice(found: Reproduction, original: string): [string, Notice["tone"], NoticeOptions] {
+  const text = `Rerun finished. ${found.text}`;
+  if (found.identical) return [text, "info", {}];
+  const compare = () => {
+    useStore.setState({ compareIds: [original, found.run_id], compareMode: "side" });
+    useStore.getState().setView("compare");
+  };
+  return [text, "info", { persist: true, action: { label: "Compare the runs", run: compare } }];
 }
 
 /** What is said about a run, as the server now has it, wherever this tab keeps its listing. */

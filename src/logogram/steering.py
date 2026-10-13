@@ -69,6 +69,7 @@ from logogram.spec import (
     AllPositions,
     FeatureDirection,
     LayerComponentsScope,
+    SavedDirection,
     Site,
     SitesScope,
     Spec,
@@ -312,9 +313,23 @@ def run_steering(
     cancel: threading.Event | None = None,
     on_start: Callable[[list[ResolvedSite], dict[str, Any]], None] | None = None,
     sae: Any = None,
+    directions: dict[str, Any] | None = None,
 ) -> EngineResult:
     exp = spec.experiment
     assert isinstance(exp, Steering)
+    saved = None
+    if isinstance(exp.direction, SavedDirection):
+        name = exp.direction.direction.name
+        saved = (directions or {}).get(name)
+        if saved is None:
+            raise EngineError(
+                f"Steering along {name} needs that direction, which this run didn't load."
+            )
+        if saved.dimensions != 1:
+            raise EngineError(
+                f"Steering adds one direction, and {name} has {saved.dimensions} dimensions. "
+                "Save one of its vectors as a direction of its own."
+            )
     info = backend.info
     batch_size = spec.execution.batch_size
     feature = exp.direction.feature if isinstance(exp.direction, FeatureDirection) else None
@@ -382,10 +397,12 @@ def run_steering(
         "test": [p.index for p in test],
         "norms": [],
     }
+    if saved is not None:
+        steering["direction"] = {"name": saved.name, "sha256": saved.sha256, "along": []}
     if feature is not None:
         steering["feature"] = {
             "feature": feature,
-            "sae": {"repo": sae.repo, "path": sae.path, "revision": sae.revision},
+            "sae": sae.ref(),
             "site": str(sae.site),
             "layer": int(sae.layer),
             "transcoder": bool(sae.transcoder),
@@ -420,8 +437,41 @@ def run_steering(
             on_progress(done, total, layer)
 
     generated: dict[tuple[int, int, int], list[int]] = {}
+    if saved is not None:
+        from logogram.directions import check_fits
+
+        warnings += check_fits(saved, info, "the residual stream")
     for b, site in enumerate(base):
-        if feature is None:
+        if saved is not None:
+            steered, along, spread = _saved_direction(
+                backend,
+                spec,
+                saved.vectors[0],
+                site,
+                b,
+                train,
+                train_groups,
+                test,
+                test_groups,
+                cancel,
+            )
+            steering["direction"]["along"].append(along)
+            if spread < 1e-9:
+                warnings.append(
+                    f"At {site_label(site)}, the training pairs' prompts don't differ along "
+                    f"{saved.name} (their mean difference along it is {along:.3g}), so steering "
+                    "along it at any strength adds next to nothing there."
+                )
+            elif abs(along) < 0.25 * spread:
+                warnings.append(
+                    f"At {site_label(site)}, the training pairs differ along {saved.name} in both "
+                    f"directions: their mean difference along it is {along:.3g}, though each "
+                    f"pair's is {spread:.3g} in size on average. Steering adds the mean to every "
+                    "prompt, so it adds little, and moves some prompts away from their pair. "
+                    "Steer prompts whose pairs differ the same way along it, or patch along it "
+                    "(subspace patching), which takes each prompt's own pair's value."
+                )
+        elif feature is None:
             steered = _mean_difference(
                 backend, spec, site, b, train, train_groups, test, test_groups, cancel
             )
@@ -547,6 +597,64 @@ def _mean_difference(
         control=None if control is None else control.expand(n, *control.shape),
         norm=float(direction.norm()),
     )
+
+
+def _saved_direction(
+    backend: ModelBackend,
+    spec: Spec,
+    unit: torch.Tensor,
+    site: Site,
+    b: int,
+    train: list[PreparedPrompt],
+    train_groups: list[LengthGroup],
+    test: list[PreparedPrompt],
+    test_groups: list[LengthGroup],
+    cancel: threading.Event | None,
+) -> tuple[_Steered, float, float]:
+    """A saved direction's unit vector, scaled by the mean difference between the two prompts of
+    each training pair along it (reference - receiver, at the site's token): the same for every
+    held-out prompt. Its control: a random direction of the same length. Also the mean size of
+    each pair's difference along it, to tell pairs that differ both ways along it."""
+    exp = spec.experiment
+    assert isinstance(exp, Steering)
+    receiver = exp.apply_to
+    reference = "corrupt" if receiver == "clean" else "clean"
+    batch_size = spec.execution.batch_size
+    probe = ResolvedSite(0, site, 0, 0, "")
+    kinds = [site.kind]
+    toward = _LayerSources(
+        backend, train, train_groups, site.layer, kinds, reference, batch_size, cancel
+    )
+    away = _LayerSources(
+        backend, train, train_groups, site.layer, kinds, receiver, batch_size, cancel
+    )
+    difference = float64(toward.table(site.kind, probe)) - float64(away.table(site.kind, probe))
+    u = float64(unit).to(difference.device)
+    projected = difference @ u
+    along = float(projected.mean())
+    spread = float(projected.abs().mean())
+    direction = along * u
+    control = None
+    if exp.control:
+        control = random_direction(
+            direction.shape, exp.seed * 1_000_003 + b, float(direction.norm())
+        )
+    own = float64(
+        _LayerSources(
+            backend, test, test_groups, site.layer, kinds, receiver, batch_size, cancel
+        ).table(site.kind, probe)
+    )
+    n = len(test)
+    steered = _Steered(
+        kind=site.kind,
+        layer=site.layer,
+        own=own,
+        positions=[_position(site, p, exp.apply_to) for p in test],
+        along=direction.expand(n, *direction.shape),
+        control=None if control is None else control.expand(n, *control.shape),
+        norm=float(direction.norm()),
+    )
+    return steered, along, spread
 
 
 def _feature_direction(

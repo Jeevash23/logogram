@@ -1,21 +1,42 @@
 # Logogram
 
-A local workbench for causal experiments inside language models.
+A local workbench for mechanistic interpretability: causal experiments inside language models,
+with the statistics to read them by.
+
+![GPT-2 small's attention heads patched one by one on the IOI prompts: each layer's results paint
+onto the model map as it finishes, then a head's evidence opens in the
+inspector](docs/images/sweep.gif)
 
 In *Arrival*, an unfamiliar language is decoded by running small, controlled experiments and
-watching what changes. Activation patching works the same way: replace one activation with its
-value from a different input, and measure what happens to the output. Logogram makes those
-experiments visual, fast and rigorous. Load GPT-2, set up a clean/corrupted prompt pair, sweep
-every attention head, watch the results paint onto a map of the model, then click a head and see
-the evidence behind its number.
+watching what changes. Interpretability works the same way: replace one activation with its value
+from a different input, remove a direction, add a feature, and measure what happens. Logogram
+makes those experiments visual, fast and rigorous, and asks the questions interpretability asks:
+
+* **Where is it computed?** Activation patching and ablation (zero, mean, resample, scaled or
+  along a direction), attribution patching with integrated gradients, and direct logit
+  attribution, over residual streams, heads, queries, keys, values, neurons and SAE features.
+* **How does it flow?** Path patching, edge attribution (EAP and EAP-IG) with its faithfulness
+  curve, and ACDC, which finds a circuit by removing edges one at a time.
+* **What does a site represent?** Linear probes against shuffled-label controls, distributed
+  alignment search, and directions saved in the project and tested by patching along them,
+  removing them, steering along them and reading them out; where a neuron, feature or direction
+  is most active in your own texts; the principal components of activations over prompts or texts;
+  SAEs, published or trained in the project; the logit lens, and a tuned lens trained in the
+  project.
+* **What does adding a direction do?** Steering along a mean difference, an SAE feature or a saved
+  direction, on held-out prompts, against a random direction.
+
+Load GPT-2 (or Llama, Qwen, Gemma, Pythia and others, on a CPU, a GPU or Apple's MPS), set up
+prompt pairs from a task or your own file, run a sweep, watch the results paint onto a map of the
+model, then click a site and see the evidence behind its number.
 
 * **A research instrument, not a demo.** Every number is traceable to the method that produced
   it: the intervention, baseline, direction, position, metric, normalization, n and confidence
   interval are always shown.
 * **Local-first.** No account, no cloud, no telemetry. Everything runs on your machine.
 * **Plain files.** Experiments are folders you can commit, share and rerun.
-* **One spec, two front ends.** The app and `logogram run` execute the same `spec.json`, and
-  produce identical results on the same machine.
+* **One spec, three front ends.** The app, `logogram run` and the Python API execute the same
+  `spec.json`, and produce identical results on the same machine.
 
 The [documentation](docs/README.md) teaches the app and the methods, from a first run to the exact
 definition of every number.
@@ -74,9 +95,9 @@ This starts a local server on 127.0.0.1, prints its address and opens your brows
 
    Each run also gets a **logogram**, a circular ink glyph written by its results: layers run
    clockwise from the top, and the ink swells outward (cobalt) where a layer's strongest effect
-   is positive and inward (ochre) where it is negative. A run with a few strong layers reads as
+   is positive and inward (amber) where it is negative. A run with a few strong layers reads as
    a heavy, lopsided ring; a null result as a thin, even one. Logograms appear in the history,
-   on the results page, and beside the model atlas, where each layer number opens that layer's
+   on the results page, and beside the model map, where each layer number opens that layer's
    strongest component.
 4. Press **A** on a head to see its attention pattern, or right-click any cell for **Patch here**,
    **Ablate here** and **Compare across runs**.
@@ -102,15 +123,17 @@ The [documentation](docs/README.md) teaches the app and the methods:
   for, and [Models](docs/models.md) which models load and how.
 * [Concepts](docs/README.md#concepts): what each method computes, exactly, and the papers it
   comes from: activation patching, ablation, metrics and normalization, statistics, attribution
-  patching, path patching, edge attribution, direct logit attribution, steering, SAE features,
-  circuits, and the logit lens with the checks each model passes when it loads.
+  patching, path patching, edge attribution, ACDC, direct logit attribution, steering, linear
+  probes, saved directions, distributed alignment search, SAE features, training an SAE, circuits,
+  corpora and representations, the logit lens with the checks each model passes when it loads,
+  and the tuned lens.
 * [How-to guides](docs/README.md#how-to-guides): replicate IOI, find induction heads, work with
-  an SAE, check a finding's robustness, compare runs, sweep seeds, datasets or checkpoints, queue
-  runs and run them headless, run a chat model on its template, study your own fine-tune, share a
-  result, and use a remote GPU.
+  an SAE, train an SAE and a tuned lens, check a finding's robustness, compare runs, sweep seeds,
+  datasets or checkpoints, queue runs and run them headless, run a chat model on its template,
+  study your own fine-tune, share a result, and use a remote GPU.
 * [Reference](docs/README.md#reference), generated from the code: every field of
-  [the spec](docs/reference/spec.md), every command and option of
-  [the command line](docs/reference/cli.md), and every function of
+  [the spec](docs/reference/spec.md) and of [the training specs](docs/reference/training.md),
+  every command and option of [the command line](docs/reference/cli.md), and every function of
   [the Python API](docs/reference/python-api.md).
 * [Notebooks](notebooks/README.md), which open in Colab: IOI head patching with its statistics,
   an attribution-patching estimate checked by patching, and an SAE's features on GPT-2 small.
@@ -165,6 +188,7 @@ What each method finds, as normalized effects (every other head 0):
 | Steering | none: the difference is a token's identity, not a direction | on ABBA prompts, the mean difference after layer 2 at the last token flips the answer (1.0 at ×1, 2/3 at ×0.5) and beats a random direction; with ABBA and BABA mixed it cancels to 0 |
 | Edges, each path patched alone | 1.0 for each planted edge along which the prompts differ (the embeddings → L0 H2's value, L0 H2 → L1 H1's key, L1 H1 → the logits), 0 for the others | 1.0 for the embeddings → L1 H1's query, L1 H1 → L2 H3's value, L2 H3 → L3 H0's query and L3 H0 → the logits, 0 for the others |
 | Edge attribution | one gradient: L1 H1 → logits 1.0, exact; edges into queries and keys about 0. With 32 steps of integrated gradients, L0 H2 → L1 H1's key about 1.0 | one gradient: L3 H0 → logits 1.0, exact; edges into queries and keys about 0 |
+| ACDC | with the logit difference and a threshold of 1 logit (the gap is 20), in either direction: exactly the embeddings → L0 H2's value, L0 H2 → L1 H1's key and L1 H1 → the logits, 3 of 110 edges, each a change of 1.0 when it was removed; faithfulness 1.0 | with the KL divergence from the clean prompt's prediction and a threshold of 0.1 nats (the gap is about 10): exactly the four edges path patching finds, 4 of 479, each a change of 1.0; faithfulness 1.0 |
 
 How the weights do it: every direction of the residual stream is one named feature (a token's
 identity, the previous token's, the token to predict, the position p/128 and its square, a few
@@ -185,8 +209,13 @@ The workbench has three workspaces, described view by view in [the workbench](do
   diagram connected the way the model was measured to add attention and the MLP, attention
   patterns and the [head finder](docs/guides/find-induction-heads.md), head comparison, layer
   predictions (a [final-norm logit lens](docs/concepts/logit-lens-and-model-checks.md), offered for
-  models where it reproduces their output), an [SAE's features](docs/concepts/sae-features.md), and
-  **Your text**, which reads any text and continues it, with and without an SAE feature added.
+  models where it reproduces their output, or a [tuned lens](docs/concepts/tuned-lens.md) trained in
+  the project), an [SAE's features](docs/concepts/sae-features.md) (a published SAE, or one
+  [trained in the project](docs/concepts/sae-training.md)), **Your text**, which reads any text
+  and continues it, with and without an SAE feature added, **Corpus**, where a neuron, a feature,
+  a direction or a head is most active in plain text, and **Representations**, the principal
+  components of activations and the directions saved from them (see
+  [corpora and representations](#corpora-and-representations)).
 * **Experiment** sets up what runs: the prompt pairs, the baseline check, the experiment form,
   which shows every choice that can change a number, and the complete spec. Choose components on
   the map and **Add to experiment** to measure them one by one, or **Test as a circuit** to
@@ -196,11 +225,23 @@ The workbench has three workspaces, described view by view in [the workbench](do
   [sweeps](docs/guides/sweeps.md) of one spec across seeds, datasets or checkpoints, and research
   notes.
 
+![A run's results in the Evidence workspace: GPT-2 small's 144 heads patched on the IOI prompts,
+their effects as a heatmap and a strip of means, the strongest effects with their intervals, and
+the inspector's per-prompt evidence for L9 H9](docs/images/results.png)
+
 ## Command line
 
 ```text
 logogram                      start the app and open the browser
 logogram open PATH            start with a project open
+logogram new NAME             create a project and print its folder (--parent DIR)
+logogram projects             the projects opened lately, marking those whose folder can't be found
+logogram projects forget PATH take a project out of that list (its folder stays)
+logogram project rename NAME  give the project another name (its folder keeps its own)
+logogram project delete       delete the project's folder for good, once its name is typed (--yes)
+logogram datasets             the project's datasets, and the drafts and queued runs that name each
+logogram datasets rename NAME NEW   give a dataset another name (runs keep their own copy)
+logogram datasets delete NAME delete a dataset for good, after asking (--yes doesn't ask)
 logogram run SPEC.json        run an experiment headlessly and print a summary
 logogram validate SPEC.json   check a spec without running it, and say what it left out
 logogram list                 the project's runs and drafts, newest first (--archived for all)
@@ -224,11 +265,21 @@ logogram queue clear          take every run out of the queue, after asking (--y
 logogram queue run            run the queue to the end, one run at a time, without the app
 logogram tasks                the tasks Logogram writes prompts for, with their options
 logogram saes MODEL [WORDS]   the published SAEs for a model, and whether Logogram reads each exactly
+logogram sae train SPEC.json  train an SAE on a corpus of the project (or options for every choice)
+logogram sae list             the SAEs trained in the project, with what they measured
+logogram lens train SPEC.json train a tuned lens on a corpus of the project (or options)
+logogram lens list            the tuned lenses trained in the project, with what they measured
 logogram generate TASK        a seeded dataset for a task (-n N --seed S, --option NAME=VALUE)
 logogram models add PATH --name NAME   add a model folder on this machine (its files are hashed)
 logogram models list          the model folders added here, with their hashes
 logogram models remove NAME   forget a model folder (its files stay)
 logogram toy [NAME [FOLDER]]  a model whose circuit is known, with experiments that say what each finds
+logogram corpora              the project's corpora: plain texts, their labels and where they came from
+logogram corpora import NAME FILE   a corpus from a file (--hub REPO --file PATH, or --dataset PATH)
+logogram corpora rename|delete      rename a corpus, or delete it after asking (--yes doesn't ask)
+logogram directions           the project's directions, with what made each, where and on which model
+logogram directions rename|delete   rename a direction, or delete it after asking
+logogram activations SOURCE   export activations at sites (--site resid_post:6 --position last -o NAME --model ID)
 logogram doctor               environment and hardware report, with fixes (each GPU by its cuda:N)
 logogram env                  the versions and devices results depend on, as JSON (--requirements pins them)
 logogram doctor --report      a short report to paste into an issue (--hardware adds the hardware)
@@ -244,6 +295,13 @@ address of a port that forwards to the app, such as an SSH tunnel's (see
 also logs what the server does, with the traceback of each failed run, and `--log-file PATH`
 appends the same to a file. Commands that read runs use the project in the current folder or
 above it, or `--project PATH`; a run is its id or its folder.
+
+Deleting asks first and says what goes. `logogram project delete` deletes nothing while a run or
+the queue is running in the project, nor from a folder that also holds what Logogram doesn't make
+there (a repository's files, say): it lists them instead. A dataset that a saved draft or a
+queued run names can't be renamed, deleted or replaced (`generate --overwrite`) until they no
+longer do: they would fail, or run on other prompts. Finished runs keep their own copy of their
+prompts.
 
 A failed run keeps its traceback in `traceback.txt`, without this machine's paths or names:
 `logogram show RUN` prints it, `logogram run --verbose` prints it as the run fails, and the app
@@ -299,7 +357,7 @@ PyTorch; functions load what they need.
 import logogram as lg
 
 project = lg.open_project("~/Documents/Logogram/ioi-example")
-model = lg.load_model("openai-community/gpt2")   # load once, pass it to every run
+model = lg.load_model("openai-community/gpt2")   # load once, pass it to the runs that name it
 spec = lg.load_spec(project.root / "experiments/ioi-head-patching/spec.json")
 run = lg.run(spec, project, model=model)
 
@@ -334,11 +392,22 @@ lg.list_saes(model, "layer 8")   # SAELens's registry for this model, and what L
 sae = lg.load_sae(release="gpt2-small-res-jb", sae_id="blocks.8.hook_resid_pre", model=model)
 lg.feature_writes(model, sae, 1234, "When Mary and John went to the store, John gave a drink to",
                   prepend_bos=True)   # the tokens the feature promotes and suppresses directly
+trained = lg.train_sae(project, "sae.json", model=model)   # a TopK SAE on a corpus of the project
+mine = lg.load_sae(trained["name"], project=project, model=model)   # read from saes/NAME
+lg.train_lens(project, "lens.json", model=model)   # a tuned lens for the layer predictions
 
 lg.add_local_model("~/models/my-fine-tune", "my-fine-tune")   # hash a model folder, once
 tuned = lg.load_model("my-fine-tune", device="cuda:1")         # a local model, on the second GPU
+lg.run(lg.with_model(spec, tuned), project, model=tuned)       # the same spec, on this model
 toy = lg.toy_model("ioi")        # a model whose circuit is known: project, datasets, experiments
 toy.run("which-heads").sites()   # L1 H1, L2 H3 and L3 H0 at 1.0, every other head at 0
+found = lg.run(lg.load_spec({**toy.specs["which-heads"].model_dump(), "name": "The circuit",
+    "notes": "", "scope": {"kind": "graph", "layers": None, "logits": True},
+    "experiment": {"kind": "acdc", "direction": "corrupt_to_clean", "threshold": 0.1,
+                   "rule": "toward_source"},
+    "metric": {"kind": "kl", "target": "clean", "normalization": "dataset_gap"}}),
+    toy.project, model=toy.model)
+found.circuit()      # the 4 planted edges of 479 kept, each a change of 1.0; faithfulness 1.0
 chat = lg.load_model("Qwen/Qwen2.5-0.5B-Instruct")
 lg.look(chat, "The capital of France is", prepend_bos=False,
         chat_template={"kind": "user_turn", "system": None})   # read in its own chat template
@@ -352,20 +421,26 @@ steered = lg.run(lg.load_spec({**spec.model_dump(), "experiment": {
     "continuations": {"prompts": 3, "tokens": 20}},
     "scope": {"kind": "sites", "sites": [{"kind": "resid_pre", "layer": 8, "position": {"kind": "last"}}]},
     "sae": {"repo": "jbloom/GPT2-Small-SAEs-Reformatted", "path": "blocks.8.hook_resid_pre",
-            "revision": None}}), project, model=model, sae=sae)
+            "revision": None, "source": "hub", "sha256": None}}), project, model=model, sae=sae)
 steered.continuations()   # what the steered model said, prompt by prompt and strength by strength
 ```
 
 Tables come back as pandas DataFrames when pandas is installed, and as pyarrow Tables otherwise.
-`lg.list_runs(project)` and `lg.load_run(project, run_id)` read runs made anywhere. A run that
-fails raises `lg.api.LogogramError` with the reason, and `lg.load_run(project, run_id).traceback`
-reads the traceback it kept. Interrupting the kernel records the run as cancelled, keeping what
-finished: `run.partial` says how far a run that stopped early got and what it doesn't keep.
-`run.rename("Name movers")`, `run.star()` and `run.archive()` change what the history shows
-(`run.title`, `run.starred`, `run.archived`), and `lg.delete_run(project, run)` deletes a run's
-folder for good. `lg.sweep` returns a sweep's runs, one per value; a run that fails keeps its
-status there and the next value runs. `sweep.summary()` holds what the app's sweep view shows,
-and `lg.load_sweep(project, sweep.id)` reads a sweep back.
+A model passed to `lg.run` is reused when it is the model the spec names (its files, dtype,
+device and weight processing). One that isn't is refused, with each difference named, rather
+than another copy loaded beside it: `lg.with_model(spec, model)` makes the spec name the model as
+it was loaded. `lg.list_runs(project)` and `lg.load_run(project, run_id)` read runs made
+anywhere. A run that fails raises `lg.api.LogogramError` with the reason, and
+`lg.load_run(project, run_id).traceback` reads the traceback it kept. Interrupting the kernel
+records the run as cancelled, keeping what finished: `run.partial` says how far a run that
+stopped early got and what it doesn't keep. `run.rename("Name movers")`, `run.star()` and
+`run.archive()` change what the history shows (`run.title`, `run.starred`, `run.archived`), and
+`lg.delete_run(project, run)` deletes a run's folder for good. `lg.sweep` returns a sweep's runs,
+one per value; a run that fails keeps its status there and the next value runs.
+`sweep.summary()` holds what the app's sweep view shows, and `lg.load_sweep(project, sweep.id)`
+reads a sweep back. `project.rename(name)`, `lg.rename_dataset(project, name, new)`,
+`lg.delete_dataset(project, name)` and `lg.delete_project(project)` manage projects and datasets
+as the app and the command line do, with the same refusals.
 
 ## Running on a remote GPU
 
@@ -394,7 +469,7 @@ browser on your own computer. Everything still runs on the remote machine, which
    with a new session token:
 
    ```text
-   Logogram 0.3.0 is running at:
+   Logogram <version> is running at:
 
      http://127.0.0.1:8765/?token=…
    ```
@@ -487,9 +562,9 @@ A dataset is a JSONL file in the project's `datasets/` folder, one prompt pair p
   patching with one gradient, path patching, mean and resample ablation, steering by the mean
   difference) refuses them on such pairs, naming the pairs; zero ablation, direct logit
   attribution and steering along an SAE feature read one prompt at a time and take any position
-  they otherwise take. Integrated gradients, edge attribution and path patching of edges (an edge
-  carries its sender's output at every position), sets that keep their sites and patch the rest,
-  and mean or resample ablation of sets need pairs of equal length. Pairs of equal length may
+  they otherwise take. Integrated gradients, edge attribution, ACDC and path patching of edges (an
+  edge carries its sender's output at every position), sets that keep their sites and patch the
+  rest, and mean or resample ablation of sets need pairs of equal length. Pairs of equal length may
   give `corrupt_positions` too.
 * `meta` is optional: anything about the prompt, such as `{"template": "went"}`. The bootstrap can
   resample prompts by one of its fields (see Statistics).
@@ -524,6 +599,43 @@ length, labelling both prompts' positions and recording `"vocabulary": "full"` i
 `meta` (IOI's names of several tokens are then read with the log-probability difference). GPT-2
 small does all of them but the docstring task, where it prefers the right argument in about half
 the prompts.
+
+## Corpora and representations
+
+Prompt pairs measure one behavior; a **corpus** is plain text the model reads as it would any text,
+kept in the project's `corpora/` folder as JSONL, one text per line with an optional label. Import
+one in **Explore → Corpus**, with `logogram corpora import` or with `lg.import_corpus`: from a text,
+JSON Lines, JSON, CSV, TSV or Parquet file (you name the text field and the label field), from one
+file of a Hugging Face dataset, downloaded once at the exact commit its revision resolves to, or
+from a dataset's prompts, labelled by side or by a field of their meta. The corpus records where
+its texts came from and the hash of its file, and analyses that read it record that hash.
+
+* **Where a unit is most active.** For an MLP neuron, a feature of the loaded SAE, a saved
+  direction (its projection at its site, signed) or an attention head (the length of what it
+  writes), the texts and tokens of a corpus where it is largest, each with a window of context
+  shaded by its value, the most negative ones for a signed unit, a histogram of its values and the
+  share of tokens where it is above zero. Every choice (texts, tokens of each, the
+  beginning-of-sequence token, batch size, how many examples, context) comes back with the answer;
+  ties go to the earlier text, then token. An example opens in **Your text**.
+* **Representations.** The activation at one site and token (the last, an index, a labelled
+  position, or the mean over tokens) of each prompt or text, on its principal components: centered,
+  computed in float64, each component signed so its largest loading is positive, with the share of
+  variance each explains. A component, or the mean difference between two classes, is saved as a
+  **direction** in the project's `directions/` folder, with its model and site; the view lists the
+  project's directions, marks one found on another model, and renames and deletes them.
+* **Exported activations.** The activations at chosen sites and a position, one row per prompt or
+  text, written to `activations/NAME.safetensors` (one float32 tensor per site) with a JSON file
+  saying what each row is: from the view, `logogram activations`, or `lg.export_activations`
+  (`lg.activations` returns them as NumPy arrays).
+
+```text
+logogram corpora import reviews reviews.csv --text-field review --label-field stars
+logogram activations datasets/ioi.jsonl --site resid_post:6 --position last -o ioi-last --model openai-community/gpt2
+```
+
+These are readings, not interventions: what they suggest, patching tests. See
+[corpora and representations](docs/concepts/corpora-and-representations.md) and the guide
+[find what a neuron reads](docs/guides/find-what-a-neuron-reads.md).
 
 ## Experiments
 
@@ -588,18 +700,21 @@ change travels only through the residual stream (and the MLPs, unless you hold t
 receivers read in that run is recorded and patched into an unchanged receiver run, where the metric
 is read. Senders in or after the last receiver's layer have no path, so a sweep keeps only the
 layers before it. In models that share keys and values across heads (grouped-query attention),
-only queries can be receivers. Tests check that from the last layer to the logits a path is the
-whole effect, exactly as patching measures it. **Check robustness** offers holding or releasing
-the MLPs, the opposite direction, and the senders' whole effect by patching.
+a key or value receiver is a key/value head (`L5 KV1 k`), and the path reaches every query head of
+its group through what they share. Tests check that from the last layer to the logits a path is
+the whole effect, exactly as patching measures it. **Check robustness** offers holding or
+releasing the MLPs, the opposite direction, and the senders' whole effect by patching.
 
 **Edge attribution** estimates which edges of the model's graph carry the behavior (EAP, Syed et
 al. 2023; with integrated gradients, EAP-IG, Hanna et al. 2024). The graph's nodes are the
 embeddings, every attention head's output, every MLP and the logits. An edge runs from a node's
 output to a later node's input through the residual stream: a head's query, key and value are an
-edge each, an MLP's input one and the logits one, so GPT-2 small has 32,491 edges. An edge's
-estimate is (the sender's output on the source prompt − on the receiver prompt) · the gradient of
-the metric with respect to the receiver's own copy of the residual stream, summed over positions.
-The gradient goes through the receiver's normalization with its scale recomputed from its input,
+edge each, an MLP's input one and the logits one, so GPT-2 small has 32,491 edges. Where heads
+share keys and values (grouped-query attention, as in Llama and Qwen), a key or value input is the
+key/value head's, read by every query head of its group (`L5 KV1 k`): Qwen 2.5 0.5B has 79,813
+edges. An edge's estimate is (the sender's output on the source prompt − on the receiver prompt) ·
+the gradient of the metric with respect to the receiver's own copy of the residual stream, summed
+over positions. The gradient goes through the receiver's normalization with its scale recomputed from its input,
 as patching the edge would recompute it (holding the scale, as direct logit attribution does, would
 linearize another function). Tests check it against finite differences on tiny models, and that
 each estimate is the slope of patching its edge. Every edge keeps its per-prompt values and
@@ -632,8 +747,25 @@ keep none of it.
 
 Edge attribution needs heads that each write into the residual stream and receivers that can each
 read their own copy of it. Logogram measures both when a run starts, and refuses models that
-normalize after combining heads (Gemma 2, OLMo 2) or whose heads share keys and values
-(grouped-query attention, as in Llama and Qwen), which it doesn't build edges for yet.
+normalize after combining heads (Gemma 2, OLMo 2). Tests on tiny GPT-2, Pythia, Llama and Qwen 2
+models check that each estimate is the slope of patching its edge, that one edge patched is path
+patching of that edge and that patching every edge reproduces the source run.
+
+**ACDC** (automated circuit discovery, Conmy et al. 2023) finds a circuit in the same graph by
+measuring instead of estimating. The receiver prompt runs with every edge in the circuit; then the
+edges are removed one at a time, in the reverse of the graph's order (from the logits back toward
+the embeddings, so a node is tested only after everything it feeds), and a removed edge carries
+its sender's output on the source prompt. An edge stays removed when its removal moves the
+metric's mean by less than `threshold`, in the metric's own units (nats for the KL divergence,
+logits for the logit difference); `rule` says which change counts: the move toward the source
+prompt's value (`toward_source`, the paper's) or its size either way (`either_way`). Neither has a
+default. The run records every edge's change when it was tested and whether it was kept, the
+circuit, and its faithfulness with a bootstrap interval, normalized as the faithfulness curve
+normalizes (tests check that the two agree bit for bit). It costs a forward pass per edge and batch
+of prompts, so the form says how many passes a run takes and about how long, timed on the loaded
+model, before it runs; choose layers to search part of a large graph. A run that stops early keeps
+nothing, since the edges left aren't a circuit until every edge has been tested. See
+[ACDC](docs/concepts/acdc.md).
 
 **Steering** adds a direction to the residual stream and measures what it does. At each steered
 site (one residual stream state per layer, or chosen ones, at one token of each prompt) the
@@ -775,6 +907,27 @@ it. `logogram saes MODEL` lists a model's SAEs, and `lg.load_sae(release=..., sa
 one. However an SAE is chosen, specs record its repository, folder and revision, pinned when it
 loads.
 
+**SAEs and tuned lenses trained in the project.** When no published SAE fits the model, the site or
+the text, Logogram trains one in the project, on a corpus of its texts: a TopK SAE (Gao et al.
+2024) on one site of one layer, from a training spec that states every choice that can change the
+weights (the model, the corpus by name and hash, the site, the width and k, the steps and tokens
+per step, the learning rate and Adam's settings, the seed, the held-out share, the normalization,
+AuxK). The same spec on the same machine gives the same weights, bit for bit. It is saved as
+`saes/NAME` in SAELens's format, read back by the same reader as published SAEs, with
+`training.json` and `metrics.json`: the loss curve and, on held-out texts it never trained on, the
+variance explained, the features that fire per token, the share that never fire and the next-token
+loss recovered. **Train an SAE…** in **Explore → Features** shows every choice, what training would
+take on this machine (the texts and tokens, the memory and the time) and its progress; a cancelled
+training writes nothing. Specs name such an SAE by its folder and the hash of its files
+(`"source": "project"`), which a run pins when it starts. A **tuned lens** (Belrose et al. 2023)
+trains an affine translator per layer so that the layer's residual stream, read through the final
+normalization and unembedding, predicts what the model predicts; it reads early layers more
+faithfully than the logit lens, and its training measures each layer's held-out KL divergence
+through both. **Layer predictions** reads through one (**Tuned lens**, or **Train a tuned
+lens…**), and a lens trained on another model, or of another width, is refused. See
+[training an SAE](docs/concepts/sae-training.md), [the tuned lens](docs/concepts/tuned-lens.md)
+and the [guide](docs/guides/train-an-sae.md).
+
 **Sites** are abstract: `resid_pre`, `resid_mid`, `resid_post`, `attn_out`, `mlp_out` and `head`
 (an attention head's output `z`), each at a layer, head and position. Positions are `all`,
 `last`, a token `index` or a named `label`. **Sweeps** cover every head at one position
@@ -800,6 +953,47 @@ patching and sets of sites take them. Direct logit attribution reads a neuron at
 and a value at any position (through the heads that read it, their attention patterns as in the
 run). It refuses queries and keys, which act only through the softmax, and neurons of models
 that normalize the MLP's output (Gemma 2, OLMo 2), where no neuron writes a term of its own.
+
+**Probes, directions and learned subspaces.** Much of what interpretability finds is a direction
+in a site's activation space. Logogram keeps directions in the project's `directions/` folder (the
+vectors as orthonormal rows in safetensors, and what made them, where and on which model), and a
+run that uses one pins it by the hash of its file and keeps a copy
+([directions](docs/concepts/directions.md)). They are found by:
+
+* a **linear probe** (`probe`): a logistic regression at each site, at one token, trained on a
+  seeded split of the pairs to read which prompt of a pair it is or a field of the prompts' `meta`,
+  and measured on the held-out pairs beside a probe trained on shuffled labels; selectivity, the
+  difference, has its own interval. A probe's spec has no metric: it reads activations, not the
+  output ([probes](docs/concepts/probes.md));
+* **distributed alignment search** (`das`): a subspace of a stated number of dimensions, learned on
+  training pairs so that patching within it carries as much of a site's effect as it can, and
+  measured on held-out pairs beside patching the whole site and a random subspace of the same size
+  ([distributed alignment search](docs/concepts/das.md));
+* a principal component or a mean difference, from **Explore → Representations**.
+
+**Save as direction** in a probe's or a learned subspace's results (or `logogram directions save`,
+or `run.save_direction`) keeps one, and then:
+
+* **subspace patching** (`subspace_patching`) patches only the component of each site along it,
+  from the other prompt, keeping everything at right angles to it: how much of the site's effect
+  the direction carries;
+* **directional ablation** (an ablation with the `projection` baseline) removes the component along
+  it, or sets it to its mean over the clean or corrupt prompts; the `scale` baseline multiplies a
+  whole activation by a factor;
+* **steering** along it adds its unit vector, scaled by the training pairs' mean difference along
+  it, and says when the pairs differ along it both ways and the mean cancels;
+* a **readout** (`readout` metric) reads its component at a site, layer and token in place of the
+  model's output, so that patching and ablation ask which heads and MLPs write it. A readout reads
+  an MLP neuron or an SAE feature the same way.
+
+These act on one site at a time and on activations as wide as the residual stream (stream sites,
+attention and MLP outputs; a probe also reads a head's output, query, key or value). Tests check
+their identities on tiny models: removing every direction of the space is zero ablation and setting
+it to its mean is mean ablation, patching within the whole space is activation patching, and the
+whole-site column of a learned subspace run is activation patching on the held-out pairs.
+[Find a direction and test it](docs/guides/find-and-test-a-direction.md) walks through it on
+GPT-2 small: a probe reads the subject's gender at every layer, but its direction carries about half
+of the effect only where patching shows the model uses it.
 
 **Sets of sites** test a circuit. A `site_sets` scope lists sets of sites, each intervened on at
 once, in one forward pass: one result per set. A set marked `complement` intervenes on every
@@ -858,7 +1052,7 @@ must state every such choice, and a spec that leaves one out is refused with the
 
 ```json
 {
-  "logogram_spec": 3,
+  "logogram_spec": 4,
   "name": "Which heads restore the answer?",
   "notes": "",
   "model": {
@@ -883,9 +1077,11 @@ must state every such choice, and a spec that leaves one out is refused with the
 Version 1 specs (from Logogram 0.1) still run. Where one leaves a choice out, it takes the value
 version 1 gave it, the run's first warning lists each such value, and the spec saved with the run
 states them all. `logogram validate SPEC.json` shows the list without running anything. Version 2
-specs (Logogram 0.2 to 0.4) read as version 3 with what version 3 added turned off, which is what
-they did: no chat template, a model from Hugging Face, and steering along the mean difference
-without continuations.
+specs (Logogram 0.2 to 0.4) read with what version 3 added turned off, which is what they did: no
+chat template, a model from Hugging Face, and steering along the mean difference without
+continuations. Version 3 specs (Logogram 0.5 and 0.6) read as version 4 with what version 4 adds
+turned off: the SAE a spec names is a published one, and the layer predictions read the logit
+lens. Version 4 also adds methods and sources that a version 3 spec can't name.
 
 | Field | Values |
 |---|---|
@@ -896,10 +1092,11 @@ without continuations.
 | `tokenization.chat_template` | `null` feeds each prompt as raw text. `{"kind": "user_turn", "system": null}` makes each prompt the person's message in the model's own chat template, so the answer is the first token of the reply; `{"kind": "assistant_prefix", "system": null, "user": "…"}` makes it the start of the model's reply to a fixed message. `system` is an optional system message. The template is the one the tokenizer ships at the model's revision (see [Chat templates](#chat-templates)). With a template, `prepend_bos` is `false`: the template writes the beginning of the text. |
 | `model.process_weights` | Fold LayerNorm and center weights, as TransformerLens does by default. Logit differences don't change. Value biases are folded into the attention output's bias, so zero ablation of head outputs and heads' direct effects do change (by up to several logits in Qwen 2.5, whose value biases are large); a layer's attention output doesn't. |
 | `dataset.sha256` | If set, the run refuses a dataset file that has changed. |
-| `experiment` | `{"kind": "activation_patching", "direction": "clean_to_corrupt" \| "corrupt_to_clean"}`, `{"kind": "ablation", "baseline": …}` with `{"kind": "zero"}`, `{"kind": "mean", "reference": "clean" \| "corrupt"}` or `{"kind": "resample", "pool": "clean" \| "corrupt", "donors": 10, "seed": 0}`, `{"kind": "attribution_patching", "direction": …, "method": "gradient", "steps": null}` (same directions as patching; or `"method": "integrated_gradients", "steps": 8`), `{"kind": "direct_logit_attribution", "prompts": "clean" \| "corrupt"}`, `{"kind": "path_patching", "direction": …, "receivers": [{"kind": "head", "layer": 9, "head": 9, "input": "q" \| "k" \| "v"}, {"kind": "mlp", "layer": 3}, {"kind": "logits"}], "freeze_mlps": false}`, `{"kind": "edge_attribution", "direction": …, "method": "gradient", "steps": null, "curve": {"counts": [10, 100, 1000], "patch": "chosen" \| "rest", "control": {"seed": 0, "draws": 1}}}` (`curve` `null` for none) with a `graph` scope, or `{"kind": "steering", "apply_to": "clean" \| "corrupt", "direction": {"kind": "mean_difference"}, "coefficients": [-1, 1, 2], "train_fraction": 0.5, "seed": 0, "control": true, "continuations": null}` with a scope of one residual component per layer (`layer_components`) or residual `sites`, at one token. The direction can instead be one SAE feature's decoder direction, `{"kind": "sae_feature", "feature": 1234}` (with the spec's `sae`, and `sites` naming where the SAE writes), and `continuations` can be `{"prompts": 3, "tokens": 20}` to record what the steered model goes on to say |
-| `scope` | `{"kind": "heads", "position": …}`, `{"kind": "layer_position", "site": "resid_pre", "positions": "each" \| "labels"}`, `{"kind": "layer_components", "components": ["attn_out", "mlp_out"], "position": …}` `{"kind": "sites", "sites": [{"kind": "head", "layer": 9, "head": 9, "position": {"kind": "label", "label": "end"}}]}` (feature sites are `{"kind": "sae_feature", "layer": 8, "feature": 1234, "position": …}`), `{"kind": "head_inputs", "input": "q" \| "k" \| "v", "position": …}`, `{"kind": "neurons", "layers": [3, 4], "position": …}`, for attribution patching, `{"kind": "features", "position": …, "top": 50, "choose_on": 0.5, "seed": 0}` (`choose_on` and `seed` both `null` to choose and report on every prompt), `{"kind": "site_sets", "universe": ["head"], "sets": [{"label": "circuit", "sites": […], "complement": true}]}`, for edge attribution `{"kind": "graph", "layers": null, "logits": true}` (`layers` the heads and MLPs that receive edges, `null` for every layer), or, for path patching edges one at a time, `{"kind": "edges", "edges": [{"sender": {"kind": "head", "layer": 5, "head": 5}, "receiver": {"kind": "head", "layer": 9, "head": 6, "input": "v"}}]}` (senders `{"kind": "embed"}`, heads or `{"kind": "mlp", "layer": 0}`; `freeze_mlps` true, and the experiment's receivers those of the edges) |
-| `sae` | The SAE that feature sites belong to: `{"repo": "…", "path": "blocks.8.hook_resid_pre", "revision": "…"}`. The revision is pinned when a run starts. |
-| `metric` | `{"kind": "logit_diff" \| "logprob_diff" \| "logprob" \| "prob" \| "prob_diff", "normalization": …}` or `{"kind": "kl", "target": "clean" \| "corrupt", "normalization": …}` |
+| `experiment` | `{"kind": "activation_patching", "direction": "clean_to_corrupt" \| "corrupt_to_clean"}`, `{"kind": "ablation", "baseline": …}` with `{"kind": "zero"}`, `{"kind": "mean", "reference": "clean" \| "corrupt"}` or `{"kind": "resample", "pool": "clean" \| "corrupt", "donors": 10, "seed": 0}`, `{"kind": "attribution_patching", "direction": …, "method": "gradient", "steps": null}` (same directions as patching; or `"method": "integrated_gradients", "steps": 8`), `{"kind": "direct_logit_attribution", "prompts": "clean" \| "corrupt"}`, `{"kind": "path_patching", "direction": …, "receivers": [{"kind": "head", "layer": 9, "head": 9, "input": "q" \| "k" \| "v"}, {"kind": "mlp", "layer": 3}, {"kind": "logits"}], "freeze_mlps": false}`, `{"kind": "edge_attribution", "direction": …, "method": "gradient", "steps": null, "curve": {"counts": [10, 100, 1000], "patch": "chosen" \| "rest", "control": {"seed": 0, "draws": 1}}}` (`curve` `null` for none) with a `graph` scope, `{"kind": "acdc", "direction": …, "threshold": 0.1, "rule": "toward_source" \| "either_way"}` with a `graph` scope (`threshold` in the metric's units), or `{"kind": "steering", "apply_to": "clean" \| "corrupt", "direction": {"kind": "mean_difference"}, "coefficients": [-1, 1, 2], "train_fraction": 0.5, "seed": 0, "control": true, "continuations": null}` with a scope of one residual component per layer (`layer_components`) or residual `sites`, at one token. The direction can instead be one SAE feature's decoder direction, `{"kind": "sae_feature", "feature": 1234}` (with the spec's `sae`, and `sites` naming where the SAE writes), or a saved direction, `{"kind": "direction", "direction": {"name": "…", "sha256": null}}`, and `continuations` can be `{"prompts": 3, "tokens": 20}` to record what the steered model goes on to say. Also `{"kind": "probe", "labels": {"kind": "side"} \| {"kind": "meta", "field": "gender", "prompts": "clean" \| "corrupt" \| "both"}, "train_fraction": 0.5, "seed": 0, "regularization": 0.01, "iterations": 100, "control": true}`, `{"kind": "das", "direction": …, "dimensions": 1, "train_fraction": 0.5, "seed": 0, "steps": 100, "learning_rate": 0.01, "control": true}` and `{"kind": "subspace_patching", "direction": …, "subspace": {"name": "…", "sha256": null}}`, at one site at a time; ablation's baseline can also be `{"kind": "scale", "factor": 0.5}` or `{"kind": "projection", "direction": {"name": "…", "sha256": null}, "reference": null \| "clean" \| "corrupt"}` |
+| `scope` | `{"kind": "heads", "position": …}`, `{"kind": "layer_position", "site": "resid_pre", "positions": "each" \| "labels"}`, `{"kind": "layer_components", "components": ["attn_out", "mlp_out"], "position": …}` `{"kind": "sites", "sites": [{"kind": "head", "layer": 9, "head": 9, "position": {"kind": "label", "label": "end"}}]}` (feature sites are `{"kind": "sae_feature", "layer": 8, "feature": 1234, "position": …}`), `{"kind": "head_inputs", "input": "q" \| "k" \| "v", "position": …}`, `{"kind": "neurons", "layers": [3, 4], "position": …}`, for attribution patching, `{"kind": "features", "position": …, "top": 50, "choose_on": 0.5, "seed": 0}` (`choose_on` and `seed` both `null` to choose and report on every prompt), `{"kind": "site_sets", "universe": ["head"], "sets": [{"label": "circuit", "sites": […], "complement": true}]}`, for edge attribution and ACDC `{"kind": "graph", "layers": null, "logits": true}` (`layers` the heads and MLPs that receive edges, `null` for every layer), or, for path patching edges one at a time, `{"kind": "edges", "edges": [{"sender": {"kind": "head", "layer": 5, "head": 5}, "receiver": {"kind": "head", "layer": 9, "head": 6, "input": "v"}}]}` (senders `{"kind": "embed"}`, heads or `{"kind": "mlp", "layer": 0}`; `freeze_mlps` true, and the experiment's receivers those of the edges; a `k` or `v` receiver's `head` is a key/value head where heads share them) |
+| `sae` | The SAE that feature sites belong to: a published one, `{"repo": "…", "path": "blocks.8.hook_resid_pre", "revision": "…", "source": "hub", "sha256": null}`, whose revision is pinned when a run starts, or one trained in the project, `{"repo": "NAME", "path": "saes/NAME", "revision": null, "source": "project", "sha256": "…"}`, pinned by the hash of its files. |
+| `predictions` | `null`, or the layer prediction diagnostic saved beside the results: `{"method": "final_norm_logit_lens" \| "tuned_lens", "lens": null, "prompt_index": 0, "which": "clean", "position": {"kind": "last"}, "top_k": 5}`, with `lens` `{"name": "NAME", "sha256": "…"}` naming a tuned lens trained in the project, pinned by the hash of its file. |
+| `metric` | `{"kind": "logit_diff" \| "logprob_diff" \| "logprob" \| "prob" \| "prob_diff", "normalization": …}`, `{"kind": "kl", "target": "clean" \| "corrupt", "normalization": …}`, or, for patching, ablation and subspace patching, `{"kind": "readout", "unit": {"kind": "neuron", "layer": 9, "neuron": 652}, "position": {"kind": "last"}, "normalization": …}` (a unit can also be `{"kind": "direction", "direction": {"name": "…", "sha256": null}, "site": "resid_post", "layer": 10}` or `{"kind": "sae_feature", "feature": 1234}`); `null` for a probe |
 | `metric.normalization` | `dataset_gap` or `prompt_gap` |
 | `statistics.cluster` | `null` to resample prompts, or a field of the prompts' `meta` (such as `"template"`) to resample clusters of prompts |
 | `execution.batch_size` | Recorded because batch shape can change floating-point results in the last digits. |
@@ -912,6 +1109,9 @@ my-project/
   research.json                      saved selections and research notes (created on first save)
   datasets/*.jsonl
   datasets/snapshots/<sha256>.jsonl   immutable input bytes, shared by runs with identical data
+  corpora/<name>.jsonl, <name>.json   plain texts, and where they came from with the file's hash
+  directions/<name>.safetensors, .json  directions (orthonormal rows) and what made each
+  activations/<name>.safetensors, .json  exported activations, and what each row is
   experiments/<id>/spec.json          the experiment, with revision and dataset hash pinned
   experiments/<id>/results.parquet    one row per site and prompt
   experiments/<id>/summary.json       per-site statistics and the layout of the results
@@ -919,6 +1119,10 @@ my-project/
   experiments/<id>/manifest.json      versions, device, dtype, model revision, dataset hash, timing
   experiments/<id>/traceback.txt      a failed run's traceback, without this machine's paths
   experiments/<id>/owner.json         while a run runs: its process id and start time
+  saes/<name>/                        an SAE trained here: cfg.json, sae_weights.safetensors,
+                                      training.json (its spec) and metrics.json
+  lenses/<name>/                      a tuned lens trained here: lens.safetensors, training.json
+                                      and metrics.json
   .gitignore
 ```
 
@@ -955,9 +1159,10 @@ treating them as equivalent.
 manifests, summaries and per-prompt results list, open, compare and export as before. What a
 later release added and an older run didn't measure (corrections for the number of sites, say)
 is left out; runs from 0.1, which measured the logit difference only, read it as their metric.
-Version 1 and version 2 specs both run: a version 1 spec takes version 1's value for each choice
-it left out, `logogram validate` lists them, and its runs say so. The tests keep run folders
-written by 0.1.0 and 0.2.0 to hold every release to this.
+Specs of every earlier version run: what a later version added takes the value that reproduces
+what they did, and a version 1 spec takes version 1's value for each choice it left out, which
+`logogram validate` lists and its runs say. The tests keep run folders written by 0.1.0 and 0.2.0
+to hold every release to this.
 
 **What is bit-identical.** The same spec, on the same machine, with the same versions of
 Logogram, PyTorch, TransformerLens, Transformers and NumPy, gives the same per-prompt values to
@@ -1129,9 +1334,11 @@ The messages people see most often, as Logogram shows them, and what to do. If y
 * *In float16, …'s own forward pass gives values that aren't finite numbers (it overflows), so its
   predictions can't be checked. Load it in bfloat16 or float32, which have a wider range than
   float16.* Pythia is one such model.
-* *The spec asks for CUDA, but PyTorch can't see a CUDA GPU here.* `logogram doctor` names the
-  cause, usually a CPU-only PyTorch, and the command that fixes it. Or set `model.device` to
-  `auto` or `cpu` in the spec.
+* *CUDA was chosen, but PyTorch can't see a CUDA GPU here.* `logogram doctor` names the cause,
+  usually a CPU-only PyTorch, and the command that fixes it. Or choose the device **Automatic**
+  or **CPU** (`auto` or `cpu`, as `model.device` in a spec). A model that is loaded stays loaded:
+  the device is checked before it is closed, and the model dialog keeps **Load** disabled while
+  the device chosen isn't there.
 
 **A model or a run that doesn't fit.** The model dialog estimates, before downloading, the memory
 a model needs against what is free, and the experiment form's summary says whether a batch fits.
@@ -1165,8 +1372,8 @@ pairs can't be used, and why:
 * **Automatic** runs on the CPU: TransformerLens reports that Apple's MPS can give silently wrong
   results, and Logogram hasn't been checked on it, so MPS is used only when you choose it under
   **Device**. Check results that matter by rerunning on the CPU and comparing the two runs.
-* *The spec asks for Apple's MPS, which isn't available here. Set model.device to auto or cpu.*
-  The spec was made on a Mac: change its `model.device`.
+* *Apple's MPS was chosen, but it isn't available here. Choose the device auto or cpu
+  (model.device in a spec).* A spec made on a Mac asks for it: change its `model.device`.
 * `logogram doctor` says *Python is running under Rosetta*: an Intel Python can't use the Apple
   GPU. Install a native arm64 Python and reinstall Logogram with it, as it says.
 * `logogram doctor` says *Apple GPU (MPS) unavailable*: MPS needs macOS 12.3 or later.
@@ -1276,9 +1483,10 @@ runs the small models' SAEs on their models, recording each check in the catalog
 
 Model access goes through `logogram.backends.base.ModelBackend`. TransformerLens is the only
 backend today; remote execution and other libraries can be added behind the same interface.
-Not built yet, with room left for them: chat templates for models made for chat, attribution
-graphs over transcoders, cross-layer transcoders and crosscoders, the first Gemma Scope's NumPy
-SAE files, remote compute, a native desktop wrapper, plugins and assistants.
+Not built yet, with room left for them: attribution graphs over transcoders, cross-layer
+transcoders and crosscoders, the first Gemma Scope's NumPy SAE files, automated labels for
+features, models split across GPUs or quantized, sharing results online, remote compute, a native
+desktop wrapper, plugins and assistants.
 
 ## License
 

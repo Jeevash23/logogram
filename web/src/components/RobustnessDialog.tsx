@@ -7,21 +7,49 @@ import { experimentText } from "../lib/spec";
 import { useStore } from "../store/app";
 import { Button, Choices, Dialog, Field, Input, Select } from "./ui";
 
-type Option = "direction" | "zero" | "mean" | "resample" | "donors" | "seed" | "total" | "prompts" | "exact" | "estimator" | "split" | "other" | "mlps" | "pathdirection" | "whole" | "float32" | "edgedirection";
+type Option =
+  | "direction"
+  | "zero"
+  | "mean"
+  | "resample"
+  | "donors"
+  | "seed"
+  | "total"
+  | "prompts"
+  | "exact"
+  | "estimator"
+  | "split"
+  | "other"
+  | "mlps"
+  | "pathdirection"
+  | "whole"
+  | "float32"
+  | "edgedirection"
+  | "threshold"
+  | "acdcrule"
+  | "acdcdirection"
+  | "eap";
 
 function suggest(e: ExperimentSpec): Option {
   if (e.kind === "activation_patching") return e.direction === "clean_to_corrupt" ? "direction" : "resample";
   if (e.kind === "direct_logit_attribution") return "total";
   if (e.kind === "attribution_patching") return "exact";
-  if (e.kind === "steering") return "split";
+  if (e.kind === "steering" || e.kind === "probe" || e.kind === "das") return "split";
   if (e.kind === "path_patching") return "mlps";
   if (e.kind === "edge_attribution") return "estimator";
+  if (e.kind === "acdc") return "threshold";
+  if (e.kind === "subspace_patching") return "whole";
+  if (e.baseline.kind === "scale" || e.baseline.kind === "projection") return "zero";
   if (e.baseline.kind === "resample") return "donors";
   if (e.baseline.kind === "zero") return "mean";
   return "resample";
 }
 
-function variant(e: ExperimentSpec, option: Option, params: { donors: number; seed: number; reference: "clean" | "corrupt"; pool: "clean" | "corrupt"; steps: number }): ExperimentSpec {
+function variant(
+  e: ExperimentSpec,
+  option: Option,
+  params: { donors: number; seed: number; reference: "clean" | "corrupt"; pool: "clean" | "corrupt"; steps: number; threshold: number },
+): ExperimentSpec {
   const base = e.kind === "ablation" ? e.baseline : null;
   switch (option) {
     case "total":
@@ -33,11 +61,11 @@ function variant(e: ExperimentSpec, option: Option, params: { donors: number; se
       return e.kind === "path_patching" ? { ...e, direction: e.direction === "clean_to_corrupt" ? "corrupt_to_clean" : "clean_to_corrupt" } : e;
     case "whole":
       // The senders' whole effect, through every path: how much of it the receivers carry.
-      return { kind: "activation_patching", direction: e.kind === "path_patching" ? e.direction : "clean_to_corrupt" };
+      return { kind: "activation_patching", direction: e.kind === "path_patching" || e.kind === "subspace_patching" ? e.direction : "clean_to_corrupt" };
     case "split":
-      // The same steering with the pairs split differently: does the direction depend on which
-      // pairs computed it?
-      return e.kind === "steering" ? { ...e, seed: e.seed + 1 } : e;
+      // The same method with the pairs split differently: does what it found depend on which
+      // pairs found it?
+      return e.kind === "steering" || e.kind === "probe" || e.kind === "das" ? { ...e, seed: e.seed + 1 } : e;
     case "other":
       return e.kind === "steering" ? { ...e, apply_to: e.apply_to === "clean" ? "corrupt" : "clean" } : e;
     case "exact":
@@ -52,6 +80,23 @@ function variant(e: ExperimentSpec, option: Option, params: { donors: number; se
     case "edgedirection":
       // The same edges estimated the other way: the other prompt of each pair as the receiver.
       return e.kind === "edge_attribution" ? { ...e, direction: e.direction === "clean_to_corrupt" ? "corrupt_to_clean" : "clean_to_corrupt" } : e;
+    case "threshold":
+      // The same search with another threshold: how much of the circuit is the threshold's.
+      return e.kind === "acdc" && Number.isFinite(params.threshold) && params.threshold > 0 ? { ...e, threshold: params.threshold } : e;
+    case "acdcrule":
+      return e.kind === "acdc" ? { ...e, rule: e.rule === "toward_source" ? "either_way" : "toward_source" } : e;
+    case "acdcdirection":
+      return e.kind === "acdc" ? { ...e, direction: e.direction === "clean_to_corrupt" ? "corrupt_to_clean" : "clean_to_corrupt" } : e;
+    case "eap":
+      // Every edge of the same graph estimated from gradients, each alone, to compare with the
+      // edges ACDC kept.
+      return {
+        kind: "edge_attribution",
+        direction: e.kind === "acdc" ? e.direction : "clean_to_corrupt",
+        method: "integrated_gradients",
+        steps: params.steps,
+        curve: null,
+      };
     case "prompts":
       return { kind: "direct_logit_attribution", prompts: e.kind === "direct_logit_attribution" && e.prompts === "clean" ? "corrupt" : "clean" };
     case "direction":
@@ -97,6 +142,7 @@ export function RobustnessDialog() {
   const [seed, setSeed] = useState(1);
   const [reference, setReference] = useState<"clean" | "corrupt">("corrupt");
   const [pool, setPool] = useState<"clean" | "corrupt">("corrupt");
+  const [threshold, setThreshold] = useState(0.1);
 
   useEffect(() => {
     if (!open || !exp) return;
@@ -110,6 +156,7 @@ export function RobustnessDialog() {
       setSeed(0);
     }
     if (exp.kind === "ablation" && exp.baseline.kind === "mean") setReference(exp.baseline.reference === "clean" ? "corrupt" : "clean");
+    if (exp.kind === "acdc") setThreshold(exp.threshold / 10);
   }, [open, exp]);
 
   if (!exp || !runId) return null;
@@ -158,6 +205,24 @@ export function RobustnessDialog() {
         : exp.apply_to === "clean" ? "Steer corrupt prompts toward clean" : "Steer clean prompts toward corrupt",
       detail: feature ? "The same feature, sites and strengths, added to the other prompts." : "The same sites and strengths in the other direction.",
     });
+  } else if (exp.kind === "probe") {
+    options.push({
+      value: "split",
+      title: "Another split of the pairs",
+      detail: `Seed ${exp.seed + 1}: other pairs train the probes, and others measure them.`,
+    });
+  } else if (exp.kind === "das") {
+    options.push({
+      value: "split",
+      title: "Another split of the pairs",
+      detail: `Seed ${exp.seed + 1}: other pairs learn the subspaces, from another starting point, and others measure them.`,
+    });
+  } else if (exp.kind === "subspace_patching") {
+    options.push({
+      value: "whole",
+      title: "Patch the whole site",
+      detail: "The same sites patched as a whole: how much of their effect the direction carries.",
+    });
   } else if (exp.kind === "attribution_patching") {
     options.push({
       value: "exact",
@@ -192,6 +257,31 @@ export function RobustnessDialog() {
           ? "Estimate the edges on the clean prompts, carrying corrupt values: which edges the behavior needs."
           : "Estimate the edges on the corrupt prompts, carrying clean values: which edges bring the behavior back.",
     });
+  } else if (exp.kind === "acdc") {
+    const source = exp.direction === "clean_to_corrupt" ? "clean" : "corrupt";
+    options.push({
+      value: "threshold",
+      title: "Another threshold",
+      detail: "The same search, keeping edges by another threshold: how much of the circuit depends on the one chosen.",
+    });
+    options.push(
+      exp.rule === "toward_source"
+        ? { value: "acdcrule", title: "Count changes either way", detail: "Keep an edge whose removal moves the metric away from the source as well." }
+        : { value: "acdcrule", title: `Count only changes toward ${source}`, detail: "The paper's rule: a removal that moves the metric away from the source always stays." },
+    );
+    options.push({
+      value: "acdcdirection",
+      title: "Opposite direction",
+      detail:
+        exp.direction === "clean_to_corrupt"
+          ? "Run the clean prompts, removed edges carrying corrupt values: which edges the behavior needs."
+          : "Run the corrupt prompts, removed edges carrying clean values: which edges keep the behavior away.",
+    });
+    options.push({
+      value: "eap",
+      title: "Estimate every edge instead",
+      detail: `Edge attribution with integrated gradients (${DEFAULT_IG_STEPS} steps) over the same graph: each edge's effect alone, from gradients, to compare with the edges ACDC kept.`,
+    });
   } else if (exp.kind === "activation_patching") {
     options.push({
       value: "direction",
@@ -221,7 +311,7 @@ export function RobustnessDialog() {
     });
   }
 
-  const next = variant(exp, option, { donors, seed, reference, pool, steps: DEFAULT_IG_STEPS });
+  const next = variant(exp, option, { donors, seed, reference, pool, steps: DEFAULT_IG_STEPS, threshold });
   const same = option !== "float32" && JSON.stringify(next) === JSON.stringify(exp);
 
   return (
@@ -259,6 +349,11 @@ export function RobustnessDialog() {
             <option value="corrupt">Corrupt prompts</option>
             <option value="clean">Clean prompts</option>
           </Select>
+        </Field>
+      )}
+      {option === "threshold" && (
+        <Field label="Threshold" help="In the metric's units, as the run's threshold is. Lower keeps more edges.">
+          <Input type="number" min={0} step="any" value={threshold} onChange={(e) => setThreshold(Number(e.target.value))} aria-invalid={!(threshold > 0)} />
         </Field>
       )}
       {(option === "resample" || option === "donors" || option === "seed") && (

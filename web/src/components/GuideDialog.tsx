@@ -158,7 +158,8 @@ function PageText({ page }: { page: GuidePageId }) {
         <dl className={s.rows}>
           <Row term={<Workspace color="--explore">Explore</Workspace>}>
             Look inside the model: the model map, where heads attend and which heads the head finder finds, what each
-            layer would predict, an SAE&rsquo;s features, and any text of your own.
+            layer would predict, an SAE&rsquo;s features, any text of your own, where a unit is most active in a
+            corpus of texts, and how prompts and texts sit on the principal components of the activations.
           </Row>
           <Row term={<Workspace color="--experiment">Experiment</Workspace>}>
             Set up what runs: the prompt pairs, the baseline check, the experiment form, and the complete spec it makes.

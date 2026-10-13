@@ -2,10 +2,16 @@
 commands that read and check runs without the app: ``list``, ``show``, ``compare``, ``diff``,
 ``verify``, ``robustness``, ``sweep``, ``export``, ``validate``, ``tasks`` and ``generate``;
 ``saes``, the published SAEs for a model and what Logogram reads of them;
-commands that manage them: ``rename``, ``star``, ``archive`` and ``delete``; ``models add``,
+commands that manage them: ``rename``, ``star``, ``archive`` and ``delete``; projects: ``new``,
+``projects`` and ``projects forget`` (the recent list), ``project rename`` and ``project delete``;
+datasets: ``datasets``, ``datasets rename`` and ``datasets delete``; ``models add``,
 ``models list`` and ``models remove`` for model folders on this machine; ``toy``, a model whose
-circuit is known; and the project's run queue: ``queue add``, ``queue list``, ``queue clear`` and
-``queue run``."""
+circuit is known; the project's run queue: ``queue add``, ``queue list``, ``queue clear`` and
+``queue run``; its corpora (``corpora``, ``corpora import``, ``corpora rename`` and ``corpora
+delete``) and directions (``directions``, ``directions save``, ``directions rename`` and
+``directions delete``); ``activations``, which exports the activations at sites over a dataset or
+a corpus; and SAEs and tuned lenses trained in the project: ``sae train``, ``sae list``, ``lens
+train`` and ``lens list``."""
 
 from __future__ import annotations
 
@@ -668,6 +674,40 @@ def _print_continuations(project: Any, run_id: str) -> None:
         typer.echo(f"  {label:<18} {''.join(tokens)!r}")
 
 
+def _print_probes(summary: dict, ci: int, top: int) -> None:  # type: ignore[type-arg]
+    """A probe run: each site's held-out accuracy beside its control's, and their difference."""
+    probe = summary["probe"]
+    typer.echo(
+        f"\nThe probes read {probe['labels']}: {', '.join(probe['classes'])}. Chance (the most "
+        f"common training class) scores {_fmt(probe['chance'])} on {probe['examples']['test']} "
+        f"held-out examples; {probe['examples']['train']} examples trained them."
+    )
+    sites = {s["index"]: s for s in summary["sites"]}
+    chosen = {c["index"]: c for c in probe.get("selectivity") or []}
+    probes = [s for s in summary["sites"] if not (s.get("variant") or {}).get("control")]
+    probes = sorted(probes, key=lambda s: -(s["effect"]["mean"] or 0.0))[:top]
+    width = max([22, *(len(s["label"]) for s in probes)])
+    typer.echo("")
+    typer.echo(
+        f"{'site':<{width}} {'accuracy':>9}  {f'{ci}% CI':<19} {'control':>8} {'selectivity':>12}"
+    )
+    for s in probes:
+        e = s["effect"]
+        sel = chosen.get(s["index"]) or {}
+        control = sites.get(sel.get("control_index", -1))
+        mark = "  selective" if sel.get("selective") else ""
+        interval = f"[{_fmt(e['lo'])}, {_fmt(e['hi'])}]"
+        held = None if control is None else control["effect"]["mean"]
+        typer.echo(
+            f"{s['label']:<{width}} {_fmt(e['mean']):>9}  {interval:<19} {_fmt(held):>8} "
+            f"{_fmt(sel.get('difference')):>12}{mark}"
+        )
+    typer.echo(
+        "\nA probe shows what can be read at a site, not what the model uses. Save a site's "
+        "direction (logogram directions save RUN SITE NAME) and patch along it to test that."
+    )
+
+
 def _print_summary(summary: dict, top: int) -> None:  # type: ignore[type-arg]
     base = summary["baseline"]
     clean = base["clean"]["logit_diff"]["mean"]
@@ -696,6 +736,9 @@ def _print_summary(summary: dict, top: int) -> None:  # type: ignore[type-arg]
     typer.echo(
         f"Confidence intervals: {ci}% {stats['method']}, {stats['bootstrap']} resamples, seed {stats['seed']}"
     )
+    if summary.get("probe"):
+        _print_probes(summary, ci, top)
+        return
     # What the values are depends on the method: patched runs, estimates of them, or terms of a
     # split; only patched runs can flip a prompt.
     measure = summary.get("measure", "intervention")
@@ -705,13 +748,23 @@ def _print_summary(summary: dict, top: int) -> None:  # type: ignore[type-arg]
         "estimate": ("estimated", "estimated Δ"),
         "attribution": ("share", "direct"),
     }.get(measure, ("effect", delta))
-    flips = measure == "intervention"
-    sites = sorted(summary["sites"], key=lambda s: -abs(s["effect"]["mean"] or 0.0))[:top]
+    acdc = summary.get("acdc")
+    # An ACDC run's values are changes between circuits, not patched runs of the whole model.
+    flips = measure == "intervention" and not acdc
+    sites = sorted(summary["sites"], key=lambda s: -abs(s["effect"]["mean"] or 0.0))
+    if acdc:
+        # The circuit's edges first, then the strongest of the edges removed.
+        circuit = set(acdc["kept"])
+        sites = [s for s in sites if s["index"] in circuit] + [
+            s for s in sites if s["index"] not in circuit
+        ]
+        value = "change"
+    sites = sites[:top]
     typer.echo("")
     # Edges are named by both ends ("L5 H5 → L9 H6 q"): the column fits the longest.
     width = max([22, *(len(s["label"]) for s in sites)])
     header = f"{'site':<{width}} {value:>9}  {f'{ci}% CI':<19} {change:>12}"
-    typer.echo(header + (f"  {'flipped':>8}" if flips else ""))
+    typer.echo(header + (f"  {'flipped':>8}" if flips else "") + ("  circuit" if acdc else ""))
     for s in sites:
         e = s["effect"]
         interval = f"[{_fmt(e['lo'])}, {_fmt(e['hi'])}]"
@@ -719,9 +772,24 @@ def _print_summary(summary: dict, top: int) -> None:  # type: ignore[type-arg]
             f"{s['label']:<{width}} {_fmt(e['mean']):>9}  {interval:<19} "
             f"{_fmt(s['delta']['mean']):>12}"
         )
-        typer.echo(line + (f"  {s['sign_flips']:>3} / {s['n']:<3}" if flips else ""))
+        if flips:
+            line += f"  {s['sign_flips']:>3} / {s['n']:<3}"
+        if acdc:
+            line += "  kept" if s["index"] in circuit else "  removed"
+        typer.echo(line)
     if summary.get("edges"):
         _print_edges(summary["edges"], ci)
+    if summary.get("das"):
+        das = summary["das"]
+        typer.echo(
+            f"\nEach site's subspace of {das['dimensions']} dimension"
+            f"{'s' if das['dimensions'] != 1 else ''} was learned on {len(das['train'])} pairs and "
+            f"measured on the {len(das['test'])} held-out pairs, beside the whole site and (with "
+            "the control) a random subspace. Save one as a direction with logogram directions "
+            "save RUN SITE NAME."
+        )
+    if acdc:
+        _print_acdc(summary, ci)
     if summary.get("direct"):
         d = summary["direct"]
         typer.echo(
@@ -785,7 +853,7 @@ def _print_summary(summary: dict, top: int) -> None:  # type: ignore[type-arg]
                     f"\n{r['label']}: beyond {i['a']} and {i['b']} alone, an effect of "
                     f"{_interval(i['effect'])}"
                 )
-    corrections = (summary.get("edges") or {}).get("corrections")
+    corrections = (summary.get("edges") or summary.get("acdc") or {}).get("corrections")
     if stats.get("band_level") is not None and corrections:
         # Counted over every edge: the summary lists only the strongest.
         typer.echo(
@@ -809,24 +877,13 @@ def _print_summary(summary: dict, top: int) -> None:  # type: ignore[type-arg]
 
 
 def _report_reproduction(original: Path, new: Path, original_id: str) -> None:
+    """Whether the new run's per-prompt values match the run its spec came from, as the app says
+    it when a rerun finishes (logogram.compare.reproduction_of)."""
     import pyarrow.parquet as pq
 
-    from logogram.results import largest_change
+    from logogram.compare import reproduction_of
 
-    a = pq.read_table(original)
-    b = pq.read_table(new)
-    largest = largest_change(a, b)
-    if largest is None:
-        typer.echo(f"Differs from {original_id}: {a.num_rows} rows before, {b.num_rows} now.")
-    elif largest == 0.0:
-        typer.echo(
-            f"Identical to {original_id}: all {a.num_rows:,} per-prompt values match exactly."
-        )
-    else:
-        typer.echo(
-            f"Differs from {original_id}: largest change in a per-prompt value is {largest:.3g}. "
-            "Check the device, dtype and library versions in the two manifests."
-        )
+    typer.echo(reproduction_of(pq.read_table(original), pq.read_table(new), original_id)["text"])
 
 
 # -- runs without the app ---------------------------------------------------------------------
@@ -979,12 +1036,16 @@ def delete(
     project_dir: Annotated[Path | None, ProjectOption] = None,
 ) -> None:
     """Delete a finished, failed or cancelled run, or a draft: its folder and everything in it.
-    There is no undo; `logogram archive` keeps a run out of the way instead."""
-    from logogram.history import delete_run, display_name, reason
+    A run in progress, or a draft waiting in the queue, can't be deleted. There is no undo;
+    `logogram archive` keeps a run out of the way instead."""
+    from logogram.history import check_deletable, delete_run, display_name, reason
 
     project = _open_project(project_dir, Path(run) if Path(run).exists() else None)
     run_id = _named_run(project, run)
-    listing = project.run_listing(run_id)
+    try:
+        listing = check_deletable(project, run_id)  # before asking
+    except ValueError as exc:
+        raise _fail(reason(exc)) from exc
     name = display_name(listing) if listing else run_id
     if not yes:
         derived = [
@@ -1229,6 +1290,34 @@ def _print_edges(edges: dict[str, Any], ci: int) -> None:
     difference = curve.get("source_difference")
     if difference is not None:
         typer.echo(f"Patching every edge reproduces the source run within {difference:.2g}.")
+
+
+def _print_acdc(summary: dict[str, Any], ci: int) -> None:
+    """An ACDC run's circuit: how many edges it kept and by which rule, how faithful it is, and
+    what the run cost."""
+    acdc = summary["acdc"]
+    label = summary["metric"].get("label") or "metric"
+    receiver, source = summary["receiver"], summary["reference"]
+    moved = (
+        f"moved the {label} toward the {source} prompts' by less than"
+        if acdc["rule"] == "toward_source"
+        else f"moved the {label} either way by less than"
+    )
+    typer.echo(
+        f"\nACDC kept {acdc['n_kept']:,} of {acdc['n_edges']:,} edges: an edge stayed removed when "
+        f"removing it {moved} {acdc['threshold']:g}. Each edge's change is what its removal did "
+        "when it was tested."
+    )
+    typer.echo(
+        f"The circuit's faithfulness: {_interval(acdc['faithfulness'])} ({ci}% CI; 0 is the "
+        f"{source} run, 1 the {receiver} run). Mean {label}: every edge kept "
+        f"{_fmt(acdc['full'])}, the circuit {_fmt(acdc['circuit'])}."
+    )
+    typer.echo(
+        f"The summary lists the circuit's edges, then the strongest removed ({acdc['reported']:,} "
+        "in all); edges.parquet has every edge, and whether it was kept."
+    )
+    typer.echo(f"Cost: {acdc['cost']['text']}.")
 
 
 def _print_edge_verification(table: dict[str, Any]) -> None:
@@ -1501,8 +1590,8 @@ def export(
         bool,
         typer.Option(
             "--sites",
-            help="One row per site instead of per site and prompt (for an edge attribution run, "
-            "every edge of its graph).",
+            help="One row per site instead of per site and prompt (for an edge attribution or "
+            "ACDC run, every edge of its graph).",
         ),
     ] = False,
     prompt_text: Annotated[
@@ -1792,8 +1881,10 @@ def generate(
     overwrite: Annotated[bool, typer.Option(help="Replace a dataset of the same name.")] = False,
     project_dir: Annotated[Path | None, ProjectOption] = None,
 ) -> None:
-    """Write a seeded dataset of prompt pairs for a task into the project's datasets folder."""
-    from logogram.datasets import check_dataset_name, write_dataset
+    """Write a seeded dataset of prompt pairs for a task into the project's datasets folder.
+    --overwrite replaces a dataset of the same name, unless a saved draft or a queued run names
+    it (they would fail, or run on other prompts); finished runs keep their own copy."""
+    from logogram.datasets import DatasetError, check_dataset_name, check_unused, write_dataset
     from logogram.tasks import TaskError, generate_task, get_task
 
     project = _open_project(project_dir)
@@ -1806,10 +1897,15 @@ def generate(
         path = project.dataset_file(check_dataset_name(name or task))
     except (TaskError, ValueError) as exc:
         raise _fail(str(exc)) from exc
-    if path.exists() and not overwrite:
-        raise _fail(f"{path.name} already exists. Choose another --name, or pass --overwrite.")
-    write_dataset(path, records)
     rel = path.relative_to(project.root).as_posix()
+    if os.path.lexists(path):
+        if not overwrite:
+            raise _fail(f"{path.name} already exists. Choose another --name, or pass --overwrite.")
+        try:
+            check_unused(project, rel, "replaced")
+        except DatasetError as exc:
+            raise _fail(str(exc)) from exc
+    write_dataset(path, records)
     metric = get_task(task).recommended_metric(options)
     typer.echo(f"Wrote {len(records)} prompt pairs to {rel}.")
     typer.echo(f'Read them with "metric": {{"kind": "{metric}", ...}} in the spec.')
@@ -1839,6 +1935,234 @@ def _cached_tokenizer(model_id: str) -> tuple[Any, Any]:
         return list(tok(text, add_special_tokens=False)["input_ids"])
 
     return (lambda text: len(ids(text)) == 1), (lambda text: len(ids(text)))
+
+
+# -- projects ----------------------------------------------------------------------------------
+
+
+@app.command()
+def new(
+    name: Annotated[str, typer.Argument(help="The project's name; its folder is named after it.")],
+    parent: Annotated[
+        Path | None,
+        typer.Option(
+            "--parent",
+            file_okay=False,
+            help="The folder to make it in (default: the projects folder the app uses, "
+            "Documents/Logogram).",
+        ),
+    ] = None,
+) -> None:
+    """Create a project, as the app's Create project does: a folder named after NAME, with
+    project.json, datasets/ and experiments/. Prints its path."""
+    from logogram.project import Project, ProjectError, default_projects_parent, remember_recent
+
+    try:
+        project = Project.create(parent or default_projects_parent(), name)
+    except ProjectError as exc:
+        raise _fail(str(exc)) from exc
+    with contextlib.suppress(Exception):  # the app lists it among the recent projects
+        remember_recent(project)
+    typer.echo(f"Created the project “{project.meta.name}” in\n\n  {project.root}\n")
+    typer.echo(f"Open it in the app: logogram open {project.root}")
+
+
+projects_app = typer.Typer(
+    add_completion=False,
+    invoke_without_command=True,
+    rich_markup_mode=None,
+    help="The projects opened lately, as the app lists them: list them, or take one out of the "
+    "list.",
+)
+app.add_typer(projects_app, name="projects")
+
+
+@projects_app.callback()
+def projects_list(ctx: typer.Context) -> None:
+    """List the projects opened lately, last opened first. A project whose folder can't be found
+    (moved, deleted, or on a drive that isn't connected) is marked, and stays listed until
+    `logogram projects forget PATH` takes it out."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from logogram.project import load_recent
+
+    listed = load_recent()
+    if not listed:
+        typer.echo(
+            "No projects opened yet. Make one with `logogram new NAME`, or open a folder with "
+            "`logogram open PATH`."
+        )
+        return
+    for item in listed:
+        mark = f"  ({item['problem']})" if item["missing"] else ""
+        typer.echo(f"{item['name']}{mark}\n  {item['path']}")
+
+
+@projects_app.command("forget")
+def projects_forget(
+    path: Annotated[str, typer.Argument(help="The project's folder, as the list shows it.")],
+) -> None:
+    """Take a project out of the recent list. Its folder is left as it is."""
+    from logogram.project import forget_recent
+
+    if not forget_recent(path):
+        raise _fail(f"{path} isn't in the recent list (`logogram projects` lists it).")
+    typer.echo(f"Took {path} out of the recent list. Its folder is left as it is.")
+
+
+project_app = typer.Typer(
+    add_completion=False,
+    no_args_is_help=True,
+    rich_markup_mode=None,
+    help="The project: give it another name, or delete it.",
+)
+app.add_typer(project_app, name="project")
+
+
+@project_app.command("rename")
+def project_rename(
+    name: Annotated[str, typer.Argument(help="The project's new name.")],
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Give the project another name, in its project.json. Its folder keeps its name."""
+    project = _open_project(project_dir)
+    old = project.meta.name
+    try:
+        project.rename(name)
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
+    typer.echo(f"“{old}” is now called “{project.meta.name}”. Its folder keeps its name.")
+
+
+@project_app.command("delete")
+def project_delete(
+    yes: Annotated[
+        bool, typer.Option("--yes", "-y", help="Delete it without asking first.")
+    ] = False,
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Delete the project's folder and everything in it, for good: its runs, drafts, datasets and
+    queue. Asks for the project's name to be typed first, unless --yes. Refused while a run is in
+    progress in it or its queue is being run, and when the folder holds anything Logogram doesn't
+    make there (it may be your own folder), listing it."""
+    from logogram.project import delete_project, deletion_plan
+
+    project = _open_project(project_dir)
+    try:
+        plan = deletion_plan(project)
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
+    if plan.problem:
+        raise _fail(plan.problem)
+    if not yes:
+        typer.echo(plan.text)
+        typed = typer.prompt(
+            f"Type the project's name, {plan.name}, to delete it", default="", show_default=False
+        )
+        if typed.strip() != plan.name:
+            typer.echo("That isn't its name. Nothing was deleted.")
+            raise typer.Exit(1)
+    try:
+        delete_project(project)
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
+    typer.echo(f"Deleted “{plan.name}” ({plan.path}).")
+
+
+# -- datasets ----------------------------------------------------------------------------------
+
+datasets_app = typer.Typer(
+    add_completion=False,
+    invoke_without_command=True,
+    rich_markup_mode=None,
+    help="The project's datasets: list them, rename one, delete one. Runs keep their own copy of "
+    "the prompts they ran on, so neither changes a run.",
+)
+app.add_typer(datasets_app, name="datasets")
+
+
+@datasets_app.callback()
+def datasets_list(
+    ctx: typer.Context, project_dir: Annotated[Path | None, ProjectOption] = None
+) -> None:
+    """List the project's datasets: each file in datasets/, its prompts, and the drafts and queued
+    runs that name it."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from logogram.datasets import dataset_users, users_text
+
+    project = _open_project(project_dir)
+    listed = project.list_datasets()
+    if not listed:
+        typer.echo("No datasets yet. Make one with `logogram generate TASK`, or in the app.")
+        return
+    width = max(len(d["name"]) for d in listed)
+    for d in listed:
+        about = f"error: {d['error']}" if d.get("error") else count_text(d["n"], "prompt pair")
+        typer.echo(f"{d['name']:<{width}}  {about}")
+        users = dataset_users(project, d["path"])
+        if users:
+            typer.echo(f"{'':<{width}}  named by {users_text(users)}")
+
+
+def _dataset_or_fail(project: Any, name: str, action: str) -> Any:
+    """The dataset file ``name``, once checked to be there and free to ``action``."""
+    from logogram.datasets import check_unused, existing_dataset
+
+    try:
+        path = existing_dataset(project, name)
+        check_unused(project, f"datasets/{path.name}", action)
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
+    return path
+
+
+@datasets_app.command("delete")
+def datasets_delete(
+    name: Annotated[str, typer.Argument(help="The dataset's file name, such as ioi.jsonl.")],
+    yes: Annotated[
+        bool, typer.Option("--yes", "-y", help="Delete it without asking first.")
+    ] = False,
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Delete a dataset file from the project, for good. Runs that ran on it keep their own copy
+    of its prompts in datasets/snapshots/. Refused while a saved draft or a queued run names it."""
+    from logogram.datasets import delete_dataset
+
+    project = _open_project(project_dir)
+    path = _dataset_or_fail(project, name, "deleted")
+    if not yes:
+        typer.echo(
+            f"This deletes datasets/{path.name}, for good. Runs that ran on it keep their own copy "
+            "of its prompts, in datasets/snapshots/."
+        )
+        if not typer.confirm("Delete it?", default=False):
+            typer.echo("Nothing was deleted.")
+            raise typer.Exit(1)
+    try:
+        rel = delete_dataset(project, name)
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
+    typer.echo(f"Deleted {rel}.")
+
+
+@datasets_app.command("rename")
+def datasets_rename(
+    name: Annotated[str, typer.Argument(help="The dataset's file name, such as ioi.jsonl.")],
+    new_name: Annotated[str, typer.Argument(metavar="NEW", help="Its new file name.")],
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Give a dataset file another name. Its prompts, and so its hash, stay the same; runs that
+    ran on it keep their own copy. Refused while a saved draft or a queued run names it."""
+    from logogram.datasets import rename_dataset
+
+    project = _open_project(project_dir)
+    path = _dataset_or_fail(project, name, "renamed")
+    try:
+        rel = rename_dataset(project, name, new_name)
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
+    typer.echo(f"Renamed datasets/{path.name} to {rel}.")
 
 
 # -- local models ------------------------------------------------------------------------------
@@ -2225,6 +2549,1010 @@ def queue_run(
     typer.echo(f"\nThe queue is empty. Of its {ran} run{'s' if ran != 1 else ''}: {counts}.")
     if ended.get("failed") or ended.get("skipped"):
         raise typer.Exit(1)
+
+
+# -- corpora, directions and activations --------------------------------------------------------
+
+corpora_app = typer.Typer(
+    add_completion=False,
+    invoke_without_command=True,
+    rich_markup_mode=None,
+    help="The project's corpora: plain texts in its corpora/ folder, for the analyses that read "
+    "text rather than prompt pairs. Without a command, list them.",
+)
+app.add_typer(corpora_app, name="corpora")
+
+
+@corpora_app.callback()
+def corpora_list(
+    ctx: typer.Context, project_dir: Annotated[Path | None, ProjectOption] = None
+) -> None:
+    """List the project's corpora: how many texts each has, its labels and where they came
+    from."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from logogram.corpora import list_corpora
+
+    project = _open_project(project_dir)
+    corpora = list_corpora(project)
+    if not corpora:
+        typer.echo(
+            "No corpora yet. Import one with `logogram corpora import NAME FILE`, from a Hugging "
+            "Face dataset (--hub REPO --file PATH) or from a dataset's prompts (--dataset PATH)."
+        )
+        return
+    width = max(len(c["name"]) for c in corpora)
+    for c in corpora:
+        if c["error"]:
+            typer.echo(f"{c['name']:<{width}}  can't be read: {c['error']}")
+            continue
+        labels = f" · labels {', '.join(c['labels'][:6])}" if c["labels"] else ""
+        more = f" and {len(c['labels']) - 6} more" if len(c["labels"]) > 6 else ""
+        typer.echo(f"{c['name']:<{width}}  {count_text(c['n'], 'text')}{labels}{more}")
+        if c["source"]:
+            typer.echo(f"{'':<{width}}  {c['source']['detail']}")
+
+
+@corpora_app.command("import")
+def corpora_import(
+    name: Annotated[str, typer.Argument(help="The corpus's name in the project.")],
+    file: Annotated[
+        Path | None,
+        typer.Argument(help="A file on this machine: Parquet, JSON Lines, JSON, CSV, TSV or text."),
+    ] = None,
+    hub: Annotated[
+        str | None,
+        typer.Option("--hub", help="A Hugging Face dataset, such as stanfordnlp/imdb."),
+    ] = None,
+    hub_file: Annotated[
+        str | None,
+        typer.Option(
+            "--file", help="With --hub: the file in the dataset, such as data/train.parquet."
+        ),
+    ] = None,
+    revision: Annotated[
+        str | None,
+        typer.Option(
+            help="With --hub: a commit, branch or tag (default: main), pinned as a commit."
+        ),
+    ] = None,
+    dataset: Annotated[
+        str | None,
+        typer.Option("--dataset", help="A project dataset's prompts, such as datasets/ioi.jsonl."),
+    ] = None,
+    sides: Annotated[
+        str,
+        typer.Option(
+            help="With --dataset: clean, corrupt or both (each pair's clean prompt first)."
+        ),
+    ] = "both",
+    label: Annotated[
+        str | None,
+        typer.Option(help="With --dataset: label texts by side, or by a meta field as meta:FIELD."),
+    ] = None,
+    format: Annotated[
+        str | None,
+        typer.Option(
+            "--format",
+            help="lines, paragraphs, jsonl, json, csv, tsv or parquet (default: from the file's name).",
+        ),
+    ] = None,
+    split: Annotated[
+        str,
+        typer.Option(
+            help="A text file's texts: one per line (lines) or by blank lines (paragraphs)."
+        ),
+    ] = "lines",
+    text_field: Annotated[
+        str, typer.Option(help="The field or column that holds each text.")
+    ] = "text",
+    label_field: Annotated[
+        str | None, typer.Option(help="The field or column that holds each text's label.")
+    ] = None,
+    limit: Annotated[
+        int | None, typer.Option(help="Keep the first N texts (with --dataset, the first N pairs).")
+    ] = None,
+    overwrite: Annotated[bool, typer.Option(help="Replace a corpus of the same name.")] = False,
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Import texts as a corpus: from a file, from one file of a Hugging Face dataset (downloaded
+    once, at the exact commit its revision names), or from a project dataset's prompts. Rows
+    without text are left out, and counted."""
+    from logogram.backends.base import BackendError
+    from logogram.corpora import CorpusError
+    from logogram.corpus_import import FORMATS, import_file, import_hub, import_prompts
+
+    project = _open_project(project_dir)
+    if sum(x is not None for x in (file, hub, dataset)) != 1:
+        raise _fail("import from one place: a FILE, --hub REPO --file PATH, or --dataset PATH.")
+    if format is not None and format not in FORMATS:
+        raise _fail(f"--format is one of {', '.join(FORMATS)}.")
+    try:
+        if file is not None:
+            done = import_file(
+                project,
+                name,
+                file,
+                fmt=format,  # type: ignore[arg-type]
+                split=split,
+                text_field=text_field,
+                label_field=label_field,
+                limit=limit,
+                overwrite=overwrite,
+            )
+        elif hub is not None:
+            if not hub_file:
+                raise _fail("--hub needs --file: the file in the dataset to import.")
+            _quiet_environment()
+            printer = _ProgressPrinter()
+
+            def progress(done: int, total: int, path: str) -> None:
+                printer("model", {"stage": "downloading", "done": done, "total": total})
+
+            try:
+                done = import_hub(
+                    project,
+                    name,
+                    repo=hub,
+                    path=hub_file,
+                    revision=revision,
+                    text_field=text_field,
+                    label_field=label_field,
+                    limit=limit,
+                    split=split,
+                    progress=progress,
+                    overwrite=overwrite,
+                )
+            finally:
+                printer.close()
+        else:
+            if sides not in ("clean", "corrupt", "both"):
+                raise _fail("--sides is clean, corrupt or both.")
+            done = import_prompts(
+                project,
+                name,
+                dataset=str(dataset),
+                sides=sides,  # type: ignore[arg-type]
+                label=label,
+                limit=limit,
+                overwrite=overwrite,
+            )
+    except (CorpusError, BackendError, ValueError) as exc:
+        raise _fail(str(exc)) from exc
+    except KeyboardInterrupt:
+        typer.echo("\nInterrupted. No corpus was written.", err=True)
+        raise typer.Exit(130) from None
+    corpus = done.corpus
+    labels = f", labelled {', '.join(corpus.labels()[:6])}" if corpus.labels() else ""
+    skipped = f" ({count_text(done.skipped, 'row')} without text left out)" if done.skipped else ""
+    typer.echo(
+        f"Wrote {count_text(len(corpus.records), 'text')}{labels} to {corpus.path}{skipped}."
+    )
+    if corpus.meta is not None:
+        typer.echo(f"  {corpus.meta.source.detail}")
+    typer.echo(f"  SHA-256 of the corpus: {corpus.sha256}")
+
+
+@corpora_app.command("rename")
+def corpora_rename(
+    name: Annotated[str, typer.Argument(help="The corpus's name.")],
+    new: Annotated[str, typer.Argument(help="Its new name.")],
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Give a corpus another name."""
+    from logogram.corpora import CorpusError, rename_corpus
+
+    project = _open_project(project_dir)
+    try:
+        corpus = rename_corpus(project, name, new)
+    except CorpusError as exc:
+        raise _fail(str(exc)) from exc
+    typer.echo(f"Renamed {name} to {corpus.name} ({corpus.path}).")
+
+
+@corpora_app.command("delete")
+def corpora_delete(
+    name: Annotated[str, typer.Argument(help="The corpus's name.")],
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Delete without asking first.")] = False,
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Delete a corpus: its texts and their description. There is no undo."""
+    from logogram.corpora import CorpusError, delete_corpus, read_corpus
+
+    project = _open_project(project_dir)
+    try:
+        corpus = read_corpus(project, name)
+    except CorpusError as exc:
+        raise _fail(str(exc)) from exc
+    if not yes:
+        typer.echo(f"This deletes {corpus.path} ({count_text(len(corpus.records), 'text')}).")
+        if not typer.confirm("Delete it?", default=False):
+            typer.echo("Nothing was deleted.")
+            raise typer.Exit(1)
+    delete_corpus(project, corpus.name)
+    typer.echo(f"Deleted the corpus {corpus.name}.")
+
+
+directions_app = typer.Typer(
+    add_completion=False,
+    invoke_without_command=True,
+    rich_markup_mode=None,
+    help="The directions saved in the project (its directions/ folder): probes' weights, learned "
+    "subspaces, principal components and mean differences. Without a command, list them.",
+)
+app.add_typer(directions_app, name="directions")
+
+
+@directions_app.callback()
+def directions_list(
+    ctx: typer.Context, project_dir: Annotated[Path | None, ProjectOption] = None
+) -> None:
+    """List the project's directions: what made each, where and on which model."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from logogram.directions import METHOD_WORDS, list_directions
+
+    project = _open_project(project_dir)
+    directions = list_directions(project)
+    if not directions:
+        typer.echo(
+            "No directions yet. Save a probe's or a learned subspace's from its run (logogram "
+            "directions save RUN SITE NAME), or a principal component or a mean difference in the "
+            "app's Representations view, or from Python with save_direction."
+        )
+        return
+    width = max(len(d["name"]) for d in directions)
+    for d in directions:
+        if d["error"]:
+            typer.echo(f"{d['name']:<{width}}  can't be read: {d['error']}")
+            continue
+        site = d["site"]
+        where = f"{site['kind']}:{site['layer']}" if site else "no site"
+        dims = "1 dimension" if d["dimensions"] == 1 else f"{d['dimensions']} dimensions"
+        model = d["model"]
+        found = (
+            f"{model['id']} at {model['revision'][:7]}"
+            if model["source"] == "hub" and model["revision"]
+            else model["id"]
+        )
+        method = METHOD_WORDS.get(d["made_by"]["method"], d["made_by"]["method"])
+        typer.echo(f"{d['name']:<{width}}  {dims} of {d['width']:,} · {where} · {found}")
+        typer.echo(f"{'':<{width}}  {method}: {d['made_by']['detail']}")
+
+
+@directions_app.command("rename")
+def directions_rename(
+    name: Annotated[str, typer.Argument(help="The direction's name.")],
+    new: Annotated[str, typer.Argument(help="Its new name.")],
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Give a direction another name. Runs that used it keep their own copy."""
+    from logogram.directions import DirectionError, rename_direction
+
+    project = _open_project(project_dir)
+    try:
+        rename_direction(project, name, new)
+    except DirectionError as exc:
+        raise _fail(str(exc)) from exc
+    typer.echo(f"Renamed the direction {name} to {new}.")
+
+
+@directions_app.command("delete")
+def directions_delete(
+    name: Annotated[str, typer.Argument(help="The direction's name.")],
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Delete without asking first.")] = False,
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Delete a direction. Runs that used it keep their own copy."""
+    from logogram.directions import DirectionError, delete_direction, read_direction
+
+    project = _open_project(project_dir)
+    try:
+        read_direction(project, name)
+    except DirectionError as exc:
+        raise _fail(str(exc)) from exc
+    if not yes and not typer.confirm(f"Delete the direction {name}?", default=False):
+        typer.echo("Nothing was deleted.")
+        raise typer.Exit(1)
+    delete_direction(project, name)
+    typer.echo(f"Deleted the direction {name}.")
+
+
+@directions_app.command("save")
+def directions_save(
+    run_id: Annotated[str, typer.Argument(help="A probe or learned subspace run's id.")],
+    site: Annotated[
+        int, typer.Argument(help="The site's index, as logogram show lists the run's sites.")
+    ],
+    name: Annotated[str, typer.Argument(help="The direction's name.")],
+    row: Annotated[
+        int | None,
+        typer.Option(
+            "--row",
+            help="One vector of a learned subspace, or a probe of more than two classes: the "
+            "class whose weights are saved.",
+        ),
+    ] = None,
+    replace: Annotated[
+        bool, typer.Option("--replace", help="Replace a direction of the same name.")
+    ] = False,
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Save what a probe or a learned subspace run found at one of its sites as a direction: a
+    probe's weights (with two classes, toward the second class from the first), or the learned
+    subspace. Steering, directional ablation, subspace patching and readouts can then use it."""
+    from logogram.directions import DirectionError, save_run_direction
+
+    project = _open_project(project_dir)
+    try:
+        saved = save_run_direction(project, run_id, site, name, row=row, replace=replace)
+    except DirectionError as exc:
+        raise _fail(str(exc)) from exc
+    dims = "1 dimension" if saved.dimensions == 1 else f"{saved.dimensions} dimensions"
+    typer.echo(f"Saved the direction {saved.name}: {dims}, {saved.meta.made_by.detail}.")
+
+
+def _rows_source(
+    project: Any, value: str, sides: str, mark: str | None, limit: int | None, max_tokens: int
+) -> Any:
+    """A dataset or a corpus named as the command line names them: a dataset's path in the
+    project (datasets/ioi.jsonl), a corpus's (corpora/reviews.jsonl), or a corpus's name."""
+    from logogram.representations import CorpusRows, DatasetRows
+
+    path = Path(value)
+    if path.is_absolute() or (Path.cwd() / path).exists():
+        with contextlib.suppress(ValueError, OSError):
+            value = path.resolve().relative_to(project.root.resolve()).as_posix()
+    text = value.replace("\\", "/")
+    if text.startswith("corpora/") and text.endswith(".jsonl"):
+        return CorpusRows(
+            name=text[len("corpora/") : -len(".jsonl")], limit=limit, max_tokens=max_tokens
+        )
+    if text.endswith(".jsonl"):
+        if sides not in ("clean", "corrupt", "both"):
+            raise _fail("--sides is clean, corrupt or both.")
+        dataset = text if "/" in text else f"datasets/{text}"
+        return DatasetRows(path=dataset, sides=sides, mark=mark, limit=limit)  # type: ignore[arg-type]
+    return CorpusRows(name=text, limit=limit, max_tokens=max_tokens)
+
+
+@app.command()
+def activations(
+    source: Annotated[
+        str,
+        typer.Argument(
+            metavar="DATASET_OR_CORPUS",
+            help="A dataset's path in the project (datasets/ioi.jsonl), or a corpus's name.",
+        ),
+    ],
+    site: Annotated[
+        list[str],
+        typer.Option("--site", help="KIND:LAYER, such as resid_post:6; repeat it for more sites."),
+    ],
+    output: Annotated[
+        str, typer.Option("-o", "--output", help="The export's name: activations/NAME.safetensors.")
+    ],
+    model: Annotated[
+        str, typer.Option(help="The model: a Hugging Face id, or a local model's name.")
+    ],
+    position: Annotated[
+        str,
+        typer.Option(
+            help="last, mean, a token index (negative counts from the end) or label:NAME."
+        ),
+    ] = "last",
+    revision: Annotated[str | None, typer.Option(help="The model's commit, branch or tag.")] = None,
+    dtype: Annotated[str, typer.Option(help="float32, float16 or bfloat16.")] = "float32",
+    device: Annotated[str, typer.Option(help="auto, cpu, cuda, cuda:N or mps.")] = "auto",
+    process_weights: Annotated[
+        bool, typer.Option(help="Fold LayerNorm weights as TransformerLens does by default.")
+    ] = True,
+    bos: Annotated[
+        bool, typer.Option(help="Begin each text with the beginning-of-sequence token.")
+    ] = True,
+    batch_size: Annotated[int, typer.Option(help="Prompts or texts in a batch.")] = 16,
+    sides: Annotated[
+        str, typer.Option(help="A dataset's clean, corrupt or both prompts (each clean first).")
+    ] = "both",
+    mark: Annotated[
+        str | None,
+        typer.Option(help="A dataset's rows' class, recorded with each: side, or meta:FIELD."),
+    ] = None,
+    limit: Annotated[
+        int | None, typer.Option(help="Read the first N prompt pairs or texts only.")
+    ] = None,
+    max_tokens: Annotated[
+        int, typer.Option(help="A corpus's texts are cut to their first N tokens.")
+    ] = 128,
+    overwrite: Annotated[bool, typer.Option(help="Replace an export of the same name.")] = False,
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Write the activations at sites and a position, one row per prompt or text, to
+    activations/NAME.safetensors (one float32 tensor per site, [rows, width]), with
+    activations/NAME.json saying what they are: the model, the sites, the position, the dataset or
+    corpus and its hash, and each row's index, side and class."""
+    from logogram.backends.base import BackendError
+    from logogram.corpora import CorpusError
+    from logogram.project import ProjectError
+    from logogram.representations import (
+        export_activations,
+        load_rows,
+        parse_position,
+        parse_site,
+    )
+
+    project = _open_project(project_dir)
+    try:
+        sites = [parse_site(s) for s in site]
+        where = parse_position(position)
+        rows_source = _rows_source(project, source, sides, mark, limit, max_tokens)
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
+    _quiet_environment()
+    from logogram.api import LogogramError, load_model
+
+    printer = _ProgressPrinter()
+    try:
+        backend = load_model(
+            model,
+            revision=revision,
+            dtype=dtype,
+            device=device,
+            process_weights=process_weights,
+            on_progress=lambda data: printer("model", data),
+        )
+    except (BackendError, LogogramError) as exc:
+        printer.close()
+        raise _fail(str(exc)) from exc
+    printer.close()
+
+    last = {"time": 0.0}
+
+    def progress(done: int, total: int) -> None:
+        now = time.monotonic()
+        if done == total or now - last["time"] > 0.25:
+            last["time"] = now
+            printer("status", {"message": f"read {done:,} of {total:,} prompts or texts"})
+
+    try:
+        loaded = load_rows(backend, project, rows_source, bos)
+        written = export_activations(
+            project,
+            output,
+            backend,
+            loaded,
+            sites,
+            where,
+            prepend_bos=bos,
+            batch_size=batch_size,
+            overwrite=overwrite,
+            progress=progress,
+        )
+    except (CorpusError, ProjectError, BackendError, ValueError) as exc:
+        printer.close()
+        raise _fail(str(exc)) from exc
+    except KeyboardInterrupt:
+        printer.close()
+        typer.echo("\nInterrupted. Nothing was written.", err=True)
+        raise typer.Exit(130) from None
+    printer.close()
+    typer.echo(
+        f"Wrote {count_text(written['n'], 'row')} of {', '.join(written['sites'])} to "
+        f"{written['path']}, and what they are to {written['json_path']}."
+    )
+    typer.echo(f"  SHA-256 of the tensors: {written['sha256']}")
+
+
+# -- SAEs and lenses trained in the project ----------------------------------------------------
+
+sae_app = typer.Typer(
+    add_completion=False,
+    no_args_is_help=True,
+    rich_markup_mode=None,
+    help="SAEs trained in the project: train one, deterministically, from a training spec or "
+    "from options that state every choice, or list them. Each is saved as saes/NAME in SAELens's "
+    "format, and specs name it by that folder and the hash of its files.",
+)
+app.add_typer(sae_app, name="sae")
+lens_app = typer.Typer(
+    add_completion=False,
+    no_args_is_help=True,
+    rich_markup_mode=None,
+    help="Tuned lenses trained in the project: train one, deterministically, from a training "
+    "spec or from options that state every choice, or list them. Each is saved as lenses/NAME; "
+    "the layer predictions of a spec read it by name and the hash of its file.",
+)
+app.add_typer(lens_app, name="lens")
+
+SpecArgument = typer.Argument(
+    metavar="SPEC.json",
+    help="A training spec. Leave it out to state every choice with the options instead.",
+)
+
+
+def _list_value(text: str, what: str, cast: Any = float) -> list[Any]:
+    try:
+        return [cast(part.strip()) for part in text.split(",") if part.strip()]
+    except ValueError as exc:
+        raise _fail(f"{what} is a list of numbers separated by commas.") from exc
+
+
+def _model_option(
+    model: str, revision: str, dtype: str, device: str, process_weights: bool
+) -> dict[str, Any]:
+    """The spec's model from options: a local model by the name it was added under (and the hash
+    of its files), otherwise a Hugging Face id."""
+    from logogram.local_models import find_model
+
+    local = find_model(name=model) if "/" not in model else None
+    revision_value = None if revision.lower() == "none" else revision
+    return {
+        "id": model,
+        "source": "local" if local else "hub",
+        "revision": None if local else revision_value,
+        "sha256": local.sha256 if local else None,
+        "dtype": dtype,
+        "device": device,
+        "process_weights": process_weights,
+    }
+
+
+def _training_spec(
+    spec_path: Path | None,
+    project_dir: Path | None,
+    options: dict[str, Any],
+    build: Any,
+    load: Any,
+) -> tuple[Any, Any]:
+    """The project and the training spec: read from ``spec_path``, or built by ``build`` from
+    ``options``, every one of which must then be given."""
+    from logogram.fileio import JSON_LIMIT, read_limited
+
+    given = {name: value for name, value in options.items() if value is not None}
+    if spec_path is not None:
+        if given:
+            names = ", ".join(f"--{n.replace('_', '-')}" for n in given)
+            raise _fail(f"give either SPEC.json or the options, not both ({names}).")
+        if not spec_path.exists():
+            raise _fail(f"{spec_path} doesn't exist.")
+        project = _open_project(project_dir, spec_path.absolute().parent)
+        try:
+            spec = load(
+                read_limited(
+                    project.readable(spec_path.absolute()),
+                    JSON_LIMIT,
+                    "A training spec is a few kilobytes: check the file.",
+                )
+            )
+        except (ValueError, OSError) as exc:
+            raise _fail(str(exc)) from exc
+        return project, spec
+    missing = [name for name, value in options.items() if value is None]
+    if missing:
+        names = ", ".join(f"--{n.replace('_', '-')}" for n in missing)
+        raise _fail(
+            f"a training states every choice: give SPEC.json, or these options too: {names}."
+        )
+    project = _open_project(project_dir)
+    try:
+        spec = build(options)
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
+    return project, spec
+
+
+class _TrainingPrinter:
+    """A training's progress on stderr: each stage, the loss curve's latest point."""
+
+    def __init__(self) -> None:
+        self.model = _ProgressPrinter()
+        self.stage: str | None = None
+        self.last = 0.0
+
+    def __call__(self, data: dict[str, Any]) -> None:
+        stage = data.get("stage")
+        now = time.monotonic()
+        done, total = int(data.get("done") or 0), int(data.get("total") or 0)
+        final = bool(total) and done == total
+        if stage == self.stage and not final and now - self.last < 0.2:
+            return
+        self.stage, self.last = stage, now
+        if stage == "collecting" and total:
+            self.model._line(
+                f"  collecting activations {100 * done / total:5.1f}% of {total:,} tokens"
+            )
+        elif stage == "training" and total:
+            point = (data.get("curve") or [{}])[-1]
+            loss = (
+                f"FVU {point['fvu']:.4f} · L0 {point['l0']:.1f}"
+                if "fvu" in point
+                else f"KL {point['kl']:.4f}"
+                if "kl" in point
+                else ""
+            )
+            self.model._line(f"  step {done:,} of {total:,} · {loss}")
+        elif stage == "evaluating" and total:
+            self.model._line(f"  measuring on the held-out texts: {done:,} of {total:,}")
+        elif stage in ("loading", "reading", "writing"):
+            words = {
+                "loading": "loading the model",
+                "reading": "reading and tokenizing the corpus",
+                "writing": "writing",
+            }
+            self.model._line(f"  {words[stage]}")
+
+    def close(self) -> None:
+        self.model.close()
+
+
+def _train(project: Any, spec: Any, train: Any, what: str) -> Any:
+    from logogram.backends.base import BackendError
+    from logogram.runner import default_provider
+    from logogram.training import TrainingError
+
+    _quiet_environment()
+    printer = _TrainingPrinter()
+    try:
+        trained = train(
+            spec, project, provider=default_provider(printer.model), on_progress=printer
+        )
+    except (TrainingError, BackendError, ValueError, OSError) as exc:
+        printer.close()
+        raise _fail(str(exc)) from exc
+    except KeyboardInterrupt:
+        printer.close()
+        typer.echo(f"\nInterrupted. Nothing was written: the {what} isn't saved.", err=True)
+        raise typer.Exit(130) from None
+    printer.close()
+    return trained
+
+
+@sae_app.command("train")
+def sae_train(
+    spec_path: Annotated[Path | None, SpecArgument] = None,
+    name: Annotated[str | None, typer.Option(help="Its name: it is saved as saes/NAME.")] = None,
+    model: Annotated[
+        str | None, typer.Option(help="A Hugging Face id, or the name of a local model.")
+    ] = None,
+    revision: Annotated[
+        str | None,
+        typer.Option(help="The model's commit, tag or branch, or none (the current main)."),
+    ] = None,
+    dtype: Annotated[str | None, typer.Option(help="float32, float16 or bfloat16.")] = None,
+    device: Annotated[str | None, typer.Option(help="auto, cpu, cuda, cuda:N or mps.")] = None,
+    process_weights: Annotated[
+        bool | None,
+        typer.Option(
+            "--process-weights/--no-process-weights",
+            help="Load the model with TransformerLens's weight processing, or without.",
+        ),
+    ] = None,
+    corpus: Annotated[str | None, typer.Option(help="The corpus's name, in corpora/.")] = None,
+    site: Annotated[
+        str | None,
+        typer.Option(
+            help="SITE:LAYER, such as resid_post:6 (resid_pre, resid_post, attn_out, mlp_out)."
+        ),
+    ] = None,
+    d_sae: Annotated[int | None, typer.Option(help="How many features.")] = None,
+    k: Annotated[int | None, typer.Option(help="How many features each token keeps.")] = None,
+    steps: Annotated[int | None, typer.Option(help="Steps of the optimizer.")] = None,
+    batch_tokens: Annotated[int | None, typer.Option(help="Tokens per step.")] = None,
+    lr: Annotated[float | None, typer.Option(help="Adam's learning rate.")] = None,
+    betas: Annotated[str | None, typer.Option(help="Adam's betas, such as 0.9,0.999.")] = None,
+    eps: Annotated[float | None, typer.Option(help="Adam's epsilon, such as 1e-8.")] = None,
+    seed: Annotated[int | None, typer.Option(help="The seed of everything random.")] = None,
+    held_out: Annotated[
+        float | None, typer.Option(help="The share of texts held out and measured on.")
+    ] = None,
+    normalize: Annotated[
+        str | None,
+        typer.Option(
+            help="mean_squared_norm (scaled to a mean squared norm of the width) or none."
+        ),
+    ] = None,
+    auxk: Annotated[
+        str | None,
+        typer.Option(help="The AuxK loss as K,COEFFICIENT,DEAD_AFTER (tokens), or none."),
+    ] = None,
+    log_every: Annotated[
+        int | None, typer.Option(help="Steps per point of the loss curve.")
+    ] = None,
+    prepend_bos: Annotated[
+        bool | None,
+        typer.Option("--prepend-bos/--no-prepend-bos", help="Begin each text with BOS, or not."),
+    ] = None,
+    max_tokens: Annotated[int | None, typer.Option(help="The most tokens read of a text.")] = None,
+    model_batch: Annotated[int | None, typer.Option(help="Texts per forward pass.")] = None,
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Train a TopK SAE on one site of one layer, on a corpus of the project, and save it as
+    saes/NAME (in SAELens's format, with training.json and metrics.json). The same spec on the
+    same machine gives the same weights, bit for bit."""
+    from logogram.sae_training import SAETrainingSpec, load_training_spec, train_sae
+
+    options = {
+        "name": name,
+        "model": model,
+        "revision": revision,
+        "dtype": dtype,
+        "device": device,
+        "process_weights": process_weights,
+        "corpus": corpus,
+        "site": site,
+        "d_sae": d_sae,
+        "k": k,
+        "steps": steps,
+        "batch_tokens": batch_tokens,
+        "lr": lr,
+        "betas": betas,
+        "eps": eps,
+        "seed": seed,
+        "held_out": held_out,
+        "normalize": normalize,
+        "auxk": auxk,
+        "log_every": log_every,
+        "prepend_bos": prepend_bos,
+        "max_tokens": max_tokens,
+        "model_batch": model_batch,
+    }
+
+    def build(o: dict[str, Any]) -> SAETrainingSpec:
+        where, _, layer = str(o["site"]).partition(":")
+        if not layer.isdigit():
+            raise ValueError("--site is SITE:LAYER, such as resid_post:6.")
+        aux = None
+        if str(o["auxk"]).lower() != "none":
+            parts = _list_value(o["auxk"], "--auxk")
+            if len(parts) != 3:
+                raise ValueError("--auxk is K,COEFFICIENT,DEAD_AFTER, or none.")
+            aux = {"k": int(parts[0]), "coefficient": parts[1], "dead_after": int(parts[2])}
+        return SAETrainingSpec.model_validate(
+            {
+                "logogram_sae_training": 1,
+                "name": o["name"],
+                "model": _model_option(
+                    o["model"], o["revision"], o["dtype"], o["device"], o["process_weights"]
+                ),
+                "corpus": {"name": o["corpus"], "sha256": None},
+                "tokenization": {"prepend_bos": o["prepend_bos"], "max_tokens": o["max_tokens"]},
+                "site": where,
+                "layer": int(layer),
+                "architecture": {"kind": "topk", "k": o["k"]},
+                "d_sae": o["d_sae"],
+                "steps": o["steps"],
+                "batch_tokens": o["batch_tokens"],
+                "lr": o["lr"],
+                "betas": _list_value(o["betas"], "--betas"),
+                "eps": o["eps"],
+                "seed": o["seed"],
+                "held_out": o["held_out"],
+                "normalize": o["normalize"],
+                "auxk": aux,
+                "log_every": o["log_every"],
+                "model_batch": o["model_batch"],
+            }
+        )
+
+    project, spec = _training_spec(spec_path, project_dir, options, build, load_training_spec)
+    typer.echo(
+        f"Training the SAE {spec.name}: {spec.site} of layer {spec.layer} of {spec.model.id}"
+    )
+    typer.echo(
+        f"  {spec.d_sae:,} features, the top {spec.architecture.k} per token · {spec.steps:,} "
+        f"steps of {spec.batch_tokens:,} tokens · corpus {spec.corpus.name}"
+    )
+    trained = _train(project, spec, train_sae, "SAE")
+    held = trained.metrics["held_out"]
+    typer.echo(f"Saved {trained.path} ({trained.metrics['wall_time_s']} s).")
+    explained = held["variance_explained"]
+    typer.echo(
+        f"  On {held['tokens']:,} held-out tokens: variance explained "
+        f"{'—' if explained is None else f'{explained:.1%}'} · {held['l0']:.1f} features per "
+        f"token · {held['dead_share']:.1%} of features never fire"
+    )
+    loss = held.get("loss")
+    if loss:
+        recovered = loss["recovered"]
+        typer.echo(
+            f"  Next-token loss: clean {loss['clean']:.3f} · with the SAE {loss['spliced']:.3f} · "
+            f"with the site zeroed {loss['zero']:.3f} · loss recovered "
+            f"{'—' if recovered is None else f'{recovered:.1%}'}"
+        )
+    ref = trained.ref().model_dump(mode="json")
+    typer.echo(f'  Specs name it "sae": {_json(ref)}')
+
+
+@sae_app.command("list")
+def sae_list(project_dir: Annotated[Path | None, ProjectOption] = None) -> None:
+    """List the SAEs trained in the project, with what their training measured."""
+    from logogram.sae_training import list_project_saes
+
+    project = _open_project(project_dir)
+    saes = list_project_saes(project)
+    if not saes:
+        typer.echo("No SAE has been trained in this project. Train one: logogram sae train --help")
+        return
+    for s in saes:
+        if s["error"]:
+            typer.echo(f"{s['name']}  can't be read: {s['error']}")
+            continue
+        held = s.get("held_out") or {}
+        explained = held.get("variance_explained")
+        typer.echo(
+            f"{s['name']}  {s['site']} of layer {s['layer']} · {s['d_sae']:,} features, top "
+            f"{s['k']} · {(s.get('model') or {}).get('id')} · variance explained "
+            f"{'—' if explained is None else f'{explained:.1%}'} · {str(s['sha256'])[:12]}"
+        )
+
+
+@lens_app.command("train")
+def lens_train(
+    spec_path: Annotated[Path | None, SpecArgument] = None,
+    name: Annotated[str | None, typer.Option(help="Its name: it is saved as lenses/NAME.")] = None,
+    model: Annotated[
+        str | None, typer.Option(help="A Hugging Face id, or the name of a local model.")
+    ] = None,
+    revision: Annotated[
+        str | None,
+        typer.Option(help="The model's commit, tag or branch, or none (the current main)."),
+    ] = None,
+    dtype: Annotated[str | None, typer.Option(help="float32, float16 or bfloat16.")] = None,
+    device: Annotated[str | None, typer.Option(help="auto, cpu, cuda, cuda:N or mps.")] = None,
+    process_weights: Annotated[
+        bool | None,
+        typer.Option(
+            "--process-weights/--no-process-weights",
+            help="Load the model with TransformerLens's weight processing, or without.",
+        ),
+    ] = None,
+    corpus: Annotated[str | None, typer.Option(help="The corpus's name, in corpora/.")] = None,
+    layers: Annotated[
+        str | None,
+        typer.Option(help="The layers that get a translator, such as 0,1,2, or all-but-last."),
+    ] = None,
+    steps: Annotated[int | None, typer.Option(help="Steps of the optimizer.")] = None,
+    batch_tokens: Annotated[int | None, typer.Option(help="Tokens per step.")] = None,
+    lr: Annotated[float | None, typer.Option(help="The learning rate.")] = None,
+    betas: Annotated[str | None, typer.Option(help="Adam's betas, such as 0.9,0.999.")] = None,
+    eps: Annotated[float | None, typer.Option(help="Adam's epsilon, such as 1e-8.")] = None,
+    weight_decay: Annotated[
+        str | None, typer.Option(help="AdamW's weight decay, such as 0.001, or none.")
+    ] = None,
+    seed: Annotated[int | None, typer.Option(help="The seed of everything random.")] = None,
+    held_out: Annotated[
+        float | None, typer.Option(help="The share of texts held out and measured on.")
+    ] = None,
+    log_every: Annotated[
+        int | None, typer.Option(help="Steps per point of the loss curve.")
+    ] = None,
+    prepend_bos: Annotated[
+        bool | None,
+        typer.Option("--prepend-bos/--no-prepend-bos", help="Begin each text with BOS, or not."),
+    ] = None,
+    max_tokens: Annotated[int | None, typer.Option(help="The most tokens read of a text.")] = None,
+    model_batch: Annotated[int | None, typer.Option(help="Texts per forward pass.")] = None,
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Train a tuned lens (an affine translator per layer, read through the model's final
+    normalization and unembedding) on a corpus of the project, and save it as lenses/NAME. The
+    same spec on the same machine gives the same translators, bit for bit."""
+    from logogram.lenses import LensTrainingSpec, load_training_spec, train_lens
+
+    options = {
+        "name": name,
+        "model": model,
+        "revision": revision,
+        "dtype": dtype,
+        "device": device,
+        "process_weights": process_weights,
+        "corpus": corpus,
+        "layers": layers,
+        "steps": steps,
+        "batch_tokens": batch_tokens,
+        "lr": lr,
+        "betas": betas,
+        "eps": eps,
+        "weight_decay": weight_decay,
+        "seed": seed,
+        "held_out": held_out,
+        "log_every": log_every,
+        "prepend_bos": prepend_bos,
+        "max_tokens": max_tokens,
+        "model_batch": model_batch,
+    }
+
+    def build(o: dict[str, Any]) -> LensTrainingSpec:
+        chosen = (
+            None
+            if str(o["layers"]).lower() == "all-but-last"
+            else _list_value(o["layers"], "--layers", int)
+        )
+        decay = None if str(o["weight_decay"]).lower() == "none" else float(o["weight_decay"])
+        return LensTrainingSpec.model_validate(
+            {
+                "logogram_lens_training": 1,
+                "name": o["name"],
+                "model": _model_option(
+                    o["model"], o["revision"], o["dtype"], o["device"], o["process_weights"]
+                ),
+                "corpus": {"name": o["corpus"], "sha256": None},
+                "tokenization": {"prepend_bos": o["prepend_bos"], "max_tokens": o["max_tokens"]},
+                "layers": chosen,
+                "steps": o["steps"],
+                "batch_tokens": o["batch_tokens"],
+                "lr": o["lr"],
+                "betas": _list_value(o["betas"], "--betas"),
+                "eps": o["eps"],
+                "weight_decay": decay,
+                "seed": o["seed"],
+                "held_out": o["held_out"],
+                "log_every": o["log_every"],
+                "model_batch": o["model_batch"],
+            }
+        )
+
+    project, spec = _training_spec(spec_path, project_dir, options, build, load_training_spec)
+    which = "every layer but the last" if spec.layers is None else f"layers {spec.layers}"
+    typer.echo(f"Training the lens {spec.name} on {spec.model.id}: {which}")
+    typer.echo(
+        f"  {spec.steps:,} steps of {spec.batch_tokens:,} tokens · corpus {spec.corpus.name}"
+    )
+    trained = _train(project, spec, train_lens, "lens")
+    held = trained.metrics["held_out"]
+    typer.echo(f"Saved {trained.path} ({trained.metrics['wall_time_s']} s).")
+    typer.echo(
+        f"  KL divergence from the model's prediction on {held['tokens']:,} held-out tokens, "
+        "logit lens → tuned lens:"
+    )
+    for row in held["layers"]:
+        tuned = row["tuned_lens"]
+        after = "not trained" if tuned is None else f"{tuned:.4f}"
+        typer.echo(f"    layer {row['layer']:>3}  {row['logit_lens']:.4f} → {after}")
+    ref = trained.ref().model_dump(mode="json")
+    typer.echo(
+        f'  Specs read it with "predictions": {{"method": "tuned_lens", "lens": {_json(ref)}, ...}}'
+    )
+
+
+@lens_app.command("list")
+def lens_list(project_dir: Annotated[Path | None, ProjectOption] = None) -> None:
+    """List the tuned lenses trained in the project, with what their training measured."""
+    from logogram.lenses import list_lenses
+
+    project = _open_project(project_dir)
+    found = list_lenses(project)
+    if not found:
+        typer.echo(
+            "No lens has been trained in this project. Train one: logogram lens train --help"
+        )
+        return
+    for x in found:
+        if x["error"]:
+            typer.echo(f"{x['name']}  can't be read: {x['error']}")
+            continue
+        # The held-out KL divergence over the layers it trained, through each lens.
+        rows = [
+            row
+            for row in (x.get("held_out") or {}).get("layers") or []
+            if isinstance(row, dict) and isinstance(row.get("tuned_lens"), int | float)
+        ]
+        kl = (
+            f"held-out KL {sum(r['logit_lens'] for r in rows) / len(rows):.4f} with the logit "
+            f"lens, {sum(r['tuned_lens'] for r in rows) / len(rows):.4f} with this one · "
+            if rows
+            else ""
+        )
+        typer.echo(
+            f"{x['name']}  layers {', '.join(map(str, x['layers'] or []))} · "
+            f"{(x.get('model') or {}).get('id')} · {kl}{str(x['sha256'])[:12]}"
+        )
+
+
+def _json(value: Any) -> str:
+    import json
+
+    return json.dumps(value)
 
 
 def main() -> None:

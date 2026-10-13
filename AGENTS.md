@@ -36,9 +36,11 @@ traceability come before features.
   never add a code path that only one of them uses.
 * Every choice that can change a number lives in the spec and is shown in the UI: direction,
   baseline, site, position, metric, normalization, seeds, clustering, batch size, dtype, model
-  revision. Nothing methodological is silently defaulted: a version 2 spec states every such
-  field, and a new one is required (with the value that reproduces earlier behavior filled in
-  for version 1 specs by `upgrade_v1`, listed when it was a choice). Ablation has no default
+  revision. Nothing methodological is silently defaulted: a spec of the current version
+  (`SPEC_VERSION` in `spec.py`) states every such field, and a new one is required. Specs of
+  earlier versions still run: each version's upgrade function (`upgrade_v1`, `upgrade_v2`,
+  `upgrade_v3`) fills in the fields the next version added, with the values that reproduce
+  earlier behavior (`upgrade_v1` lists those that were a choice). Ablation has no default
   baseline.
 * Specs use abstract sites (`resid_pre`, `resid_mid`, `resid_post`, `attn_out`, `mlp_out`,
   `head`). Library hook names appear only inside a backend (`src/logogram/backends/`).
@@ -95,7 +97,7 @@ traceability come before features.
 
 ```text
 src/logogram/
-  spec.py              experiment spec (pydantic); version 1 specs are upgraded here
+  spec.py              experiment spec (pydantic); earlier versions' specs are upgraded here
   datasets.py, ioi.py  JSONL datasets and the IOI generator
   tasks.py             seeded datasets for the other tasks (greater-than, docstring, ...)
   prompts.py           tokenization, alignment checks, length groups, seeded splits
@@ -112,6 +114,10 @@ src/logogram/
   edges.py             edge attribution (EAP, EAP-IG), edge patching and the faithfulness curve
   features.py          SAE features: patching and attribution patching
   sae.py               SAE encode, decode and fit
+  sae_training.py      TopK SAEs trained in the project from a training spec (saes/NAME)
+  lenses.py            tuned lenses trained in the project from a training spec (lenses/NAME)
+  training.py          what both share: a corpus's texts split and ordered by seed, folders
+                       written whole or not at all
   stats.py             bootstrap (over prompts or clusters), bands, q-values, paired differences
   results.py           summary.json and results.parquet
   runs.py              the per-prompt evidence behind one site's number
@@ -121,6 +127,10 @@ src/logogram/
   fileio.py            atomic writes that never follow symlinks
   project.py           project folders: where runs, datasets and drafts live, read safely
   research.py          research notes and named selections
+  corpus_import.py     corpora from files, Hugging Face datasets' files and a dataset's prompts
+  top_activations.py   where a neuron, an SAE feature, a direction or a head is most active in a corpus
+  representations.py   activations at a site over prompts or texts: principal components, mean
+                       differences, directions saved from them, exported activations
   runner.py            run a spec end to end (used by the app, the CLI and the Python API)
   partial.py           what a run that stops early keeps of what finished, and what it leaves out
   owner.py             which process runs a run, so a run going elsewhere isn't taken for interrupted

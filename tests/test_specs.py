@@ -25,6 +25,14 @@ MODEL = {
     "process_weights": True,
 }
 LOCAL = {**MODEL, "id": "my fine-tune", "source": "local", "revision": None, "sha256": "ab" * 32}
+HUB_SAE = {"repo": "a/b", "path": "", "revision": None, "source": "hub", "sha256": None}
+PROJECT_SAE = {
+    "repo": "my-sae",
+    "path": "saes/my-sae",
+    "revision": None,
+    "source": "project",
+    "sha256": None,
+}
 
 V1_MINIMAL = {
     "logogram_spec": 1,
@@ -39,7 +47,7 @@ V1_MINIMAL = {
 
 def test_version_1_specs_list_what_they_left_out():
     spec = Spec.model_validate(V1_MINIMAL)
-    assert spec.logogram_spec == 3
+    assert spec.logogram_spec == 4
     filled = "\n".join(spec.upgraded_fields)
     for expected in (
         'model.dtype = "float32"',
@@ -61,7 +69,7 @@ def test_version_1_specs_list_what_they_left_out():
     assert Spec.model_validate(dumped).upgraded_fields == []
 
 
-def test_version_2_specs_read_as_version_3_with_its_additions_off():
+def test_version_2_specs_read_as_the_current_version_with_its_additions_off():
     v2 = Spec.model_validate(V1_MINIMAL).model_dump(mode="json")
     v2["logogram_spec"] = 2
     del v2["tokenization"]["chat_template"], v2["model"]["source"], v2["model"]["sha256"]
@@ -75,7 +83,7 @@ def test_version_2_specs_read_as_version_3_with_its_additions_off():
     }
     for experiment in (v2["experiment"], steering):
         spec = Spec.model_validate({**v2, "experiment": experiment})
-        assert spec.logogram_spec == 3 and spec.upgraded_fields == []
+        assert spec.logogram_spec == 4 and spec.upgraded_fields == []
         assert spec.tokenization.chat_template is None
         assert (spec.model.source, spec.model.sha256) == ("hub", None)
     assert spec.experiment.model_dump() == {
@@ -86,6 +94,32 @@ def test_version_2_specs_read_as_version_3_with_its_additions_off():
     before = json.loads(json.dumps(v2))
     upgrade_v2(v2)
     assert v2 == before  # the input is left as it was
+
+
+def test_version_3_specs_read_with_a_published_sae_and_the_logit_lens():
+    v3 = Spec.model_validate(V1_MINIMAL).model_dump(mode="json")
+    v3["logogram_spec"] = 3
+    v3["sae"] = {"repo": "a/b", "path": "blocks.1.hook_resid_pre", "revision": None}
+    v3["predictions"] = {
+        "method": "final_norm_logit_lens",
+        "prompt_index": 0,
+        "which": "clean",
+        "position": {"kind": "last"},
+        "top_k": 5,
+    }
+    before = json.loads(json.dumps(v3))
+    spec = Spec.model_validate(v3)
+    assert v3 == before  # the input is left as it was
+    assert spec.logogram_spec == 4 and spec.upgraded_fields == []
+    assert spec.sae is not None and (spec.sae.source, spec.sae.sha256) == ("hub", None)
+    assert spec.predictions is not None and spec.predictions.lens is None
+    # Version 4 states them.
+    full = spec.model_dump(mode="json")
+    for section, key in (("sae", "source"), ("sae", "sha256"), ("predictions", "lens")):
+        data = json.loads(json.dumps(full))
+        del data[section][key]
+        with pytest.raises(ValidationError, match="Field required"):
+            Spec.model_validate(data)
 
 
 def test_specs_must_state_every_choice():
@@ -130,8 +164,13 @@ def test_specs_must_state_every_choice():
             {"dataset": {"path": "C:/data/ioi.jsonl", "sha256": None, "limit": None}},
             "inside the project",
         ),
-        ({"sae": {"repo": "a/b", "path": "../../x", "revision": None}}, "inside the project"),
-        ({"sae": {"repo": "a/b", "path": "", "revision": "../../etc"}}, "commit, tag or branch"),
+        ({"sae": {**HUB_SAE, "path": "../../x"}}, "inside the project"),
+        ({"sae": {**HUB_SAE, "revision": "../../etc"}}, "commit, tag or branch"),
+        ({"sae": {**HUB_SAE, "sha256": "0" * 64}}, "pinned by its revision"),
+        ({"sae": {**PROJECT_SAE, "path": "saes/other"}}, "set sae.path to saes/my-sae"),
+        ({"sae": {**PROJECT_SAE, "revision": "main"}}, "has no revisions"),
+        ({"sae": {**PROJECT_SAE, "sha256": "AB" * 32}}, "64 lowercase hex digits"),
+        ({"sae": {**PROJECT_SAE, "repo": "../x", "path": "saes/../x"}}, "letters, digits"),
         ({"metric": {"kind": "kl", "normalization": "dataset_gap"}}, "target"),
         (
             {"statistics": {"bootstrap": 200, "ci": 0.95, "seed": -1, "cluster": None}},
@@ -219,7 +258,7 @@ def test_a_version_1_run_says_what_it_assumed(tiny_backend, project):
     assert "This spec is version 1" in outcome.summary["warnings"][0]
     assert "statistics.seed = 0" in outcome.summary["warnings"][0]
     saved = json.loads((outcome.folder / "spec.json").read_text(encoding="utf-8"))
-    assert saved["logogram_spec"] == 3 and saved["statistics"]["cluster"] is None
+    assert saved["logogram_spec"] == 4 and saved["statistics"]["cluster"] is None
 
 
 def test_upgrading_never_changes_the_input():

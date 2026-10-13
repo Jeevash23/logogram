@@ -4,6 +4,174 @@ What changed in each version of Logogram.
 
 ## Unreleased
 
+### Added
+
+- **Spec version 4.** Versions 1 to 3 still load, and are upgraded as they load.
+- **Directions saved in the project.** A direction, or a subspace of several, is two files in the
+  project's `directions/` folder: the vectors (safetensors, rows made orthonormal) and what they
+  are (the model and site they were found on, how, and the run they came from). A run pins each
+  direction it uses by the hash of its file and keeps a copy, and its manifest and methods
+  paragraph name them. `logogram directions` lists, renames, deletes and saves them.
+- **Linear probes** (`"kind": "probe"`): a logistic regression at each site, trained on a seeded
+  split of the pairs to read which prompt of a pair it is, or a field of the prompts' `meta`, and
+  measured on the held-out pairs, with a probe on shuffled labels as a control and selectivity
+  with its interval. A probe's weights can be saved as a direction.
+- **Distributed alignment search** (`"kind": "das"`): learns the subspace of a stated number of
+  dimensions whose patching carries a site's effect, on training pairs, and measures it on
+  held-out pairs beside the whole site and a random subspace of the same size. The learned
+  subspace can be saved as a direction.
+- **Subspace patching** (`"kind": "subspace_patching"`): patch only the component of each site's
+  activation along a saved direction or within a saved subspace.
+- **Two ablation baselines**: `scale` multiplies the activation by a factor, and `projection`
+  (directional ablation) removes its component along a saved direction or sets it to its mean.
+- **Steering along a saved direction** (`"direction": {"kind": "direction", ...}`).
+- **Readouts** (`"metric": {"kind": "readout", ...}`): patching and ablation can read a neuron's
+  activation, an activation's component along a saved direction or an SAE feature's activation
+  instead of the model's output, to ask what drives it.
+- **ACDC** (`acdc`, with the `graph` scope): automated circuit discovery (Conmy et al. 2023) over
+  edge attribution's graph.
+  - The receiver prompt runs with every edge in the circuit. Then the candidate edges are removed
+    one at a time, in the reverse of the graph's order (from the logits back toward the
+    embeddings). A removed edge carries its sender's output on the source prompt.
+  - An edge stays removed when removing it moves the metric's mean by less than `threshold`, in
+    the metric's own units. `rule` says which change counts: the move toward the source prompt's
+    value (`toward_source`, the paper's) or its size either way (`either_way`). Neither has a
+    default.
+  - A run keeps every edge's change when it was tested and whether it was kept, the circuit, and
+    the circuit's faithfulness with a bootstrap interval. Tests check that the faithfulness is
+    the faithfulness curve's for the same edges, bit for bit. `edges.parquet` gains `kept` and
+    `step`.
+  - It costs a forward pass per edge and batch of prompts. Before a run, the app says how many
+    passes it takes and about how long, timed on the loaded model. A run that stops early keeps
+    nothing.
+  - The experiment form offers it as **Circuit discovery (ACDC)**. The results draw the circuit
+    and list every tested edge with whether it was kept, and the inspector says how an edge was
+    tested. **Check robustness** offers another threshold, the other rule, the opposite direction
+    and edge attribution over the same graph.
+  - `logogram run` and `logogram show` list the circuit, the report draws it, and `run.circuit()`
+    returns it.
+- **Edges into shared keys and values.** Edge attribution, ACDC and path patching work on models
+  with grouped-query attention, as in Llama and Qwen. A key or value receiver is the key/value
+  head, read by every query head of its group.
+  - Results write it `L5 KV1 k`, and the app and the report draw it at the middle of its group.
+  - Tests on tiny Llama and Qwen 2 models check three things: every estimate is the slope of
+    patching its edge, one edge patched is path patching of that edge, and patching every edge
+    reproduces the source run.
+  - Models whose heads don't add up to their attention output (Gemma 2, OLMo 2) are still
+    refused.
+- **Corpora**: plain texts in the project's `corpora/` folder, each with an optional label, for
+  the analyses that read text rather than prompt pairs. **Explore → Corpus**, `logogram corpora
+  import` and `lg.import_corpus` import them from a text, JSON Lines, JSON, CSV, TSV or Parquet
+  file (the text field and the label field named), from one file of a Hugging Face dataset
+  (downloaded once at the exact commit its revision resolves to, as a job with progress and
+  Cancel in the app; offline, from the cache), or from a dataset's clean or corrupt prompts,
+  labelled by side or by a field of their meta. A corpus records where its texts came from and
+  the hash of its file. The app pages and searches its texts, and renames and deletes it
+  (`logogram corpora rename`, `logogram corpora delete`).
+- **Where a unit is most active** (**Explore → Corpus**, `lg.top_examples`): over a corpus's
+  texts, the tokens where an MLP neuron, a feature of the loaded SAE, a saved direction (its
+  projection, signed) or an attention head (the length of what it writes) is largest, each with a
+  window of context shaded on the ink ramp, the most negative ones for a signed unit, a histogram
+  of its values and the share of tokens where it is above zero. The beginning-of-sequence token is
+  read but never counted; ties go to the earlier text, then token; every choice comes back with
+  the answer. An example opens in **Your text**, read at its token.
+- **Representations** (**Explore → Representations**, `lg.principal_components`,
+  `lg.mean_difference`): the activation at a site and token (the last, an index, a labelled
+  position or the mean over tokens) of each of a dataset's prompts or a corpus's texts, on its
+  principal components, centered and computed in float64, each signed so its largest loading is
+  positive. The app draws them on canvas, each class an ink shape, and saves a component or the
+  difference between two classes' means as a direction.
+- **Directions in the app**: the Representations view lists the project's directions with what
+  made each, where and on which model, marks one found on another model than the one loaded, and
+  renames and deletes them (`logogram directions`, `lg.list_directions`, `lg.read_direction`,
+  `lg.save_direction`).
+- **Exported activations**: `activations/NAME.safetensors` (one float32 tensor per site) with
+  `activations/NAME.json` saying what each row is and how it was read, from the Representations
+  view, `logogram activations` or `lg.export_activations`; `lg.activations` returns them as NumPy
+  arrays without writing anything.
+- **SAEs trained in the project.** A TopK SAE (Gao et al. 2024) on one site of one layer
+  (`resid_pre`, `resid_post`, `attn_out` or `mlp_out`), trained on a corpus of the project.
+  - A training spec (`logogram_sae_training: 1`) states every choice that can change the weights,
+    with no default: the model, the corpus by name and hash, the tokenization, the site and layer,
+    k and the number of features, the steps and tokens per step, the learning rate, Adam's betas
+    and epsilon, the seed, the held-out share, the normalization (to a mean squared norm of the
+    width, its factor recorded and folded into the saved weights) and the optional AuxK loss.
+  - The same spec on the same machine gives the same weights, bit for bit: seeded generators,
+    fixed batches, float32 and deterministic algorithms throughout.
+  - The decoder's rows keep unit length (the gradient along each is projected out, and each is
+    made unit length again after every step), and the decoder's bias starts at the activations'
+    mean.
+  - It is saved as `saes/NAME` in SAELens's format, read back by the same reader as published
+    SAEs, with `training.json` (its spec, pinned) and `metrics.json`: the loss curve and, on
+    held-out texts, the variance explained, the features that fire per token, the share that
+    never fire, and the next-token loss recovered.
+  - A spec's `sae` gains `source` (`hub` or `project`) and `sha256`. An SAE trained in the project
+    is named by its folder and the hash of its files, which a run pins when it starts, and is
+    refused if they have changed. Version 3 specs read with `source` `hub`.
+  - In the app, **Features** lists the SAEs trained in the project and offers **Train an SAE…**.
+    The dialog shows every choice, then what training would take on this machine (texts, tokens,
+    memory, and time measured there) or why it can't train. It follows the training's progress
+    and loss curve, shows what was measured, and offers **Load this SAE**. A cancelled training
+    writes nothing.
+  - `logogram sae train` (a spec, or options that state every choice), `logogram sae list`,
+    `lg.train_sae` and `lg.load_sae(NAME, project=project, model=model)`.
+- **Tuned lenses** (Belrose et al. 2023). An affine translator per layer, starting as the identity,
+  trained on a corpus of the project to minimize the KL divergence from the model's own
+  next-token distribution.
+  - A training spec (`logogram_lens_training: 1`) states every choice, with no default, and the
+    same spec on the same machine gives the same translators, bit for bit.
+  - It is saved as `lenses/NAME`: `lens.safetensors`, `training.json`, and `metrics.json` with the
+    loss curve and each layer's held-out KL divergence through the logit lens and through the
+    tuned lens.
+  - The layer predictions gain the method `tuned_lens` and `lens`, the lens's name and the hash
+    of its file, pinned when a run starts. Version 3 specs read with `lens` null. A lens trained
+    on another model, with TransformerLens's weight processing the other way, or of another
+    width is refused.
+  - **Layer predictions** chooses between the logit lens and a tuned lens, marks how each layer
+    was read, and offers **Train a tuned lens…**.
+  - `logogram lens train`, `logogram lens list` and `lg.train_lens`.
+- **Documentation**: pages on training an SAE and on the tuned lens (what is computed, every
+  choice, where it can mislead), a guide to training an SAE and a tuned lens and using them, and
+  a reference of the training specs, generated from the code.
+- **Managing projects.**
+  - Rename a project: its project.json says the new name, and its folder keeps its own
+    (**Rename project…** in the project menu, `logogram project rename NAME`,
+    `project.rename(name)`).
+  - Delete a project: its folder and everything in it, for good, once its name is typed
+    (**Delete project…** in the project menu and in a recent project's menu, `logogram project
+    delete`, `lg.delete_project`). Refused while a run is in progress in it or its queue is being
+    run, and when the folder holds anything Logogram doesn't make there (a repository, say),
+    listing what.
+  - Take a project out of the recent list; its folder is left as it is (**Remove from the list**
+    in the Projects screen, `logogram projects` and `logogram projects forget PATH`).
+  - `logogram new NAME [--parent DIR]` creates a project, as the app's Create project does.
+- **Managing datasets.** Rename or delete a dataset file: in the dataset menu of the header and
+  in the Prompts view, or with `logogram datasets`, `logogram datasets rename NAME NEW`,
+  `logogram datasets delete NAME`, `lg.rename_dataset` and `lg.delete_dataset`. Runs that ran on
+  it keep their own copy of its prompts. Refused while a saved draft or a queued run names it,
+  naming them. Every tab showing the dataset follows it to its new name.
+- **Rerun** in the app: a run's results and its menu in the history run its spec again, exactly
+  as it ran (a finished, failed or cancelled run; Edit and rerun stays for changing it first). When
+  the rerun finishes, a notice says whether every per-prompt value matches the original exactly,
+  as `logogram run` does, and a difference offers the comparison of the two runs
+  (`GET /api/runs/{id}/reproduction`).
+- `lg.with_model(spec, model)`: the spec with its model replaced by a loaded model, as it was
+  loaded (its files, the exact revision, dtype, device and weight processing), to run the spec on
+  that model.
+
+### Changed
+
+- The experiment form groups its methods by the question each answers: where is it computed, how
+  does it flow, what does a site represent, and what does adding a direction do. A new page,
+  [Choosing a method](docs/concepts/choosing-a-method.md), says what each measures, what it costs
+  and what it can't tell you.
+- A workspace's views that don't fit beside the tabs go under a menu at the end of the row,
+  named **More**, or after the open view when it is one of them.
+- A run's results put their actions (**Test the top sites as a circuit**, **Check robustness**,
+  **Rerun**, **Sweep…**, **Export**) in a row under the title, beside the run's glyph.
+- The README and the documentation show the app: a sweep painting onto the model map, a run's
+  results, the method picker, an ACDC circuit, a probe and a principal components plot.
+
 ### Fixed
 
 - When edge attribution's batch didn't fit in memory, the batch size it suggested could still be
@@ -15,6 +183,45 @@ What changed in each version of Logogram.
   now chooses the folder in the box, listing it first when it hasn't been.
 - A run the queue started could end before the tabs heard it had started, and the queue then
   read as waiting, with nothing left in it, instead of running.
+- Loading a model on a device this machine doesn't have (CUDA without a GPU, say) unloaded the
+  model that was loaded before it said so. The device, the dtype and a local model's folder are
+  now checked first, and the loaded model stays. The model dialog keeps **Load** disabled while
+  the device chosen isn't there, and the message no longer says "the spec asks for" when no spec
+  is involved.
+- `lg.run(spec, project, model=model)` loaded a second copy of the model, without a word, when
+  `model` wasn't the one the spec names (loaded on another GPU, say, or in bfloat16). It now
+  refuses, naming each difference (the files or revision, the dtype, the device as it resolves
+  here, weight processing), and says what to do: pass `lg.with_model(spec, model)`, or no model
+  to load the spec's own. `lg.verify_run`, `lg.check_robustness` and `lg.sweep` refuse a model
+  passed to them that their runs don't name, and a toy's experiments run on the toy as it was
+  loaded.
+- An analysis in the app that ran out of memory (the baseline, attention, predictions, Your text,
+  an SAE's features, …) failed with "Internal Server Error". It now gives the memory back and
+  says what ran out (GPU memory, or memory) and what to do: fewer prompts, a smaller batch size
+  or a shorter text, or a smaller model or a 16-bit dtype.
+- A project whose folder was missing when the recent projects were listed (on a drive that
+  wasn't connected, say) was dropped from the list for good. It now stays, marked *Folder not
+  found*, until it is removed from the list, and opening it says plainly that its folder isn't
+  there. Listing the recent projects no longer writes into them: it used to add their folders and
+  `.gitignore` when they were missing.
+- Opening a project could fail after the project had been switched, with no tab told, when the
+  recent list couldn't be written (Logogram's settings folder read-only, say) or held entries
+  that aren't objects. The recent list never stops a project opening now, and entries it can't
+  read are left out.
+- `logogram generate --overwrite` and `lg.write_dataset(..., overwrite=True)` replaced a dataset
+  that saved drafts and queued runs named, and they then failed with "has changed since this
+  spec was written". Replacing a dataset, from the app too, is now refused while a draft or a
+  queued run names it, naming them. Finished runs were never affected: each keeps its own copy
+  of the prompts it ran on.
+- `logogram delete` and `lg.delete_run` deleted a draft waiting in the queue, which the app
+  refuses; the queue then failed when its turn came. Every front end now refuses it, saying to take
+  it out of the queue first, and `logogram delete` says so before asking.
+- Taking one run out of the queue, in the history, happened at once and couldn't be undone, while
+  clearing the queue asked first. It now asks too, saying whether its spec is kept (a saved draft
+  stays in the history) or lost.
+- A settings file holding `null`, a list or anything else that isn't an object stopped the app
+  from starting (an internal server error). It now reads as no settings, and settings are written
+  whole, through a temporary file, so an interrupted write never leaves half a file.
 
 ## 0.6.0 (2026-10-12)
 

@@ -1,5 +1,5 @@
 import type { RunDetail } from "../api/types";
-import { divergingScale, niceBound, SCALE_FLOOR, textOn } from "./color";
+import { divergingScale, inkScale, niceBound, SCALE_FLOOR, textOn } from "./color";
 import { chatTemplateText, experimentText, measureWords, scopeText } from "./spec";
 
 export function downloadBlob(blob: Blob, filename: string) {
@@ -49,8 +49,10 @@ export async function exportFigure(run: RunDetail, metric: "effect" | "delta", u
   ctx.fillText(`${model.id}${files} · ${model.dtype} · n = ${summary.n_prompts}`, 28, 88, width - 56);
   const words = measureWords(run.spec.experiment, summary.metric);
   ctx.fillText(`${layout.row_title} × ${layout.col_title} · ${metric === "effect" ? words.effect : words.delta} · mean over prompts`, 28, 110, width - 56);
-  const bound = unit && metric === "effect" ? 1 : niceBound(sites.map((s) => s[metric].mean), SCALE_FLOOR[metric]);
-  const color = divergingScale(bound, "light");
+  // A probe's held-out accuracy isn't an effect: it is drawn in ink, from 0 to 1.
+  const accuracy = summary.measure === "probe";
+  const bound = accuracy || (unit && metric === "effect") ? 1 : niceBound(sites.map((s) => s[metric].mean), SCALE_FLOOR[metric]);
+  const color = accuracy ? inkScale(1, "light") : divergingScale(bound, "light");
   ctx.font = `13px ${font}`;
   layout.rows.forEach((row, r) => { ctx.fillStyle = "#1c2226"; ctx.textAlign = "right"; ctx.fillText(row.label, left - 14, top + r * cell + 27, left - 28); });
   layout.cols.forEach((col, c) => {
@@ -69,9 +71,9 @@ export async function exportFigure(run: RunDetail, metric: "effect" | "delta", u
     ctx.fillText(value === null ? "∅" : value.toFixed(2), x + (cell - 2) / 2, y + 26, cell - 6);
   }
   const legendY = bottom - 122;
-  for (let x = 0; x < 300; x++) { ctx.fillStyle = color(bound * (2 * x / 299 - 1)); ctx.fillRect(28 + x, legendY, 1, 14); }
+  for (let x = 0; x < 300; x++) { ctx.fillStyle = color(accuracy ? x / 299 : bound * (2 * x / 299 - 1)); ctx.fillRect(28 + x, legendY, 1, 14); }
   ctx.fillStyle = "#1c2226"; ctx.font = `13px ${font}`; ctx.textAlign = "left";
-  ctx.fillText(String(-bound), 28, legendY + 34); ctx.fillText("0", 174, legendY + 34);
+  ctx.fillText(accuracy ? "0" : String(-bound), 28, legendY + 34); ctx.fillText(accuracy ? "0.5" : "0", 174, legendY + 34);
   ctx.textAlign = "right"; ctx.fillText(String(bound), 328, legendY + 34); ctx.textAlign = "left";
   // In a chat template, the template writes the beginning of each prompt: whether BOS is added
   // doesn't apply.
@@ -81,7 +83,7 @@ export async function exportFigure(run: RunDetail, metric: "effect" | "delta", u
     ? `Prompts ${chatTemplateText(template)}${templateSha ? ` (template SHA-256 ${templateSha.slice(0, 12)})` : ""}`
     : `BOS ${tokenization.prepend_bos ? "on" : "off"}`;
   ctx.fillText(`${reading} · batch ${run.spec.execution.batch_size} · ${summary.statistics.ci * 100}% CI, ${summary.statistics.bootstrap} resamples, seed ${summary.statistics.seed}`, 28, bottom - 55, width - 56);
-  ctx.fillText(`Run ${run.id} · ∅ undefined · colors clipped at ±${bound}; full values and intervals in the saved results`, 28, bottom - 30, width - 56);
+  ctx.fillText(`Run ${run.id} · ∅ undefined · ${accuracy ? "held-out accuracy from 0 to 1" : `colors clipped at ±${bound}`}; full values and intervals in the saved results`, 28, bottom - 30, width - 56);
   if (partial) {
     const ended = partial.status === "failed" ? "failed" : "was cancelled";
     const rest = partial.unit === "prompts" ? "" : "; nothing is drawn for the rest";

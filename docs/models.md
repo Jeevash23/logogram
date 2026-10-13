@@ -9,12 +9,14 @@ checked when it loads rather than trusted to be what its architecture's name say
 ## Which models have been checked
 
 GPT-2 small is the model the bundled examples were made for. Every method but edge attribution
-has been run end to end with real weights on GPT-2 small (with a SAELens and an OpenAI SAE),
-Pythia-70m (with an EleutherAI SAE) and Qwen 2.5 0.5B, and the test suite runs the sanity checks on
-tiny random models of the Llama, Pythia, Qwen 2, Gemma 2 and OLMo 2 families without downloading
-anything. Edge attribution has been run on GPT-2 small; it refuses models whose heads share keys
-and values, as Qwen's and Llama's do, and models that normalize the attention output after
-combining the heads (see [its limits](concepts/edge-attribution.md#limits)). On GPT-2 small,
+and ACDC has been run end to end with real weights on GPT-2 small (with a SAELens and an OpenAI
+SAE), Pythia-70m (with an EleutherAI SAE) and Qwen 2.5 0.5B, and the test suite runs the sanity
+checks on tiny random models of the Llama, Pythia, Qwen 2, Gemma 2 and OLMo 2 families without
+downloading anything. Edge attribution has been run on GPT-2 small, and ACDC on GPT-2 small's
+edges into its first layer and the logits. On models whose heads share keys and values, as Qwen's
+and Llama's do, both have been checked on tiny models only. Both refuse models that normalize the
+attention output after combining the heads (see
+[their limits](concepts/edge-attribution.md#limits)). On GPT-2 small,
 patching the whole input gives an effect of exactly 1 under every metric, answers of several
 tokens included; the logit difference and the log-probability difference, equal in exact
 arithmetic for answers of one token, agree to 5 × 10⁻⁷; and reruns are bit-identical. Gemma Scope 2's files were checked on Gemma 3 270M with weight processing off.
@@ -73,6 +75,10 @@ activations they were trained on, so load the model the way the SAE was trained.
 * **Apple Silicon.** **Automatic** runs models on the CPU: TransformerLens reports that Apple's MPS
   can give silently wrong results, and Logogram hasn't been checked on it, so MPS is used only when
   you choose it under **Device**. It is faster; check results that matter on the CPU.
+* **A device this machine doesn't have.** The model dialog says so as soon as the device is
+  chosen, and keeps **Load** disabled until another is. A model asked for on it anyway (by a
+  spec, another tab or a script) is refused before anything is closed, so the model that is
+  loaded stays loaded.
 
 The same spec on another device can differ in the last digits; see
 [reproducibility](concepts/runs-and-projects.md#reproducibility).

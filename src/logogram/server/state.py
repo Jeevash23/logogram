@@ -18,7 +18,15 @@ from typing import Any
 
 from logogram import runqueue
 from logogram.backends.base import Cancelled, ModelBackend
-from logogram.project import Project, config_dir, remember_recent
+from logogram.fileio import write_text_atomic
+from logogram.project import (
+    DeletionPlan,
+    Project,
+    ProjectError,
+    config_dir,
+    remember_recent,
+)
+from logogram.project import deletion_plan as plan_deletion
 from logogram.runqueue import Queued, QueueError
 from logogram.schema import QueueRunner, RunListing, validate_event
 from logogram.spec import ModelRef, Spec
@@ -270,16 +278,21 @@ class AppState:
         return config_dir() / "settings.json"
 
     def settings(self) -> dict[str, Any]:
+        """The settings file's object; {} when there is none, or it holds anything else (null, a
+        list, text that isn't JSON), as if nothing had been set."""
         try:
-            return json.loads(self.settings_path().read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            data = json.loads(self.settings_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError, RecursionError):
             return {}
+        return data if isinstance(data, dict) else {}
 
     def update_settings(self, **values: Any) -> None:
+        """Change some settings, keeping the others. The file is replaced whole, never left half
+        written."""
         data = self.settings()
         data.update(values)
         self.settings_path().parent.mkdir(parents=True, exist_ok=True)
-        self.settings_path().write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        write_text_atomic(self.settings_path(), json.dumps(data, indent=2) + "\n")
 
     # -- project -----------------------------------------------------------------------------
 
@@ -291,7 +304,11 @@ class AppState:
             # The queue of the project open until now stays in it, paused.
             self._release_queue(publish=False)
             self.project = project
-        remember_recent(project)
+            self._drop_project_sae()
+        try:
+            remember_recent(project)
+        except Exception as exc:  # noqa: BLE001 - the recent list never stops a project opening
+            log.warning("Couldn't add the project to the recent projects: %s", _reason(exc))
         log.info("Opened the project %s", project.root)
         self.hub.publish("project", {"session_id": project.session_id})
 
@@ -311,6 +328,7 @@ class AppState:
             self._check_switch()
             self._release_queue(publish=False)  # its queue stays in it, paused
             self.project = None
+            self._drop_project_sae()
         self.hub.publish("project", {"session_id": None})
 
     def require_project(self) -> Project:
@@ -322,6 +340,118 @@ class AppState:
         if self.project is None:
             raise Missing("Open a project first.")
         return self.project
+
+    def project_changed(
+        self, project: Project, dataset: str | None = None, to: str | None = None
+    ) -> None:
+        """Tell the tabs showing ``project`` to read it again: its name, or its datasets after
+        the file ``dataset`` was renamed ``to`` another path or deleted (``to`` None)."""
+        payload: dict[str, Any] = {"project_session": project.session_id}
+        if dataset is not None:
+            payload["dataset"] = {"path": dataset, "to": to}
+        self.hub.publish("project.changed", validate_event("project.changed", payload))
+
+    def rename_project(self, name: str) -> Project:
+        """Give the open project another name, in its project.json."""
+        project = self.require_project()
+        with self._job_lock:
+            self.require_project()
+            project.rename(name)
+        self.project_changed(project)
+        return project
+
+    def delete_dataset(self, name: str) -> str:
+        """Delete a dataset file of the open project (see logogram.datasets.delete_dataset):
+        under the job lock, so no run starts on it meanwhile. Returns the path it had."""
+        from logogram.datasets import delete_dataset
+
+        project = self.require_project()
+        with self._job_lock:
+            self.require_project()
+            rel = delete_dataset(project, name)
+        self.project_changed(project, rel)
+        return rel
+
+    def rename_dataset(self, name: str, new: str) -> str:
+        """Give a dataset file of the open project another name (see
+        logogram.datasets.rename_dataset). Returns its new path."""
+        from logogram.datasets import existing_dataset, rename_dataset
+
+        project = self.require_project()
+        with self._job_lock:
+            self.require_project()
+            old = f"datasets/{existing_dataset(project, name).name}"
+            rel = rename_dataset(project, name, new)
+        self.project_changed(project, old, rel)
+        return rel
+
+    def project_at(self, path: str | None) -> Project:
+        """The open project (``path`` None, or its folder), or the project in the folder
+        ``path``, read without writing into it."""
+        if path is None:
+            return self.require_project()
+        target = Project.read(path)
+        current = self.project
+        return current if current is not None and current.root == target.root else target
+
+    def deletion_plan(self, path: str | None) -> DeletionPlan:
+        """What deleting the project at ``path`` (the open one when None) would delete, and what
+        stops it, with what this server is doing in it."""
+        with self._job_lock:
+            target = self.project_at(path)
+            plan = plan_deletion(target)
+            busy = self._busy_in(target)
+        if busy and not plan.busy:
+            plan.busy = busy
+        return plan
+
+    def _busy_in(self, project: Project) -> str | None:
+        """Why this server keeps ``project`` from being deleted now (under _job_lock)."""
+        if project is not self.project:
+            return None
+        job = self.job
+        if job is not None and job.status == "running":
+            return (
+                f"“{job.title}” is running. Wait for it to end, or cancel it, before deleting "
+                "the project."
+            )
+        if self._holds_queue(project):
+            return (
+                "This project's queue is being run here. Pause it, or wait for it to finish, "
+                "before deleting the project."
+            )
+        return None
+
+    def delete_project(self, path: str | None, name: str) -> None:
+        """Delete the project at ``path`` (the open one when None) for good, once ``name`` is
+        typed as the project is called. The open project is closed first. Refused while a job
+        runs in it or this server runs its queue, and whenever logogram.project.delete_project
+        refuses: a folder that holds what Logogram didn't make, a run in progress elsewhere."""
+        from logogram.project import ProjectInUse, delete_project
+
+        closed = False
+        try:
+            with self._job_lock:
+                target = self.project_at(path)
+                if name.strip() != target.meta.name:
+                    raise ProjectError(
+                        f"Type the project's name, “{target.meta.name}”, exactly, to delete it."
+                    )
+                busy = self._busy_in(target)
+                if busy:
+                    raise ProjectInUse(busy)
+                plan = plan_deletion(target)
+                if plan.problem:
+                    raise (ProjectError if plan.others else ProjectInUse)(plan.problem)
+                if target is self.project:
+                    self._release_queue(publish=False)  # its queue goes with it
+                    self.project = None
+                    closed = True
+                delete_project(target)
+            log.info("Deleted the project %s", target.root)
+        finally:
+            if closed:
+                self.hub.publish("project", {"session_id": None})
 
     # -- model -------------------------------------------------------------------------------
 
@@ -346,14 +476,30 @@ class AppState:
     def load_model(self, ref: ModelRef, cancel: threading.Event | None = None) -> ModelBackend:
         """Load (or reuse) a model. Runs on a worker thread.
 
-        The current model is closed first to make room, so if the new one fails to load, no model
-        is loaded. Closing waits for an analysis that is using the old model.
+        What can be checked without loading anything (the device, the dtype, a local model's
+        folder) is checked first, so a request that can't load, such as one for a GPU this machine
+        lacks, leaves the loaded model as it is. Then the current model is closed to make room,
+        so if the new one fails to load, no model is loaded. Closing waits for an analysis that is
+        using the old model.
         """
-        from logogram.backends.transformer_lens import load_model
+        from logogram.backends.transformer_lens import check_request, load_model
         from logogram.runner import model_matches
 
         if model_matches(self.backend, ref):
             return self.backend  # type: ignore[return-value]
+        try:
+            check_request(
+                ref.id,
+                revision=ref.revision,
+                dtype=ref.dtype,
+                device=ref.device,
+                source=ref.source,
+                sha256=ref.sha256,
+            )
+        except Exception as exc:
+            if self.backend is None:  # otherwise the loaded model stays, and its status with it
+                self._set_model_status(state="error", id=ref.id, error=str(exc))
+            raise
         if self.backend is not None:
             old, self.backend = self.backend, None
             old.close()
@@ -426,12 +572,18 @@ class AppState:
             self.sae = None
             self._set_sae_status(state="none")
 
+    def _drop_project_sae(self) -> None:
+        """An SAE trained in a project belongs to it: another project may have one of the same
+        name."""
+        if self.sae is not None and self.sae.source == "project":
+            self._drop_sae()
+
     def load_sae(self, ref: Any, cancel: threading.Event | None = None) -> Any:
         """Load (or reuse) an SAE for the loaded model. Runs on a worker thread."""
         from logogram.sae import load_sae, sae_matches
 
         backend = self.require_backend()
-        if sae_matches(self.sae, ref):
+        if sae_matches(self.sae, ref, self.project if ref.source == "project" else None):
             return self.sae
         self.sae = None
         self._set_sae_status(state="loading", repo=ref.repo, path=ref.path, stage="downloading")
@@ -451,7 +603,15 @@ class AppState:
                 )
 
         try:
-            sae = load_sae(ref, backend.info.device, progress, cancel)
+            if ref.source == "project":
+                # Trained in the open project: read from its saes folder, nothing downloaded.
+                from logogram.sae_training import load_project_sae
+
+                sae = load_project_sae(
+                    self.require_project(), ref, backend.info.device, backend.info
+                )
+            else:
+                sae = load_sae(ref, backend.info.device, progress, cancel)
             from logogram.features import check_sae_fits
 
             check_sae_fits(sae, backend.info)
@@ -479,6 +639,86 @@ class AppState:
                 )
             self._drop_sae()
 
+    # -- SAEs and lenses trained in the project ----------------------------------------------
+
+    def train_sae_job(self, spec: Any) -> Job:
+        """Train an SAE in the open project (logogram.sae_training), as a job: its progress
+        carries the stage, the steps done and the loss curve so far. A cancelled training writes
+        nothing."""
+        from logogram.sae_training import train_sae
+        from logogram.spec import TRAINED_SAES
+        from logogram.training import check_new
+
+        project = self.require_project()
+
+        def prepare() -> None:
+            self.require_project()  # again, under the switch/job lock
+            check_new(project, TRAINED_SAES, spec.name, "an SAE")
+
+        def work(job: Job) -> None:
+            trained = train_sae(
+                spec,
+                project,
+                backend=self.backend,
+                provider=lambda ref: self.load_model(ref, cancel=job.cancel),
+                on_progress=self._training_progress(job),
+                cancel=job.cancel,
+            )
+            done = {"stage": "finished", "name": trained.name, "sha256": trained.sha256}
+            job.update(progress={**job.progress, **done})
+
+        return self.start_job(
+            "train_sae", f"Train the SAE {spec.name}", work, prepare=prepare, scoped=True
+        )
+
+    def train_lens_job(self, spec: Any) -> Job:
+        """Train a tuned lens in the open project (logogram.lenses), as a job, as for an SAE."""
+        from logogram.lenses import train_lens
+        from logogram.spec import TRAINED_LENSES
+        from logogram.training import check_new
+
+        project = self.require_project()
+
+        def prepare() -> None:
+            self.require_project()
+            check_new(project, TRAINED_LENSES, spec.name, "a lens")
+
+        def work(job: Job) -> None:
+            trained = train_lens(
+                spec,
+                project,
+                backend=self.backend,
+                provider=lambda ref: self.load_model(ref, cancel=job.cancel),
+                on_progress=self._training_progress(job),
+                cancel=job.cancel,
+            )
+            done = {"stage": "finished", "name": trained.name, "sha256": trained.sha256}
+            job.update(progress={**job.progress, **done})
+
+        return self.start_job(
+            "train_lens", f"Train the lens {spec.name}", work, prepare=prepare, scoped=True
+        )
+
+    def _training_progress(self, job: Job) -> Callable[[dict[str, Any]], None]:
+        """Tell the tabs how a training goes: each new stage and point of the loss curve, and
+        otherwise about ten times a second."""
+        last = {"stage": None, "points": 0, "time": 0.0}
+
+        def progress(data: dict[str, Any]) -> None:
+            curve = data.get("curve")
+            points = len(curve) if isinstance(curve, list) else last["points"]
+            snapshot = {**job.progress, **data}
+            if isinstance(curve, list):
+                snapshot["curve"] = list(curve)
+            job.update(progress=snapshot)
+            now = time.monotonic()
+            fresh = data.get("stage") != last["stage"] or points != last["points"]
+            if fresh or now - float(last["time"] or 0.0) >= 0.1:
+                last.update(stage=data.get("stage"), points=points, time=now)
+                self.hub.publish("job", job.to_dict())
+
+        return progress
+
     # -- jobs --------------------------------------------------------------------------------
 
     def start_job(
@@ -487,11 +727,13 @@ class AppState:
         title: str,
         work: Callable[[Job], None],
         prepare: Callable[[], str | None] | None = None,
+        scoped: bool = False,
     ) -> Job:
         """Run ``work`` on a worker thread, unless another job is running.
 
         ``prepare`` runs first, under the same lock, so nothing is written for a job that can't
-        start (a double-click on Run, say). It returns the job's run id, if it has one.
+        start (a double-click on Run, say). It returns the job's run id, if it has one. A job
+        with a run, or ``scoped`` (it writes into the open project), names the project's session.
         """
         with self._job_lock:
             if self.job is not None and self.job.status == "running":
@@ -504,7 +746,9 @@ class AppState:
                 kind=kind,
                 title=title,
                 run_id=run_id,
-                project_session=self.project.session_id if run_id and self.project else None,
+                project_session=self.project.session_id
+                if (run_id or scoped) and self.project
+                else None,
             )
             self.job = job
         self.hub.publish("job", job.to_dict())
@@ -919,7 +1163,8 @@ class AppState:
 
     def delete_run(self, run_id: str) -> None:
         """Delete a finished, failed or cancelled run, or a draft. Not one that is running or
-        queued: under the job lock, so none can start in its folder meanwhile."""
+        queued (logogram.history refuses a queued draft): under the job lock, so none can start
+        in its folder meanwhile."""
         from logogram.history import RunInUse, delete_run, display_name
 
         project = self.require_project()
@@ -931,11 +1176,6 @@ class AppState:
             if job is not None and job.status == "running" and job.run_id == run_id:
                 raise RunInUse(
                     f"{name} is running. Wait for it to end, or cancel it, then delete it."
-                )
-            if self._queued_draft(project, run_id):
-                raise RunInUse(
-                    f"{name} is waiting in the queue to run. Take it out of the queue first, then "
-                    "delete it."
                 )
             delete_run(project, run_id)
         self._runs_changed(project, run_id, deleted=True)

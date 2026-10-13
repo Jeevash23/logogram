@@ -2,14 +2,17 @@
 // the store so that the form's draft storage and the spec builder can use it without a cycle.
 
 import type {
+  AcdcRule,
   AttributionMethod,
   BaselineSpec,
   ChatTemplateSpec,
+  DirectionRefSpec,
   ExperimentKind,
   MetricKind,
   Normalization,
   PathReceiverSpec,
   PredictionSettings,
+  ReadoutUnit,
   SAERef,
   ScopeSpec,
   Side,
@@ -66,6 +69,36 @@ export interface FormState {
   edgePatch: "chosen" | "rest" | null;
   edgeSeed: number;
   edgeDraws: number;
+  /** Steering along a saved direction (steerDirection "direction"): which one (no default). */
+  steerSaved: DirectionRefSpec | null;
+  /** A probe: what labels each example (no default: it is what the probe reads), the meta field
+   * and which prompts are examples, the share of pairs that train and its seed, the weight of
+   * the L2 penalty, the iterations of L-BFGS, and whether a probe on shuffled labels runs too. */
+  probeLabels: "side" | "meta" | null;
+  probeField: string | null;
+  probePrompts: "clean" | "corrupt" | "both";
+  probeTrain: number;
+  probeSeed: number;
+  probeL2: number;
+  probeIterations: number;
+  probeControl: boolean;
+  /** Distributed alignment search: the subspace's dimensions, the share of pairs that train it
+   * and its seed, the steps and learning rate of Adam, and whether a random subspace runs too. */
+  dasDimensions: number;
+  dasTrain: number;
+  dasSeed: number;
+  dasSteps: number;
+  dasRate: number;
+  dasControl: boolean;
+  /** Subspace patching: the saved direction (or subspace) patched along (no default). */
+  subspace: DirectionRefSpec | null;
+  /** A readout metric (metric "readout"): what it reads (no default), and at which token. */
+  readout: ReadoutUnit | null;
+  readoutPosition: { kind: "last" } | { kind: "index"; index: number } | { kind: "label"; label: string };
+  /** ACDC: the threshold as typed, in the metric's units, and which change in the metric it is
+   * compared with. Neither has a default: they decide which edges stay. */
+  acdcThreshold: string;
+  acdcRule: AcdcRule | null;
   /** The SAE a saved spec's features belong to; used when no SAE is loaded. */
   saeRef: SAERef | null;
   scope: ScopeSpec;
@@ -123,6 +156,26 @@ export const DEFAULT_FORM: FormState = {
   edgePatch: null,
   edgeSeed: 0,
   edgeDraws: 1,
+  steerSaved: null,
+  probeLabels: null,
+  probeField: null,
+  probePrompts: "both",
+  probeTrain: 0.5,
+  probeSeed: 0,
+  probeL2: 0.01,
+  probeIterations: 100,
+  probeControl: true,
+  dasDimensions: 1,
+  dasTrain: 0.5,
+  dasSeed: 0,
+  dasSteps: 100,
+  dasRate: 0.01,
+  dasControl: true,
+  subspace: null,
+  readout: null,
+  readoutPosition: { kind: "last" },
+  acdcThreshold: "",
+  acdcRule: null,
   saeRef: null,
   scope: { kind: "heads", position: { kind: "all" } },
   metric: "logit_diff",
@@ -153,7 +206,13 @@ export function formFromSpec(spec: Spec): FormState {
     nameEdited: true,
     kind: e.kind,
     direction:
-      e.kind === "activation_patching" || e.kind === "attribution_patching" || e.kind === "path_patching" || e.kind === "edge_attribution"
+      e.kind === "activation_patching" ||
+      e.kind === "attribution_patching" ||
+      e.kind === "path_patching" ||
+      e.kind === "edge_attribution" ||
+      e.kind === "acdc" ||
+      e.kind === "subspace_patching" ||
+      e.kind === "das"
         ? e.direction
         : "clean_to_corrupt",
     baseline: e.kind === "ablation" ? e.baseline : null,
@@ -178,13 +237,34 @@ export function formFromSpec(spec: Spec): FormState {
     edgePatch: e.kind === "edge_attribution" && e.curve ? e.curve.patch : null,
     edgeSeed: e.kind === "edge_attribution" && e.curve ? e.curve.control.seed : DEFAULT_FORM.edgeSeed,
     edgeDraws: e.kind === "edge_attribution" && e.curve ? e.curve.control.draws : DEFAULT_FORM.edgeDraws,
+    steerSaved: e.kind === "steering" && e.direction?.kind === "direction" ? e.direction.direction : null,
+    probeLabels: e.kind === "probe" ? e.labels.kind : null,
+    probeField: e.kind === "probe" && e.labels.kind === "meta" ? e.labels.field : null,
+    probePrompts: e.kind === "probe" && e.labels.kind === "meta" ? e.labels.prompts : DEFAULT_FORM.probePrompts,
+    probeTrain: e.kind === "probe" ? e.train_fraction : DEFAULT_FORM.probeTrain,
+    probeSeed: e.kind === "probe" ? e.seed : DEFAULT_FORM.probeSeed,
+    probeL2: e.kind === "probe" ? e.regularization : DEFAULT_FORM.probeL2,
+    probeIterations: e.kind === "probe" ? e.iterations : DEFAULT_FORM.probeIterations,
+    probeControl: e.kind === "probe" ? e.control : DEFAULT_FORM.probeControl,
+    dasDimensions: e.kind === "das" ? e.dimensions : DEFAULT_FORM.dasDimensions,
+    dasTrain: e.kind === "das" ? e.train_fraction : DEFAULT_FORM.dasTrain,
+    dasSeed: e.kind === "das" ? e.seed : DEFAULT_FORM.dasSeed,
+    dasSteps: e.kind === "das" ? e.steps : DEFAULT_FORM.dasSteps,
+    dasRate: e.kind === "das" ? e.learning_rate : DEFAULT_FORM.dasRate,
+    dasControl: e.kind === "das" ? e.control : DEFAULT_FORM.dasControl,
+    subspace: e.kind === "subspace_patching" ? e.subspace : null,
+    readout: metric?.kind === "readout" ? metric.unit : null,
+    readoutPosition: metric?.kind === "readout" ? metric.position : DEFAULT_FORM.readoutPosition,
+    acdcThreshold: e.kind === "acdc" ? String(e.threshold) : DEFAULT_FORM.acdcThreshold,
+    acdcRule: e.kind === "acdc" ? e.rule : null,
     saeRef: spec.sae ?? null,
     scope: spec.scope.kind === "features"
       ? { ...spec.scope, choose_on: spec.scope.choose_on ?? null, seed: spec.scope.seed ?? null }
       : spec.scope,
-    metric: (metric.kind ?? "logit_diff") as MetricKind,
-    klTarget: metric.kind === "kl" ? metric.target : null,
-    normalization: metric.normalization,
+    // A probe has no metric: the form keeps its own until another method is chosen.
+    metric: (metric?.kind ?? DEFAULT_FORM.metric) as MetricKind,
+    klTarget: metric?.kind === "kl" ? metric.target : null,
+    normalization: metric?.normalization ?? DEFAULT_FORM.normalization,
     bootstrap: spec.statistics.bootstrap,
     ci: spec.statistics.ci,
     statSeed: spec.statistics.seed,

@@ -77,11 +77,11 @@ def test_a_gpu_is_checked_against_the_machines(gpus, monkeypatch):
     with pytest.raises(BackendError, match=r"GPU 2 \(cuda:2\).*2 GPUs, cuda:0 to cuda:1"):
         resolve_device("cuda:2")
     gpus.count = 1
-    with pytest.raises(BackendError, match=r"one GPU, cuda:0.*or to cuda for the default GPU"):
+    with pytest.raises(BackendError, match=r"one GPU, cuda:0.*or cuda for the default GPU"):
         resolve_device("cuda:1")
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     # The message the README's troubleshooting quotes, for one GPU of several too.
-    with pytest.raises(BackendError, match=r"asks for CUDA, but PyTorch can't see a CUDA GPU"):
+    with pytest.raises(BackendError, match=r"CUDA was chosen, but PyTorch can't see a CUDA GPU"):
         resolve_device("cuda:1")
     assert resolve_device("auto") == "cpu"
 

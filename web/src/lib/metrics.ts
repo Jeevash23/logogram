@@ -52,6 +52,12 @@ export const METRICS: Record<MetricKind, MetricWords> = {
     formula: "KL(P_target || P)",
     detail: "How far the whole next-token distribution is from a target prompt's. Reads no answer.",
   },
+  readout: {
+    label: "readout",
+    short: "readout",
+    formula: "the value read inside the model",
+    detail: "A value inside the model instead of its output: a neuron, a saved direction or an SAE feature. Patching then asks what drives it.",
+  },
 };
 
 export const METRIC_KINDS = Object.keys(METRICS) as MetricKind[];
@@ -85,8 +91,15 @@ export function metricWords(metric: { kind?: string | null; target?: Side | null
 }
 
 /** The metric in a sentence, as describe_metric in spec.py writes it. */
-export function describeMetric(metric: MetricSpec): string {
+export function describeMetric(metric: MetricSpec | null): string {
+  if (!metric) return "no metric: the probes read the activations, not the output";
   if (metric.kind === "kl") return `KL divergence from the ${metric.target} prompt's next-token distribution`;
+  if (metric.kind === "readout") {
+    const u = metric.unit;
+    const what = u.kind === "neuron" ? `neuron ${u.neuron} of L${u.layer}'s MLP` : u.kind === "direction" ? `the ${u.site} of L${u.layer} along the direction ${u.direction.name}` : `SAE feature ${u.feature}`;
+    const where = metric.position.kind === "last" ? "the last token" : metric.position.kind === "index" ? `token index ${metric.position.index}` : `position ${metric.position.label}`;
+    return `${what} at ${where}`;
+  }
   return metric.kind === "logit_diff" ? `${METRICS.logit_diff.formula} at the last position` : METRICS[metric.kind].formula;
 }
 

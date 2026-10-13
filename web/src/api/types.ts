@@ -93,7 +93,7 @@ export interface ModelStatus {
 export interface Job {
   project_session?: string | null;
   id: string;
-  kind: "load_model" | "load_sae" | "run" | "add_model";
+  kind: "load_model" | "load_sae" | "run" | "add_model" | "import_corpus" | "train_sae" | "train_lens";
   title: string;
   status: "running" | "finished" | "failed" | "cancelled";
   run_id: string | null;
@@ -155,6 +155,196 @@ export interface DatasetListing {
   error?: string;
 }
 
+/** A direction saved in the project (logogram.directions): vectors in the model's activation
+ * space, orthonormal rows, found by a probe, a learned subspace, a principal component or a mean
+ * difference. One that can't be read has only its name and why. */
+export interface DirectionListing {
+  name: string;
+  error: string | null;
+  model?: { id: string; source: "hub" | "local"; revision: string | null; sha256: string | null };
+  site?: { kind: string; layer: number } | null;
+  width?: number;
+  dimensions?: number;
+  made_by?: { method: "probe" | "das" | "pca" | "mean_difference" | "import" | "sae_feature"; run: string | null; detail: string };
+  created?: string;
+  sha256?: string;
+  norms?: number[];
+  notes?: string;
+  path?: string;
+}
+
+/** A corpus in the project (logogram.corpora): plain texts, each with an optional label. */
+export interface CorpusListing {
+  name: string;
+  path: string;
+  error: string | null;
+  n?: number;
+  sha256?: string;
+  labels?: string[];
+  source?: CorpusSource | null;
+  created?: string | null;
+}
+
+/** Where a corpus's texts came from: a file (by its name only), a Hugging Face dataset's file at
+ * an exact commit, a project dataset's prompts, or texts written from Python. */
+export interface CorpusSource {
+  kind: "file" | "hub" | "dataset" | "texts";
+  detail: string;
+  repo?: string | null;
+  path?: string | null;
+  revision?: string | null;
+  /** The hash of the file the texts were read from. */
+  sha256?: string | null;
+}
+
+/** One text on a page of a corpus: its start, when it is long (`length` says how long). */
+export interface CorpusText {
+  index: number;
+  text: string;
+  length: number;
+  label: string | null;
+  id: string | null;
+  meta: Record<string, unknown> | null;
+}
+
+/** A page of a corpus's texts, those a search finds. */
+export interface CorpusPage {
+  name: string;
+  path: string;
+  sha256: string;
+  n: number;
+  labels: string[];
+  source: CorpusSource | null;
+  created: string | null;
+  query: string;
+  matches: number;
+  page: number;
+  pages: number;
+  size: number;
+  start: number;
+  texts: CorpusText[];
+}
+
+/** How an uploaded file's texts are laid out. */
+export type CorpusFormat = "lines" | "paragraphs" | "jsonl" | "json" | "csv" | "tsv";
+
+/** A corpus just written, and how many rows were left out for having no text. */
+export interface CorpusImported {
+  name: string;
+  path: string;
+  sha256: string;
+  n: number;
+  labels: string[];
+  skipped: number;
+  source: CorpusSource | null;
+}
+
+/** A Hugging Face dataset's files at the exact commit its revision resolves to. */
+export interface HubDatasetFiles {
+  repo: string;
+  revision: string;
+  files: { path: string; size: number; readable: boolean }[];
+}
+
+/** Where activations are read: a residual stream site, or an attention or MLP output. */
+export interface ReadSite {
+  kind: StreamKind;
+  layer: number;
+}
+
+/** The token of each prompt or text read: the last, an index (negative from the end), a labelled
+ * position of a dataset's prompts, or the mean over the tokens after the BOS token. */
+export type ReadPosition = { kind: "last" } | { kind: "index"; index: number } | { kind: "label"; label: string } | { kind: "mean" };
+
+/** What is read: a dataset's prompts (marked by side, by a meta field as "meta:FIELD", or not),
+ * or a corpus's texts (marked by their labels), each cut to `max_tokens`. */
+export type RowsSource =
+  | { kind: "dataset"; path: string; sha256?: string | null; sides: "clean" | "corrupt" | "both"; mark: string | null; limit: number | null }
+  | { kind: "corpus"; name: string; sha256?: string | null; limit: number | null; max_tokens: number };
+
+/** A unit whose activity over a corpus is read: a neuron, a feature of the loaded SAE, a saved
+ * direction (at its own site, or at `site`) or a head (the length of what it writes). */
+export type TopUnit =
+  | { kind: "neuron"; layer: number; neuron: number }
+  | { kind: "sae_feature"; feature: number }
+  | { kind: "direction"; name: string; sha256: string | null; site?: ReadSite | null }
+  | { kind: "head"; layer: number; head: number };
+
+/** A token where a unit is active, with a window of its text: `tokens` from token `start`, and
+ * the unit's value at each (null where it isn't counted: the BOS token). `open` is the text up to
+ * the window's end, when Your text can read it. */
+export interface TopExample {
+  text: number;
+  id: string | null;
+  label: string | null;
+  position: number;
+  value: number;
+  start: number;
+  tokens: string[];
+  values: (number | null)[];
+  open: string | null;
+}
+
+/** Where a unit is most active in a corpus, with every choice that made it. */
+export interface CorpusTop {
+  corpus: { name: string; path: string; sha256: string; n: number };
+  unit: Record<string, unknown>;
+  description: string;
+  signed: boolean;
+  settings: { texts: number | null; max_tokens: number; prepend_bos: boolean; batch_size: number; top_k: number; context: number };
+  texts_read: number;
+  truncated: number;
+  tokens: number;
+  first_counted: number;
+  active: number;
+  active_share: number;
+  mean: number;
+  min: number;
+  max: number;
+  histogram: { edges: number[]; counts: number[] };
+  top: TopExample[];
+  bottom: TopExample[] | null;
+  notes: string[];
+}
+
+export interface RepresentationPoint {
+  row: number;
+  index: number;
+  side: "clean" | "corrupt" | null;
+  mark: string | null;
+  text: string;
+  coords: number[];
+}
+
+/** The principal components of the activations at a site over prompts or texts. */
+export interface Representations {
+  source: Record<string, unknown> & { kind: "dataset" | "corpus"; sha256: string; n: number };
+  position: ReadPosition;
+  prepend_bos: boolean;
+  batch_size: number;
+  site: ReadSite;
+  n: number;
+  width: number;
+  components: number;
+  explained: number[];
+  variances: number[];
+  total_variance: number;
+  marks: string[];
+  points: RepresentationPoint[];
+  description: string;
+}
+
+/** Activations written to the project's activations folder. */
+export interface ActivationsExported {
+  name: string;
+  path: string;
+  json_path: string;
+  n: number;
+  sites: string[];
+  sha256: string;
+  bytes: number;
+}
+
 export interface ProjectInfo {
   session_id: string;
   name: string;
@@ -203,7 +393,50 @@ export interface RecentProject {
   path: string;
   name: string;
   opened: string | null;
-  modified: string;
+  /** Null when the project can't be read now. */
+  modified: string | null;
+  /** Its folder isn't there now (or holds no project Logogram can read): it stays in the list
+   * until it is removed from it, and `problem` says why. */
+  missing?: boolean;
+  problem?: string | null;
+}
+
+/** What deleting a project would delete, and what stops it now (logogram.project.DeletionPlan). */
+export interface DeletionPlan {
+  path: string;
+  name: string;
+  runs: number;
+  drafts: number;
+  datasets: number;
+  queued: number;
+  /** The folder's entries Logogram doesn't make there: while there are any, it isn't deleted. */
+  others: string[];
+  /** Why it can't be deleted now: a run in progress in it, its queue being run. */
+  busy: string | null;
+  /** Why it can't be deleted (others, or busy), and what to do; null when it can. */
+  problem: string | null;
+  /** What deleting it deletes, in words. */
+  text: string;
+}
+
+/** Whether a rerun reproduced the run it reran, value by value (logogram.compare.reproduction_of). */
+export interface Reproduction {
+  run_id: string;
+  original: string;
+  /** Every per-prompt value matches exactly. */
+  identical: boolean;
+  rows: number;
+  original_rows: number;
+  /** The largest change in a per-prompt value; null when the rows differ. */
+  largest: number | null;
+  /** The sentence `logogram run` says it in. */
+  text: string;
+}
+
+/** A dataset file renamed (its new name and path) or deleted (the ones it had). */
+export interface DatasetChanged {
+  name: string;
+  path: string;
 }
 
 /** A bundled example (logogram.gallery): what it asks, the result to expect, and its spec. */
@@ -304,11 +537,15 @@ export interface SiteSpec {
   position: PositionSpec;
 }
 
-/** A published sparse autoencoder: repository, folder and exact commit. */
+/** A sparse autoencoder: one published on Hugging Face (repository, folder and exact commit), or
+ * one trained in the project (`source` "project": its name as `repo`, its folder saes/NAME as
+ * `path`, and the hash of its files). */
 export interface SAERef {
   repo: string;
   path: string;
   revision: string | null;
+  source: "hub" | "project";
+  sha256: string | null;
 }
 
 export interface SAEFit {
@@ -338,6 +575,11 @@ export interface SAEInfo extends SAERef {
   transcoder?: boolean;
   /** A transcoder that also adds its input times a skip matrix to what it writes. */
   skip?: boolean;
+  /** An SAE trained in the project: the model it was trained on, its corpus and what its training
+   * measured on the held-out texts. */
+  trained?: { model: TrainedModel | null; corpus: string | null; held_out: SAEHeldOut | null } | null;
+  /** What to know before trusting it here, such as that it was trained on another model. */
+  warnings?: string[];
 }
 
 /** One SAE of SAELens's registry, as the catalogue that ships with Logogram describes it: where
@@ -481,10 +723,22 @@ export type ScopeSpec =
   /** Edges measured one at a time by path patching, everything else held (1 to 64). */
   | { kind: "edges"; edges: EdgeSpec[] };
 
+/** A direction saved in the project, pinned by the hash of its tensor file when a run starts
+ * (null until then). */
+export interface DirectionRefSpec {
+  name: string;
+  sha256: string | null;
+}
+
 export type BaselineSpec =
   | { kind: "zero" }
   | { kind: "mean"; reference: "clean" | "corrupt" }
-  | { kind: "resample"; pool: "clean" | "corrupt"; donors: number; seed: number };
+  | { kind: "resample"; pool: "clean" | "corrupt"; donors: number; seed: number }
+  /** Multiply the activation by a factor (0 removes it, 2 doubles it). */
+  | { kind: "scale"; factor: number }
+  /** Remove the activation's component along a saved direction, or set it to the reference
+   * prompts' mean component. */
+  | { kind: "projection"; direction: DirectionRefSpec; reference: "clean" | "corrupt" | null };
 
 export type Direction = "clean_to_corrupt" | "corrupt_to_clean";
 
@@ -520,9 +774,21 @@ export interface FaithfulnessCurveSpec {
  * averaged over `steps` runs between the two prompts (2 to 64; null for one gradient). */
 export type AttributionMethod = "gradient" | "integrated_gradients";
 
+/** Which change in the metric ACDC compares with its threshold: how far removing an edge moves it
+ * toward the source prompt's (the paper's rule), or how far in either direction. */
+export type AcdcRule = "toward_source" | "either_way";
+
 /** What steering adds: the mean difference of the training pairs, or one SAE feature's decoder
  * direction where the SAE reads. */
-export type SteeringDirection = { kind: "mean_difference" } | { kind: "sae_feature"; feature: number };
+export type SteeringDirection =
+  | { kind: "mean_difference" }
+  | { kind: "sae_feature"; feature: number }
+  /** A saved direction of one dimension; strength 1 moves along it as far as the training pairs'
+   * mean difference does. */
+  | { kind: "direction"; direction: DirectionRefSpec };
+
+/** What a probe reads: which prompt of the pair it is, or a field of the pair's meta. */
+export type ProbeLabels = { kind: "side" } | { kind: "meta"; field: string; prompts: "clean" | "corrupt" | "both" };
 
 /** Greedy continuations of the first held-out prompts, unsteered and at each strength. */
 export interface Continuations {
@@ -537,6 +803,9 @@ export type ExperimentSpec =
   | { kind: "attribution_patching"; direction: Direction; method: AttributionMethod; steps: number | null }
   | { kind: "path_patching"; direction: Direction; receivers: PathReceiverSpec[]; freeze_mlps: boolean }
   | { kind: "edge_attribution"; direction: Direction; method: AttributionMethod; steps: number | null; curve: FaithfulnessCurveSpec | null }
+  /** ACDC: the graph's edges removed one at a time, each kept out when removing it changes the
+   * metric's mean by less than `threshold` (in the metric's units), counted as `rule` says. */
+  | { kind: "acdc"; direction: Direction; threshold: number; rule: AcdcRule }
   | {
       kind: "steering";
       apply_to: "clean" | "corrupt";
@@ -546,23 +815,60 @@ export type ExperimentSpec =
       seed: number;
       control: boolean;
       continuations: Continuations | null;
+    }
+  /** Patch only the component along a saved direction (or within a saved subspace). */
+  | { kind: "subspace_patching"; direction: Direction; subspace: DirectionRefSpec }
+  /** Distributed alignment search: learn a subspace whose patching carries the effect. */
+  | {
+      kind: "das";
+      direction: Direction;
+      dimensions: number;
+      train_fraction: number;
+      seed: number;
+      steps: number;
+      learning_rate: number;
+      control: boolean;
+    }
+  /** A linear probe at each site, measured on held-out pairs. It has no metric. */
+  | {
+      kind: "probe";
+      labels: ProbeLabels;
+      train_fraction: number;
+      seed: number;
+      regularization: number;
+      iterations: number;
+      control: boolean;
     };
 
 export type ExperimentKind = ExperimentSpec["kind"];
 
-/** What a run's per-prompt values are: patched runs, estimates of them, or terms of a split. */
-export type Measure = "intervention" | "estimate" | "attribution";
+/** What a run's per-prompt values are: patched runs, estimates of them, terms of a split, or a
+ * probe's held-out accuracy. */
+export type Measure = "intervention" | "estimate" | "attribution" | "probe";
 
 /** What a forward pass is measured by (src/logogram/spec.py, METRIC_LABELS). */
-export type MetricKind = "logit_diff" | "logprob_diff" | "logprob" | "prob" | "prob_diff" | "kl";
+export type MetricKind = "logit_diff" | "logprob_diff" | "logprob" | "prob" | "prob_diff" | "kl" | "readout";
+
+/** What a readout metric reads inside the model: a neuron, a saved direction's component at a
+ * stream site, or a feature of the spec's SAE. */
+export type ReadoutUnit =
+  | { kind: "neuron"; layer: number; neuron: number }
+  | { kind: "direction"; direction: DirectionRefSpec; site: StreamKind; layer: number }
+  | { kind: "sae_feature"; feature: number };
 export type Normalization = "dataset_gap" | "prompt_gap";
 export type Side = "clean" | "corrupt";
 
 /** The metric of a spec. The KL divergence is measured from a target prompt's next-token
  * distribution, which has no default. */
 export type MetricSpec =
-  | { kind: Exclude<MetricKind, "kl">; normalization: Normalization }
-  | { kind: "kl"; target: Side; normalization: Normalization };
+  | { kind: Exclude<MetricKind, "kl" | "readout">; normalization: Normalization }
+  | { kind: "kl"; target: Side; normalization: Normalization }
+  | {
+      kind: "readout";
+      unit: ReadoutUnit;
+      position: { kind: "last" } | { kind: "index"; index: number } | { kind: "label"; label: string };
+      normalization: Normalization;
+    };
 
 /** The model of a spec: from Hugging Face, pinned by its revision, or a local folder found by the
  * hash of its files (`sha256`). */
@@ -582,9 +888,9 @@ export type ChatTemplateSpec =
   | { kind: "user_turn"; system: string | null }
   | { kind: "assistant_prefix"; system: string | null; user: string };
 
-/** A version 3 spec: every choice that can change a number is stated. */
+/** A version 4 spec: every choice that can change a number is stated. A probe has no metric. */
 export interface Spec {
-  logogram_spec: 3;
+  logogram_spec: 4;
   name: string;
   notes: string;
   model: ModelRef;
@@ -592,7 +898,7 @@ export interface Spec {
   tokenization: { prepend_bos: boolean; chat_template: ChatTemplateSpec | null };
   experiment: ExperimentSpec;
   scope: ScopeSpec;
-  metric: MetricSpec;
+  metric: MetricSpec | null;
   /** Percentile bootstrap; with `cluster`, over groups of prompts sharing that field of their meta. */
   statistics: { bootstrap: number; ci: number; seed: number; cluster: string | null };
   execution: { batch_size: number };
@@ -600,8 +906,16 @@ export interface Spec {
   sae?: SAERef | null;
 }
 
+/** A tuned lens trained in the project, pinned by the hash of its file. */
+export interface LensRef {
+  name: string;
+  sha256: string | null;
+}
+
 export interface PredictionSettings {
-  method: "final_norm_logit_lens";
+  method: "final_norm_logit_lens" | "tuned_lens";
+  /** The tuned lens, for the tuned_lens method; null for the logit lens. */
+  lens: LensRef | null;
   prompt_index: number;
   which: "clean" | "corrupt";
   position: { kind: "last" } | { kind: "index"; index: number };
@@ -613,7 +927,17 @@ export interface PredictionReport {
   position: number;
   tokens: string[];
   settings: PredictionSettings;
-  layers: { layer: number; top: { id: number; token: string; prob: number }[]; answer_prob: number; distractor_prob: number; logit_diff: number }[];
+  /** The tuned lens read; null (or absent, in older reports) for the logit lens. */
+  lens?: { name: string; sha256: string; layers: number[]; width: number; model: TrainedModel } | null;
+  layers: {
+    layer: number;
+    top: { id: number; token: string; prob: number }[];
+    answer_prob: number;
+    distractor_prob: number;
+    logit_diff: number;
+    /** Read through a tuned lens's translator, or as the logit lens reads it. */
+    readout?: "logit_lens" | "tuned_lens";
+  }[];
   batch_members: number[];
   answer: string;
   distractor: string;
@@ -666,7 +990,7 @@ export interface SiteBase {
   label: string;
   /** One of several measurements of the same site, such as a steering strength or its control,
    * or a set of sites (whether it keeps its sites, and how many). */
-  variant?: { coefficient?: number; control?: boolean; complement?: boolean; size?: number } | null;
+  variant?: { coefficient?: number; control?: boolean; complement?: boolean; size?: number; subspace?: "learned" | "full" | "random" } | null;
   variant_key?: string | null;
   /** The sites of a set intervened on together (kind site_set). */
   members?: SiteSpec[] | null;
@@ -719,7 +1043,7 @@ export interface Layout {
   /** head_inputs: every head's query or key/value head's key or value (`site`); neurons: every
    * neuron of the chosen layers, a row per layer with no columns listed; edges: senders by
    * receivers of an edge attribution run. */
-  kind: "heads" | "layer_position" | "layer_components" | "sites" | "steering" | "site_sets" | "head_inputs" | "neurons" | "edges";
+  kind: "heads" | "layer_position" | "layer_components" | "sites" | "steering" | "site_sets" | "head_inputs" | "neurons" | "edges" | "probe" | "das";
   site?: StreamKind | HeadInputKind | "neuron";
   row_title: string;
   col_title: string;
@@ -784,6 +1108,8 @@ export interface Summary {
     norms: number[];
     control?: ControlComparison[] | null;
     feature?: SteeringFeature | null;
+    /** Along a saved direction: which, and how far strength 1 moves along it at each row. */
+    direction?: { name: string; sha256: string; along: number[] } | null;
   } | null;
   /** Runs on SAE features: the SAE, its fit on these prompts, and (attribution patching) how much
    * of the site's estimated effect its features account for. */
@@ -817,6 +1143,12 @@ export interface Summary {
   partial?: PartialRun | null;
   /** Edge attribution: the graph, how the estimates were taken, what it cost, and the curve. */
   edges?: EdgeRun | null;
+  /** A probe run: the labels and classes, chance, the split, each site's probe and its control. */
+  probe?: ProbeRun | null;
+  /** Distributed alignment search: the subspace's size, its training, and the split. */
+  das?: DASRun | null;
+  /** ACDC: the circuit it found, the rule it kept edges by, and how faithful the circuit is. */
+  acdc?: AcdcRun | null;
 }
 
 /** One point of a faithfulness curve: k edges and how much of the behavior they carry. */
@@ -857,6 +1189,12 @@ export interface EdgeCost {
   memory_per_batch: number;
   values: number;
   text?: string;
+  /** ACDC: the memory the source prompts' senders take, kept for every pass. */
+  cache?: number;
+  /** ACDC, before a run: how long one edge-patched pass of the largest batch took here, and the
+   * whole run at that pace. */
+  seconds_per_pass?: number;
+  seconds?: number | null;
 }
 
 /** An edge attribution run: the graph, how its estimates were taken, the model's measured
@@ -879,7 +1217,33 @@ export interface EdgeRun {
   corrections?: { edges: number; single: number; banded: number; discoveries: number } | null;
 }
 
-/** An edge attribution spec on the loaded model, before it runs (POST /api/edges/plan). */
+/** An ACDC run: the graph, the rule and threshold its edges were kept by, the circuit (`kept`,
+ * the indices of its edges) and how faithful it is (0 is the source run, 1 the receiver run with
+ * every edge). Each listed edge's values are the change its removal made when it was tested. */
+export interface AcdcRun {
+  threshold: number;
+  rule: AcdcRule;
+  /** The sign of a change toward the source run's metric. */
+  source_sign: 1 | -1;
+  order: string;
+  n_edges: number;
+  n_kept: number;
+  kept: number[];
+  n_senders: number;
+  n_receivers: number;
+  reported: number;
+  structure: "sequential" | "parallel";
+  checks: Record<string, number>;
+  cost: EdgeCost;
+  /** The mean metric with every edge kept, and of the circuit. */
+  full: number | null;
+  circuit: number | null;
+  faithfulness: Stat;
+  per_prompt: Record<string, (number | null)[]>;
+  corrections?: { edges: number; single: number; banded: number; discoveries: number } | null;
+}
+
+/** An edge attribution or ACDC spec on the loaded model, before it runs (POST /api/edges/plan). */
 export interface EdgePlan {
   n_edges: number | null;
   n_senders: number | null;
@@ -967,6 +1331,51 @@ export interface SteeringFeature {
 export interface GeneratedTokens {
   ids: number[];
   tokens: string[];
+}
+
+/** A probe at one site of the layout: its accuracy on the training and the held-out examples. */
+export interface ProbeSite {
+  index: number;
+  control: boolean;
+  train_accuracy: number;
+  test_accuracy: number;
+}
+
+/** A site's probe against its control, pair by pair: the difference of their held-out accuracies
+ * and its interval; selective where the interval lies above zero. */
+export interface ProbeSelectivity {
+  row: number;
+  index: number;
+  control_index: number;
+  difference: number | null;
+  lo: number | null;
+  hi: number | null;
+  selective: boolean;
+}
+
+export interface ProbeRun {
+  labels: string;
+  classes: string[];
+  /** The held-out accuracy of always answering the most common training class. */
+  chance: number;
+  train: number[];
+  test: number[];
+  examples: { train: number; test: number };
+  /** The scope's own layout of the probed sites, and where each (a row of the layout) is in it. */
+  grid: Layout & { sites: { row: number; col: number }[] };
+  sites: ProbeSite[];
+  selectivity: ProbeSelectivity[];
+}
+
+export interface DASRun {
+  dimensions: number;
+  steps: number;
+  learning_rate: number;
+  train: number[];
+  test: number[];
+  /** Each site's learned subspace (`index` in the layout, of row `row`): the mean normalized
+   * effect on the training pairs after each step. */
+  sites: { index: number; row: number; curve: number[]; train_effect: number | null }[];
 }
 
 /** A steering run's continuations.json: greedy continuations of the first held-out prompts,
@@ -1719,6 +2128,14 @@ export interface EstimateResponse {
   estimate: MemoryEstimate;
 }
 
+/** Whether a device is there to load a model on: what it resolves to here, or why it isn't and
+ * what to choose instead. */
+export interface DeviceCheck {
+  device: Device;
+  resolved: string | null;
+  error: string | null;
+}
+
 export interface IOITemplate {
   id: string;
   text: string;
@@ -1791,4 +2208,150 @@ export interface LocalModel {
   added: string;
   size: number;
   files: number;
+}
+
+// -- SAEs and lenses trained in the project -----------------------------------------------------
+
+/** The model something was trained on: a Hugging Face model by id and revision, a local model by
+ * the hash of its files, and whether TransformerLens processed its weights. */
+export interface TrainedModel {
+  id: string;
+  source: "hub" | "local";
+  revision: string | null;
+  sha256: string | null;
+  process_weights: boolean;
+}
+
+/** What an SAE's training measured on its held-out texts. */
+export interface SAEHeldOut {
+  tokens: number;
+  fvu: number | null;
+  variance_explained: number | null;
+  l0: number;
+  dead_share: number;
+  loss: { clean: number; spliced: number; zero: number; recovered: number | null; tokens: number } | null;
+}
+
+/** How each text of a corpus becomes tokens, for training. */
+export interface TextTokenization {
+  prepend_bos: boolean;
+  max_tokens: number;
+}
+
+/** An SAE's training spec (src/logogram/sae_training.py): every choice that can change its
+ * weights. */
+export interface SAETrainingSpec {
+  logogram_sae_training: 1;
+  name: string;
+  notes?: string;
+  model: ModelRef;
+  corpus: { name: string; sha256: string | null };
+  tokenization: TextTokenization;
+  site: "resid_pre" | "resid_post" | "attn_out" | "mlp_out";
+  layer: number;
+  architecture: { kind: "topk"; k: number };
+  d_sae: number;
+  steps: number;
+  batch_tokens: number;
+  lr: number;
+  betas: [number, number];
+  eps: number;
+  seed: number;
+  held_out: number;
+  normalize: "mean_squared_norm" | "none";
+  auxk: { k: number; coefficient: number; dead_after: number } | null;
+  log_every: number;
+  model_batch: number;
+}
+
+/** A tuned lens's training spec (src/logogram/lenses.py). */
+export interface LensTrainingSpec {
+  logogram_lens_training: 1;
+  name: string;
+  notes?: string;
+  model: ModelRef;
+  corpus: { name: string; sha256: string | null };
+  tokenization: TextTokenization;
+  layers: number[] | null;
+  steps: number;
+  batch_tokens: number;
+  lr: number;
+  betas: [number, number];
+  eps: number;
+  weight_decay: number | null;
+  seed: number;
+  held_out: number;
+  log_every: number;
+  model_batch: number;
+}
+
+/** An SAE trained in the project, as its training recorded it, or why it can't be read. */
+export interface TrainedSAE {
+  name: string;
+  path: string;
+  error: string | null;
+  sha256?: string | null;
+  site?: string | null;
+  layer?: number | null;
+  d_in?: number | null;
+  d_sae?: number | null;
+  k?: number | null;
+  model?: TrainedModel | null;
+  corpus?: { name: string; sha256: string | null } | null;
+  steps?: number | null;
+  created?: string | null;
+  held_out?: SAEHeldOut | null;
+  spec?: SAETrainingSpec | null;
+}
+
+/** A tuned lens trained in the project, whether it reads the loaded model and if not why, or why
+ * it can't be read. */
+export interface TrainedLens {
+  name: string;
+  path: string;
+  error: string | null;
+  sha256?: string | null;
+  layers?: number[] | null;
+  width?: number | null;
+  model?: TrainedModel | null;
+  corpus?: { name: string; sha256: string | null } | null;
+  steps?: number | null;
+  created?: string | null;
+  held_out?: { tokens: number; layers: { layer: number; logit_lens: number; tuned_lens: number | null }[] } | null;
+  spec?: LensTrainingSpec | null;
+  fits?: boolean | null;
+  reason?: string | null;
+}
+
+/** What a training would take, or why it can't train. */
+export interface TrainingPlan {
+  refusal: string | null;
+  layers?: number[] | null;
+  texts?: { corpus: string; sha256: string; total: number; train: number; held_out: number; read?: number } | null;
+  tokens?: { train: number; used: number; held_out: number; per_step: number; epochs: number | null } | null;
+  memory?: { total: number; available: number; verdict: "fits" | "tight" | "wont_fit" } | null;
+  seconds?: { total: number; collect?: number; train?: number; evaluate?: number } | null;
+}
+
+/** A point of a training's loss curve: an SAE's fraction of variance unexplained and features per
+ * token, or a lens's KL divergence (the mean over its layers, and each layer's). */
+export interface CurvePoint {
+  step: number;
+  tokens: number;
+  fvu?: number;
+  l0?: number;
+  aux?: number | null;
+  dead?: number | null;
+  kl?: number;
+  layers?: number[];
+}
+
+/** A training job's progress: its stage, how far along, and the loss curve so far. */
+export interface TrainingProgress {
+  stage?: "loading" | "reading" | "collecting" | "training" | "evaluating" | "writing" | "finished";
+  done?: number;
+  total?: number;
+  curve?: CurvePoint[];
+  name?: string;
+  sha256?: string;
 }

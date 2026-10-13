@@ -1454,7 +1454,7 @@ def spec_of(name: str, experiment: ToyExperiment, dataset_sha256: str | None = N
 
     return Spec.model_validate(
         {
-            "logogram_spec": 3,
+            "logogram_spec": 4,
             "name": experiment.name,
             "notes": experiment.notes,
             "model": model_ref(name),

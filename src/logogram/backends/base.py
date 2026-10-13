@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import threading
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -155,9 +155,10 @@ class EdgePatcher:
     ``sent`` gets each node's output as the pass computes it, in the order of the pass: the
     embeddings (``"embed"``, layer -1, ``[B, pos, d_model]``), a layer's heads (``"head"``, their
     outputs z, ``[B, pos, H, d_head]``) and a layer's MLP (``"mlp"``, ``[B, pos, d_model]``).
-    ``update`` returns what to add to a receiver's own input before it is read (``"q"``, ``"k"``
-    or ``"v"`` of a layer, ``[B, pos, H, d_model]``; ``"mlp"`` of a layer or ``"logits"``,
-    ``[B, pos, d_model]``), or None to leave it as it is."""
+    ``update`` returns what to add to a receiver's own input before it is read (``"q"`` of a
+    layer, ``[B, pos, H, d_model]``; ``"k"`` or ``"v"``, ``[B, pos, H_kv, d_model]``, one copy for
+    each key/value head; ``"mlp"`` of a layer or ``"logits"``, ``[B, pos, d_model]``), or None to
+    leave it as it is."""
 
     def sent(self, node: str, layer: int, output: torch.Tensor) -> None:  # pragma: no cover
         raise NotImplementedError
@@ -178,6 +179,9 @@ class ModelBackend(ABC):
     info: ModelInfo
     # The model's own beginning-of-sequence token, if it has one.
     bos_token_id: int | None = None
+    # The device it was loaded with, as asked ("auto", "cuda", "cpu", ...), where that is known:
+    # info.device is where that put it.
+    requested_device: str | None = None
 
     def __init__(self) -> None:
         # All model use goes through this lock, one forward pass at a time, so interactive
@@ -186,6 +190,11 @@ class ModelBackend(ABC):
 
     @abstractmethod
     def tokenize(self, text: str, prepend_bos: bool) -> Tokenized: ...
+
+    def tokenize_many(self, texts: Sequence[str], prepend_bos: bool) -> list[list[int]]:
+        """The token ids of each of ``texts``, as :meth:`tokenize` gives them (a corpus's texts
+        are many: backends may read them in one call)."""
+        return [self.tokenize(text, prepend_bos).ids for text in texts]
 
     @property
     def chat_template(self) -> str | None:
@@ -213,9 +222,25 @@ class ModelBackend(ABC):
     def token_str(self, token_id: int) -> str: ...
 
     @abstractmethod
-    def logits(self, tokens: torch.Tensor, patch: Patches = None, keep: int = 1) -> torch.Tensor:
+    def logits(
+        self, tokens: torch.Tensor, patch: Patches = None, keep: int = 1, grad: bool = False
+    ) -> torch.Tensor:
         """Logits at the last ``keep`` positions, ``[B, keep, vocab]`` in float32, with the patches
-        applied (all at once)."""
+        applied (all at once). With ``grad``, the pass keeps its graph, so a gradient can be taken
+        through the patches' values to whatever they were computed from (a learned subspace)."""
+
+    def logits_and_reads(
+        self,
+        tokens: torch.Tensor,
+        patch: Patches,
+        keep: int,
+        reads: list[tuple[str, int]],
+    ) -> tuple[torch.Tensor, dict[tuple[str, int], torch.Tensor]]:
+        """Logits as :meth:`logits` gives them, and the activations at ``reads`` (``(kind,
+        layer)``, shaped as :meth:`capture` gives them, and ``"mlp_in"`` for the MLP's input as a
+        transcoder reads it) from the same forward pass, after any patch at the same place: what a
+        readout metric reads."""
+        raise BackendError("Reading activations in a patched pass isn't supported by this backend.")
 
     def final_logits(self, tokens: torch.Tensor, patch: Patches = None) -> torch.Tensor:
         """Logits at the last position, ``[B, vocab]`` in float32."""
@@ -286,9 +311,10 @@ class ModelBackend(ABC):
     def edge_checks(self) -> dict[str, float]:
         """Measure, once, what edge attribution relies on, and raise BackendError when the model
         doesn't have it: that each head reads its own copy of the residual stream for its query,
-        key and value, before its normalization, without changing what the model computes; that
-        MLPs and the logits read theirs before their normalization; and that heads and MLPs add
-        into the residual stream (measured when the model loaded). Returns the measured errors."""
+        key and value (with grouped-query attention, each key/value head its own for its key and
+        value), before its normalization, without changing what the model computes; that MLPs and
+        the logits read theirs before their normalization; and that heads and MLPs add into the
+        residual stream (measured when the model loaded). Returns the measured errors."""
         raise BackendError("Edge attribution isn't supported by this model backend.")
 
     def head_output_weights(self, layer: int) -> torch.Tensor:
@@ -383,13 +409,31 @@ class ModelBackend(ABC):
         check_model measures when a model loads (``checks.heads``)."""
         raise BackendError("Reading heads' writes isn't supported by this model backend.")
 
-    def layer_logits(self, tokens: torch.Tensor, position: int, row: int) -> torch.Tensor:
+    def layer_logits(
+        self,
+        tokens: torch.Tensor,
+        position: int,
+        row: int,
+        translators: Mapping[int, tuple[torch.Tensor, torch.Tensor]] | None = None,
+    ) -> torch.Tensor:
         """Final-norm logit lens at resid_post, ``[layer, vocab]`` for one row, on CPU.
 
         Preserve the supplied batch composition. Backends must opt in rather than assuming
-        that every model has the same normalization and vocabulary projection.
+        that every model has the same normalization and vocabulary projection. With
+        ``translators`` (a tuned lens's: layer to ``(weight [d_model, d_model], bias
+        [d_model])``, float32), each of those layers' resid_post is read as ``resid_post @ weight
+        + bias`` first.
         """
         raise BackendError("Per-layer predictions aren't supported by this model backend.")
+
+    def read_out(self, residual: torch.Tensor) -> torch.Tensor:
+        """What the model does after its last layer to ``residual`` (``[..., d_model]``, the
+        residual stream entering the final normalization): the final normalization, recomputed
+        from ``residual`` as the logit lens does, the unembedding and any soft cap on the logits.
+        Logits ``[..., vocab]`` in float32, differentiable with respect to ``residual``: a tuned
+        lens is trained through it (logogram.lenses). Backends must opt in, as for
+        :meth:`layer_logits`."""
+        raise BackendError("Reading the residual stream into logits isn't supported here.")
 
     @property
     def device(self) -> torch.device:

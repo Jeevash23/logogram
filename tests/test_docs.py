@@ -93,6 +93,8 @@ def _json_blocks(page: Path) -> list[str]:
     "page", [*DOCS, ROOT / "README.md"], ids=lambda p: p.relative_to(ROOT).as_posix()
 )
 def test_the_specs_the_docs_show_are_valid(page: Path):
+    from logogram.lenses import LensTrainingSpec
+    from logogram.sae_training import SAETrainingSpec
     from logogram.spec import Spec
 
     example = json.loads(EXAMPLE.read_text(encoding="utf-8"))
@@ -104,6 +106,13 @@ def test_the_specs_the_docs_show_are_valid(page: Path):
         if "logogram_spec" in data:
             Spec.model_validate(data)
             continue
+        # The specs that train an SAE or a tuned lens in the project.
+        if "logogram_sae_training" in data:
+            SAETrainingSpec.model_validate(data)
+            continue
+        if "logogram_lens_training" in data:
+            LensTrainingSpec.model_validate(data)
+            continue
         if not set(data) <= set(Spec.model_fields):
             continue  # a prompt pair, or another kind of JSON
         merged = {**example, **data}
@@ -113,5 +122,11 @@ def test_the_specs_the_docs_show_are_valid(page: Path):
             "sae_feature" in json.dumps(data) or data.get("scope", {}).get("kind") == "features"
         )
         if uses_sae and merged.get("sae") is None:
-            merged["sae"] = {"repo": "an/sae", "path": "", "revision": None}
+            merged["sae"] = {
+                "repo": "an/sae",
+                "path": "",
+                "revision": None,
+                "source": "hub",
+                "sha256": None,
+            }
         Spec.model_validate(merged)

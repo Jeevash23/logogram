@@ -1,15 +1,31 @@
 // A thin JSON client. The session cookie (set by the launch URL) authenticates every request.
 
 import type {
+  ActivationsExported,
+  CorpusFormat,
+  CorpusImported,
+  CorpusListing,
+  CorpusPage,
+  CorpusTop,
+  DirectionListing,
+  HubDatasetFiles,
+  ReadPosition,
+  ReadSite,
+  Representations,
+  RowsSource,
+  TopUnit,
   AttentionData,
   BaselineReport,
   ChatTemplateSpec,
   ChatWrapped,
   LocalModel,
   Comparison,
+  DatasetChanged,
   DatasetCreated,
   DatasetDetail,
+  DeletionPlan,
   DeriveRequest,
+  DeviceCheck,
   EdgePlan,
   EdgeVerification,
   Environment,
@@ -25,7 +41,13 @@ import type {
   ModelStatus,
   SAECatalogue,
   SAEFit,
+  SAERef,
   SAEStatus,
+  SAETrainingSpec,
+  LensTrainingSpec,
+  TrainedLens,
+  TrainedSAE,
+  TrainingPlan,
   TokenFeatures,
   FeatureReport,
   FeatureWrites,
@@ -34,6 +56,7 @@ import type {
   PromptRecord,
   ProblemReport,
   RecentProject,
+  Reproduction,
   RobustnessChange,
   RunAnnotationsChange,
   RunDetail,
@@ -98,6 +121,30 @@ export interface AnalysisOptions {
   batch_size: number;
 }
 
+/** What every reading of activations states, and what it reads. */
+export interface RepresentationsRequest {
+  source: RowsSource;
+  site: ReadSite;
+  position: ReadPosition;
+  prepend_bos: boolean;
+  batch_size: number;
+  model?: ModelRef;
+}
+
+/** Where a unit is most active in a corpus: every choice that changes the answer. */
+export interface CorpusTopRequest {
+  corpus: string;
+  corpus_sha256: string | null;
+  unit: TopUnit;
+  texts: number | null;
+  max_tokens: number;
+  top_k: number;
+  context: number;
+  prepend_bos: boolean;
+  batch_size: number;
+  model?: ModelRef;
+}
+
 function errorMessage(data: unknown): string | null {
   if (!data || typeof data !== "object") return null;
   const record = data as { error?: unknown; detail?: unknown };
@@ -114,16 +161,24 @@ function errorMessage(data: unknown): string | null {
 export const PROJECT_SCOPED = [
   "/api/project",
   "/api/research",
+  "/api/directions",
+  "/api/corpora",
+  "/api/corpus",
+  "/api/representations",
+  "/api/activations",
   "/api/dataset",
   "/api/datasets/",
   "/api/tokenize",
   "/api/baseline",
   "/api/attention",
   "/api/predictions",
+  "/api/sae/load",
   "/api/sae/fit",
   "/api/sae/tokens",
   "/api/sae/feature",
   "/api/sae/writes",
+  "/api/saes/",
+  "/api/lenses",
   "/api/runs",
   "/api/drafts",
   "/api/compare",
@@ -207,9 +262,18 @@ export const api = {
   folders: (path?: string) =>
     get<FolderListing>(`/api/fs${path ? `?path=${encodeURIComponent(path)}` : ""}`),
   recent: () => get<RecentProject[]>("/api/projects/recent"),
+  /** Take a project out of the recent list (its folder is left as it is). */
+  forgetRecent: (path: string) => request<RecentProject[]>("DELETE", `/api/projects/recent?path=${encodeURIComponent(path)}`),
   createProject: (name: string, parent: string | null) =>
     post<ProjectInfo>("/api/projects", { name, parent }),
   openProject: (path: string) => post<ProjectInfo>("/api/projects/open", { path }),
+  /** Give the open project another name (its project.json; its folder keeps its name). */
+  renameProject: (name: string) => request<ProjectInfo>("PATCH", "/api/project", { name }),
+  /** What deleting the project in this folder would delete, and what stops it. */
+  deletionPlan: (path: string) => get<DeletionPlan>(`/api/projects/deletion?path=${encodeURIComponent(path)}`),
+  /** Delete the project in this folder for good, its name typed; the open project is closed first. */
+  deleteProject: (path: string, name: string) =>
+    request<RecentProject[]>("DELETE", `/api/projects?path=${encodeURIComponent(path)}&name=${encodeURIComponent(name)}`),
   examples: () => get<ExampleInfo[]>("/api/examples"),
   /** Copy a bundled example into the projects folder, once, and open it (a copy is never replaced). */
   openExample: (example: string) => post<ProjectInfo>("/api/projects/example", { example }),
@@ -233,6 +297,11 @@ export const api = {
     post<DatasetCreated>("/api/datasets/pair", body),
   /** Save a dataset's prompt pairs, some edited and some left out, as a new dataset. */
   deriveDataset: (body: DeriveRequest) => post<DatasetCreated>("/api/datasets/derive", body),
+  /** Give a dataset file another name; refused while a draft or a queued run names it. */
+  renameDataset: (name: string, newName: string) =>
+    post<DatasetChanged>(`/api/datasets/${encodeURIComponent(name)}/rename`, { name: newName }),
+  /** Delete a dataset file; runs that ran on it keep their own copy of its prompts. */
+  deleteDataset: (name: string) => request<DatasetChanged>("DELETE", `/api/datasets/${encodeURIComponent(name)}`),
   /** The metric decides whether answers of several tokens can be read. */
   tokenize: (body: { dataset?: string; index?: number; record?: PromptRecord; metric: MetricSpec } & AnalysisOptions) =>
     post<TokenStripData>("/api/tokenize", body),
@@ -244,6 +313,8 @@ export const api = {
     }>("/api/models/presets"),
   estimate: (body: { id: string; source?: "hub" | "local"; sha256?: string | null; revision?: string | null; dtype: Dtype; device: Device; process_weights: boolean }) =>
     post<EstimateResponse>("/api/models/estimate", body),
+  /** Whether a model can be loaded on this device here, and if not, why. */
+  checkDevice: (device: Device) => get<DeviceCheck>(`/api/models/device?device=${encodeURIComponent(device)}`),
   /** The models added from folders on this machine. */
   localModels: () => get<LocalModel[]>("/api/models/local"),
   /** Hash a model folder and add it under a name: a job, with progress in bytes. */
@@ -280,6 +351,43 @@ export const api = {
   headKinds: (body: { seed: number; sequences: number; length: number; bootstrap: number; ci: number } & AnalysisOptions) =>
     post<HeadKindsReport>("/api/heads/kinds", body),
   research: () => get<{ logogram_research: 1; notes: ResearchNote[] }>("/api/research"),
+  directions: () => get<DirectionListing[]>("/api/directions"),
+  /** Give a saved direction another name; runs that used it keep their copy. */
+  renameDirection: (name: string, to: string) => post<DirectionListing>(`/api/directions/${encodeURIComponent(name)}/rename`, { name: to }),
+  deleteDirection: (name: string) => request<{ ok: boolean }>("DELETE", `/api/directions/${encodeURIComponent(name)}`),
+  corpora: () => get<CorpusListing[]>("/api/corpora"),
+  /** A page of a corpus's texts: those containing `query`, a hundred at a time. */
+  corpus: (name: string, query = "", page = 0) =>
+    get<CorpusPage>(`/api/corpora/${encodeURIComponent(name)}?q=${encodeURIComponent(query)}&page=${page}`),
+  /** A corpus from a file's text, read as `format` says. */
+  importCorpus: (body: { name: string; text: string; filename: string; format: CorpusFormat; text_field: string; label_field: string | null; limit: number | null; overwrite?: boolean }) =>
+    post<CorpusImported>("/api/corpora/import", body),
+  /** A corpus from a dataset's prompts, labelled by side ("side"), a meta field ("meta:FIELD") or not. */
+  corpusFromPrompts: (body: { name: string; dataset: string; sides: "clean" | "corrupt" | "both"; label: string | null; limit: number | null; overwrite?: boolean }) =>
+    post<CorpusImported>("/api/corpora/import/dataset", body),
+  /** A Hugging Face dataset's files (one request to Hugging Face, when asked). */
+  hubDatasetFiles: (repo: string, revision: string | null) =>
+    get<HubDatasetFiles>(`/api/hub/dataset-files?repo=${encodeURIComponent(repo)}${revision ? `&revision=${encodeURIComponent(revision)}` : ""}`),
+  /** Download one file of a Hugging Face dataset and read it as a corpus: a job, with progress. */
+  importHubCorpus: (body: { name: string; repo: string; path: string; revision: string | null; split: "lines" | "paragraphs"; text_field: string; label_field: string | null; limit: number | null; overwrite?: boolean }) =>
+    post<Job>("/api/corpora/import/hub", body),
+  renameCorpus: (name: string, to: string) => post<CorpusListing>(`/api/corpora/${encodeURIComponent(name)}/rename`, { name: to }),
+  deleteCorpus: (name: string) => request<{ ok: boolean }>("DELETE", `/api/corpora/${encodeURIComponent(name)}`),
+  /** Where a unit is most active in a corpus. */
+  corpusTop: (body: CorpusTopRequest) => post<CorpusTop>("/api/corpus/top", body),
+  /** The principal components of the activations at a site over prompts or texts. */
+  representations: (body: RepresentationsRequest) => post<Representations>("/api/representations/pca", body),
+  /** Save a principal component, or the mean difference between two classes, as a direction. */
+  saveRepresentation: (
+    body: RepresentationsRequest & {
+      name: string;
+      save: { kind: "component"; component: number } | { kind: "mean_difference"; positive: string; negative: string };
+      overwrite?: boolean;
+    },
+  ) => post<DirectionListing>("/api/representations/direction", body),
+  /** Write the activations at some sites to activations/NAME.safetensors in the project. */
+  exportActivations: (body: Omit<RepresentationsRequest, "site"> & { sites: ReadSite[]; name: string; overwrite?: boolean }) =>
+    post<ActivationsExported>("/api/activations/export", body),
   saveNote: (value: NoteInput, edit?: { id: string; revision: number }) => edit
     ? request<ResearchNote>("PUT", `/api/research/${encodeURIComponent(edit.id)}`, { ...value, revision: edit.revision })
     : post<ResearchNote>("/api/research", value),
@@ -312,6 +420,11 @@ export const api = {
     post<{ run_id: string; path: string }>("/api/drafts", { spec, draft_id: draftId }),
   rerun: (id: string) =>
     post<{ run_id: string; job: Job }>(`/api/runs/${encodeURIComponent(id)}/rerun`),
+  /** Save what a probe or a learned subspace run found at one of its sites as a direction. */
+  saveRunDirection: (id: string, body: { site: number; name: string; row: number | null }) =>
+    post<DirectionListing>(`/api/runs/${encodeURIComponent(id)}/directions`, body),
+  /** Whether a rerun reproduced the run it reran, value by value. */
+  reproduction: (id: string) => get<Reproduction>(`/api/runs/${encodeURIComponent(id)}/reproduction`),
   robustness: (id: string, change: RobustnessChange) =>
     post<{ run_id: string; job: Job }>(`/api/runs/${encodeURIComponent(id)}/robustness`, change),
   verify: (id: string, top: number) =>
@@ -334,7 +447,18 @@ export const api = {
   saeCatalogue: (model: string, query: string, limit = 100) =>
     get<SAECatalogue>(`/api/sae/catalogue?model=${encodeURIComponent(model)}&q=${encodeURIComponent(query)}&limit=${limit}`),
   saeFolders: (repo: string) => get<{ repo: string; revision: string; folders: string[] }>(`/api/sae/folders?repo=${encodeURIComponent(repo)}`),
-  loadSae: (ref: { repo: string; path: string; revision: string | null }) => post<Job>("/api/sae/load", ref),
+  loadSae: (ref: SAERef) => post<Job>("/api/sae/load", ref),
+  /** The SAEs trained in the project, as their training recorded them. */
+  projectSaes: () => get<TrainedSAE[]>("/api/saes/project"),
+  /** What training this SAE on the loaded model would take; with measure, the time timed here. */
+  planSae: (spec: SAETrainingSpec, measure = true) => post<TrainingPlan>("/api/saes/plan", { spec, measure }),
+  /** Train an SAE in the project: a job whose progress carries the loss curve. */
+  trainSae: (spec: SAETrainingSpec) => post<Job>("/api/saes/train", { spec }),
+  /** The tuned lenses trained in the project, each saying whether it reads the loaded model. */
+  lenses: () => get<TrainedLens[]>("/api/lenses"),
+  planLens: (spec: LensTrainingSpec, measure = true) => post<TrainingPlan>("/api/lenses/plan", { spec, measure }),
+  /** Train a tuned lens in the project, as a job. */
+  trainLens: (spec: LensTrainingSpec) => post<Job>("/api/lenses/train", { spec }),
   unloadSae: () => post<SAEStatus>("/api/sae/unload"),
   saeFit: (dataset: string, options: Partial<AnalysisOptions>) => post<SAEFit>("/api/sae/fit", { dataset, ...options }),
   saeTokens: (dataset: string, index: number, which: "clean" | "corrupt", options: Partial<AnalysisOptions>) =>

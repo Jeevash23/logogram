@@ -34,6 +34,9 @@ from logogram.spec import GraphScope, Spec
 from logogram.stats import compute_site_stats, resample_counts
 
 CURVE = {"counts": [1, 3, 10, 30], "patch": "chosen", "control": {"seed": 0, "draws": 2}}
+# GPT-2 and Pythia give each head its own key and value; Llama and Qwen 2 share each key and
+# value among a group of query heads (grouped-query attention).
+EDGE_ARCHS = ["gpt2", "gpt_neox", "llama", "qwen2"]
 
 
 def edge_spec(spec_factory: Any, **experiment: Any) -> Spec:
@@ -78,7 +81,7 @@ def smooth_backend(tmp_path_factory: Any) -> Any:
     return get
 
 
-def _info(n_layers: int, n_heads: int, structure: str) -> ModelInfo:
+def _info(n_layers: int, n_heads: int, structure: str, n_kv: int | None = None) -> ModelInfo:
     return ModelInfo(
         id="shape",
         revision=None,
@@ -98,7 +101,7 @@ def _info(n_layers: int, n_heads: int, structure: str) -> ModelInfo:
         site_kinds=("resid_pre", "resid_post", "attn_out", "mlp_out", "head"),
         backend="test",
         backend_version="0",
-        extra={"block_structure": structure},
+        extra={"block_structure": structure, "n_key_value_heads": n_kv or n_heads},
     )
 
 
@@ -119,6 +122,40 @@ def test_the_graph_has_the_edges_of_the_literature() -> None:
         assert len(build_graph(_info(12, 12, "sequential"), scope)) == count_edges(
             12, 12, False, layers, logits
         )
+
+
+def test_keys_and_values_are_key_value_heads_with_grouped_query_attention() -> None:
+    """With grouped-query attention, a layer's keys and values are its key/value heads': each
+    receives edges once, for every query head of its group, and is named "KV". Without it, the
+    graph is as it was."""
+    shape = (12, 12, False, None, True)
+    grouped = build_graph(_info(12, 12, "sequential", n_kv=4), GraphScope(layers=None, logits=True))
+    assert len(grouped) == count_edges(*shape, n_kv_heads=4) < count_edges(*shape)
+    # 8 of the 12 heads' keys and values go: each was read by every earlier node.
+    before = sum(1 + layer * 13 for layer in range(12))
+    assert count_edges(*shape) - len(grouped) == 2 * 8 * before
+    inputs = [(r.kind, r.layer, r.head, r.label) for r in grouped.receivers if r.layer == 2]
+    # Each group's queries, then its key/value head's key and value; then the MLP.
+    assert inputs[:5] == [
+        ("q", 2, 0, "L2 H0 q"),
+        ("q", 2, 1, "L2 H1 q"),
+        ("q", 2, 2, "L2 H2 q"),
+        ("k", 2, 0, "L2 KV0 k"),
+        ("v", 2, 0, "L2 KV0 v"),
+    ]
+    assert inputs[-1][0] == "mlp" and len(inputs) == 12 + 2 * 4 + 1
+    for layers, logits in (([0], False), ([3, 4], True), ([11], True)):
+        scope = GraphScope(layers=layers, logits=logits)
+        assert len(build_graph(_info(12, 12, "sequential", n_kv=3), scope)) == count_edges(
+            12, 12, False, layers, logits, n_kv_heads=3
+        )
+    edge = grouped.edge(next(e for e in range(len(grouped)) if grouped.label(e).endswith("KV3 v")))
+    assert edge.receiver.model_dump() == {"kind": "head", "layer": 0, "head": 3, "input": "v"}
+    # The same order and the same names as before without grouped-query attention.
+    plain = build_graph(_info(3, 2, "sequential", n_kv=2), GraphScope(layers=None, logits=True))
+    assert [r.label for r in plain.receivers[:6]] == [
+        "L0 H0 q", "L0 H0 k", "L0 H0 v", "L0 H1 q", "L0 H1 k", "L0 H1 v"
+    ]  # fmt: skip
 
 
 def test_every_edge_runs_forward_and_is_named() -> None:
@@ -217,8 +254,11 @@ def test_the_model_is_measured_before_its_edges_are(tiny_backend: Any, arch_back
     assert checks["stream"] == 0
     neox = arch_backend("gpt_neox").edge_checks()  # its MLPs read the stream its heads read
     assert neox["separate"] <= 1e-4 and neox["stream"] == 0
-    with pytest.raises(BackendError, match="shares each key and value"):
-        arch_backend("llama").edge_checks()
+    # Keys and values shared among query heads: each key/value head reads its own copy.
+    for arch in ("llama", "qwen2"):
+        grouped = arch_backend(arch).edge_checks()
+        assert grouped["split"] <= 1e-4 and grouped["separate"] <= 1e-4, arch
+        assert grouped["stream"] == 0, arch
     for arch in ("gemma2", "olmo2"):  # they normalize after combining their heads
         with pytest.raises(BackendError, match="don't add up"):
             arch_backend(arch).edge_checks()
@@ -294,7 +334,7 @@ class _Nudge(EdgePatcher):
         return self.value if (receiver, layer) == self.target else None
 
 
-@pytest.mark.parametrize("arch", ["gpt2", "gpt_neox"])
+@pytest.mark.parametrize("arch", EDGE_ARCHS)
 def test_the_gradient_at_each_receiver_s_own_input_matches_finite_differences(
     smooth_backend: Any, project: Any, arch: str
 ) -> None:
@@ -383,7 +423,7 @@ def test_the_gradient_at_each_receiver_s_own_input_matches_finite_differences(
 # -- edge patching ---------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("arch", ["gpt2", "gpt_neox"])
+@pytest.mark.parametrize("arch", EDGE_ARCHS)
 def test_patching_every_edge_is_the_source_run_and_none_the_receiver_run(
     tiny_backend: Any, arch_backend: Any, project: Any, arch: str
 ) -> None:
@@ -415,18 +455,24 @@ def test_patching_every_edge_is_the_source_run_and_none_the_receiver_run(
     assert float((patched(into_logits) - clean_logits).abs().max()) < 1e-5 * scale
 
 
-@pytest.mark.parametrize("arch", ["gpt2", "gpt_neox"])
+@pytest.mark.parametrize("arch", EDGE_ARCHS)
 def test_one_edge_patched_is_path_patching_of_that_edge(
     tiny_backend: Any, arch_backend: Any, project: Any, spec_factory: Any, arch: str
 ) -> None:
     """Edge patching and path patching (two passes, everything held) are separate code paths; for
-    one edge they measure the same thing."""
+    one edge they measure the same thing. With grouped-query attention, an edge into a key or
+    value reaches its key/value head, which both code paths patch for every query head of its
+    group."""
     backend = tiny_backend if arch == "gpt2" else arch_backend(arch)
     prompts = _prompts(backend, project)
     graph = build_graph(backend.info, GraphScope(layers=None, logits=True))
-    wanted = {"embeddings → L1 H2 q", "L0 H1 → L1 H0 k", "L0 H3 → L1 H3 v", "L0 MLP → L1 MLP"}
-    wanted |= {"L1 H2 → logits", "embeddings → L0 MLP", "L1 MLP → logits"}
-    if arch == "gpt2":
+    if arch in ("llama", "qwen2"):  # 4 query heads, 2 key/value heads
+        wanted = {"embeddings → L1 H2 q", "L0 H1 → L1 KV0 k", "L0 H3 → L1 KV1 v"}
+        wanted |= {"embeddings → L1 KV1 k", "L0 MLP → L1 KV0 v"}
+    else:
+        wanted = {"embeddings → L1 H2 q", "L0 H1 → L1 H0 k", "L0 H3 → L1 H3 v"}
+    wanted |= {"L0 MLP → L1 MLP", "L1 H2 → logits", "embeddings → L0 MLP", "L1 MLP → logits"}
+    if arch != "gpt_neox":
         wanted.add("L1 H0 → L1 MLP")  # a sequential layer's MLP reads its own heads
     chosen = [e for e in range(len(graph)) if graph.label(e) in wanted]
     assert len(chosen) == len(wanted)
@@ -478,7 +524,7 @@ def test_no_difference_estimates_no_effect(
     np.testing.assert_allclose(result.delta, 0.0, atol=1e-12)
 
 
-@pytest.mark.parametrize("arch", ["gpt2", "gpt_neox"])
+@pytest.mark.parametrize("arch", EDGE_ARCHS)
 def test_each_estimate_is_the_slope_of_patching_its_edge(
     smooth_backend: Any, project: Any, spec_factory: Any, arch: str
 ) -> None:

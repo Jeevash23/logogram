@@ -72,10 +72,38 @@ shows the gap before anything runs.
 **The change itself** (the map's other view, "change in the logit difference" and so on) is
 reported too, in the metric's own units, unnormalized.
 
+## Readouts
+
+A **readout** (`readout`) reads a value inside the model instead of its output, at one token of
+each prompt (the last, an index or a labelled position):
+
+* **a neuron**: one MLP neuron's activation after its nonlinearity (for a gated MLP, the gate's
+  activation times the up projection);
+* **a direction**: an activation's component along a [saved direction](directions.md) of one
+  dimension, its dot product with the unit vector, at a residual stream site, attention output or
+  MLP output and a layer you choose;
+* **an SAE feature**: one feature of the spec's [SAE](sae-features.md), as the SAE encodes the
+  activation it reads.
+
+Patching and ablation then ask what drives that value: which earlier heads, MLPs and positions
+write the neuron, the direction or the feature. Effects are normalized like any other metric's,
+so 1 means the intervention moves the value as far as switching to the other prompt does. A site
+later in the model than the value (a later layer, or a later part of the same layer) can't change
+it, so its effect is 0, and the run says so.
+
+Readouts work with methods that run the model forward (activation patching, ablation and subspace
+patching), on sites rather than on SAE features or sets of sites. Attribution patching and the
+other gradient methods read the model's output.
+
 ## In a spec
 
 ```json
 "metric": {"kind": "logit_diff", "normalization": "dataset_gap"}
+```
+
+```json
+"metric": {"kind": "readout", "unit": {"kind": "neuron", "layer": 9, "neuron": 652},
+           "position": {"kind": "last"}, "normalization": "dataset_gap"}
 ```
 
 ```json

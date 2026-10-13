@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from logogram.schema import (
     ContinuationsFile,
@@ -68,7 +68,9 @@ class ModelStatus(_Out):
 
 class JobInfo(_Out):
     id: str
-    kind: Literal["load_model", "load_sae", "run", "add_model"]
+    kind: Literal[
+        "load_model", "load_sae", "run", "add_model", "import_corpus", "train_sae", "train_lens"
+    ]
     title: str
     status: Literal["running", "finished", "failed", "cancelled"]
     run_id: str | None
@@ -125,11 +127,261 @@ class ProjectInfo(_Out):
     datasets: list[DatasetListing]
 
 
+class DirectionListing(_Out):
+    """A direction saved in the project (logogram.directions), or why it can't be read."""
+
+    name: str
+    error: str | None
+    logogram_direction: int | None = None
+    model: dict[str, Any] | None = None
+    site: dict[str, Any] | None = None
+    width: int | None = None
+    dimensions: int | None = None
+    made_by: dict[str, Any] | None = None
+    created: str | None = None
+    sha256: str | None = None
+    norms: list[float] | None = None
+    notes: str | None = None
+    path: str | None = None
+
+
+class CorpusListing(_Out):
+    """A corpus in the project (logogram.corpora), or why it can't be read."""
+
+    name: str
+    path: str
+    error: str | None
+    n: int | None = None
+    sha256: str | None = None
+    labels: list[str] | None = None
+    source: dict[str, Any] | None = None
+    created: str | None = None
+
+
+class CorpusText(_Out):
+    """One text on a page of a corpus: the start of it, when it is long (``length`` says)."""
+
+    index: int
+    text: str
+    length: int
+    label: str | None
+    id: str | None
+    meta: dict[str, Any] | None
+
+
+class CorpusPage(_Out):
+    """A page of a corpus's texts, those a search finds (logogram.corpora.corpus_page)."""
+
+    name: str
+    path: str
+    sha256: str
+    n: int
+    labels: list[str]
+    source: dict[str, Any] | None
+    created: str | None
+    query: str
+    matches: int
+    page: int
+    pages: int
+    size: int
+    start: int
+    texts: list[CorpusText]
+
+
+class CorpusImported(_Out):
+    """A corpus just written, and how many rows were left out for having no text."""
+
+    name: str
+    path: str
+    sha256: str
+    n: int
+    labels: list[str]
+    skipped: int
+    source: dict[str, Any] | None
+
+
+class HubFile(_Out):
+    path: str
+    size: int
+    # Whether Logogram reads its format (Parquet, JSON Lines, JSON, CSV, TSV or text).
+    readable: bool
+
+
+class HubDatasetFiles(_Out):
+    """A Hugging Face dataset's files at the exact commit its revision resolves to."""
+
+    repo: str
+    revision: str
+    files: list[HubFile]
+
+
+class TopExample(_Out):
+    """A token where a unit is active, with a window of its text: ``tokens`` from token ``start``,
+    and the unit's value at each (null where it isn't counted, at the beginning-of-sequence
+    token). ``open`` is the text up to the window's end, when Your text can read it."""
+
+    text: int
+    id: str | None
+    label: str | None
+    position: int
+    value: float
+    start: int
+    tokens: list[str]
+    values: list[float | None]
+    open: str | None
+
+
+class Histogram(_Out):
+    edges: list[float]
+    counts: list[int]
+
+
+class CorpusTop(_Out):
+    """Where a unit is most active in a corpus (logogram.top_activations), with every choice
+    that made it."""
+
+    corpus: dict[str, Any]
+    unit: dict[str, Any]
+    description: str
+    signed: bool
+    settings: dict[str, Any]
+    texts_read: int
+    truncated: int
+    tokens: int
+    first_counted: int
+    active: int
+    active_share: float
+    mean: float
+    min: float
+    max: float
+    histogram: Histogram
+    top: list[TopExample]
+    bottom: list[TopExample] | None
+    notes: list[str]
+
+
+class RepresentationPoint(_Out):
+    row: int
+    index: int
+    side: str | None
+    mark: str | None
+    text: str
+    coords: list[float]
+
+
+class Representations(_Out):
+    """The principal components of the activations at a site (logogram.representations)."""
+
+    source: dict[str, Any]
+    position: dict[str, Any]
+    prepend_bos: bool
+    batch_size: int
+    site: dict[str, Any]
+    n: int
+    width: int
+    components: int
+    explained: list[float]
+    variances: list[float]
+    total_variance: float
+    marks: list[str]
+    points: list[RepresentationPoint]
+    description: str
+
+
+class ActivationsExported(_Out):
+    """Activations written to the project's activations folder."""
+
+    name: str
+    path: str
+    json_path: str
+    n: int
+    sites: list[str]
+    sha256: str
+    bytes: int
+
+
+class TrainedSAEListing(_Out):
+    """An SAE trained in the project (logogram.sae_training), as its training recorded it, or why
+    it can't be read."""
+
+    name: str
+    path: str
+    error: str | None
+    sha256: str | None = None
+    site: str | None = None
+    layer: int | None = None
+    d_in: int | None = None
+    d_sae: int | None = None
+    k: int | None = None
+    model: dict[str, Any] | None = None
+    corpus: dict[str, Any] | None = None
+    steps: int | None = None
+    created: str | None = None
+    held_out: dict[str, Any] | None = None
+    spec: dict[str, Any] | None = None
+
+
+class LensListing(_Out):
+    """A tuned lens trained in the project (logogram.lenses), as its training recorded it, whether
+    it reads the loaded model (and if not why), or why it can't be read."""
+
+    name: str
+    path: str
+    error: str | None
+    sha256: str | None = None
+    layers: list[int] | None = None
+    width: int | None = None
+    model: dict[str, Any] | None = None
+    corpus: dict[str, Any] | None = None
+    steps: int | None = None
+    created: str | None = None
+    held_out: dict[str, Any] | None = None
+    spec: dict[str, Any] | None = None
+    fits: bool | None = None
+    reason: str | None = None
+
+
+class TrainingPlan(_Out):
+    """What training an SAE or a lens would take, or why it can't train (``refusal``)."""
+
+    refusal: str | None
+    layers: list[int] | None = None
+    texts: dict[str, Any] | None = None
+    tokens: dict[str, Any] | None = None
+    memory: dict[str, Any] | None = None
+    seconds: dict[str, float] | None = None
+
+
 class RecentProject(_Out):
     path: str
     name: str
     opened: str | None
-    modified: str
+    # None when the project can't be read now.
+    modified: str | None
+    # Its folder isn't there now (or holds no project Logogram can read): kept in the list until
+    # it is removed from it, with ``problem`` saying why.
+    missing: bool = False
+    problem: str | None = None
+
+
+class DeletionPlanOut(_Out):
+    """What deleting a project would delete, and what stops it now (see
+    logogram.project.DeletionPlan)."""
+
+    path: str
+    name: str
+    runs: int
+    drafts: int
+    datasets: int
+    queued: int
+    # The folder's entries Logogram doesn't make there: while there are any, it isn't deleted.
+    others: list[str]
+    # Why it can't be deleted now: a run in progress in it, its queue being run.
+    busy: str | None
+    # Why it can't be deleted (others, or busy), and what to do; None when it can.
+    problem: str | None
+    # What deleting it deletes, in words.
+    text: str
 
 
 class ExampleInfo(_Out):
@@ -257,6 +509,13 @@ class DatasetCreated(_Out):
     name: str
     path: str
     n: int
+
+
+class DatasetChanged(_Out):
+    """A dataset file renamed (its new name and path) or deleted (the ones it had)."""
+
+    name: str
+    path: str
 
 
 class IOITemplateOut(_Out):
@@ -430,8 +689,9 @@ class MethodsText(_Out):
 
 
 class EdgePlan(_Out):
-    """What an edge attribution spec would do on the loaded model, before it runs: the graph's
-    size, the passes and memory a run takes, and why it would be refused (null when it
+    """What an edge attribution or ACDC spec would do on the loaded model, before it runs: the
+    graph's size, the passes and memory a run takes (for ACDC, also how long it may take here:
+    ``cost.seconds``, from one pass timed), and why it would be refused (null when it
     wouldn't)."""
 
     n_edges: int | None
@@ -592,6 +852,18 @@ class PredictionLayer(_Out):
     answer_prob: float
     distractor_prob: float
     logit_diff: float
+    # How the layer was read: through a tuned lens's translator, or as the logit lens reads it.
+    readout: Literal["logit_lens", "tuned_lens"] = "logit_lens"
+
+
+class PredictionLens(_Out):
+    """The tuned lens a report read, as it was: its name, hash, layers, width and model."""
+
+    name: str
+    sha256: str
+    layers: list[int]
+    width: int
+    model: dict[str, Any]
 
 
 class PredictionReport(_Out):
@@ -599,6 +871,8 @@ class PredictionReport(_Out):
     position: int
     tokens: list[str]
     settings: PredictionSettings
+    # The tuned lens read, with the tuned_lens method; None for the logit lens.
+    lens: PredictionLens | None = None
     layers: list[PredictionLayer]
     batch_members: list[int]
     answer: str
@@ -606,6 +880,15 @@ class PredictionReport(_Out):
     # How the lens reads the answer: one token, a set (summed), or a continuation's first token.
     answer_reading: Literal["token", "set", "first_token"] = "token"
     issues: list[PromptIssue]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _before_lenses(cls, data: Any) -> Any:
+        # predictions.json written before tuned lenses: the logit lens, with no lens to name.
+        settings = data.get("settings") if isinstance(data, dict) else None
+        if isinstance(settings, dict) and "lens" not in settings:
+            data = {**data, "settings": {**settings, "lens": None}}
+        return data
 
 
 class Presets(_Out):
@@ -668,6 +951,30 @@ class EstimateOut(_Out):
     supported: bool
     support_note: str | None
     estimate: MemoryEstimateOut
+
+
+class Reproduction(_Out):
+    """Whether a rerun reproduced the run it reran, value by value (see
+    logogram.compare.reproduction_of)."""
+
+    run_id: str
+    original: str
+    # Every per-prompt value matches exactly.
+    identical: bool
+    rows: int
+    original_rows: int
+    # The largest change in a per-prompt value; None when the rows differ.
+    largest: float | None
+    text: str
+
+
+class DeviceCheck(_Out):
+    """Whether a device is there to load a model on: what it resolves to here, or why it isn't
+    there and what to choose instead."""
+
+    device: str
+    resolved: str | None
+    error: str | None
 
 
 # -- published SAEs ----------------------------------------------------------------------------

@@ -65,6 +65,15 @@ export function duration(seconds: number | null | undefined): string {
   return `${m} min ${s.toString().padStart(2, "0")} s`;
 }
 
+/** An estimated duration, roughly, in words: "about 40 seconds", "about 3 minutes", "about 2.5
+ * hours" (as src/logogram/acdc.py duration_text says it). */
+export function roughDuration(seconds: number): string {
+  if (seconds < 90) return `about ${plural(Math.max(1, Math.round(seconds)), "second")}`;
+  if (seconds < 90 * 60) return `about ${Math.round(seconds / 60)} minutes`;
+  const hours = seconds / 3600;
+  return `about ${hours < 10 ? hours.toFixed(1) : Math.round(hours)} hours`;
+}
+
 export function ago(iso: string | null | undefined, now = Date.now()): string {
   if (!iso) return "";
   const t = Date.parse(iso);

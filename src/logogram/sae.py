@@ -30,14 +30,28 @@ FIT_CHUNK = 4096
 
 @dataclass
 class SAE:
-    """A loaded SAE, its parameters on the model's device, and where it came from."""
+    """A loaded SAE, its parameters on the model's device, and where it came from: a repository,
+    folder and revision on Hugging Face (``source`` "hub"), or for one trained in the project
+    (``source`` "project") its name as ``repo``, its folder (saes/NAME) as ``path``, no revision,
+    and the hash of its files as ``sha256``."""
 
     repo: str
     path: str
-    revision: str
+    revision: str | None
     params: SAEParams
     device: str = "cpu"
     fit: dict[str, Any] = field(default_factory=dict)
+    source: str = "hub"
+    sha256: str | None = None
+    # For an SAE trained in the project: the model it was trained on (logogram.training's
+    # model_of) and the held-out measurements its training recorded.
+    trained: dict[str, Any] | None = None
+    # What a reader should know before trusting it here, such as that it was trained on another
+    # model; empty when nothing is known against it.
+    warnings: list[str] = field(default_factory=list)
+    # The folder of the project an SAE trained in a project was read from, to tell it from one of
+    # the same name in another project. Never written anywhere: it names this machine's folders.
+    project: str | None = field(default=None, repr=False)
 
     @property
     def site(self) -> str:
@@ -83,12 +97,26 @@ class SAE:
         self.device = device
         return self
 
+    def ref(self) -> dict[str, Any]:
+        """The SAE as a spec names it (its ``sae``), pinned to the files loaded."""
+        return {
+            "repo": self.repo,
+            "path": self.path,
+            "revision": self.revision,
+            "source": self.source,
+            "sha256": self.sha256,
+        }
+
     def describe(self) -> dict[str, Any]:
         p = self.params
         return {
             "repo": self.repo,
             "path": self.path,
             "revision": self.revision,
+            "source": self.source,
+            "sha256": self.sha256,
+            "trained": self.trained,
+            "warnings": list(self.warnings),
             "site": p.site,
             "layer": p.layer,
             "d_in": p.d_in,
@@ -240,11 +268,17 @@ def load_sae(
     """Download (once) and read a published SAE at an exact revision, on ``device``. An SAE that
     SAELens's registry reads with settings its own configuration doesn't state (as the bundled
     catalogue records) is refused before anything is downloaded: its files alone don't say what
-    it computes."""
+    it computes. An SAE trained in the project is read from the project instead, by
+    :func:`logogram.sae_training.load_project_sae`."""
     from logogram.backends.base import BackendError
     from logogram.backends.catalogue import registry_refusal
     from logogram.backends.saes import download_sae, read_sae
 
+    if ref.source == "project":
+        raise BackendError(
+            f"The SAE {ref.repo} was trained in a project: load it from that project's "
+            f"{ref.path} folder."
+        )
     reason = registry_refusal(ref.repo, ref.path)
     if reason is not None:
         raise BackendError(reason)
@@ -253,10 +287,18 @@ def load_sae(
     return SAE(repo=ref.repo, path=ref.path, revision=revision, params=params).to(device)
 
 
-def sae_matches(sae: SAE | None, ref: SAERef) -> bool:
+def sae_matches(sae: SAE | None, ref: SAERef, project: Any = None) -> bool:
+    """Whether the loaded SAE is the one ``ref`` names: from the same place, and the same files
+    (the same revision of a published one, the same hash of one trained in the project), when
+    ``ref`` pins them. An SAE trained in a project matches only in ``project`` (when given): two
+    projects can each have an SAE of the same name."""
+    if sae is None or sae.source != ref.source:
+        return False
+    if ref.source == "project":
+        here = project is None or sae.project == str(project.root)
+        return here and sae.repo == ref.repo and (ref.sha256 is None or ref.sha256 == sae.sha256)
     return (
-        sae is not None
-        and sae.repo == ref.repo
+        sae.repo == ref.repo
         and sae.path.strip("/") == ref.path.strip("/")
         and (ref.revision is None or ref.revision == sae.revision)
     )

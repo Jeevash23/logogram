@@ -240,7 +240,7 @@ MESSAGES = [
     "'s own forward pass gives values that aren't finite numbers (it overflows), so its "
     "predictions can't be checked.",
     "Load it in bfloat16 or float32, which have a wider range than float16.",
-    "The spec asks for CUDA, but PyTorch can't see a CUDA GPU here.",
+    "CUDA was chosen, but PyTorch can't see a CUDA GPU here.",
     "while its weights are processed",
     "Choose a smaller model, a 16-bit dtype or another device.",
     "The run ran out of",
@@ -251,7 +251,8 @@ MESSAGES = [
     "doesn't cover any token.",
     "This model's tokenizer has no beginning-of-sequence token. Set tokenization.prepend_bos to "
     "false in the spec.",
-    "The spec asks for Apple's MPS, which isn't available here. Set model.device to auto or cpu.",
+    "Apple's MPS was chosen, but it isn't available here. Choose the device auto or cpu "
+    "(model.device in a spec).",
     "Python is running under Rosetta",
     "Apple GPU (MPS) unavailable",
     "a path inside the project, written with forward slashes and without '..', such as "

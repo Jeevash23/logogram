@@ -3,6 +3,7 @@ import { useState } from "react";
 
 import { api } from "../api/client";
 import { FolderPicker } from "./FolderPicker";
+import { DeleteDatasetDialog, DeleteProjectDialog, RenameDatasetDialog, RenameProjectDialog, type DatasetTarget } from "./ManageDialogs";
 import { Icon, Spinner, Tip, menuClasses } from "./ui";
 import { modelName, useAnalysisContext } from "../lib/hooks";
 import { pct, plural } from "../lib/format";
@@ -17,6 +18,8 @@ export const SHIFT = isMac ? "⇧" : "Shift";
 export function ProjectMenu() {
   const project = useStore((st) => st.project);
   const [picker, setPicker] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [deleting, setDeleting] = useState<{ path: string; name: string } | null>(null);
   const guard = useStore((st) => st.guard);
   const enter = useStore((st) => st.enterProject);
 
@@ -42,6 +45,9 @@ export function ProjectMenu() {
               System check
             </DropdownMenu.Item>
             <DropdownMenu.Separator className={menuClasses.separator} />
+            <DropdownMenu.Item className={menuClasses.item} onSelect={() => setRenaming(true)}>
+              Rename project…
+            </DropdownMenu.Item>
             <DropdownMenu.Item
               className={menuClasses.item}
               onSelect={async () => {
@@ -51,9 +57,18 @@ export function ProjectMenu() {
             >
               Close project
             </DropdownMenu.Item>
+            <DropdownMenu.Item
+              className={menuClasses.item}
+              disabled={!project}
+              onSelect={() => project && setDeleting({ path: project.path, name: project.name })}
+            >
+              Delete project…
+            </DropdownMenu.Item>
           </DropdownMenu.Content>
         </DropdownMenu.Portal>
       </DropdownMenu.Root>
+      <RenameProjectDialog open={renaming} onOpenChange={setRenaming} />
+      <DeleteProjectDialog target={deleting} onOpenChange={(open) => !open && setDeleting(null)} />
       <FolderPicker
         open={picker}
         onOpenChange={setPicker}
@@ -129,7 +144,11 @@ export function DatasetChip() {
   const setView = useStore((st) => st.setView);
   const datasets = project?.datasets ?? [];
   const current = datasets.find((d) => d.path === datasetPath);
+  const [renaming, setRenaming] = useState<DatasetTarget | null>(null);
+  const [deleting, setDeleting] = useState<DatasetTarget | null>(null);
+  const target = current ? { path: current.path, name: current.name, n: current.n } : null;
   return (
+    <>
     <DropdownMenu.Root>
       <DropdownMenu.Trigger className={`${s.chip} ${current ? "" : s.chipEmpty}`}>
         <Icon name="file" size={14} />
@@ -159,8 +178,21 @@ export function DatasetChip() {
           <DropdownMenu.Item className={menuClasses.item} onSelect={() => setView("prompts")}>
             Set up prompts…
           </DropdownMenu.Item>
+          {target && (
+            <>
+              <DropdownMenu.Item className={menuClasses.item} onSelect={() => setRenaming(target)}>
+                Rename {target.name}…
+              </DropdownMenu.Item>
+              <DropdownMenu.Item className={menuClasses.item} onSelect={() => setDeleting(target)}>
+                Delete {target.name}…
+              </DropdownMenu.Item>
+            </>
+          )}
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
+    <RenameDatasetDialog target={renaming} onOpenChange={(open) => !open && setRenaming(null)} />
+    <DeleteDatasetDialog target={deleting} onOpenChange={(open) => !open && setDeleting(null)} />
+    </>
   );
 }

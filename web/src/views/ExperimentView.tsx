@@ -7,11 +7,14 @@ import { capitalize, count, plural, shortRevision } from "../lib/format";
 import { modelName } from "../lib/hooks";
 import { EVERYTHING, SET_SITE_KINDS } from "../lib/circuits";
 import { KIND_SHORT, parseHeadQuery, queryHeadsOf, queryHeadsText } from "../lib/sites";
-import { buildSpec, carriedBy, datasetFacts, lastInstead, parseCounts, parseStrengths, savedDifferences, unlinedReason, unevenPairsText, usesFeatures } from "../lib/buildSpec";
+import { buildSpec, carriedBy, datasetFacts, lastInstead, parseCounts, parseStrengths, parseThreshold, savedDifferences, unlinedReason, unevenPairsText, usesFeatures } from "../lib/buildSpec";
+import { metricWords } from "../lib/metrics";
 import { useEdgePlan, type EdgePlanState } from "../lib/edgePlan";
-import { edgeLabel, graphText, parseLayers, receiverLabel, receiverWords, saeWritesText, scopeFor, scopeShort, siteText, steerSiteOf, suggestName, workload } from "../lib/spec";
+import { edgeLabel, graphText, parseLayers, receiverLabel, receiverWords, saeName, saeRefOf, saeWritesText, scopeFor, scopeShort, sharesKeys, siteText, steerSiteOf, suggestName, workload } from "../lib/spec";
 import { useStore, type FormState } from "../store/app";
 import { ChatTemplateSettings } from "./ChatTemplateSettings";
+import { DirectionPicker } from "./DirectionPicker";
+import { DASSettings, ProbeSettings } from "./ProbeSettings";
 import { MetricSettings } from "./MetricSettings";
 import { ClusterChooser } from "./StatisticsSettings";
 import { SiteSetsEditor } from "./SiteSetsEditor";
@@ -21,35 +24,71 @@ import e from "./ExperimentView.module.css";
 
 const STREAM_KINDS: StreamKind[] = ["resid_pre", "resid_mid", "resid_post", "attn_out", "mlp_out"];
 
-const METHODS: { value: ExperimentKind; title: string; detail: string }[] = [
-  { value: "activation_patching", title: "Activation patching", detail: "Copy an activation from the other prompt of each pair." },
-  { value: "ablation", title: "Ablation", detail: "Replace an activation with a baseline you choose." },
+// The methods, grouped by the question each answers.
+const LOCATE = "Where is it computed?";
+const TRACE = "How does it flow?";
+const REPRESENT = "What does a site represent?";
+const STEER = "What does adding a direction do?";
+
+const METHODS: { value: ExperimentKind; title: string; detail: string; group: string }[] = [
+  { value: "activation_patching", title: "Activation patching", detail: "Copy an activation from the other prompt of each pair.", group: LOCATE },
+  { value: "ablation", title: "Ablation", detail: "Replace an activation with a baseline you choose.", group: LOCATE },
   {
     value: "attribution_patching",
     title: "Attribution patching",
     detail: "Estimate patching at every site from gradients, then verify the strongest.",
+    group: LOCATE,
   },
   {
     value: "direct_logit_attribution",
     title: "Direct logit attribution",
     detail: "Split the logit difference into what each component writes directly. No intervention.",
+    group: LOCATE,
   },
   {
     value: "path_patching",
     title: "Path patching",
     detail: "Patch a component's effect through chosen receivers only, holding the other heads.",
-  },
-  {
-    value: "steering",
-    title: "Steering",
-    detail: "Add the mean clean–corrupt difference or an SAE feature at several strengths, against a random control.",
+    group: TRACE,
   },
   {
     value: "edge_attribution",
     title: "Edge attribution",
     detail: "Estimate every edge between components from gradients, then patch the strongest as a circuit.",
+    group: TRACE,
+  },
+  {
+    value: "acdc",
+    title: "Circuit discovery (ACDC)",
+    detail: "Remove the edges between components one at a time, keeping those whose removal changes the metric.",
+    group: TRACE,
+  },
+  {
+    value: "probe",
+    title: "Linear probe",
+    detail: "Train a probe at each site to read a label, and measure it on held-out pairs. Reads; doesn't intervene.",
+    group: REPRESENT,
+  },
+  {
+    value: "das",
+    title: "Learned subspace (DAS)",
+    detail: "Learn a few directions at each site whose patching carries the effect, measured on held-out pairs.",
+    group: REPRESENT,
+  },
+  {
+    value: "subspace_patching",
+    title: "Subspace patching",
+    detail: "Patch only the component of each site along a saved direction: how much of the effect it carries.",
+    group: REPRESENT,
+  },
+  {
+    value: "steering",
+    title: "Steering",
+    detail: "Add the mean clean–corrupt difference, an SAE feature or a saved direction at several strengths, against a random control.",
+    group: STEER,
   },
 ];
+
 
 export function ExperimentView() {
   const form = useStore((st) => st.form);
@@ -84,13 +123,19 @@ export function ExperimentView() {
   // Edge attribution: the graph's size and what a run costs on the loaded model, and why a run
   // would be refused (too many edges, or too little memory), before it runs. Neither depends on
   // which edges the curve patches, so they are known before that is chosen.
+  // ACDC's threshold and rule don't change what a run costs either.
+  const onGraph = form.kind === "edge_attribution" || form.kind === "acdc";
   let planned = spec;
   if (!planned && form.kind === "edge_attribution" && form.edgeCurve && !form.edgePatch) {
     const unchosen = buildSpec({ ...form, edgePatch: "chosen" }, buildContext);
     planned = "spec" in unchosen ? unchosen.spec : null;
   }
-  const plan = useEdgePlan(form.kind === "edge_attribution" ? planned : null);
-  const refusal = form.kind === "edge_attribution" ? (plan.plan?.refusal ?? null) : null;
+  if (!planned && form.kind === "acdc" && (!form.acdcRule || "error" in parseThreshold(form.acdcThreshold))) {
+    const unchosen = buildSpec({ ...form, acdcRule: form.acdcRule ?? "toward_source", acdcThreshold: "1" }, buildContext);
+    planned = "spec" in unchosen ? unchosen.spec : null;
+  }
+  const plan = useEdgePlan(onGraph ? planned : null);
+  const refusal = onGraph ? (plan.plan?.refusal ?? null) : null;
 
   const suggested = spec
     ? suggestName(spec)
@@ -100,7 +145,9 @@ export function ExperimentView() {
         ? `Direct attribution · ${scopeShort(form.scope).toLowerCase()}`
         : form.kind === "steering" && !form.steerApplyTo
           ? `Steering · ${scopeShort(form.scope).toLowerCase()}`
-          : "";
+          : form.kind === "acdc"
+            ? `ACDC · ${scopeShort(form.scope).toLowerCase()}`
+            : "";
   useEffect(() => {
     // The suggested name follows the rest of the form: not a change of its own to undo.
     if (!form.nameEdited && suggested && form.name !== suggested) setForm({ name: suggested }, { record: false });
@@ -162,7 +209,7 @@ export function ExperimentView() {
       <div className={e.form}>
         {form.predictions && <section className={e.section} aria-label="Included prediction diagnostic">
           <h2 className={e.sectionTitle}>Layer prediction diagnostic</h2>
-          <p className={s.small}>Final-norm logit lens · {form.predictions.which} prompt {form.predictions.prompt_index} · {form.predictions.position.kind === "last" ? "last token" : `token index ${form.predictions.position.index}`} · top {form.predictions.top_k} tokens. Saved as predictions.json beside this run’s intervention results.</p>
+          <p className={s.small}>{form.predictions.method === "tuned_lens" ? `Tuned lens ${form.predictions.lens?.name ?? ""}` : "Final-norm logit lens"} · {form.predictions.which} prompt {form.predictions.prompt_index} · {form.predictions.position.kind === "last" ? "last token" : `token index ${form.predictions.position.index}`} · top {form.predictions.top_k} tokens. Saved as predictions.json beside this run’s intervention results.</p>
           <div className={s.headActions}><Button size="small" onClick={() => useStore.getState().setView("predictions")}>Inspect predictions</Button><Button size="small" onClick={() => setForm({ predictions: null })}>Remove diagnostic</Button></div>
         </section>}
         <Field label="Name">
@@ -216,9 +263,27 @@ export function ExperimentView() {
               </p>
             </div>
           ) : form.kind === "path_patching" ? (
-            <PathSettings form={form} onChange={setForm} />
+            <PathSettings form={form} onChange={setForm} model={arch} />
           ) : form.kind === "edge_attribution" ? (
             <EdgeSettings form={form} onChange={setForm} />
+          ) : form.kind === "probe" ? (
+            <ProbeSettings form={form} onChange={setForm} fields={facts?.fields.filter((f) => f.clusters >= 2).map((f) => f.field) ?? []} />
+          ) : form.kind === "das" ? (
+            <DASSettings form={form} onChange={setForm} width={model.info?.d_model} />
+          ) : form.kind === "subspace_patching" ? (
+            <div className={e.stack}>
+              <Choices label="Direction" value={form.direction} onChange={(direction) => setForm({ direction })} columns={2} options={DIRECTIONS} />
+              <DirectionPicker
+                label="Patch along"
+                value={form.subspace}
+                onChange={(subspace) => setForm({ subspace })}
+                width={model.info?.d_model}
+                help="Only the component along it is taken from the other prompt; everything at right angles to it keeps its own value."
+              />
+              {!form.subspace && <p className={e.required}>Required: the direction is what the run measures.</p>}
+            </div>
+          ) : form.kind === "acdc" ? (
+            <AcdcSettings form={form} onChange={setForm} />
           ) : form.kind === "activation_patching" || form.kind === "attribution_patching" ? (
             <div className={e.stack}>
               <Choices
@@ -242,7 +307,7 @@ export function ExperimentView() {
               {form.kind === "attribution_patching" && <AttributionSettings form={form} onChange={setForm} features={usesFeatures(form.scope)} uneven={uneven} />}
             </div>
           ) : (
-            <BaselineChooser baseline={form.baseline} onChange={(baseline) => setForm({ baseline })} />
+            <BaselineChooser baseline={form.baseline} onChange={(baseline) => setForm({ baseline })} width={model.info?.d_model} />
           )}
         </section>
 
@@ -253,6 +318,7 @@ export function ExperimentView() {
             model={arch}
             saeLoaded={saeInfo}
             steersFeature={form.kind === "steering" && steersFeature}
+            baseline={form.kind === "ablation" ? (form.baseline?.kind ?? null) : null}
             scope={form.scope}
             onChange={(scope) => setForm({ scope })}
             labels={labels}
@@ -266,7 +332,14 @@ export function ExperimentView() {
 
         <section className={e.section}>
           <h2 className={e.sectionTitle}>Metric</h2>
-          <MetricSettings form={form} onChange={setForm} facts={facts} />
+          {form.kind === "probe" ? (
+            <p className={s.small}>
+              A probe reads activations, not the model's output, so there is no metric: each held-out pair's value is the share of its
+              examples the probe labels correctly.
+            </p>
+          ) : (
+            <MetricSettings form={form} onChange={setForm} facts={facts} labels={labels} width={model.info?.d_model} />
+          )}
         </section>
 
         <section className={e.section}>
@@ -361,7 +434,7 @@ export function ExperimentView() {
       <RunSummary
         spec={refusal ? null : spec}
         error={refusal ?? ("error" in built ? built.error : null)}
-        edgePlan={form.kind === "edge_attribution" ? plan : null}
+        edgePlan={onGraph ? plan : null}
         method={form.kind}
         scope={form.scope}
         bootstrap={form.bootstrap}
@@ -408,10 +481,14 @@ const DIRECTIONS = [
   },
 ];
 
-function PathSettings({ form, onChange }: { form: FormState; onChange: (patch: Partial<FormState>) => void }) {
+function PathSettings({ form, onChange, model }: { form: FormState; onChange: (patch: Partial<FormState>) => void; model: ModelInfo | null }) {
   const [query, setQuery] = useState("");
   const [part, setPart] = useState<"q" | "k" | "v" | "mlp">("q");
-  const head = part === "mlp" ? null : parseHeadQuery(query);
+  // With grouped-query attention a key or value receiver is a key/value head ("L9 KV1"), read by
+  // every query head of its group.
+  const grouped = sharesKeys(model);
+  const kvHead = grouped && (part === "k" || part === "v");
+  const head = part === "mlp" ? null : parseHeadQuery(kvHead ? query.replace(/kv/i, "H") : query);
   // An MLP is named by its layer: "L3" or "3".
   const mlp = part === "mlp" ? /^\s*l?\s*(\d+)\s*$/i.exec(query) : null;
   const has = (r: PathReceiverSpec) => form.pathReceivers.some((x) => JSON.stringify(x) === JSON.stringify(r));
@@ -425,8 +502,8 @@ function PathSettings({ form, onChange }: { form: FormState; onChange: (patch: P
         <div className={e.receivers}>
           {form.pathReceivers.map((r) => (
             <span key={receiverLabel(r)} className={e.receiver}>
-              {receiverWords(r)}
-              <button type="button" aria-label={`Remove ${receiverLabel(r)}`} onClick={() => onChange({ pathReceivers: form.pathReceivers.filter((x) => x !== r) })}>
+              {receiverWords(r, grouped)}
+              <button type="button" aria-label={`Remove ${receiverLabel(r, grouped)}`} onClick={() => onChange({ pathReceivers: form.pathReceivers.filter((x) => x !== r) })}>
                 ×
               </button>
             </span>
@@ -438,15 +515,15 @@ function PathSettings({ form, onChange }: { form: FormState; onChange: (patch: P
         <Input
           value={query}
           onChange={(ev) => setQuery(ev.target.value)}
-          placeholder={part === "mlp" ? "L3" : "L9 H9"}
-          aria-label={part === "mlp" ? "Receiver MLP's layer, like L3" : "Receiver head, like L9 H9"}
+          placeholder={part === "mlp" ? "L3" : kvHead ? "L9 KV1" : "L9 H9"}
+          aria-label={part === "mlp" ? "Receiver MLP's layer, like L3" : kvHead ? "Receiver key/value head, like L9 KV1" : "Receiver head, like L9 H9"}
           style={{ width: 110 }}
           spellCheck={false}
         />
         <Select value={part} onChange={(ev) => setPart(ev.target.value as "q" | "k" | "v" | "mlp")} aria-label="Which input receives the path">
           <option value="q">Head's query</option>
-          <option value="k">Head's key</option>
-          <option value="v">Head's value</option>
+          <option value="k">{grouped ? "Key/value head's key" : "Head's key"}</option>
+          <option value="v">{grouped ? "Key/value head's value" : "Head's value"}</option>
           <option value="mlp">MLP's input</option>
         </Select>
         {part === "mlp" ? (
@@ -455,7 +532,7 @@ function PathSettings({ form, onChange }: { form: FormState; onChange: (patch: P
           </Button>
         ) : (
           <Button size="small" disabled={!head} onClick={() => head && (add({ kind: "head", layer: head.layer, head: head.head, input: part }), setQuery(""))}>
-            Add head
+            {kvHead ? "Add key/value head" : "Add head"}
           </Button>
         )}
         <Button size="small" disabled={has({ kind: "logits" })} onClick={() => add({ kind: "logits" })}>
@@ -469,6 +546,9 @@ function PathSettings({ form, onChange }: { form: FormState; onChange: (patch: P
         Each sender is patched while every other attention head keeps its own value, so its effect reaches the receivers only
         through the residual stream{form.pathFreezeMlps ? "" : " and the MLPs"}. What the receivers read in that run is then patched
         into an unchanged run. Senders in or after the last receiver's layer have no path and are left out.
+        {grouped && model
+          ? ` ${modelName(model.id)} shares each key and value among ${plural(model.n_heads / (model.extra?.n_key_value_heads ?? model.n_heads), "head")}: a key or value receiver is a key/value head, and the path reaches every query head of its group through it.`
+          : ""}
       </p>
     </div>
   );
@@ -640,8 +720,77 @@ function EdgeSettings({ form, onChange }: { form: FormState; onChange: (patch: P
   );
 }
 
-/** The graph an edge attribution run estimates: the edges into every layer or chosen ones, and
- * into the logits; with its size on the loaded model. */
+/** ACDC: the direction, the threshold (in the metric's units) and which change it is compared
+ * with. */
+function AcdcSettings({ form, onChange }: { form: FormState; onChange: (patch: Partial<FormState>) => void }) {
+  const [receiver, source] = form.direction === "clean_to_corrupt" ? ["corrupt", "clean"] : ["clean", "corrupt"];
+  const threshold = parseThreshold(form.acdcThreshold);
+  const typed = form.acdcThreshold.trim() !== "";
+  // The threshold is compared with the metric's mean over the prompts, in the metric's own units.
+  const units =
+    form.metric === "kl"
+      ? "In nats of KL divergence, compared with the change in its mean over the prompts."
+      : form.metric === "logit_diff"
+        ? "In logits, compared with the change in the mean logit difference over the prompts."
+        : `In the units of the ${metricWords({ kind: form.metric, target: form.klTarget }).label}, compared with the change in its mean over the prompts.`;
+  return (
+    <div className={e.stack}>
+      <Choices
+        label="Direction"
+        value={form.direction}
+        onChange={(direction) => onChange({ direction })}
+        columns={2}
+        options={[
+          {
+            value: "corrupt_to_clean",
+            title: "Corrupt → clean",
+            detail: "Run the clean prompts; a removed edge carries its sender's corrupt output. Which edges does the behavior need? ACDC's own choice.",
+          },
+          {
+            value: "clean_to_corrupt",
+            title: "Clean → corrupt",
+            detail: "Run the corrupt prompts; a removed edge carries its sender's clean output. Which edges keep the behavior away?",
+          },
+        ]}
+      />
+      <div className={s.grid3}>
+        <Field label="Threshold" help={typed && "error" in threshold ? threshold.error : units}>
+          <Input value={form.acdcThreshold} onChange={(ev) => onChange({ acdcThreshold: ev.target.value })} inputMode="decimal" spellCheck={false} placeholder="0.1" aria-invalid={typed && "error" in threshold} />
+        </Field>
+      </div>
+      {!typed && <p className={e.required}>Required: it decides how small a change leaves an edge out, so there&rsquo;s no default.</p>}
+      <Choices
+        label="Compare with the threshold"
+        value={form.acdcRule}
+        onChange={(acdcRule) => onChange({ acdcRule })}
+        columns={2}
+        options={[
+          {
+            value: "toward_source",
+            title: `The change toward ${source}`,
+            detail: `How far removing the edge moves the metric toward the ${source} prompts'. A removal that moves it the other way always stays: the paper's rule.`,
+          },
+          {
+            value: "either_way",
+            title: "The change either way",
+            detail: "How far removing the edge moves the metric in either direction, so an edge that works against the behavior is kept too.",
+          },
+        ]}
+      />
+      {!form.acdcRule && <p className={e.required}>Required: it decides which changes count, so there&rsquo;s no default.</p>}
+      <p className={s.small}>
+        The {receiver} prompts run with every edge in the circuit. ACDC tests the edges one at a time, from the logits back toward
+        the embeddings: removing an edge makes it carry its sender&rsquo;s output on the {source} prompt into its receiver, while
+        the edges of the circuit carry what their senders output in that run. An edge stays removed when removing it moves the
+        mean of the metric over the prompts by less than the threshold; otherwise it is put back. Each edge costs one forward
+        pass per batch of prompts, and which edges stay can depend on the threshold and on the order they are tested in.
+      </p>
+    </div>
+  );
+}
+
+/** The graph an edge attribution or ACDC run measures: the edges into every layer or chosen ones,
+ * and into the logits; with its size on the loaded model. */
 function GraphScopeEditor({
   scope,
   onChange,
@@ -706,13 +855,13 @@ const wholeOrNull = (text: string): number | null => (text.trim() === "" ? null 
 function SteeringSettings({ form, onChange, sae }: { form: FormState; onChange: (patch: Partial<FormState>) => void; sae: SAEInfo | null }) {
   const strengths = parseStrengths(form.steerStrengths);
   const feature = form.steerDirection === "sae_feature";
-  const named = form.saeRef ? `${form.saeRef.repo}${form.saeRef.path ? `/${form.saeRef.path}` : ""}` : null;
+  const named = form.saeRef ? saeName(form.saeRef) : null;
   const chooseDirection = (steerDirection: FormState["steerDirection"]) => {
     if (steerDirection === "sae_feature") {
       // Added where the loaded SAE writes: the scope becomes that site.
       onChange({
         steerDirection,
-        ...(sae ? { saeRef: { repo: sae.repo, path: sae.path, revision: sae.revision }, scope: scopeFor("steering", form.scope, steerSiteOf(sae)) } : {}),
+        ...(sae ? { saeRef: saeRefOf(sae), scope: scopeFor("steering", form.scope, steerSiteOf(sae)) } : {}),
       });
     } else {
       onChange({ steerDirection, scope: scopeFor("steering", form.scope) });
@@ -738,8 +887,22 @@ function SteeringSettings({ form, onChange, sae }: { form: FormState; onChange: 
               ? `Its decoder direction, added where the SAE writes: ${saeWritesText(sae)}.`
               : "Its decoder direction, added where its SAE writes. Needs a loaded SAE.",
           },
+          {
+            value: "direction",
+            title: "A saved direction",
+            detail: "A probe's, a learned subspace's or a principal component, added to the residual stream. Strength 1 moves along it as far as the pairs differ.",
+          },
         ]}
       />
+      {form.steerDirection === "direction" && (
+        <DirectionPicker
+          label="Steer along"
+          value={form.steerSaved}
+          onChange={(steerSaved) => onChange({ steerSaved })}
+          oneDimension
+          help="One dimension, added at the steered sites."
+        />
+      )}
       {feature && (
         <div className={s.grid3}>
           <Field
@@ -835,7 +998,7 @@ function SteeringSettings({ form, onChange, sae }: { form: FormState; onChange: 
   );
 }
 
-function BaselineChooser({ baseline, onChange }: { baseline: BaselineSpec | null; onChange: (b: BaselineSpec) => void }) {
+function BaselineChooser({ baseline, onChange, width }: { baseline: BaselineSpec | null; onChange: (b: BaselineSpec) => void; width?: number }) {
   return (
     <div className={e.stack}>
       <Choices
@@ -844,6 +1007,8 @@ function BaselineChooser({ baseline, onChange }: { baseline: BaselineSpec | null
         onChange={(kind) => {
           if (kind === "zero") onChange({ kind: "zero" });
           else if (kind === "mean") onChange({ kind: "mean", reference: "corrupt" });
+          else if (kind === "scale") onChange({ kind: "scale", factor: 0 });
+          else if (kind === "projection") onChange({ kind: "projection", direction: { name: "", sha256: null }, reference: null });
           else onChange({ kind: "resample", pool: "corrupt", donors: 10, seed: 0 });
         }}
         columns={3}
@@ -851,8 +1016,37 @@ function BaselineChooser({ baseline, onChange }: { baseline: BaselineSpec | null
           { value: "zero", title: "Zero", detail: "Replace the activation with zeros." },
           { value: "mean", title: "Mean", detail: "Replace it with its mean over a stated reference set." },
           { value: "resample", title: "Resample", detail: "Replace it with its value in other prompts, averaged over donors." },
+          { value: "scale", title: "Scale", detail: "Multiply it by a factor: 0 removes it, 2 doubles it." },
+          { value: "projection", title: "Remove a direction", detail: "Remove its component along a saved direction, or set that to its mean." },
         ]}
       />
+      {baseline?.kind === "scale" && (
+        <div className={s.grid3}>
+          <Field label="Factor" help="0 is the same as zero ablation; 1 changes nothing.">
+            <Input type="number" step={0.1} value={baseline.factor} onChange={(ev) => onChange({ kind: "scale", factor: Number(ev.target.value) })} />
+          </Field>
+        </div>
+      )}
+      {baseline?.kind === "projection" && (
+        <div className={s.grid2}>
+          <DirectionPicker
+            label="Direction"
+            value={baseline.direction.name ? baseline.direction : null}
+            onChange={(direction) => onChange({ ...baseline, direction: direction ?? { name: "", sha256: null } })}
+            width={width}
+          />
+          <Field label="Its component becomes" help="Everything at right angles to the direction keeps its own value.">
+            <Select
+              value={baseline.reference ?? "zero"}
+              onChange={(ev) => onChange({ ...baseline, reference: ev.target.value === "zero" ? null : (ev.target.value as "clean" | "corrupt") })}
+            >
+              <option value="zero">Zero: the direction is removed</option>
+              <option value="clean">Its mean over the clean prompts</option>
+              <option value="corrupt">Its mean over the corrupt prompts</option>
+            </Select>
+          </Field>
+        </div>
+      )}
       {!baseline && <p className={e.required}>Required: the baseline changes the result, so there's no default.</p>}
       {baseline?.kind === "mean" && (
         <div className={s.grid3}>
@@ -888,14 +1082,15 @@ function PositionPicker({
   value,
   onChange,
   labels,
-  allowAll = true,
+  oneToken = null,
   unlined = null,
 }: {
   value: PositionSpec;
   onChange: (p: PositionSpec) => void;
   labels: string[];
-  /** Steering adds at one token of each prompt, so "all positions" doesn't apply. */
-  allowAll?: boolean;
+  /** Why the method reads or adds at one token of each prompt, so "all positions" doesn't apply
+   * (steering, probes, distributed alignment search), or null. */
+  oneToken?: string | null;
   /** Why every position and token indices can't be used here (prompts of different lengths). */
   unlined?: string | null;
 }) {
@@ -914,8 +1109,8 @@ function PositionPicker({
           {
             value: "all",
             label: "All positions",
-            disabled: !allowAll || !!unlined,
-            reason: !allowAll ? "Steering adds the direction at one token of each prompt, so it can't use all positions." : unlined ?? undefined,
+            disabled: !!oneToken || !!unlined,
+            reason: oneToken ?? unlined ?? undefined,
           },
           { value: "last", label: "Last token" },
           { value: "label", label: "Named position", disabled: labels.length === 0, reason: "This dataset has no named positions." },
@@ -1065,6 +1260,7 @@ function ScopeEditor({
   model,
   saeLoaded,
   steersFeature,
+  baseline,
   scope,
   onChange,
   labels,
@@ -1081,6 +1277,8 @@ function ScopeEditor({
   saeLoaded: SAEInfo | null;
   /** Steering along an SAE feature: added where its SAE writes, at one site. */
   steersFeature: boolean;
+  /** An ablation's baseline: scaling and removing a direction act on one site at a time. */
+  baseline: BaselineSpec["kind"] | null;
   scope: ScopeSpec;
   onChange: (s: ScopeSpec) => void;
   labels: string[];
@@ -1099,7 +1297,7 @@ function ScopeEditor({
       <div className={e.stack}>
         <p className={s.small}>
           {scope.edges.length === 1 ? "One edge" : `${count(scope.edges.length)} edges`}, each path-patched alone with every other head and MLP
-          held: {scope.edges.slice(0, 6).map(edgeLabel).join(", ")}
+          held: {scope.edges.slice(0, 6).map((x) => edgeLabel(x, sharesKeys(model))).join(", ")}
           {scope.edges.length > 6 ? ` and ${count(scope.edges.length - 6)} more` : ""}.
         </p>
         <p className={s.faint}>Set up by verifying an edge attribution run. Pick another method above to sweep components instead.</p>
@@ -1113,10 +1311,33 @@ function ScopeEditor({
   // Paths start at heads, attention outputs or MLP outputs.
   const paths = method === "path_patching";
   const verb = method === "ablation" ? "Ablate" : "Patch";
-  // Sets of sites are intervened on together, which patching and ablation do.
-  const setsAllowed = method === "activation_patching" || method === "ablation";
+  // A probe reads whole activations, or one head's output, query, key or value; a saved or
+  // learned direction lives in activations as wide as the residual stream.
+  const probe = method === "probe";
+  const directional = method === "das" || method === "subspace_patching" || (method === "ablation" && baseline === "projection");
+  // Sets of sites are intervened on together, which patching and ablation do, with values made
+  // before the forward pass (not scaled or projected from the run's own).
+  const setsAllowed = method === "activation_patching" || (method === "ablation" && baseline !== "scale" && baseline !== "projection");
+  // Methods that read or add at one token of each prompt.
+  const oneToken = steering
+    ? "Steering adds the direction at one token of each prompt, so it can't use all positions."
+    : probe
+      ? "A probe reads one token of each prompt: the last token, a named position or a token index."
+      : method === "das"
+        ? "Distributed alignment search learns a subspace at one token of each prompt: the last token, a named position or a token index."
+        : null;
+  // New sweeps start where they can run: at the last token, for direct effects, for methods that
+  // read one token of each prompt and for prompts of different lengths.
+  const position = (p: PositionSpec) =>
+    direct || (oneToken && p.kind === "all") || (unlined && (p.kind === "all" || p.kind === "index")) ? ({ kind: "last" } as PositionSpec) : p;
   // Why some scopes can't be chosen with this method, said once under the choices.
-  const unavailable = steersFeature
+  const unavailable = directional
+    ? "A direction lives in activations as wide as the residual stream: stream sites, attention outputs and MLP outputs, one site at a time."
+    : probe
+    ? "A probe reads whole activations, or one head's output, query, key or value, one site at a time: not neurons or sets of sites."
+    : method === "ablation" && baseline === "scale"
+    ? "Scaling acts on one site at a time, not on sets of sites."
+    : steersFeature
     ? "Steering along an SAE feature adds it where the SAE writes, at one token: one site of one layer."
     : steering
     ? "Steering adds a direction to the residual stream at one token, so it sweeps no heads, positions, queries, keys, values, neurons or sets of sites."
@@ -1128,9 +1349,7 @@ function ScopeEditor({
   // Queries, keys and values (the loaded model may offer only some), and neurons.
   const inputsMissing = missingNote(model, "q") && missingNote(model, "k") && missingNote(model, "v");
   const neuronsMissing = missingNote(model, "neuron");
-  // New sweeps start where they can run: at the last token, for direct effects and for prompts of
-  // different lengths.
-  const position = (p: PositionSpec) => (direct || (unlined && (p.kind === "all" || p.kind === "index")) ? ({ kind: "last" } as PositionSpec) : p);
+
   return (
     <div className={e.stack}>
       <Segmented
@@ -1151,16 +1370,21 @@ function ScopeEditor({
           } else if (k === "neurons") onChange({ kind: "neurons", layers: [], position: position({ kind: "all" }) });
         }}
         options={[
-          { value: "heads", label: "Layer × head", disabled: steering, reason: unavailable },
+          { value: "heads", label: "Layer × head", disabled: steering || directional, reason: unavailable },
           { value: "layer_position", label: "Layer × position", disabled: direct || steering || paths, reason: unavailable },
           { value: "layer_components", label: steering ? "One site in every layer" : "Attention and MLP per layer", disabled: steersFeature, reason: unavailable },
           {
             value: "head_inputs" as const,
             label: "Queries, keys, values",
-            disabled: steering || paths || !!inputsMissing,
+            disabled: steering || paths || directional || !!inputsMissing,
             reason: inputsMissing || unavailable,
           },
-          { value: "neurons" as const, label: "Neurons", disabled: steering || paths || !!neuronsMissing, reason: neuronsMissing || unavailable },
+          {
+            value: "neurons" as const,
+            label: "Neurons",
+            disabled: steering || paths || directional || probe || !!neuronsMissing,
+            reason: neuronsMissing || unavailable,
+          },
           ...(method === "attribution_patching" && (saeLoaded || kind === "features")
             ? [{ value: "features" as const, label: "Every SAE feature" }]
             : []),
@@ -1206,7 +1430,7 @@ function ScopeEditor({
           </Field>
         ) : (
           <Field label={`${verb} each head's output (z) at`}>
-            <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} unlined={unlined} />
+            <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} oneToken={oneToken} unlined={unlined} />
           </Field>
         ))}
       {scope.kind === "head_inputs" && (
@@ -1232,7 +1456,7 @@ function ScopeEditor({
           </Field>
           <p className={s.small}>{scope.input === "q" ? "A query site is one head's query, as its projection computes it, before any rotary embedding." : groupText(model)}</p>
           <Field label={`${direct ? "Read" : verb} each ${scope.input === "q" ? "query" : scope.input === "k" ? "key" : "value"} at`}>
-            <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} />
+            <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} oneToken={oneToken} />
           </Field>
           {direct && (
             <p className={s.small}>
@@ -1281,7 +1505,7 @@ function ScopeEditor({
             </Select>
           </Field>
           <Field label="Add the direction at">
-            <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} allowAll={false} unlined={unlined} />
+            <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} oneToken={oneToken} unlined={unlined} />
           </Field>
         </div>
       )}
@@ -1310,7 +1534,7 @@ function ScopeEditor({
             {direct ? (
               <p className={s.small}>{LAST_TOKEN_NOTE} Residual stream states aren't written by a component, so they have no direct effect.</p>
             ) : (
-              <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} unlined={unlined} />
+              <PositionPicker value={scope.position} onChange={(position) => onChange({ ...scope, position })} labels={labels} oneToken={oneToken} unlined={unlined} />
             )}
           </Field>
         </>
@@ -1354,7 +1578,7 @@ function ScopeEditor({
               <PositionPicker
                 value={site.position}
                 labels={labels}
-                allowAll={!steering}
+                oneToken={oneToken}
                 unlined={unlined}
                 onChange={(position) =>
                   onChange({ kind: "sites", sites: scope.sites.map((x, j) => (j === i ? { ...x, position } : x)) })

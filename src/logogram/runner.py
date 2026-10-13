@@ -45,8 +45,14 @@ from logogram.results import (
     site_payload,
     write_results,
 )
-from logogram.schema import CONTINUATIONS_FILE, EDGES_FILE, ContinuationsFile, Manifest
-from logogram.spec import SINGLE_POSITION_METRICS, EdgeAttribution, ModelRef, SAERef, Spec
+from logogram.schema import (
+    CONTINUATIONS_FILE,
+    EDGES_FILE,
+    VECTORS_FILE,
+    ContinuationsFile,
+    Manifest,
+)
+from logogram.spec import ACDC, EdgeAttribution, ModelRef, SAERef, Spec, reads_continuations
 
 EventFn = Callable[[str, dict[str, Any]], None]
 ModelProvider = Callable[[ModelRef], ModelBackend]
@@ -231,27 +237,59 @@ def model_matches(backend: ModelBackend | None, ref: ModelRef) -> bool:
     by id and revision, a local model by the hash of its files, whatever name it was added
     under), dtype, weight processing and device, the device as it resolves here ("cuda" is the
     default GPU, so it matches a model on that GPU however it was asked for)."""
-    if backend is None:
-        return False
+    return backend is not None and not model_differences(backend, ref)
+
+
+def model_differences(backend: ModelBackend, ref: ModelRef) -> list[str]:
+    """How the loaded model differs from the one ``ref`` asks for, one clause each (its files or
+    revision, dtype, device as ``ref``'s resolves here, weight processing); empty when it is that
+    model (see :func:`model_matches`)."""
     from logogram.backends.transformer_lens import resolve_device
 
     info = backend.info
+    out: list[str] = []
+
+    def named(source: str, model_id: str, sha256: str | None) -> str:
+        if source == "local":
+            return f"the local model {model_id} (files {(sha256 or '')[:12]}…)"
+        return f"{model_id} from Hugging Face"
+
+    if info.source != ref.source or (ref.source == "hub" and info.id != ref.id):
+        out.append(
+            f"it is {named(info.source, info.id, info.sha256)}, and the spec names "
+            f"{named(ref.source, ref.id, ref.sha256)}"
+        )
+    elif ref.source == "local" and (ref.sha256 is None or info.sha256 != ref.sha256):
+        out.append(
+            f"its files hash to {(info.sha256 or '')[:12]}…, and the spec names files that hash "
+            f"to {(ref.sha256 or '')[:12]}…"
+        )
+    elif ref.source == "hub" and ref.revision is not None and ref.revision != info.revision:
+        out.append(f"it is at revision {info.revision}, and the spec pins {ref.revision}")
+    if info.dtype != ref.dtype:
+        out.append(f"it runs in {info.dtype}, and the spec in {ref.dtype}")
     try:
         device = resolve_device(ref.device)
-    except Exception:  # noqa: BLE001
-        return False
-    if info.source != ref.source:
-        return False
-    if ref.source == "local":
-        same_files = ref.sha256 is not None and info.sha256 == ref.sha256
+    except Exception:  # noqa: BLE001 - a device this machine lacks matches no model
+        out.append(
+            f"it is on {info.device}, and the spec's device, {ref.device}, isn't available here"
+        )
     else:
-        same_files = info.id == ref.id and (ref.revision is None or ref.revision == info.revision)
-    return (
-        same_files
-        and info.dtype == ref.dtype
-        and info.device == device
-        and info.process_weights == ref.process_weights
-    )
+        if info.device != device:
+            # "auto" and "cuda" name a device by what this machine has: say which that is.
+            asked = (
+                f"the spec's device is {device}"
+                if ref.device == device
+                else f"the spec's device, {ref.device}, is {device} here"
+            )
+            out.append(f"it is on {info.device}, and {asked}")
+    if info.process_weights != ref.process_weights:
+        out.append(
+            "its weights are processed, and the spec's aren't"
+            if info.process_weights
+            else "its weights aren't processed, and the spec's are"
+        )
+    return out
 
 
 def device_provenance(info: Any) -> dict[str, Any]:
@@ -387,7 +425,7 @@ def run_spec(
         # A run that kept what finished keeps the predictions it measured before the sweep too.
         # Continuations come after the sweep, so a run that stopped never has them.
         names = (
-            ("results.parquet", "summary.json", "predictions.json", EDGES_FILE)
+            ("results.parquet", "summary.json", "predictions.json", EDGES_FILE, VECTORS_FILE)
             if kept is None
             else ()
         )
@@ -494,26 +532,46 @@ def run_spec(
         if spec.sae is not None:
             from logogram.sae import load_sae, sae_matches
 
-            if not sae_matches(sae, spec.sae):
+            if not sae_matches(sae, spec.sae, project):
                 emit("status", {"message": f"Loading the SAE {spec.sae.repo}"})
-                sae = (
-                    sae_provider(spec.sae, backend)
-                    if sae_provider is not None
-                    else load_sae(spec.sae, info.device, cancel=cancel)
-                )
-            spec = spec.model_copy(
-                update={"sae": spec.sae.model_copy(update={"revision": sae.revision})}
+                if sae_provider is not None:
+                    sae = sae_provider(spec.sae, backend)
+                elif spec.sae.source == "project":
+                    from logogram.sae_training import load_project_sae
+
+                    sae = load_project_sae(project, spec.sae, info.device, info)
+                else:
+                    sae = load_sae(spec.sae, info.device, cancel=cancel)
+            # Pinned to what was loaded: a published SAE by its revision, one trained in the
+            # project by the hash of its files.
+            pinned = (
+                {"sha256": sae.sha256}
+                if spec.sae.source == "project"
+                else {"revision": sae.revision}
             )
+            spec = spec.model_copy(update={"sae": spec.sae.model_copy(update=pinned)})
             write_json(folder / "spec.json", spec.model_dump(mode="json"))
             manifest["sae"] = {
                 "repo": sae.repo,
                 "path": sae.path,
                 "revision": sae.revision,
+                "source": sae.source,
+                "sha256": sae.sha256,
                 "format": sae.params.format,
                 "site": sae.site,
                 "layer": sae.layer,
                 "d_sae": sae.d_sae,
+                **({"trained": sae.trained} if sae.trained else {}),
             }
+            write_manifest(folder / "manifest.json", manifest)
+
+        # The saved directions the spec names, pinned by their hash: the run reads its own copy.
+        from logogram.directions import pin_spec, provenance
+
+        spec, directions = pin_spec(spec, project)
+        if directions:
+            write_json(folder / "spec.json", spec.model_dump(mode="json"))
+            manifest["directions"] = provenance(directions)
             write_manifest(folder / "manifest.json", manifest)
 
         # The model's own chat template, when the spec wraps prompts in it: the same text around
@@ -526,7 +584,7 @@ def run_spec(
             backend,
             records,
             spec.tokenization.prepend_bos,
-            continuations=spec.metric.kind not in SINGLE_POSITION_METRICS,
+            continuations=reads_continuations(spec.metric),
             chat=chat,
         )
         # Bootstrap resamples over the prompts a method measures (steering measures held-out
@@ -557,15 +615,27 @@ def run_spec(
             from logogram.analysis import prediction_report
 
             emit("status", {"message": "Measuring the configured layer predictions"})
+            settings, lens = spec.predictions, None
+            if settings.lens is not None:
+                from logogram.lenses import pin_lens
+
+                # A tuned lens trained in the project, pinned by the hash of its file.
+                lens = pin_lens(project, settings.lens, info)
+                settings = settings.model_copy(update={"lens": lens.ref()})
+                spec = spec.model_copy(update={"predictions": settings})
+                write_json(folder / "spec.json", spec.model_dump(mode="json"))
+                manifest["lens"] = lens.describe()
+                write_manifest(folder / "manifest.json", manifest)
             with backend.lock:
                 predictions = prediction_report(
                     backend,
                     records,
-                    index=spec.predictions.prompt_index,
-                    settings=spec.predictions,
+                    index=settings.prompt_index,
+                    settings=settings,
                     prepend_bos=spec.tokenization.prepend_bos,
                     batch_size=spec.execution.batch_size,
                     chat_template=spec.tokenization.chat_template,
+                    lens=lens,
                 )
             if cancel is not None and cancel.is_set():
                 raise Cancelled()
@@ -604,10 +674,10 @@ def run_spec(
                     "n_prompts": len(prompts),
                     "model": model_shape,
                     "layout": layout,
-                    # An edge attribution run's edges (tens of thousands) arrive with its
-                    # summary, which lists the strongest.
+                    # An edge attribution or ACDC run's edges (tens of thousands) arrive with
+                    # its summary, which lists the strongest.
                     "sites": []
-                    if isinstance(spec.experiment, EdgeAttribution)
+                    if isinstance(spec.experiment, EdgeAttribution | ACDC)
                     else [s.to_dict() for s in sites],
                 },
             )
@@ -644,6 +714,7 @@ def run_spec(
             on_prompts=progress.finished_prompts,
             cancel=cancel,
             sae=sae,
+            directions=directions,
         )
         progress.complete = True
         result.warnings[:0] = notes
@@ -659,7 +730,13 @@ def run_spec(
             chat_template=chat.to_dict() if chat is not None else None,
         )
         write_results(folder / "results.parquet", results_table(result, stats))
-        if "edges" in result.extra:
+        # What a probe or a learned subspace found at each site: vectors to save as directions.
+        learned = result.extra.pop("vectors", None)
+        if learned is not None:
+            from logogram.directions import write_vectors
+
+            write_vectors(project.writable(folder / VECTORS_FILE), learned)
+        if "edges" in result.extra or "acdc" in result.extra:
             from logogram.edges import write_edge_table
 
             write_edge_table(folder / EDGES_FILE, result, stats)

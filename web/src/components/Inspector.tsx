@@ -19,8 +19,8 @@ import {
 import { setWhat, universeText } from "../lib/circuits";
 import { metricWords } from "../lib/metrics";
 import { runTitle } from "../lib/runs";
-import { siteText } from "../lib/spec";
-import { baselineText, experimentText, measureOf, measureWords, positionText, receiverInputWords, senderWords } from "../lib/spec";
+import { saeName, sameSae, siteText } from "../lib/spec";
+import { baselineText, experimentText, labelsText, measureOf, measureWords, positionText, readoutText, receiverInputWords, senderWords, sharesKeys } from "../lib/spec";
 import { prefersReducedMotion } from "../lib/motion";
 import { useStore } from "../store/app";
 import { Distribution } from "./Distribution";
@@ -52,7 +52,13 @@ export function Inspector() {
             {run.detail?.spec && pendingBase && (
               <p className={s.note}>
                 {experimentText(run.detail.spec.experiment)} ·{" "}
-                {pendingBase.kind === "site_set" ? "every site of the set at once" : pendingBase.kind === "edge" ? "summed over every position" : positionText(pendingBase.position)}
+                {pendingBase.kind === "site_set"
+                  ? "every site of the set at once"
+                  : pendingBase.kind === "edge"
+                    ? run.detail.spec.experiment.kind === "edge_attribution"
+                      ? "summed over every position"
+                      : "at every position"
+                    : positionText(pendingBase.position)}
               </p>
             )}
             {site && run.detail ? (
@@ -104,8 +110,9 @@ function ComponentHeader({ selection }: { selection: Selection }) {
   }
   else if (selection.part === "edge") {
     const edge = findSite(run.sites, selection)?.edge;
+    const grouped = sharesKeys(run.detail?.summary?.model);
     kind = edge
-      ? `An edge of the model's graph: ${senderWords(edge.sender)}, read directly by ${receiverInputWords(edge.receiver)} through the residual stream.`
+      ? `An edge of the model's graph: ${senderWords(edge.sender)}, read directly by ${receiverInputWords(edge.receiver, grouped)} through the residual stream.${grouped && edge.receiver.kind === "head" && edge.receiver.input !== "q" ? " The key/value head's key and value are read by every query head of its group." : ""}`
       : "An edge of the model's graph: a sender's output, read directly by a later component's input.";
   }
   else if (selection.part === "set") {
@@ -212,6 +219,7 @@ function SetReading({ site, summary }: { site: SiteResult; summary: Summary }) {
 function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | null; selection: Selection }) {
   const exp = spec.experiment;
   const measured = metricWords(summary?.metric ?? spec.metric);
+  const grouped = sharesKeys(summary?.model);
   const base = summary ? findSite(summary.sites, selection) : null;
   const position = base ? positionText(base.position) : selection.positionKey ? `position ${selection.positionKey}` : "the positions in the spec";
   const kind = base?.kind ?? selection.kind;
@@ -276,7 +284,7 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
         <p className={s.text}>Logit difference at the last token: logit(answer) − logit(distractor).</p>
         <p className={s.text}>
           Share = direct effect ÷{" "}
-          {spec.metric.normalization === "dataset_gap" ? (
+          {spec.metric?.normalization === "dataset_gap" ? (
             <>
               the mean {exp.prompts} logit difference{summary?.metric.denominator != null && <> ({num(summary.metric.denominator, 3)})</>}
             </>
@@ -294,11 +302,26 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
     how =
       `Runs each ${receiver} prompt, encodes the activation the SAE reads, and changes only ${what} at ${position} to ${to}. ` +
       "The activation moves along the feature's decoder direction, and what the SAE misses (its error) is kept as it was.";
+  } else if (selection.part === "edge" && exp.kind === "acdc") {
+    const [receiver, source] = exp.direction === "clean_to_corrupt" ? ["corrupt", "clean"] : ["clean", "corrupt"];
+    const edge = base?.edge;
+    const into = edge ? receiverInputWords(edge.receiver, grouped) : "its receiver";
+    const kept = base && summary?.acdc ? summary.acdc.kept.includes(base.index) : null;
+    const counted = exp.rule === "toward_source" ? `toward the ${source} prompts'` : "either way";
+    how =
+      `ACDC tested the edges from the logits back toward the embeddings, this one after every edge downstream of ${into}. It ran each ${receiver} prompt with the ` +
+      `edges removed so far, and this one, carrying their senders' outputs from the paired ${source} prompt, and compared the mean ` +
+      `of the metric with the circuit's just before. ` +
+      (kept === null
+        ? `An edge stays removed when that moves the metric ${counted} by less than ${exp.threshold}.`
+        : kept
+          ? `It moved the metric ${counted} by ${exp.threshold} or more, so the edge was put back: it is in the circuit.`
+          : `It moved the metric ${counted} by less than ${exp.threshold}, so the edge stayed removed.`);
   } else if (selection.part === "edge" && (exp.kind === "edge_attribution" || exp.kind === "path_patching")) {
     const [receiver, source] = exp.direction === "clean_to_corrupt" ? ["corrupt", "clean"] : ["clean", "corrupt"];
     const edge = base?.edge;
     const from = edge ? senderWords(edge.sender) : "the sender's output";
-    const into = edge ? receiverInputWords(edge.receiver) : "the receiver's input";
+    const into = edge ? receiverInputWords(edge.receiver, grouped) : "the receiver's input";
     how =
       exp.kind === "edge_attribution"
         ? `Estimates, to first order, what letting only ${into} read ${from} from the paired ${source} prompt would do in each ${receiver} prompt: ` +
@@ -321,7 +344,7 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
       `Nothing is replaced. ${exp.method === "integrated_gradients" ? "Averaging the gradient along the way corrects much of the saturation one gradient misses, but it is still an estimate" : "The estimate misses saturation and can miss or even invert an effect"}; verify it by patching.`;
   } else if (exp.kind === "path_patching") {
     const [receiver, source] = exp.direction === "clean_to_corrupt" ? ["corrupt", "clean"] : ["clean", "corrupt"];
-    const into = exp.receivers.map(receiverInputWords).join(", ");
+    const into = exp.receivers.map((r) => receiverInputWords(r, grouped)).join(", ");
     how =
       `Runs each ${receiver} prompt with ${what} at ${position} taken from the paired ${source} prompt and every other attention head ` +
       `held at its own value${exp.freeze_mlps ? ", MLPs too" : ""}, records what ${into} read, and patches only that into an unchanged ` +
@@ -340,24 +363,50 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
         : `Runs each clean prompt and replaces ${what} at ${position} with its value from the paired corrupt prompt. Does this break it?`;
   } else if (exp.kind === "ablation") {
     const b = exp.baseline;
-    const source =
-      b.kind === "zero"
-        ? "zeros"
-        : b.kind === "mean"
-          ? `its mean over the dataset's ${b.reference} prompts`
-          : `its value in ${b.donors} randomly drawn ${b.pool} prompts (seed ${b.seed}), averaging the result`;
-    how = `Runs each clean prompt and replaces ${what} at ${position} with ${source}.`;
+    if (b.kind === "scale") {
+      how = `Runs each clean prompt and multiplies ${what} at ${position} by ${String(b.factor).replace("-", "−")}.`;
+    } else if (b.kind === "projection") {
+      how =
+        `Runs each clean prompt and ${b.reference === null ? "removes" : `sets to its mean over the ${b.reference} prompts`} the component of ${what} at ${position} ` +
+        `along the saved direction ${b.direction.name}, keeping everything at right angles to it.`;
+    } else {
+      const source =
+        b.kind === "zero"
+          ? "zeros"
+          : b.kind === "mean"
+            ? `its mean over the dataset's ${b.reference} prompts`
+            : `its value in ${b.donors} randomly drawn ${b.pool} prompts (seed ${b.seed}), averaging the result`;
+      how = `Runs each clean prompt and replaces ${what} at ${position} with ${source}.`;
+    }
+  } else if (exp.kind === "subspace_patching") {
+    const [receiver, source] = exp.direction === "clean_to_corrupt" ? ["corrupt", "clean"] : ["clean", "corrupt"];
+    how =
+      `Runs each ${receiver} prompt and takes the component of ${what} at ${position} along the saved direction ${exp.subspace.name} ` +
+      `from the paired ${source} prompt, keeping the rest of it as it was.`;
+  } else if (exp.kind === "das") {
+    const [receiver, source] = exp.direction === "clean_to_corrupt" ? ["corrupt", "clean"] : ["clean", "corrupt"];
+    how =
+      `Learns, on the training pairs, a subspace of ${exp.dimensions} dimension${exp.dimensions === 1 ? "" : "s"} of ${what} at ${position} whose patching from the ` +
+      `${source} prompt moves each ${receiver} prompt toward it, then patches within it on the held-out pairs, beside the whole site` +
+      `${exp.control ? " and a random subspace of the same size" : ""}.`;
+  } else if (exp.kind === "probe") {
+    how =
+      `Trains a logistic regression to read ${labelsText(exp.labels)} from ${what} at ${position}, on ${Math.round(exp.train_fraction * 100)}% of the pairs, ` +
+      `and measures how often it is right on the held-out pairs${exp.control ? ", beside a probe trained on shuffled labels" : ""}. A probe shows what can be read here, not what the model uses.`;
   } else {
     how = "";
   }
   const receiver =
     summary?.receiver ??
-    ((exp.kind === "activation_patching" || exp.kind === "attribution_patching" || exp.kind === "path_patching" || exp.kind === "edge_attribution") &&
+    ((exp.kind === "activation_patching" || exp.kind === "attribution_patching" || exp.kind === "path_patching" || exp.kind === "edge_attribution" || exp.kind === "acdc") &&
     exp.direction === "clean_to_corrupt"
       ? "corrupt"
       : "clean");
   const estimate = exp.kind === "attribution_patching" || exp.kind === "edge_attribution";
-  const metricText = `${measured.formula}${(summary?.metric ?? spec.metric).kind === "logit_diff" ? " at the last token" : ""}`;
+  const metricText =
+    spec.metric?.kind === "readout"
+      ? readoutText(spec.metric)
+      : `${measured.formula}${(summary?.metric ?? spec.metric)?.kind === "logit_diff" ? " at the last token" : ""}`;
   const reference = summary?.reference ?? (receiver === "corrupt" ? "clean" : "corrupt");
   const gap = summary?.metric.denominator;
   return (
@@ -373,8 +422,15 @@ function Method({ spec, summary, selection }: { spec: Spec; summary: Summary | n
         {capitalize(measured.label)}: {metricText}.
       </p>
       <p className={s.text}>
-        {estimate ? "Estimated effect = (estimated patched" : exp.kind === "steering" ? "Normalized effect = (steered" : "Normalized effect = (patched"} − {receiver}) ÷{" "}
-        {spec.metric.normalization === "dataset_gap" ? (
+        {estimate
+          ? `Estimated effect = (estimated patched − ${receiver})`
+          : exp.kind === "acdc"
+            ? "Normalized change = (circuit without the edge − circuit with it)"
+            : exp.kind === "steering"
+              ? `Normalized effect = (steered − ${receiver})`
+              : `Normalized effect = (patched − ${receiver})`}{" "}
+        ÷{" "}
+        {spec.metric?.normalization === "dataset_gap" ? (
           <>
             mean({reference} − {receiver}){gap !== null && gap !== undefined && <> (denominator {num(gap, 3)})</>}
           </>
@@ -408,11 +464,9 @@ function WhatItWrites({
   const guard = useStore((st) => st.guard);
   const context = useAnalysisContext();
   const info = sae.state === "ready" ? sae.info : undefined;
-  const trim = (path: string) => path.replace(/^\/+|\/+$/g, "");
-  const loaded =
-    !!info && info.repo === saeRef.repo && trim(info.path) === trim(saeRef.path) && (!saeRef.revision || saeRef.revision === info.revision);
+  const loaded = !!info && sameSae(saeRef, info);
   const load = async () => {
-    const out = await guard(() => api.loadSae({ repo: saeRef.repo, path: saeRef.path, revision: saeRef.revision }));
+    const out = await guard(() => api.loadSae(saeRef));
     if (out) useStore.getState().applyJob(out);
   };
   return (
@@ -425,8 +479,7 @@ function WhatItWrites({
       ) : !loaded ? (
         <>
           <p className={s.note}>
-            Load this run's SAE ({saeRef.repo}
-            {saeRef.path ? ` · ${saeRef.path}` : ""}) to read what this feature writes.
+            Load this run's SAE ({saeName(saeRef)}) to read what this feature writes.
           </p>
           <div>
             <Button size="small" disabled={sae.state === "loading" || jobRunning} onClick={() => void load()}>
@@ -845,10 +898,17 @@ function RunOverview() {
   const select = useStore((st) => st.select);
   const summary = run.detail?.summary;
   const short = metricWords(summary?.metric ?? run.detail?.spec.metric).short;
+  // A probe's values are accuracies, not effects: the most accurate probes, controls aside. A
+  // learned subspace run lists its learned subspaces.
+  const probe = run.detail?.spec.experiment.kind === "probe";
+  const das = run.detail?.spec.experiment.kind === "das";
   const top = useMemo(() => {
-    const list = Object.values(run.results).filter((x) => x.effect.mean !== null);
-    return list.sort((a, b) => Math.abs(b.effect.mean ?? 0) - Math.abs(a.effect.mean ?? 0)).slice(0, 5);
-  }, [run.results]);
+    const list = Object.values(run.results).filter(
+      (x) => x.effect.mean !== null && !(probe && x.variant?.control) && !(das && x.variant?.subspace !== "learned"),
+    );
+    const size = (x: (typeof list)[number]) => (probe ? (x.effect.mean ?? 0) : Math.abs(x.effect.mean ?? 0));
+    return list.sort((a, b) => size(b) - size(a)).slice(0, 5);
+  }, [run.results, probe, das]);
 
   if (!run.id) {
     return (
@@ -883,7 +943,7 @@ function RunOverview() {
       )}
       {top.length > 0 && (
         <section className={s.section}>
-          <h3 className={s.sectionTitle}>Largest effects</h3>
+          <h3 className={s.sectionTitle}>{probe ? "Most accurate probes" : das ? "Strongest learned subspaces" : "Largest effects"}</h3>
           {top.map((site) => (
             <button
               key={site.index}
@@ -892,7 +952,7 @@ function RunOverview() {
               onClick={() => select(selectionOfSite(site))}
             >
               <span>{site.label}</span>
-              <span className={s.topValue}>{signed(site.effect.mean, 3)}</span>
+              <span className={s.topValue}>{probe ? num(site.effect.mean, 3) : signed(site.effect.mean, 3)}</span>
               <span className={s.muted}>{ci(site.effect.lo, site.effect.hi)}</span>
             </button>
           ))}

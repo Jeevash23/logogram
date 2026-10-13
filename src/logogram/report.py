@@ -19,21 +19,29 @@ from typing import Any
 from logogram import __version__
 from logogram.schema import stopped_text
 from logogram.spec import (
+    ACDC,
     Ablation,
     ActivationPatching,
     AttributionPatching,
     DirectLogitAttribution,
+    DistributedAlignmentSearch,
     EdgeAttribution,
     EdgesScope,
     FeatureDirection,
     MeanBaseline,
     PathPatching,
+    Probe,
+    ProjectionBaseline,
+    SavedDirection,
+    ScaleBaseline,
     Spec,
     Steering,
+    SubspacePatching,
     ZeroBaseline,
     describe_experiment,
     describe_metric,
     describe_sae_site,
+    labels_text,
     receiver_text,
 )
 
@@ -54,6 +62,18 @@ def _arrow(direction: str) -> str:
 def _baseline(b: Any) -> str:
     if isinstance(b, ZeroBaseline):
         return "zeros"
+    if isinstance(b, ScaleBaseline):
+        return f"itself multiplied by {b.factor:g}"
+    if isinstance(b, ProjectionBaseline):
+        to = (
+            "removed (set to zero)"
+            if b.reference is None
+            else f"set to its mean over the {b.reference} prompts"
+        )
+        return (
+            f"itself with its component along the saved direction {b.direction.name} {to}, "
+            "everything at right angles to it kept"
+        )
     if isinstance(b, MeanBaseline):
         return f"the activation's mean over the {b.reference} prompts"
     return (
@@ -106,8 +126,55 @@ def _method(spec: Spec, summary: dict[str, Any] | None) -> str:
         )
     if isinstance(e, EdgeAttribution):
         return _edge_method(spec, e, summary)
+    if isinstance(e, ACDC):
+        return _acdc_method(spec, e, summary)
     if isinstance(e, Steering):
         return _steering_method(spec, e, summary)
+    if isinstance(e, SubspacePatching):
+        return (
+            f"Subspace patching {_arrow(e.direction)}: at each site, only the activation's "
+            f"component along the saved direction {e.subspace.name} (within the span of its "
+            "orthonormal rows) was taken from the source prompt; everything at right angles to "
+            "it kept the receiver's own value."
+        )
+    if isinstance(e, DistributedAlignmentSearch):
+        das = (summary or {}).get("das") or {}
+        split = (
+            f" {len(das['train'])} pairs trained the subspaces and the {len(das['test'])} "
+            "held-out pairs measured them."
+            if das
+            else ""
+        )
+        control = ", and within a random subspace of the same size" if e.control else ""
+        return (
+            f"Distributed alignment search {_arrow(e.direction)}: at each site, an orthonormal "
+            f"basis of {e.dimensions} vector{'s' if e.dimensions != 1 else ''} (the orthonormal "
+            "part of a free matrix drawn with the seed) was trained by Adam "
+            f"(learning rate {e.learning_rate:g}, {e.steps} steps, each over every training "
+            "pair) to maximize the mean normalized effect of patching only the component within "
+            f"it.{split} The held-out pairs were patched within the learned subspace, as a whole "
+            f"site{control}."
+        )
+    if isinstance(e, Probe):
+        probe = (summary or {}).get("probe") or {}
+        classes = ", ".join(probe.get("classes") or [])
+        control = (
+            " A second probe at each site was fitted to the training labels shuffled with the "
+            "seed and measured on the true held-out labels (a control task); selectivity is the "
+            "difference of the two accuracies, pair by pair."
+            if e.control
+            else ""
+        )
+        return (
+            f"Linear probes: at each site, a logistic regression read {labels_text(e.labels)}"
+            f"{f' ({classes})' if classes else ''} from the activation, standardized with the "
+            "training examples' mean and spread, fitted from zero by L-BFGS in float64 for "
+            f"{e.iterations} iterations to the mean cross-entropy plus {e.regularization:g} / 2 "
+            f"times the squared length of its weights, on {e.train_fraction:.0%} of the pairs "
+            f"(seed {e.seed}); pairs, not examples, were split.{control} Always answering the "
+            f"most common training class scored {probe.get('chance', float('nan')):.3f} on the "
+            "held-out examples."
+        )
     assert isinstance(e, AttributionPatching)
     how = (
         f"the gradient of the metric averaged over {e.steps} runs whose input embeddings lie "
@@ -174,6 +241,54 @@ def _edge_method(spec: Spec, e: EdgeAttribution, summary: dict[str, Any] | None)
     return text
 
 
+def _acdc_method(spec: Spec, e: ACDC, summary: dict[str, Any] | None) -> str:
+    from logogram.acdc import ORDER_TEXT
+
+    acdc = (summary or {}).get("acdc") or {}
+    size = (
+        f"{acdc['n_edges']:,} edges ({acdc['n_senders']} senders, {acdc['n_receivers']} receivers)"
+        if acdc
+        else "the edges of the scope"
+    )
+    receiver, source = (
+        ("corrupt", "clean") if e.direction == "clean_to_corrupt" else ("clean", "corrupt")
+    )
+    counted = (
+        f"toward the {source} prompts' value"
+        if e.rule == "toward_source"
+        else "in either direction"
+    )
+    text = (
+        f"ACDC (automated circuit discovery) over {size}: the graph's nodes are the embeddings, "
+        "every attention head (its output through its slice of the output projection) and every "
+        "MLP, and an edge runs from a node's output to a later head's query, key or value input, "
+        "a later MLP's input, or the logits, each receiver reading its own copy of the residual "
+        f"stream, before its normalization. The {receiver} prompts ran with every edge in the "
+        f"circuit, and the edges were tested one at a time in {acdc.get('order') or ORDER_TEXT}. "
+        f"Removing an edge made it carry its sender's output on the {source} prompt into its "
+        f"receiver (the sender's difference, {source} − this pass, added into the receiver's own "
+        "input), while the edges of the circuit carried what their senders output in that pass. "
+        "An edge stayed removed when removing it moved the mean metric over the prompts "
+        f"{counted} by less than {e.threshold:g}; otherwise it was put back. Each edge's value is "
+        "the change its removal made when it was tested."
+    )
+    if acdc:
+        f = acdc.get("faithfulness") or {}
+
+        def value(key: str) -> str:
+            v = f.get(key)
+            return "undefined" if v is None else f"{v:.3f}"
+
+        level = round(spec.statistics.ci * 100)
+        text += (
+            f" The circuit kept {acdc['n_kept']:,} of the {acdc['n_edges']:,} edges. Its "
+            f"faithfulness, the share of the gap from the {source} run (0) to the {receiver} run "
+            f"with every edge (1) that it keeps, was {value('mean')} ({level}% interval "
+            f"{value('lo')} to {value('hi')})."
+        )
+    return text
+
+
 def _steering_method(spec: Spec, e: Steering, summary: dict[str, Any] | None) -> str:
     other = "corrupt" if e.apply_to == "clean" else "clean"
     strengths = ", ".join(f"{c:g}" for c in e.coefficients)
@@ -184,12 +299,16 @@ def _steering_method(spec: Spec, e: Steering, summary: dict[str, Any] | None) ->
     if isinstance(e.direction, FeatureDirection):
         f = e.direction.feature
         sae = spec.sae
-        named = (
-            f" of the SAE {sae.repo}{'/' + sae.path if sae.path else ''}"
-            f"{f' at revision {sae.revision}' if sae.revision else ''}"
-            if sae
-            else ""
-        )
+        if sae is not None and sae.source == "project":
+            pinned = f", whose files hash to {sae.sha256[:12]}" if sae.sha256 else ""
+            named = f" of the SAE {sae.repo} trained in the project{pinned}"
+        else:
+            named = (
+                f" of the SAE {sae.repo}{'/' + sae.path if sae.path else ''}"
+                f"{f' at revision {sae.revision}' if sae.revision else ''}"
+                if sae
+                else ""
+            )
         feature = steering.get("feature") or {}
         where = (
             f", {describe_sae_site(feature['site'], feature['layer'], feature['transcoder'])}"
@@ -222,6 +341,15 @@ def _steering_method(spec: Spec, e: Steering, summary: dict[str, Any] | None) ->
                     f"{value:.4g}{at} (positive in {fired} of the {measured} training activations)"
                 )
             text += f" The typical activation was {'; '.join(parts)}."
+    elif isinstance(e.direction, SavedDirection):
+        saved = steering.get("direction") or {}
+        along = ", ".join(f"{a:.4g}" for a in saved.get("along") or [])
+        text = (
+            f"Steering along the saved direction {e.direction.direction.name}: its unit vector was "
+            f"added to the {e.apply_to} prompts at strengths {strengths}, where strength 1 is the "
+            f"mean of ({other} − {e.apply_to}) activations along it at each site over {split}"
+            f"{f' ({along})' if along else ''}."
+        )
     else:
         text = (
             f"Steering: a direction was added to the {e.apply_to} prompts, the mean of ({other} − "
@@ -341,7 +469,7 @@ def methods_text(
     first = f", the first {d.limit} of the file" if d.limit else ""
     normalized = (
         "Effects were normalized by the mean clean–corrupt gap over the dataset"
-        if spec.metric.normalization == "dataset_gap"
+        if spec.normalization == "dataset_gap"
         else "Effects were normalized by each prompt's own clean–corrupt gap"
     )
     formula = ((summary or {}).get("metric") or {}).get("normalized_effect")
@@ -351,15 +479,31 @@ def methods_text(
         if m.source == "local"
         else f"{m.id} at {revision}"
     )
+    metric = (
+        "A probe reads activations, not the output: each held-out pair's value was the share of "
+        "its examples the probe labelled correctly, not normalized."
+        if spec.metric is None
+        else f"The metric, for each prompt, was {describe_metric(spec.metric)}. "
+        f"{normalized}{f': {formula}' if formula else ''}."
+    )
     paragraphs = [
         f"{describe_experiment(spec)}.",
         f"The model was {model}, run in {m.dtype} on {device}, {weights}.",
         f"{pairs} read from {source}{pinned}{first}, and {_tokenized(spec, summary)}.",
-        f"The metric, for each prompt, was {describe_metric(spec.metric)}. "
-        f"{normalized}{f': {formula}' if formula else ''}.",
+        metric,
         f"Prompts ran in batches of {spec.execution.batch_size}. {_statistics(spec, summary)}",
         _method(spec, summary),
     ]
+    # The saved directions it used, as the run pinned them.
+    used = []
+    for d in manifest.get("directions") or []:
+        size = f"{d['dimensions']} dimension{'s' if d['dimensions'] != 1 else ''}"
+        made = f"made by {d['method']}" + (
+            f" in run {d['made_from']}" if d.get("made_from") else ""
+        )
+        used.append(f"{d['name']} ({size}, {made}, SHA-256 {d['sha256']})")
+    if used:
+        paragraphs.append(f"Saved directions it used, as the run pinned them: {'; '.join(used)}.")
     # A run that stopped early: how far it got, and what its numbers cover.
     partial = (summary or {}).get("partial")
     if partial:
@@ -384,6 +528,18 @@ def methods_text(
 _POSITIVE = (37, 87, 222)
 _NEGATIVE = (200, 120, 20)
 _NEUTRAL = (236, 236, 236)
+
+
+# Held-out accuracy (a probe's) isn't an effect: it is drawn in ink, from white at 0 to ink at 1.
+_INK = (28, 34, 38)
+
+
+def ink_color(value: float | None) -> str:
+    if value is None or not math.isfinite(value):
+        return "#ffffff"
+    t = max(0.0, min(1.0, value))
+    mix = [round(255 + t * (e - 255)) for e in _INK]
+    return "#" + "".join(f"{c:02x}" for c in mix)
 
 
 def effect_color(value: float | None, bound: float) -> str:
@@ -428,8 +584,15 @@ def heatmap_svg(
         for s in summary["sites"]
         if s[value]["mean"] is not None and math.isfinite(s[value]["mean"])
     ]
-    bound = 1.0 if unit and value == "effect" else (max(finite) if finite else 1.0)
-    what = "mean normalized effect" if value == "effect" else "mean change in the metric"
+    accuracy = summary.get("measure") == "probe"
+    bound = 1.0 if accuracy or (unit and value == "effect") else (max(finite) if finite else 1.0)
+    what = (
+        "held-out accuracy"
+        if accuracy
+        else "mean normalized effect"
+        if value == "effect"
+        else "mean change in the metric"
+    )
     left = 72
     top = 64 if labels else 20
     # Wide enough for the legend and its label, however few the columns.
@@ -457,7 +620,7 @@ def heatmap_svg(
         for c in range(len(cols)):
             site = by_cell.get((r, c))
             mean = site[value]["mean"] if site else None
-            fill = effect_color(mean, bound) if site else "none"
+            fill = (ink_color(mean) if accuracy else effect_color(mean, bound)) if site else "none"
             title = (
                 f"<title>{esc(site['label'])}: {_fmt(mean)} "
                 f"[{_fmt(site[value]['lo'])} to {_fmt(site[value]['hi'])}]</title>"
@@ -468,10 +631,25 @@ def heatmap_svg(
                 f'<rect x="{left + c * cell}" y="{top + r * cell}" width="{cell - 1}" '
                 f'height="{cell - 1}" fill="{fill}">{title}</rect>'
             )
-    # The legend: the scale from −bound to +bound.
-    parts.append(_legend(left, top + cell * len(rows) + 18, bound, what))
+    # The legend: the scale from −bound to +bound (accuracy: from 0 to 1, in ink).
+    y = top + cell * len(rows) + 18
+    parts.append(_ink_legend(left, y, what) if accuracy else _legend(left, y, bound, what))
     parts.append("</svg>")
     return "".join(parts)
+
+
+def _ink_legend(left: int, y: int, what: str) -> str:
+    """The ink scale from 0 to 1, with what it measures."""
+    return (
+        '<defs><linearGradient id="ink-scale">'
+        f'<stop offset="0" stop-color="{ink_color(0)}"/>'
+        f'<stop offset="1" stop-color="{ink_color(1)}"/></linearGradient></defs>'
+        f'<rect x="{left}" y="{y}" width="120" height="8" fill="url(#ink-scale)" '
+        'stroke="currentColor" stroke-width="0.5"/>'
+        f'<text x="{left}" y="{y + 22}" fill="currentColor">0</text>'
+        f'<text x="{left + 120}" y="{y + 22}" text-anchor="end" fill="currentColor">1</text>'
+        f'<text x="{left + 132}" y="{y + 8}" fill="currentColor">{what}</text>'
+    )
 
 
 def _legend(left: int, y: int, bound: float, what: str) -> str:
@@ -648,16 +826,24 @@ def _node_place(node: dict[str, Any], n_layers: int) -> tuple[int, float | None]
     return 1 + 2 * layer, float(node.get("head") or 0)
 
 
-def edge_graph_svg(summary: dict[str, Any], top: int = GRAPH_EDGES) -> str:
+def edge_graph_svg(
+    summary: dict[str, Any], top: int = GRAPH_EDGES, only: list[int] | None = None
+) -> str:
     """The strongest edges drawn between the model's nodes, layers left to right: each edge in
     the effect colors on a symmetric scale (with a legend), wider when stronger, the strongest on
     top where edges cross. A head's query, key and value inputs end at the top, middle and bottom
-    of it."""
+    of it. ``only``: the edges that may be drawn (an ACDC run's circuit), by index."""
     model = summary.get("model") or {}
     sites = [s for s in summary["sites"] if s.get("edge") and s["effect"]["mean"] is not None]
+    if only is not None:
+        chosen = set(only)
+        sites = [s for s in sites if s["index"] in chosen]
     strongest = sorted(sites, key=lambda s: (-abs(s["effect"]["mean"]), s["index"]))[:top]
     n_layers = int(model.get("n_layers") or 1)
     n_heads = int(model.get("n_heads") or 1)
+    # With grouped-query attention a key or value is a key/value head's, read by every query head
+    # of its group: its edges end in the middle of the group.
+    group = max(1, n_heads // int(model.get("n_key_value_heads") or n_heads))
     columns = 2 * n_layers + 2
     left, right, top_pad = 40, 24, 16
     width = max(640, 36 * columns + left + right)
@@ -666,6 +852,11 @@ def edge_graph_svg(summary: dict[str, Any], top: int = GRAPH_EDGES) -> str:
     step = (width - left - right) / max(1, columns - 1)
     bound = max((abs(s["effect"]["mean"]) for s in strongest), default=1.0) or 1.0
     esc = html.escape
+    legend = (
+        "normalized change in the metric when ACDC removed the edge"
+        if summary.get("acdc")
+        else "estimated normalized effect of patching the edge alone"
+    )
 
     def place(node: dict[str, Any], inp: str | None = None) -> tuple[float, float]:
         col, head = _node_place(node, n_layers)
@@ -683,12 +874,17 @@ def edge_graph_svg(summary: dict[str, Any], top: int = GRAPH_EDGES) -> str:
         e = s["edge"]
         receiver = e["receiver"]
         x1, y1 = place(e["sender"])
+        shared = receiver.get("input") in ("k", "v") and group > 1
         x2, y2 = place(
             {"kind": "logits"}
             if receiver["kind"] == "logits"
             else {"kind": "mlp", "layer": receiver["layer"]}
             if receiver["kind"] == "mlp"
-            else {"kind": "head", "layer": receiver["layer"], "head": receiver["head"]},
+            else {
+                "kind": "head",
+                "layer": receiver["layer"],
+                "head": receiver["head"] * group + (group - 1) / 2 if shared else receiver["head"],
+            },
             receiver.get("input"),
         )
         mean = s["effect"]["mean"]
@@ -732,8 +928,7 @@ def edge_graph_svg(summary: dict[str, Any], top: int = GRAPH_EDGES) -> str:
         f'<text x="{left + 60}" y="{ly + 22}" text-anchor="middle" fill="currentColor">0</text>'
         f'<text x="{left + 120}" y="{ly + 22}" text-anchor="end" fill="currentColor">'
         f"{_fmt(bound, 2)}</text>"
-        f'<text x="{left + 132}" y="{ly + 8}" fill="currentColor">estimated normalized effect '
-        "of patching the edge alone</text></svg>"
+        f'<text x="{left + 132}" y="{ly + 8}" fill="currentColor">{legend}</text></svg>'
     )
     return "".join(parts)
 
@@ -819,10 +1014,30 @@ def curve_svg(curve: dict[str, Any], n_edges: int) -> str:
     return "".join(parts)
 
 
+def _acdc_html(summary: dict[str, Any], ci_level: int) -> str:
+    """An ACDC run's circuit, drawn, with how many edges it kept and how faithful it is."""
+    acdc = summary["acdc"]
+    f = acdc.get("faithfulness") or {}
+    drawn = min(GRAPH_EDGES, acdc["n_kept"])
+    some = f"the {drawn} with the largest changes" if drawn < acdc["n_kept"] else "each"
+    return (
+        "<section><h2>The circuit ACDC found, layers left to right</h2><figure>"
+        f"{edge_graph_svg(summary, only=acdc['kept'])}<figcaption>The {acdc['n_kept']:,} edges "
+        f"ACDC kept of {acdc['n_edges']:,}, {some} drawn in the color of the change its removal "
+        f"made when it was tested. Hover an edge for its {ci_level}% interval.</figcaption>"
+        "</figure><p class='lede'>The circuit's faithfulness, the share of the gap from the "
+        f"{summary['reference']} run (0) to the {summary['receiver']} run with every edge (1) "
+        f"that it keeps: {_fmt(f.get('mean'), sign=False)} ({ci_level}% interval "
+        f"{_fmt(f.get('lo'), sign=False)} to {_fmt(f.get('hi'), sign=False)}).</p></section>"
+    )
+
+
 def _edges_html(summary: dict[str, Any], ci_level: int, verification: dict[str, Any] | None) -> str:
     """An edge attribution run's graph, its faithfulness curve, and its estimates against path
-    patching when a verification ran."""
+    patching when a verification ran; an ACDC run's circuit."""
     esc = html.escape
+    if summary.get("acdc"):
+        return _acdc_html(summary, ci_level)
     edges = summary.get("edges") or {}
     n_edges = edges.get("n_edges", len(summary["sites"]))
     out = (
@@ -952,27 +1167,39 @@ table.continuations tr.control th, table.continuations tr.control td { color: va
 """
 
 
-def _site_rows(sites: list[dict[str, Any]], ci_level: int) -> str:
+def _site_rows(sites: list[dict[str, Any]], ci_level: int, kept: set[int] | None = None) -> str:
+    """The sites' statistics as a table. ``kept``: an ACDC run's circuit, whose edges the table
+    marks kept and every other edge removed. Its values are the changes the removals made, between
+    circuits rather than patched runs of the whole model, so it counts no sign flips."""
     esc = html.escape
     rows = []
     for s in sites:
         band = s.get("band") or {}
+        circuit = "" if kept is None else f"<td>{'kept' if s['index'] in kept else 'removed'}</td>"
+        flips = "" if kept is not None else f'<td class="num">{s.get("sign_flips", "—")}</td>'
         rows.append(
             "<tr>"
             f"<td>{esc(s['label'])}</td>"
+            f"{circuit}"
             f'<td class="num">{_fmt(s["effect"]["mean"])}</td>'
             f'<td class="num">{_fmt(s["effect"]["lo"])} to {_fmt(s["effect"]["hi"])}</td>'
             f'<td class="num">'
             f"{_fmt(band.get('lo')) + ' to ' + _fmt(band.get('hi')) if band else '—'}</td>"
             f'<td class="num">{_fmt(s.get("q"), 3, sign=False)}</td>'
-            f'<td class="num">{s.get("sign_flips", "—")}</td>'
+            f"{flips}"
             f'<td class="num">{s.get("n", "—")}</td>'
             "</tr>"
         )
+    head = (
+        "<th>Site</th><th class='num'>Effect</th>"
+        if kept is None
+        else "<th>Edge</th><th>Circuit</th><th class='num'>Change when removed</th>"
+    )
+    flips_head = "" if kept is not None else "<th class='num'>Sign flips</th>"
     return (
-        "<table><thead><tr><th>Site</th><th class='num'>Effect</th>"
+        f"<table><thead><tr>{head}"
         f"<th class='num'>{ci_level}% interval</th><th class='num'>Band, all sites</th>"
-        "<th class='num'>q-value</th><th class='num'>Sign flips</th><th class='num'>n</th>"
+        f"<th class='num'>q-value</th>{flips_head}<th class='num'>n</th>"
         f"</tr></thead><tbody>{''.join(rows)}</tbody></table>"
     )
 
@@ -1043,6 +1270,12 @@ def run_report(
     esc = html.escape
     sites = [s for s in summary["sites"] if s["effect"]["mean"] is not None]
     strongest = sorted(sites, key=lambda s: -abs(s["effect"]["mean"]))
+    # An ACDC run lists its circuit first, each edge marked kept or removed.
+    kept = set(summary["acdc"]["kept"]) if summary.get("acdc") else None
+    if kept is not None:
+        strongest = [s for s in strongest if s["index"] in kept] + [
+            s for s in strongest if s["index"] not in kept
+        ]
     ci_level = round(spec.statistics.ci * 100)
     metric = summary.get("metric") or {}
     baseline = summary.get("baseline") or {}
@@ -1062,7 +1295,18 @@ def run_report(
             _fmt((baseline.get("gap") or {}).get("mean"), 2, sign=False),
         ),
     ]
-    if strongest:
+    acdc = summary.get("acdc")
+    if acdc:
+        f = acdc.get("faithfulness") or {}
+        figures.append(("Edges kept", f"{acdc['n_kept']:,} of {acdc['n_edges']:,}"))
+        figures.append(
+            (
+                "Faithfulness of the circuit",
+                f"{_fmt(f.get('mean'), 2, sign=False)} [{_fmt(f.get('lo'), 2, sign=False)}, "
+                f"{_fmt(f.get('hi'), 2, sign=False)}]",
+            )
+        )
+    elif strongest:
         top = strongest[0]
         figures.append(
             ("Strongest effect", f"{esc(top['label'])} {_fmt(top['effect']['mean'], 2)}")
@@ -1096,11 +1340,20 @@ def run_report(
     )
     if layout.get("kind") == "edges":
         map_html = _edges_html(summary, ci_level, verification)
-    edges = summary.get("edges") or {}
+    edges = summary.get("edges") or summary.get("acdc") or {}
     unit = "edges" if layout.get("kind") == "edges" else "sites"
+    listed = (
+        f"The circuit's edges and the strongest removed, {len(summary['sites']):,} of"
+        if summary.get("acdc")
+        else f"The {len(summary['sites']):,} strongest of"
+    )
+    strongest_heading = (
+        "The edges ACDC kept, then the largest changes it removed"
+        if kept is not None
+        else f"The strongest {unit}"
+    )
     every = (
-        f"The {len(summary['sites']):,} strongest of {edges['n_edges']:,} edges (edges.parquet "
-        "holds every edge's statistics)"
+        f"{listed} {edges['n_edges']:,} edges (edges.parquet holds every edge's statistics)"
         if edges and edges["n_edges"] > len(summary["sites"])
         else f"The {len(summary['sites'])} {unit} that finished"
         if partial_of(summary)
@@ -1180,15 +1433,17 @@ def run_report(
         f"{notes}"
         f"<section class='flush'><dl class='figures'>{figure_html}</dl></section>"
         f"{map_html}"
-        f"<section><h2>The strongest {unit}</h2>{_site_rows(strongest[:STRONGEST], ci_level)}"
-        f"<p class='muted'>Effects are normalized: 1 is as far as switching to the other prompt, "
+        f"<section><h2>{strongest_heading}</h2>"
+        f"{_site_rows(strongest[:STRONGEST], ci_level, kept)}"
+        f"<p class='muted'>{'Changes' if kept is not None else 'Effects'} are normalized: 1 is as "
+        "far as switching to the other prompt, "
         f"0 is no change. The band holds for every {unit[:-1]} of the sweep at once; the q-value "
         f"is the share of false findings expected among {unit} this strong.</p></section>"
         f"{_continuations_html(continuations)}"
         f"<section class='methods'><h2>Methods</h2>{methods}</section>"
         + (f"<section><h2>Notes from the run</h2><ul>{warnings}</ul></section>" if warnings else "")
         + f"<section><h2>Every {unit[:-1]}</h2><details><summary>{every}</summary>"
-        + f"{_site_rows(summary['sites'], ci_level)}</details></section>"
+        + f"{_site_rows(summary['sites'], ci_level, kept)}</details></section>"
         f"<section><h2>Where it came from</h2><dl class='provenance'>{provenance_html}</dl>"
         f"<details><summary>The spec</summary><pre>{esc(spec.to_json())}</pre></details></section>"
         f"<footer>Made with Logogram {esc(__version__)}. The per-prompt values behind every "

@@ -23,10 +23,14 @@ export function senderPlace(s: EdgeSenderSpec): NodePlace {
   return { column: 1 + 2 * s.layer, head: s.head };
 }
 
-export function receiverPlace(r: PathReceiverSpec, nLayers: number): NodePlace {
+/** Where a receiver is drawn. With grouped-query attention (`group` query heads to a key/value
+ * head), a key or value is its key/value head's, read by every query head of its group: it is
+ * drawn in the middle of the group. */
+export function receiverPlace(r: PathReceiverSpec, nLayers: number, group = 1): NodePlace {
   if (r.kind === "logits") return { column: graphColumns(nLayers) - 1, head: null };
   if (r.kind === "mlp") return { column: 2 + 2 * r.layer, head: null };
-  return { column: 1 + 2 * r.layer, head: r.head };
+  const shared = r.input !== "q" && group > 1;
+  return { column: 1 + 2 * r.layer, head: shared ? r.head * group + (group - 1) / 2 : r.head };
 }
 
 /** Which input of a head an edge ends at, as an offset in rows: the query above the head, the

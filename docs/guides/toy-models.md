@@ -69,10 +69,12 @@ edge not named gives 0.
 | Integrated gradients | L0 H2: 0.47 with 8 steps, 0.92 with 16, 0.999 with 32 | the upstream heads stay near 0, even with 64 steps |
 | Edge attribution, one gradient (EAP) | the edge L1 H1 → logits, 1.0 exactly; edges into queries and keys about 0 | the edge L3 H0 → logits, 1.0 exactly; edges into queries and keys about 0 |
 | Edge attribution with 32 steps (EAP-IG) | L0 H2 → L1 H1's key, about 1.0 | |
+| [ACDC](../concepts/acdc.md) | with the logit difference and a threshold of 1 logit (the gap is 20), in either direction: it keeps exactly the embeddings → L0 H2's value, L0 H2 → L1 H1's key and L1 H1 → the logits, 3 of 110 edges, each a change of 1.0 when it was removed; faithfulness 1.0 | with the KL divergence from the clean prompt's prediction and a threshold of 0.1 nats (the gap is about 10): it keeps exactly the four edges path patching finds, 4 of 479, each a change of 1.0; faithfulness 1.0 |
 
 Gradients miss what the planted heads do through their attention. Each planted head attends to
 its target with all but 10⁻⁸ of its attention, so the gradient through its softmax is about
-e⁻²⁰. A patch moves the attention all the way regardless.
+e⁻²⁰. A patch moves the attention all the way regardless, and so does ACDC's removal of an edge,
+at the cost of a forward pass for every edge.
 
 This is the failure that [verifying estimates by patching](../concepts/attribution-patching.md)
 and [by path patching](../concepts/edge-attribution.md) exists to catch. On these models you can

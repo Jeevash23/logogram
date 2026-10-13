@@ -192,3 +192,99 @@ def test_look_lists_the_features_that_fire_with_an_sae(tiny_backend, tmp_path):
     assert report["first_real_token"] == 1
     added = {"features", "active", "first_real_token"}
     assert {k: v for k, v in report.items() if k not in added} == plain
+
+
+def test_a_model_that_isnt_the_specs_is_refused_naming_each_difference(
+    tiny_backend, project, spec_factory, monkeypatch
+):
+    import torch
+
+    def no_second_copy(*args, **kwargs):
+        raise AssertionError("another copy of the model was loaded")
+
+    monkeypatch.setattr("logogram.runner.default_provider", no_second_copy)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    model = {
+        "id": "tiny-gpt2",
+        "revision": "other",
+        "dtype": "bfloat16",
+        "device": "cuda",
+        "process_weights": False,
+    }
+    spec = spec_factory(model=model)
+    before = sorted(p.name for p in project.experiments_dir.iterdir())
+    with pytest.raises(lg.api.LogogramError) as refused:
+        lg.run(spec, project, model=tiny_backend)
+    message = str(refused.value)
+    assert message.startswith("The model passed to run() isn't the one the spec names: ")
+    for clause in (
+        "it is at revision test, and the spec pins other",
+        "it runs in float32, and the spec in bfloat16",
+        "it is on cpu, and the spec's device, cuda, isn't available here",
+        "its weights are processed, and the spec's aren't",
+        "lg.with_model(spec, model)",
+        "pass no model to load the spec's own",
+    ):
+        assert clause in message
+    # Nothing ran: no folder was made, and no model was loaded.
+    assert sorted(p.name for p in project.experiments_dir.iterdir()) == before
+    other = spec_factory(model={"id": "someone/else", "revision": None, "device": "auto"})
+    with pytest.raises(lg.api.LogogramError, match="it is tiny-gpt2 from Hugging Face, and the "
+                       "spec names someone/else from Hugging Face"):  # fmt: skip
+        lg.run(other, project, model=tiny_backend)
+
+    # The spec, on this model: its model is the one loaded, exactly as it was loaded.
+    mine = lg.with_model(spec, tiny_backend)
+    assert mine.model.model_dump() == {
+        "id": "tiny-gpt2",
+        "source": "hub",
+        "revision": "test",
+        "sha256": None,
+        "dtype": "float32",
+        "device": "cpu",
+        "process_weights": True,
+    }
+    assert mine.model_dump(exclude={"model"}) == spec.model_dump(exclude={"model"})
+    run = lg.run(mine, project, model=tiny_backend)
+    assert run.status == "finished" and run.spec.model == mine.model
+    # A model loaded with device "auto" is named so: the device it was loaded with.
+    monkeypatch.setattr(tiny_backend, "requested_device", "auto", raising=False)
+    assert lg.with_model(spec, tiny_backend).model.device == "auto"
+    assert lg.with_model(spec.model_dump(mode="json"), tiny_backend).model.device == "auto"
+
+
+def test_the_runs_made_from_a_run_reuse_its_model_or_refuse_another(
+    tiny_backend, project, spec_factory
+):
+    import dataclasses
+
+    from logogram.backends.transformer_lens import TransformerLensBackend
+
+    estimate = lg.run(
+        spec_factory(
+            experiment={
+                "kind": "attribution_patching",
+                "direction": "clean_to_corrupt",
+                "method": "gradient",
+                "steps": None,
+            }
+        ),
+        project,
+        model=tiny_backend,
+    )
+    # The same weights, but in another dtype as far as specs can tell.
+    other = TransformerLensBackend(
+        tiny_backend.bridge, dataclasses.replace(tiny_backend.info, dtype="bfloat16")
+    )
+    with pytest.raises(lg.api.LogogramError, match=r"passed to verify_run\(\).*bfloat16"):
+        lg.verify_run(estimate, top=2, model=other)
+    patching = {"kind": "activation_patching", "direction": "clean_to_corrupt"}
+    with pytest.raises(lg.api.LogogramError, match=r"passed to check_robustness\(\)"):
+        lg.check_robustness(estimate, experiment=patching, model=other)
+    with pytest.raises(lg.api.LogogramError, match=r"passed to sweep\(\)"):
+        lg.sweep(estimate, field="statistics.seed", values=[1, 2], model=other)
+    # The model the run was made with is reused, given or not.
+    assert lg.verify_run(estimate, top=2, model=tiny_backend).status == "finished"
+    swept = lg.sweep(estimate, field="statistics.seed", values=[1, 2])
+    assert [r.status for r in swept] == ["finished", "finished"]
+    assert all(r.model is tiny_backend for r in swept)

@@ -24,13 +24,13 @@ const DETAILED: FormState = {
   baseline: { kind: "resample", pool: "corrupt", donors: 4, seed: 3 },
   scope: { kind: "sites", sites: [{ kind: "head", layer: 9, head: 6, position: { kind: "index", index: -1 } }, { kind: "resid_post", layer: 3, head: null, position: { kind: "label", label: "S2" } }] },
   pathReceivers: [{ kind: "head", layer: 10, head: 7, input: "q" }, { kind: "logits" }],
-  predictions: { method: "final_norm_logit_lens", prompt_index: 2, which: "clean", position: { kind: "index", index: 4 }, top_k: 5 },
+  predictions: { method: "final_norm_logit_lens", lens: null, prompt_index: 2, which: "clean", position: { kind: "index", index: 4 }, top_k: 5 },
   atpMethod: "integrated_gradients",
   atpSteps: 24,
   metric: "kl",
   klTarget: "corrupt",
   cluster: "template",
-  saeRef: { repo: "owner/sae", path: "layer_9", revision: null },
+  saeRef: { repo: "owner/sae", path: "layer_9", revision: null, source: "hub", sha256: null },
   limit: 12,
   prependBos: false,
   chatTemplate: { kind: "assistant_prefix", system: "Answer in one word.", user: "Finish the sentence." },
@@ -135,6 +135,22 @@ test("a form stored before the metric, clusters, integrated gradients, local mod
   const half = olderForm();
   (half.form as Record<string, unknown>).scope = { kind: "features", position: { kind: "last" }, top: 50, seed: 3 };
   expect(parseStoredForm(JSON.stringify(half))).toBeNull();
+});
+
+test("a form stored before SAEs and lenses were trained in the project names a published SAE and reads the logit lens", () => {
+  const data = JSON.parse(serializeForm(DETAILED, 3));
+  delete data.form.saeRef.source;
+  delete data.form.saeRef.sha256;
+  delete data.form.predictions.lens;
+  expect(parseStoredForm(JSON.stringify(data))?.form).toEqual(DETAILED);
+  // An SAE trained in the project and a tuned lens read back exactly.
+  const trained: FormState = {
+    ...DETAILED,
+    saeRef: { repo: "my-sae", path: "saes/my-sae", revision: null, source: "project", sha256: "a".repeat(64) },
+    predictions: { ...DETAILED.predictions!, method: "tuned_lens", lens: { name: "my-lens", sha256: "b".repeat(64) } },
+  };
+  expect(parseStoredForm(serializeForm(trained, 1))?.form).toEqual(trained);
+  expect(parseStoredForm(serializeForm({ ...trained, saeRef: { ...trained.saeRef!, source: "disk" } } as unknown as FormState, 1))).toBeNull();
 });
 
 test("a form stored before steering had a direction steers along the mean difference, without continuations", () => {

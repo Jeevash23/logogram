@@ -12,7 +12,7 @@ import math
 import re
 import threading
 import warnings
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from importlib.metadata import version
 from pathlib import Path
@@ -812,6 +812,20 @@ class TransformerLensBackend(ModelBackend):
         tokens = [self.token_str(i) for i in ids]
         return Tokenized(ids=ids, tokens=tokens, offsets=offsets)  # type: ignore[arg-type]
 
+    def tokenize_many(self, texts: Sequence[str], prepend_bos: bool) -> list[list[int]]:
+        if not texts:
+            return []
+        bos = self.bos_token_id
+        if prepend_bos and bos is None:
+            raise BackendError(
+                "This model's tokenizer has no beginning-of-sequence token. Set prepend_bos to "
+                "false."
+            )
+        # One call for every text: the same ids as tokenize gives, one text at a time.
+        encoded = self.tokenizer(list(texts), add_special_tokens=False)["input_ids"]
+        first = [int(bos)] if prepend_bos and bos is not None else []
+        return [first + [int(i) for i in ids] for ids in encoded]
+
     @property
     def chat_template(self) -> str | None:
         return self._chat_template
@@ -867,11 +881,13 @@ class TransformerLensBackend(ModelBackend):
 
     # -- forward passes ----------------------------------------------------------------------
 
-    def logits(self, tokens: torch.Tensor, patch: Patches = None, keep: int = 1) -> torch.Tensor:
+    def logits(
+        self, tokens: torch.Tensor, patch: Patches = None, keep: int = 1, grad: bool = False
+    ) -> torch.Tensor:
         kwargs: dict[str, Any] = {"return_type": "logits"}
         if self._logits_to_keep:
             kwargs["logits_to_keep"] = keep
-        with self.lock, torch.no_grad():
+        with self.lock, torch.enable_grad() if grad else torch.no_grad():
             bridge = self._bridge()
             tokens = tokens.to(self.device)
             hooks = _patch_hooks(patch)
@@ -880,6 +896,42 @@ class TransformerLensBackend(ModelBackend):
             else:
                 logits = bridge.run_with_hooks(tokens, fwd_hooks=hooks, **kwargs)
             return logits[:, -keep:, :].float()
+
+    def logits_and_reads(
+        self,
+        tokens: torch.Tensor,
+        patch: Patches,
+        keep: int,
+        reads: list[tuple[str, int]],
+    ) -> tuple[torch.Tensor, dict[tuple[str, int], torch.Tensor]]:
+        seen: dict[tuple[str, int], torch.Tensor] = {}
+
+        def read(site: tuple[str, int]) -> Callable[..., torch.Tensor]:
+            def fn(act: torch.Tensor, hook: Any = None) -> torch.Tensor:
+                seen[site] = act.detach()
+                return act
+
+            return fn
+
+        # A read at a patched hook comes after the patch: _combine keeps the order given.
+        hooks = _combine(
+            _patch_hooks(patch)
+            + [(hook_name(kind, layer), read((kind, layer))) for kind, layer in reads]
+        )
+        kwargs: dict[str, Any] = {"return_type": "logits"}
+        if self._logits_to_keep:
+            kwargs["logits_to_keep"] = keep
+        with self.lock, torch.no_grad():
+            logits = self._bridge().run_with_hooks(
+                tokens.to(self.device), fwd_hooks=hooks, **kwargs
+            )
+            missing = [site for site in reads if site not in seen]
+            if missing:
+                raise BackendError(
+                    f"{self.info.id} never computed {missing[0][0]} in layer {missing[0][1]}, so it "
+                    "can't be read there."
+                )
+            return logits[:, -keep:, :].float(), seen
 
     def capture(
         self, tokens: torch.Tensor, sites: list[tuple[str, int]]
@@ -1128,16 +1180,14 @@ class TransformerLensBackend(ModelBackend):
             raise BackendError(
                 f"{info.id}'s heads don't add up to what its attention writes (it normalizes after "
                 f"combining them, or this couldn't be measured when it loaded), {why}. Edge "
-                "attribution needs a model whose heads each write into the residual stream, such "
-                "as GPT-2 or Pythia."
+                "attribution and ACDC need a model whose heads each write into the residual "
+                "stream, such as GPT-2, Pythia, Llama or Qwen 2."
             )
         kv = int(info.extra.get("n_key_value_heads") or info.n_heads)
-        if kv != info.n_heads:
+        if kv < 1 or info.n_heads % kv:
             raise BackendError(
-                f"{info.id} shares each key and value among {info.n_heads // kv} heads, so a single "
-                "head's key or value input doesn't exist on its own, and its graph would need edges "
-                "into shared inputs, which Logogram doesn't build yet. Use a model whose heads "
-                "each read their own keys and values, such as GPT-2 or Pythia."
+                f"{info.id} has {info.n_heads} heads and {kv} key/value heads a layer, which don't "
+                f"divide into groups of query heads, {why}."
             )
         bridge = self._bridge()
         probe = _probe_tokens(info.d_vocab, str(bridge.cfg.device))
@@ -1201,16 +1251,18 @@ class TransformerLensBackend(ModelBackend):
 
     def _separate_copies(self, bridge: Any, probe: torch.Tensor) -> float:
         """Move one head's query, key or value copy in the last layer: that head's query, key or
-        value (its projection of the copy) must change, and no other head's. The largest change
-        of another head, relative to the moved head's, measured three times (q, k, v). The head
-        moved is the first whose projection responds: a head with no query weights (one that
-        attends evenly) reads its copy without changing."""
+        value (its projection of the copy) must change, and no other head's. With grouped-query
+        attention a key or value copy is a key/value head's, and the heads compared are the
+        key/value heads. The largest change of another head, relative to the moved head's,
+        measured three times (q, k, v). The head moved is the first whose projection responds: a
+        head with no query weights (one that attends evenly) reads its copy without changing."""
         layer = self.info.n_layers - 1
-        heads = self.info.n_heads
+        kv = int(self.info.extra.get("n_key_value_heads") or self.info.n_heads)
         generator = torch.Generator(device="cpu").manual_seed(0)
         worst = 0.0
         for part in ("q", "k", "v"):
-            name = HOOKS[part].format(layer=layer)  # [B, pos, H, d_head]
+            heads = self.info.n_heads if part == "q" else kv
+            name = HOOKS[part].format(layer=layer)  # [B, pos, H (or key/value heads), d_head]
             _, base = bridge.run_with_cache(probe, names_filter=[name])
             before = base[name].float()
             shape = (probe.shape[0], probe.shape[1], self.info.d_model)
@@ -1577,7 +1629,28 @@ class TransformerLensBackend(ModelBackend):
             w_o = float64(self._bridge().blocks[layer].attn.W_O.detach())  # [H, d_head, d_model]
             return torch.einsum("khd,hdm->km", float64(z).to(w_o.device), w_o).cpu()
 
-    def layer_logits(self, tokens: torch.Tensor, position: int, row: int) -> torch.Tensor:
+    def read_out(self, residual: torch.Tensor) -> torch.Tensor:
+        if self.info.extra.get("prediction_method") != "final_norm_logit_lens":
+            raise BackendError(
+                "Reading the residual stream into logits needs the model's final normalization "
+                "and unembedding to reproduce its output, and for this model they didn't when it "
+                "loaded."
+            )
+        with self.lock:
+            bridge = self._bridge()
+            shape = residual.shape
+            stream = residual.to(device=self.device, dtype=DTYPES[self.info.dtype])
+            # As the logit lens reads a token: one position of a batch, [rows, 1, d_model].
+            logits = final_projection(bridge, stream.reshape(-1, 1, shape[-1]))
+            return logits.float().reshape(*shape[:-1], logits.shape[-1])
+
+    def layer_logits(
+        self,
+        tokens: torch.Tensor,
+        position: int,
+        row: int,
+        translators: Mapping[int, tuple[torch.Tensor, torch.Tensor]] | None = None,
+    ) -> torch.Tensor:
         if self.info.extra.get("prediction_method") != "final_norm_logit_lens":
             raise BackendError(
                 "Per-layer predictions need the model's final normalization and unembedding to "
@@ -1586,6 +1659,7 @@ class TransformerLensBackend(ModelBackend):
             )
         if not 0 <= position < tokens.shape[1] or not 0 <= row < tokens.shape[0]:
             raise ValueError("The prediction token position or batch row is out of range.")
+        lens = dict(translators or {})
         with self.lock, torch.no_grad():
             bridge = self._bridge()
             captured: dict[int, torch.Tensor] = {}
@@ -1596,6 +1670,11 @@ class TransformerLensBackend(ModelBackend):
                     # would implement attribution, not the logit lens. Keep the original
                     # batch shape and dtype through both modules, including learned biases.
                     residual = act[:, position : position + 1, :]
+                    if layer in lens:
+                        # A tuned lens's affine translator, in float32, before the readout.
+                        weight, bias = lens[layer]
+                        moved = residual.float() @ weight.to(act.device) + bias.to(act.device)
+                        residual = moved.to(act.dtype)
                     logits = final_projection(bridge, residual)
                     captured[layer] = logits[row, 0].detach().float().cpu()
                     return act
@@ -1657,9 +1736,11 @@ def full_device(device: str) -> str:
 
 
 def resolve_device(device: str) -> str:
-    """What a spec's model.device runs on here: "cpu", "mps", or one GPU by its index. "cuda" is
-    the default GPU (as torch's current device names it, normally GPU 0), so "cuda" and "cuda:0"
-    resolve alike there and a model loaded with either matches a spec that asks for the other."""
+    """What a device (a spec's model.device, or the one chosen in the app or passed to
+    ``load_model``) runs on here: "cpu", "mps", or one GPU by its index. "cuda" is the default GPU
+    (as torch's current device names it, normally GPU 0), so "cuda" and "cuda:0" resolve alike
+    there and a model loaded with either matches a spec that asks for the other. A device this
+    machine doesn't have is refused, saying what to choose instead."""
     if device == "auto":
         # Apple's MPS only when asked for: TransformerLens reports that it can give silently wrong
         # results, and Logogram hasn't been checked on it yet (see system.MPS_NOTE).
@@ -1667,8 +1748,8 @@ def resolve_device(device: str) -> str:
     if device_type(device) == "cuda":
         if not torch.cuda.is_available():
             raise BackendError(
-                "The spec asks for CUDA, but PyTorch can't see a CUDA GPU here. Run "
-                "`logogram doctor` for the fix, or set model.device to auto or cpu."
+                "CUDA was chosen, but PyTorch can't see a CUDA GPU here. Run `logogram doctor` "
+                "for the fix, or choose the device auto or cpu (model.device in a spec)."
             )
         if device == "cuda":
             return full_device(device)
@@ -1677,8 +1758,8 @@ def resolve_device(device: str) -> str:
         if index >= count:
             have = "one GPU, cuda:0" if count == 1 else f"{count} GPUs, cuda:0 to cuda:{count - 1}"
             raise BackendError(
-                f"The spec asks for GPU {index} ({device}), but this machine has {have}. Set "
-                "model.device to one of them, or to cuda for the default GPU; `logogram doctor` "
+                f"GPU {index} ({device}) was chosen, but this machine has {have}. Choose one of "
+                "them, or cuda for the default GPU (model.device in a spec); `logogram doctor` "
                 "lists them."
             )
         return f"cuda:{index}"
@@ -1686,10 +1767,38 @@ def resolve_device(device: str) -> str:
         getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()
     ):
         raise BackendError(
-            "The spec asks for Apple's MPS, which isn't available here. Set model.device to auto "
-            "or cpu."
+            "Apple's MPS was chosen, but it isn't available here. Choose the device auto or cpu "
+            "(model.device in a spec)."
         )
     return device
+
+
+def check_request(
+    model_id: str,
+    *,
+    revision: str | None,
+    dtype: str,
+    device: str,
+    source: str,
+    sha256: str | None,
+) -> str:
+    """What can be checked about loading a model before anything is downloaded or loaded: the
+    dtype, that the device is there, and for a local model that this machine has it and its folder
+    is still there. Returns the device as it resolves here. The app checks this before it closes
+    the model that is loaded, so a request that can't load (a GPU this machine lacks, say) leaves
+    that model loaded."""
+    if dtype not in DTYPES:
+        raise BackendError(f"Unknown dtype {dtype!r}; use float32, float16 or bfloat16.")
+    resolved = resolve_device(device)
+    if source == "local":
+        from logogram import local_models
+
+        if revision is not None:
+            raise BackendError(
+                "A local model has no revisions: its files are pinned by their hash."
+            )
+        local_models.registered_folder(model_id, sha256)
+    return resolved
 
 
 def load_model(
@@ -1718,16 +1827,12 @@ def load_model(
         if on_progress:
             on_progress({"stage": stage, **data})
 
-    if dtype not in DTYPES:
-        raise BackendError(f"Unknown dtype {dtype!r}; use float32, float16 or bfloat16.")
-    resolved_device = resolve_device(device)
+    resolved_device = check_request(
+        model_id, revision=revision, dtype=dtype, device=device, source=source, sha256=sha256
+    )
     if source == "local":
         from logogram import local_models
 
-        if revision is not None:
-            raise BackendError(
-                "A local model has no revisions: its files are pinned by their hash."
-            )
         emit("checking", model_id=model_id, done=0, total=0, file="")
 
         def on_check(done: int, total: int, file: str) -> None:
@@ -1786,6 +1891,7 @@ def load_model(
         except BackendError:
             backend.close()
             raise
+    backend.requested_device = device
     emit("ready")
     return backend
 
@@ -1811,8 +1917,22 @@ def release_memory() -> None:
         mps.empty_cache()
 
 
+def memory_name(device: str) -> str:
+    """The memory a device computes in, in words: "GPU memory", "unified memory" or "memory"."""
+    return {"cuda": "GPU memory", "mps": "unified memory"}.get(device_type(device), "memory")
+
+
+def analysis_out_of_memory_message(device: str | None) -> str:
+    """What an analysis that ran out of memory says (the app's Explore views, Your text)."""
+    where = memory_name(device) if device is not None else "memory"
+    return (
+        f"The analysis ran out of {where}. Run it on fewer prompts or with a smaller batch size "
+        "(or a shorter text), or load a smaller model or a 16-bit dtype, then try again."
+    )
+
+
 def out_of_memory_message(device: str, process_weights: bool) -> str:
-    where = {"cuda": "GPU memory", "mps": "unified memory"}.get(device_type(device), "memory")
+    where = memory_name(device)
     if process_weights:
         return (
             f"The model doesn't fit in {where} while its weights are processed: processing works "

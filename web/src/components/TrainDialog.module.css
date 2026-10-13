@@ -1,0 +1,150 @@
+/* Training an SAE or a tuned lens: the settings, what training would take, then its progress. */
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+}
+
+.grid3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px 14px;
+}
+
+@media (max-width: 600px) {
+  .grid,
+  .grid3 {
+    grid-template-columns: 1fr;
+  }
+}
+
+.grid input,
+.grid3 input,
+.grid select {
+  width: 100%;
+}
+
+.note {
+  font-size: var(--text-xs);
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+/* Every other setting: shown in one line, opened to change them. */
+.more > summary {
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: 560;
+  line-height: 1.5;
+}
+
+.summary {
+  display: block;
+  font-weight: 450;
+  font-size: var(--text-xs);
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.moreBody {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 12px;
+}
+
+/* What training would take, in words. */
+.plan {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.training {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.progress {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: var(--text-sm);
+}
+
+.progress p {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.done {
+  font-size: var(--text-sm);
+  font-weight: 560;
+}
+
+.curve {
+  min-width: 0;
+  padding-top: 6px;
+}
+
+.curve canvas {
+  display: block;
+  width: 100%;
+}
+
+.heading {
+  font-size: var(--text-sm);
+  font-weight: 560;
+  margin-bottom: 8px;
+}
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px 14px;
+  margin: 0 0 8px;
+}
+
+@media (max-width: 600px) {
+  .metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.metrics dt {
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+
+.metrics dd {
+  margin: 2px 0 0;
+  font-size: 24px;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.table th,
+.table td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.table thead th {
+  font-weight: 560;
+  color: var(--muted);
+  font-size: var(--text-xs);
+}

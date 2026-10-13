@@ -17,7 +17,9 @@ export function CancelRunDialog() {
   // Only a queue this server runs starts its next run when this one ends.
   const starts = useStore((st) => !st.queueRunner && (st.queueState === "waiting" || st.queueState === "running"));
   const paused = useStore((st) => st.queueState === "paused");
-  const running = job?.status === "running" && job.kind === "run" && !job.cancelling;
+  // A training is cancelled with nothing kept: the SAE or lens isn't written.
+  const training = job?.kind === "train_sae" || job?.kind === "train_lens";
+  const running = job?.status === "running" && (job.kind === "run" || training) && !job.cancelling;
   const run = useStore((st) => (st.job?.run_id ? st.runs.find((r) => r.id === st.job?.run_id) : undefined));
 
   // The run may end while the question is open: there is nothing left to cancel.
@@ -32,16 +34,22 @@ export function CancelRunDialog() {
       onOpenChange={(open) => {
         if (!open) close();
       }}
-      title="Cancel this run?"
-      keepLabel="Keep running"
-      confirmLabel="Cancel the run"
+      title={training ? "Cancel this training?" : "Cancel this run?"}
+      keepLabel={training ? "Keep training" : "Keep running"}
+      confirmLabel={training ? "Cancel the training" : "Cancel the run"}
       onConfirm={() => {
         close();
         void useStore.getState().cancelJob();
       }}
     >
-      {job && <>“{job.title}” {done === null ? "has started" : `is ${pct(done)} done`}. </>}
-      {keptText(run)} Its spec and any dataset snapshot stay in its folder, so you can run it again.
+      {training && job ? (
+        <>“{job.title}” is still going. Nothing it has done is kept: the {job.kind === "train_sae" ? "SAE" : "lens"} isn&rsquo;t written.</>
+      ) : (
+        <>
+          {job && <>“{job.title}” {done === null ? "has started" : `is ${pct(done)} done`}. </>}
+          {keptText(run)} Its spec and any dataset snapshot stay in its folder, so you can run it again.
+        </>
+      )}
       {starts && queued === 1 && " The run waiting in the queue starts next."}
       {starts && queued > 1 && ` The ${queued} runs waiting in the queue start next, one at a time.`}
       {paused && queued > 0 && " The queue is paused, so nothing starts after it."}

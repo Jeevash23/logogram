@@ -9,7 +9,8 @@ the app would make, and it lands in the project like any other::
     project = lg.open_project("~/Documents/Logogram/ioi-example")
     model = lg.load_model("openai-community/gpt2")   # or a local model, by the name it was added under
     spec = lg.load_spec(project.root / "experiments/ioi-head-patching/spec.json")
-    run = lg.run(spec, project, model=model)
+    run = lg.run(spec, project, model=model)  # reuses the model the spec names; another is refused
+    lg.with_model(spec, model)   # the spec, naming this model as it was loaded
     run.sites()          # one row per site: mean effect, interval, q-value, ...
     run.per_prompt()     # one row per site and prompt: everything the statistics came from
     run                  # in a notebook: the method, the strongest sites and a heatmap
@@ -19,8 +20,18 @@ the app would make, and it lands in the project like any other::
     seeds.table()        # the strongest sites at every value: do they keep their sign and size?
     lg.list_saes(model, "layer 8")    # published SAEs for the model, and what Logogram reads of them
     sae = lg.load_sae(release="gpt2-small-res-jb", sae_id="blocks.8.hook_resid_pre", model=model)
+    lg.train_sae(project, "sae.json", model=model)   # an SAE of your own, on a corpus of the project
+    lg.train_lens(project, "lens.json", model=model) # a tuned lens for the layer predictions
     toy = lg.toy_model("induction")   # a model whose circuit is known, with experiments to run
     toy.run("which-heads").sites()    # the planted heads at 1, every other head at 0
+    found = lg.run(acdc_spec, project, model=model)   # ACDC over the graph scope's edges
+    found.circuit()      # the edges it kept, the change each made when removed, its faithfulness
+    lg.import_corpus(project, "reviews", "reviews.csv", text_field="review", label_field="stars")
+    lg.top_examples(model, project, "reviews", {"kind": "neuron", "layer": 6, "neuron": 1234})
+    pcs = lg.principal_components(model, project, "datasets/ioi.jsonl", "resid_post:6", mark="side")
+    lg.save_direction(project, "pc1", pcs["components"][0], model=model, site="resid_post:6",
+                      method="pca")
+    acts = lg.activations(model, project, "reviews", ["resid_post:6"], "mean")  # NumPy arrays
 
 Tables come back as pandas DataFrames when pandas is installed, and as pyarrow Tables otherwise.
 """
@@ -29,6 +40,7 @@ from __future__ import annotations
 
 import html
 import json
+import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -41,16 +53,23 @@ from logogram.spec import Spec
 __all__ = [
     "Run",
     "Sweep",
+    "activations",
     "add_local_model",
     "check_robustness",
     "compare_runs",
     "continue_text",
     "create_project",
+    "delete_dataset",
+    "delete_project",
     "delete_run",
     "edge_verification",
+    "export_activations",
     "feature_writes",
     "generate",
     "head_kinds",
+    "import_corpus",
+    "list_corpora",
+    "list_directions",
     "list_local_models",
     "list_runs",
     "list_saes",
@@ -60,13 +79,24 @@ __all__ = [
     "load_spec",
     "load_sweep",
     "look",
+    "mean_difference",
     "open_example",
     "open_project",
+    "principal_components",
+    "read_corpus",
+    "read_direction",
     "remove_local_model",
+    "rename_dataset",
     "run",
+    "save_direction",
     "sweep",
+    "top_examples",
     "toy_model",
+    "train_lens",
+    "train_sae",
     "verify_run",
+    "with_model",
+    "write_corpus",
     "write_dataset",
 ]
 
@@ -81,8 +111,22 @@ def open_project(path: str | Path) -> Project:
 
 
 def create_project(parent: str | Path, name: str) -> Project:
-    """Create a project folder called after ``name`` inside ``parent``."""
+    """Create a project folder called after ``name`` inside ``parent``. ``project.rename(name)``
+    gives a project another name later (its folder keeps its own)."""
     return Project.create(parent, name)
+
+
+def delete_project(project: Project | str | Path) -> None:
+    """Delete a project's folder (a :class:`Project`, or its folder) and everything in it, for
+    good: its runs, drafts, datasets and queue. Refused while a run is in progress in it or its
+    queue is being run, and when the folder holds anything Logogram doesn't make there (it may
+    be your own folder), listing it. The project leaves the recent list."""
+    from logogram.project import delete_project as delete
+
+    try:
+        delete(project if isinstance(project, Project) else Project.read(project))
+    except ProjectError as exc:
+        raise LogogramError(str(exc)) from exc
 
 
 def open_example(example: str = "ioi-gpt2", parent: str | Path | None = None) -> Project:
@@ -109,8 +153,11 @@ def load_model(
     on_progress: Callable[[dict[str, Any]], None] | None = None,
     source: str | None = None,
 ) -> Any:
-    """Download (once) and load a model, checked as the app checks it. Pass it to :func:`run` to
-    reuse it across runs; every choice it was loaded with is recorded in each run's spec.
+    """Download (once) and load a model, checked as the app checks it. Pass it to :func:`run`
+    with specs that name it, to reuse it across runs. A spec names a model by its files (id and
+    revision, or a local model's hash), dtype, device and weight processing; one that names it
+    otherwise is refused, rather than run on another copy of its own model. :func:`with_model`
+    makes a spec name this model as it was loaded.
 
     ``model_id`` is a Hugging Face id, or the name a local model was added under (see
     :func:`add_local_model`): ``source`` says which ("hub" or "local"); by default a name this
@@ -230,7 +277,8 @@ class ToyModel:
                 f"The {self.name} toy has no experiment {experiment!r}. Its experiments are "
                 f"{', '.join(self.specs)}."
             )
-        return run(self.specs[experiment], self.project, model=self.model)
+        # On the toy as it was loaded (its device and dtype), which the run's spec records.
+        return run(with_model(self.specs[experiment], self.model), self.project, model=self.model)
 
 
 def _chat_template(value: Any) -> Any:
@@ -250,6 +298,7 @@ def load_sae(
     revision: str | None = None,
     release: str | None = None,
     sae_id: str | None = None,
+    project: Project | None = None,
 ) -> Any:
     """Download (once) and read a published SAE or transcoder at an exact revision, onto
     ``model``'s device: by its Hugging Face repository and folder, or by its SAELens release and
@@ -258,11 +307,33 @@ def load_sae(
     the SAE is its repository, folder and revision, which is what a spec records; without a
     revision, the repository's current commit is pinned. It is refused if Logogram can't read it
     exactly, was made for another model's sizes or reads a site the model doesn't have. Pass it to
-    :func:`run` with a spec that names it, or explore its features with :func:`feature_writes`."""
+    :func:`run` with a spec that names it, or explore its features with :func:`feature_writes`.
+
+    With ``project``, ``repo`` names an SAE trained in that project (saes/NAME, see
+    :func:`train_sae`), read from its files, nothing downloaded: ``load_sae("my-sae",
+    project=project, model=model)``. Its ``warnings`` say if it was trained on another model."""
     from logogram.features import check_sae_fits
     from logogram.sae import load_sae as load
-    from logogram.spec import SAERef
+    from logogram.spec import TRAINED_SAES, SAERef
 
+    if project is not None:
+        from logogram.sae_training import load_project_sae
+        from logogram.training import TrainingError
+
+        if repo is None or path or revision is not None or release or sae_id:
+            raise LogogramError(
+                "An SAE trained in the project is named by its name alone: load_sae(NAME, "
+                "project=project, model=model)."
+            )
+        ref = SAERef(
+            repo=repo, path=f"{TRAINED_SAES}/{repo}", revision=None, source="project", sha256=None
+        )
+        try:
+            sae = load_project_sae(project, ref, model.info.device, model.info)
+        except TrainingError as exc:
+            raise LogogramError(str(exc)) from exc
+        check_sae_fits(sae, model.info)
+        return sae
     if release is not None or sae_id is not None:
         if repo is not None or path:
             raise LogogramError(
@@ -281,9 +352,88 @@ def load_sae(
             "Name the SAE: its Hugging Face repository (and folder), or release= and sae_id= as "
             "SAELens names it."
         )
-    sae = load(SAERef(repo=repo, path=path, revision=revision), model.info.device)
+    sae = load(
+        SAERef(repo=repo, path=path, revision=revision, source="hub", sha256=None),
+        model.info.device,
+    )
     check_sae_fits(sae, model.info)
     return sae
+
+
+def _training(spec: Any, kind: Any) -> Any:
+    """A training spec from a dict, its JSON, a file, or the spec itself."""
+    if isinstance(spec, kind):
+        return spec
+    if isinstance(spec, dict):
+        return kind.model_validate(spec)
+    text = str(spec)
+    if text.lstrip().startswith("{"):
+        return kind.model_validate_json(text)
+    from logogram.fileio import JSON_LIMIT, read_limited
+
+    data = read_limited(Path(text).expanduser(), JSON_LIMIT, "A training spec is a few kilobytes.")
+    return kind.model_validate_json(data)
+
+
+def train_sae(
+    project: Project,
+    spec: Any,
+    *,
+    model: Any = None,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    """Train a TopK SAE in ``project``, as the app and ``logogram sae train`` do: on one site of
+    one layer, from a corpus of the project, deterministically, saved as saes/NAME in SAELens's
+    format. ``spec`` is a training spec (a dict, its JSON, a file, or a
+    :class:`logogram.sae_training.SAETrainingSpec`) that states every choice; ``model`` is reused
+    when it is the spec's model. ``on_progress`` hears each stage (reading, collecting, training
+    with the loss curve so far, measuring, writing). Returns its ``name``, ``path``, ``sha256``
+    (what specs pin it by), the ``spec`` as it ran and the ``metrics`` it measured: the loss curve
+    and, on the held-out texts, the variance explained, L0, the share of features that never fire
+    and the next-token loss recovered. Load it with ``load_sae(NAME, project=project,
+    model=model)``. See :mod:`logogram.sae_training`."""
+    from logogram.backends.base import BackendError
+    from logogram.sae_training import SAETrainingSpec
+    from logogram.sae_training import train_sae as train
+    from logogram.training import TrainingError
+
+    try:
+        trained = train(
+            _training(spec, SAETrainingSpec), project, backend=model, on_progress=on_progress
+        )
+    except (TrainingError, BackendError) as exc:
+        raise LogogramError(str(exc)) from exc
+    return trained.to_dict()
+
+
+def train_lens(
+    project: Project,
+    spec: Any,
+    *,
+    model: Any = None,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    """Train a tuned lens in ``project``, as the app and ``logogram lens train`` do: an affine
+    translator per layer, read through the model's final normalization and unembedding, trained
+    against the model's own next-token distribution on a corpus of the project, deterministically,
+    saved as lenses/NAME. ``spec`` is a training spec (a dict, its JSON, a file, or a
+    :class:`logogram.lenses.LensTrainingSpec`) that states every choice; ``model`` is reused when
+    it is the spec's model. Returns its ``name``, ``path``, ``sha256`` (what a spec's prediction
+    settings pin it by), the ``spec`` as it ran and the ``metrics`` it measured: the loss curve and
+    each layer's held-out KL divergence with the logit lens and with the tuned lens. See
+    :mod:`logogram.lenses`."""
+    from logogram.backends.base import BackendError
+    from logogram.lenses import LensTrainingSpec
+    from logogram.lenses import train_lens as train
+    from logogram.training import TrainingError
+
+    try:
+        trained = train(
+            _training(spec, LensTrainingSpec), project, backend=model, on_progress=on_progress
+        )
+    except (TrainingError, BackendError) as exc:
+        raise LogogramError(str(exc)) from exc
+    return trained.to_dict()
 
 
 def list_saes(model: Any, search: str = "") -> Any:
@@ -354,6 +504,44 @@ def load_spec(data: dict[str, Any] | str | Path) -> Spec:
     return Spec.from_path(Path(text).expanduser())
 
 
+def with_model(experiment: Spec | dict[str, Any], model: Any) -> Spec:
+    """The spec with its model replaced by ``model`` (from :func:`load_model`): its id and
+    source, the exact revision it loaded (or a local model's hash), its dtype, the device it was
+    loaded with and whether its weights are processed. ``run(with_model(spec, model), project,
+    model=model)`` runs the spec on that model, and the run's spec says so."""
+    from logogram.spec import ModelRef
+
+    specification = load_spec(experiment) if isinstance(experiment, dict) else experiment
+    info = model.info
+    ref = ModelRef(
+        id=info.id,
+        source=info.source,
+        revision=info.revision if info.source == "hub" else None,
+        sha256=info.sha256 if info.source == "local" else None,
+        dtype=info.dtype,
+        device=getattr(model, "requested_device", None) or info.device,
+        process_weights=info.process_weights,
+    )
+    return specification.model_copy(update={"model": ref})
+
+
+def _passed_model(model: Any, specification: Spec, what: str, fix: str) -> Any:
+    """``model``, when it is the model ``specification`` names, to be reused. One that isn't is
+    refused, saying how it differs and ``fix``, rather than another copy of the spec's own model
+    being loaded beside it. None passes: the spec's own model is loaded."""
+    from logogram.runner import model_differences
+
+    if model is None:
+        return None
+    differences = model_differences(model, specification.model)
+    if differences:
+        raise LogogramError(
+            f"The model passed to {what} isn't the one the spec names: {'; '.join(differences)}. "
+            f"{fix}"
+        )
+    return model
+
+
 def run(
     experiment: Spec | dict[str, Any],
     project: Project,
@@ -363,10 +551,20 @@ def run(
     on_event: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> Run:
     """Run a spec and write its experiment folder into ``project``, as the app does. ``model``
-    is reused when it matches the spec (otherwise the spec's model is loaded)."""
+    (from :func:`load_model`) is reused when it is the model the spec names, by its files,
+    dtype, device and weight processing. A model that isn't is refused, naming each difference:
+    pass ``with_model(spec, model)`` to run the spec on it, or no model to load the spec's
+    own."""
     from logogram.runner import run_spec
 
     experiment = load_spec(experiment) if isinstance(experiment, dict) else experiment
+    model = _passed_model(
+        model,
+        experiment,
+        "run()",
+        "Pass lg.with_model(spec, model) to run the spec on this model (the run's spec then "
+        "names it), or pass no model to load the spec's own.",
+    )
     outcome = run_spec(experiment, project, backend=model, sae=sae, on_event=on_event)
     if outcome.status != "finished":
         raise LogogramError(_ended(outcome, "The run"))
@@ -506,7 +704,8 @@ def list_runs(project: Project) -> list[dict[str, Any]]:
 def delete_run(project: Project, run: Run | str) -> None:
     """Delete a finished, failed or cancelled run, or a draft (a :class:`Run` or a run id): its
     folder and everything in it, for good. Archive a run to keep it out of the way instead. A run
-    in progress can't be deleted. Runs derived from it stay, and keep its id in their manifest."""
+    in progress, or a draft waiting in the queue, can't be deleted. Runs derived from it stay,
+    and keep its id in their manifest."""
     from logogram.history import delete_run as delete
 
     if isinstance(run, Run) and run.project.root != project.root:
@@ -564,6 +763,13 @@ def verify_run(estimated: Run, top: int = 10, *, model: Any = None) -> Run:
         variant = verification_spec(estimated.spec, estimated.summary, top)
     except ValueError as exc:
         raise LogogramError(str(exc)) from exc
+    if model is not None:
+        _passed_model(
+            model,
+            variant,
+            "verify_run()",
+            "Pass the model the run was made with, or no model to load it.",
+        )
     outcome = run_spec(
         variant,
         estimated.project,
@@ -608,6 +814,14 @@ def check_robustness(
     except ValueError as exc:
         raise LogogramError(str(exc)) from exc
     variant, change = robustness_spec(original.spec, experiment=experiment, dtype=dtype)
+    if model is not None:
+        _passed_model(
+            model,
+            variant,
+            "check_robustness()",
+            "Pass the model the rerun's spec names (in the dtype checked, for a dtype check), or "
+            "no model to load it.",
+        )
     outcome = run_spec(
         variant,
         original.project,
@@ -636,9 +850,11 @@ def sweep(
     commits, tags or branches, each run pinning its commit). A finished run stands in for its own
     value, which isn't run again. Returns the runs, one per value in the order given; a run that
     doesn't finish is kept with its status, and the next value runs."""
+    from logogram.runner import model_matches
     from logogram.sweeps import SweepError, plan_sweep, run_sweep
 
     original = None
+    passed = model
     if isinstance(experiment, Run):
         if project is not None and project.root != experiment.project.root:
             raise LogogramError(f"{experiment.id} belongs to another project.")
@@ -656,6 +872,17 @@ def sweep(
         plan = plan_sweep(project, specification, field, values, original=original)
     except SweepError as exc:
         raise LogogramError(str(exc)) from exc
+    # A model passed is reused by the runs that name it (a revision sweep's runs name one
+    # revision each); one that no run names is refused.
+    planned = [item.spec for item in plan.runs if item.spec is not None]
+    if passed is not None and planned and not any(model_matches(passed, s.model) for s in planned):
+        _passed_model(
+            passed,
+            planned[0],
+            "sweep()",
+            "Sweep lg.with_model(spec, model) to run on this model, or pass no model to load the "
+            "spec's own.",
+        )
     outcomes, last = run_sweep(plan, project, backend=model, on_event=on_event, sae=sae)
     runs = []
     for outcome in outcomes:
@@ -705,15 +932,584 @@ def generate(
 def write_dataset(
     project: Project, name: str, records: list[Any], *, overwrite: bool = False
 ) -> str:
-    """Write prompt pairs into the project's datasets/ folder; returns its path in the project."""
-    from logogram.datasets import check_dataset_name
+    """Write prompt pairs into the project's datasets/ folder; returns its path in the project.
+    ``overwrite`` replaces a dataset of the same name, unless a saved draft or a queued run names
+    it (they would fail, or run on other prompts); finished runs keep their own copy."""
+    from logogram.datasets import DatasetError, check_dataset_name, check_unused
     from logogram.datasets import write_dataset as write
 
     path = project.dataset_file(check_dataset_name(name))
-    if path.exists() and not overwrite:
-        raise LogogramError(f"{path.name} already exists. Pass overwrite=True to replace it.")
+    rel = path.relative_to(project.root).as_posix()
+    if os.path.lexists(path):
+        if not overwrite:
+            raise LogogramError(f"{path.name} already exists. Pass overwrite=True to replace it.")
+        try:
+            check_unused(project, rel, "replaced")
+        except DatasetError as exc:
+            raise LogogramError(str(exc)) from exc
     write(path, records)
-    return path.relative_to(project.root).as_posix()
+    return rel
+
+
+def delete_dataset(project: Project, name: str) -> str:
+    """Delete the dataset file ``name`` (such as ``ioi.jsonl``) from the project, for good;
+    returns the path it had. Runs that ran on it keep their own copy of its prompts, in
+    datasets/snapshots/. Refused while a saved draft or a queued run names it, naming them."""
+    from logogram.datasets import delete_dataset as delete
+
+    try:
+        return delete(project, name)
+    except ValueError as exc:  # DatasetError, ProjectError
+        raise LogogramError(str(exc)) from exc
+
+
+def rename_dataset(project: Project, name: str, new: str) -> str:
+    """Give the dataset file ``name`` the name ``new``; returns its new path in the project. Its
+    prompts, and so its hash, stay the same, and runs that ran on it keep their own copy. Refused
+    while a saved draft or a queued run names it, naming them, and when ``new`` is taken."""
+    from logogram.datasets import rename_dataset as rename
+
+    try:
+        return rename(project, name, new)
+    except ValueError as exc:  # DatasetError, ProjectError
+        raise LogogramError(str(exc)) from exc
+
+
+# -- corpora, top activations, representations and directions -----------------------------------
+
+
+def list_corpora(project: Project) -> list[dict[str, Any]]:
+    """The project's corpora (plain texts in its ``corpora/`` folder), by name: how many texts
+    each has, its labels, the hash of its file and where its texts came from; ``error`` says why
+    one can't be read. Import one with :func:`import_corpus` or write one with
+    :func:`write_corpus`."""
+    from logogram.corpora import list_corpora as listed
+
+    return listed(project)
+
+
+def read_corpus(project: Project, name: str, sha256: str | None = None) -> Any:
+    """A corpus of the project: its ``texts``, its ``records`` (each text with its label, id and
+    meta), ``labels()`` (the distinct labels, as text), the ``sha256`` of its file and ``meta``
+    (where its texts came from). With ``sha256``, it is refused unless its file still has that
+    hash."""
+    from logogram.corpora import CorpusError
+    from logogram.corpora import read_corpus as read
+
+    try:
+        return read(project, name, sha256)
+    except CorpusError as exc:
+        raise LogogramError(str(exc)) from exc
+
+
+def write_corpus(
+    project: Project,
+    name: str,
+    texts: Sequence[str],
+    labels: Sequence[Any] | None = None,
+    *,
+    overwrite: bool = False,
+) -> Any:
+    """Write ``texts`` as the corpus ``name``, each with the label at the same place in
+    ``labels`` (a string, a whole number or true/false) when they are given; empty texts are left
+    out. Returns the corpus (as :func:`read_corpus` does)."""
+    from logogram.corpora import CorpusError
+    from logogram.corpus_import import write_texts
+
+    try:
+        given = None if labels is None else list(labels)
+        return write_texts(project, name, list(texts), given, overwrite=overwrite).corpus
+    except CorpusError as exc:
+        raise LogogramError(str(exc)) from exc
+
+
+def import_corpus(
+    project: Project,
+    name: str,
+    path: str | Path | None = None,
+    *,
+    repo: str | None = None,
+    file: str | None = None,
+    revision: str | None = None,
+    dataset: str | None = None,
+    sides: str = "both",
+    label: str | None = None,
+    format: str | None = None,
+    split: str = "lines",
+    text_field: str = "text",
+    label_field: str | None = None,
+    limit: int | None = None,
+    overwrite: bool = False,
+) -> Any:
+    """Import texts as the corpus ``name``, from one of three places:
+
+    * ``path``, a file on this machine: Parquet, JSON Lines, a JSON array, CSV, TSV or text
+      (``format`` says which when its name doesn't; a text file is split into ``"lines"`` or
+      ``"paragraphs"``, as ``split`` says). The corpus records the file's name and hash, never
+      its folder.
+    * ``repo`` and ``file``, a file of a Hugging Face dataset, downloaded once at the exact
+      commit ``revision`` resolves to (the main branch when None), which the corpus records.
+    * ``dataset``, a project dataset's prompt pairs (``"datasets/ioi.jsonl"``): their
+      ``sides`` (``"clean"``, ``"corrupt"`` or ``"both"``), labelled by ``label``: ``"side"``,
+      or ``"meta:FIELD"`` for a field of their meta.
+
+    ``text_field`` and ``label_field`` name the field or column that holds each text and its
+    label (no label when None); rows without text are left out. ``limit`` keeps the first texts
+    (the first pairs, for a dataset). Returns the corpus (as :func:`read_corpus` does)."""
+    from logogram.backends.base import BackendError
+    from logogram.corpora import CorpusError
+    from logogram.corpus_import import import_file, import_hub, import_prompts
+
+    given = [path is not None, repo is not None, dataset is not None]
+    if sum(given) != 1:
+        raise LogogramError(
+            "Import from one place: a file's path, a Hugging Face dataset's repo and file, or a "
+            "project dataset."
+        )
+    try:
+        if path is not None:
+            done = import_file(
+                project,
+                name,
+                Path(path),
+                fmt=format,  # type: ignore[arg-type]
+                split=split,
+                text_field=text_field,
+                label_field=label_field,
+                limit=limit,
+                overwrite=overwrite,
+            )
+        elif repo is not None:
+            if not file:
+                raise LogogramError("Name the file of the dataset to import: file=...")
+            done = import_hub(
+                project,
+                name,
+                repo=repo,
+                path=file,
+                revision=revision,
+                text_field=text_field,
+                label_field=label_field,
+                limit=limit,
+                split=split,
+                overwrite=overwrite,
+            )
+        else:
+            done = import_prompts(
+                project,
+                name,
+                dataset=str(dataset),
+                sides=sides,  # type: ignore[arg-type]
+                label=label,
+                limit=limit,
+                overwrite=overwrite,
+            )
+    except (CorpusError, BackendError, ProjectError) as exc:
+        raise LogogramError(str(exc)) from exc
+    return done.corpus
+
+
+def _rows(
+    source: Any,
+    *,
+    sides: str,
+    mark: str | None,
+    limit: int | None,
+    max_tokens: int,
+) -> Any:
+    """What to read, from a dict as the app sends it, a dataset's path (``"datasets/x.jsonl"``)
+    or a corpus's name."""
+    from pydantic import TypeAdapter
+
+    from logogram.representations import CorpusRows, DatasetRows, Rows
+
+    if isinstance(source, DatasetRows | CorpusRows):
+        return source
+    if isinstance(source, dict):
+        # pydantic 2.14 types TypeAdapter's argument as a TypeForm, which the pyright CI pins
+        # doesn't see an Annotated alias as.
+        return TypeAdapter(Rows).validate_python(source)  # type: ignore[arg-type]
+    text = str(source).replace("\\", "/")
+    if text.startswith("corpora/") and text.endswith(".jsonl"):
+        return CorpusRows(
+            name=text[len("corpora/") : -len(".jsonl")], limit=limit, max_tokens=max_tokens
+        )
+    if text.endswith(".jsonl"):
+        return DatasetRows(path=text, sides=sides, mark=mark, limit=limit)  # type: ignore[arg-type]
+    return CorpusRows(name=text, limit=limit, max_tokens=max_tokens)
+
+
+def _sites(sites: Any) -> list[Any]:
+    """Sites as ``"KIND:LAYER"``, one or a list of them (or dicts, as the app sends them)."""
+    from logogram.representations import parse_site
+
+    try:
+        return [parse_site(s) for s in ([sites] if isinstance(sites, str | dict) else sites)]
+    except ValueError as exc:
+        raise LogogramError(str(exc)) from exc
+
+
+def _read(model: Any, project: Project, source: Any, prepend_bos: bool, **choices: Any) -> Any:
+    from logogram.corpora import CorpusError
+    from logogram.representations import load_rows
+
+    try:
+        with model.lock:
+            return load_rows(model, project, _rows(source, **choices), prepend_bos)
+    except (CorpusError, ProjectError, ValueError) as exc:
+        raise LogogramError(str(exc)) from exc
+
+
+def top_examples(
+    model: Any,
+    project: Project,
+    corpus: str,
+    unit: dict[str, Any],
+    *,
+    sae: Any = None,
+    texts: int | None = None,
+    max_tokens: int = 128,
+    prepend_bos: bool = True,
+    batch_size: int = 16,
+    top_k: int = 20,
+    context: int = 8,
+) -> dict[str, Any]:
+    """Where a unit is most active in the corpus ``corpus``, as the app's Corpus view shows it.
+    ``unit`` is ``{"kind": "neuron", "layer": 3, "neuron": 12}``, ``{"kind": "sae_feature",
+    "feature": 1234}`` (a feature of ``sae``, from :func:`load_sae`), ``{"kind": "direction",
+    "name": "sides"}`` (a saved direction, read at its site, or at ``"site": {"kind":
+    "resid_post", "layer": 6}``) or ``{"kind": "head", "layer": 9, "head": 9}`` (the length of
+    what the head writes into the residual stream).
+
+    The first ``texts`` texts (every text when None) are read, each cut to its first
+    ``max_tokens`` tokens, after the beginning-of-sequence token with ``prepend_bos`` (that token
+    is never counted). Returns the ``top_k`` tokens where the unit is largest (``top``), each with
+    ``context`` tokens on either side and the unit's value at each, for a signed unit (a direction
+    of one dimension) the ``top_k`` most negative (``bottom``), a ``histogram`` of its values, the
+    share of tokens where it is above zero (``active_share``), and the ``settings`` that made
+    them. Ties go to the earlier text, then the earlier token."""
+    from pydantic import TypeAdapter
+
+    from logogram.corpora import CorpusError
+    from logogram.directions import DirectionError, read_direction
+    from logogram.top_activations import DirectionUnit, Unit
+    from logogram.top_activations import top_examples as top
+
+    try:
+        # See _rows.
+        chosen = TypeAdapter(Unit).validate_python(unit)  # type: ignore[arg-type]
+        direction = None
+        if isinstance(chosen, DirectionUnit):
+            direction = read_direction(project, chosen.name)
+            if chosen.sha256 is not None and chosen.sha256 != direction.sha256:
+                raise LogogramError(f"The direction {chosen.name} has changed (its hash differs).")
+        found = read_corpus(project, corpus)
+        with model.lock:
+            return top(
+                model,
+                found,
+                chosen,
+                sae=sae,
+                direction=direction,
+                texts=texts,
+                max_tokens=max_tokens,
+                prepend_bos=prepend_bos,
+                batch_size=batch_size,
+                top_k=top_k,
+                context=context,
+            )
+    except (CorpusError, DirectionError, ValueError) as exc:
+        raise LogogramError(str(exc)) from exc
+
+
+def activations(
+    model: Any,
+    project: Project,
+    source: Any,
+    sites: str | Sequence[str],
+    position: Any = "last",
+    *,
+    prepend_bos: bool = True,
+    batch_size: int = 16,
+    sides: str = "both",
+    mark: str | None = None,
+    limit: int | None = None,
+    max_tokens: int = 128,
+) -> dict[str, Any]:
+    """The activations at ``sites`` and ``position``, one row per prompt or text, as NumPy
+    arrays ``[rows, width]`` in float64 by site (``"resid_post:6"``); nothing is written.
+
+    ``source`` is a project dataset's path (``"datasets/ioi.jsonl"``: its ``sides``,
+    ``"clean"``, ``"corrupt"`` or ``"both"``, each pair's clean prompt then its corrupt one) or a
+    corpus's name (each text cut to its first ``max_tokens`` tokens); ``limit`` reads the first
+    pairs or texts only. ``sites`` are ``"KIND:LAYER"`` (``resid_pre``, ``resid_mid``,
+    ``resid_post``, ``attn_out`` or ``mlp_out``). ``position`` is ``"last"``, a token index
+    (negative counts from the end), ``"label:NAME"`` (a labelled position of the prompts) or
+    ``"mean"`` (the mean over the tokens after the beginning-of-sequence token). The same rows
+    always run in the same batches, so they give the same numbers. Write them to the project
+    with :func:`export_activations`."""
+    from logogram.representations import collect, parse_position
+
+    loaded = _read(
+        model,
+        project,
+        source,
+        prepend_bos,
+        sides=sides,
+        mark=mark,
+        limit=limit,
+        max_tokens=max_tokens,
+    )
+    chosen = _sites(sites)
+    try:
+        with model.lock:
+            return collect(
+                model,
+                loaded,
+                chosen,
+                parse_position(position),
+                prepend_bos=prepend_bos,
+                batch_size=batch_size,
+            )
+    except ValueError as exc:
+        raise LogogramError(str(exc)) from exc
+
+
+def export_activations(
+    model: Any,
+    project: Project,
+    name: str,
+    source: Any,
+    sites: str | Sequence[str],
+    position: Any = "last",
+    *,
+    prepend_bos: bool = True,
+    batch_size: int = 16,
+    sides: str = "both",
+    mark: str | None = None,
+    limit: int | None = None,
+    max_tokens: int = 128,
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """Write the activations :func:`activations` reads to ``activations/NAME.safetensors`` in
+    the project (one float32 tensor per site, ``[rows, width]``, named ``"kind:layer"``) and what
+    they are to ``activations/NAME.json``: the model, the sites, the position, the dataset or
+    corpus read and its hash, each row's index, side and class (``mark``: ``"side"`` or
+    ``"meta:FIELD"`` for a dataset; a corpus's labels), and how texts were tokenized. Returns where
+    they were written."""
+    from logogram.representations import export_activations as export
+    from logogram.representations import parse_position
+
+    loaded = _read(
+        model,
+        project,
+        source,
+        prepend_bos,
+        sides=sides,
+        mark=mark,
+        limit=limit,
+        max_tokens=max_tokens,
+    )
+    chosen = _sites(sites)
+    try:
+        with model.lock:
+            return export(
+                project,
+                name,
+                model,
+                loaded,
+                chosen,
+                parse_position(position),
+                prepend_bos=prepend_bos,
+                batch_size=batch_size,
+                overwrite=overwrite,
+            )
+    except (ValueError, ProjectError) as exc:
+        raise LogogramError(str(exc)) from exc
+
+
+def principal_components(
+    model: Any,
+    project: Project,
+    source: Any,
+    site: Any,
+    position: Any = "last",
+    *,
+    prepend_bos: bool = True,
+    batch_size: int = 16,
+    sides: str = "both",
+    mark: str | None = None,
+    limit: int | None = None,
+    max_tokens: int = 128,
+) -> dict[str, Any]:
+    """The principal components of the activations at ``site`` and ``position`` (read as
+    :func:`activations` reads them), as the app's Representations view shows them: the rows
+    centered on their mean and decomposed in float64, each component signed so its
+    largest-magnitude loading is positive. Returns ``components`` (``[k, width]``, at most ten),
+    ``explained`` (each one's share of the variance), ``coords`` (``[rows, k]``), ``mean``,
+    ``rows`` (each row's index, side, class and text) and ``settings``. Save a component as a
+    direction with :func:`save_direction`."""
+    from logogram.representations import (
+        collect,
+        parse_position,
+        parse_site,
+        position_words,
+        settings_of,
+        site_words,
+        source_words,
+    )
+    from logogram.representations import principal_components as decompose
+
+    loaded = _read(
+        model,
+        project,
+        source,
+        prepend_bos,
+        sides=sides,
+        mark=mark,
+        limit=limit,
+        max_tokens=max_tokens,
+    )
+    chosen, where = parse_site(site), parse_position(position)
+    try:
+        with model.lock:
+            values = collect(
+                model, loaded, [chosen], where, prepend_bos=prepend_bos, batch_size=batch_size
+            )[chosen.name]
+        found = decompose(values)
+    except ValueError as exc:
+        raise LogogramError(str(exc)) from exc
+    return {
+        "components": found.components,
+        "explained": found.explained,
+        "variances": found.variances,
+        "coords": found.coords,
+        "mean": found.mean,
+        "rows": [
+            {"index": r.index, "side": r.side, "mark": r.mark, "text": r.text} for r in loaded.rows
+        ],
+        "settings": settings_of(loaded, chosen, where, prepend_bos, batch_size),
+        "description": f"{site_words(chosen.kind, chosen.layer)} at {position_words(where)}, "
+        f"over {source_words(loaded.source)}",
+    }
+
+
+def mean_difference(
+    model: Any,
+    project: Project,
+    source: Any,
+    site: Any,
+    position: Any,
+    positive: str,
+    negative: str,
+    *,
+    prepend_bos: bool = True,
+    batch_size: int = 16,
+    sides: str = "both",
+    mark: str | None = None,
+    limit: int | None = None,
+    max_tokens: int = 128,
+) -> Any:
+    """The mean activation at ``site`` and ``position`` over the rows of class ``positive``
+    minus the mean over those of class ``negative`` (read as :func:`activations` reads them; a
+    dataset's rows take their class from ``mark``, ``"side"`` or ``"meta:FIELD"``, a corpus's from
+    their labels), as a NumPy vector. Save it as a direction with :func:`save_direction`
+    (``method="mean_difference"``)."""
+    from logogram.representations import collect, parse_position, parse_site
+    from logogram.representations import mean_difference as difference
+
+    loaded = _read(
+        model,
+        project,
+        source,
+        prepend_bos,
+        sides=sides,
+        mark=mark,
+        limit=limit,
+        max_tokens=max_tokens,
+    )
+    chosen = parse_site(site)
+    try:
+        with model.lock:
+            values = collect(
+                model,
+                loaded,
+                [chosen],
+                parse_position(position),
+                prepend_bos=prepend_bos,
+                batch_size=batch_size,
+            )[chosen.name]
+        vector, _, _ = difference(values, loaded, positive, negative)
+    except ValueError as exc:
+        raise LogogramError(str(exc)) from exc
+    return vector
+
+
+def list_directions(project: Project) -> list[dict[str, Any]]:
+    """The directions saved in the project (its ``directions/`` folder), by name: the model and
+    site each was found on, how many dimensions it has, how it was made (``made_by``: the method,
+    the run and in words) and the hash of its tensor file; ``error`` says why one can't be
+    read."""
+    from logogram.directions import list_directions as listed
+
+    return listed(project)
+
+
+def read_direction(project: Project, name: str) -> Any:
+    """A saved direction: its ``vectors`` (``[k, width]``, orthonormal rows, float32) and ``meta``
+    (the model and site it was found on, how it was made, its hash)."""
+    from logogram.directions import DirectionError
+    from logogram.directions import read_direction as read
+
+    try:
+        return read(project, name)
+    except DirectionError as exc:
+        raise LogogramError(str(exc)) from exc
+
+
+def save_direction(
+    project: Project,
+    name: str,
+    vectors: Any,
+    *,
+    model: Any,
+    site: Any,
+    method: str = "import",
+    detail: str = "",
+    notes: str = "",
+    overwrite: bool = False,
+) -> Any:
+    """Save ``vectors`` (one vector ``[width]``, or ``[k, width]`` for a subspace; a NumPy array,
+    a tensor or a list) as the direction ``name``, made orthonormal, with the length of each
+    vector before kept. ``model`` is the loaded model it was found on (from :func:`load_model`),
+    ``site`` where (``"resid_post:6"``, or None), ``method`` how (``"pca"``,
+    ``"mean_difference"``, ``"probe"``, ``"das"``, ``"sae_feature"`` or ``"import"``) and
+    ``detail`` in words. Steering, ablation along it and the analyses that read directions use
+    it by name. An existing direction of that name is replaced only with ``overwrite``."""
+    import torch
+
+    from logogram.backends.base import float64
+    from logogram.directions import DirectionError, model_of
+    from logogram.directions import save_direction as save
+    from logogram.representations import parse_site
+
+    chosen = None if site is None else parse_site(site)
+    tensor = vectors if isinstance(vectors, torch.Tensor) else torch.as_tensor(vectors)
+    try:
+        return save(
+            project,
+            name,
+            float64(tensor.detach()),
+            model=model if isinstance(model, dict) else model_of(model.info),
+            site=None if chosen is None else {"kind": chosen.kind, "layer": chosen.layer},
+            method=method,  # type: ignore[arg-type]
+            run=None,
+            detail=detail or f"vectors saved from Python ({method})",
+            notes=notes,
+            replace=overwrite,
+        )
+    except (DirectionError, ValueError) as exc:
+        raise LogogramError(str(exc)) from exc
 
 
 def _table(rows: list[dict[str, Any]]) -> Any:
@@ -890,9 +1686,11 @@ class Run:
         return sorted(sites, key=lambda s: -abs(s["effect"]["mean"]))[:k]
 
     def edges(self) -> Any:
-        """An edge attribution run's every edge, one row each (its edges.parquet): the sender and
-        receiver, the mean estimated effect and its interval, the simultaneous band and q-value.
-        The summary lists only the strongest."""
+        """An edge attribution or ACDC run's every edge, one row each (its edges.parquet): the
+        sender and receiver, the mean effect (estimated, or for ACDC the change its removal made
+        when it was tested) and its interval, the simultaneous band and q-value; for ACDC also
+        ``kept`` (in the circuit) and ``step`` (when it was tested, from 0). The summary lists
+        only the strongest."""
         import pyarrow.parquet as pq
 
         from logogram.schema import EDGES_FILE
@@ -900,17 +1698,144 @@ class Run:
         self._summary()
         path = self.folder / EDGES_FILE
         if not path.is_file():
-            raise LogogramError(f"{self.id} isn't an edge attribution run: it has no edges.")
+            raise LogogramError(
+                f"{self.id} isn't an edge attribution or ACDC run: it has no edges."
+            )
         table = pq.read_table(self.project.readable(path))
         try:
             return table.to_pandas()
         except ImportError:
             return table
 
+    def circuit(self) -> dict[str, Any]:
+        """An ACDC run's circuit: ``edges``, the kept edges as the spec writes them (sender and
+        receiver) with their ``label`` and the change their removal made when tested (``change``,
+        normalized, and ``delta``, in the metric's units); ``n_kept`` of ``n_edges``; the
+        ``threshold`` and ``rule`` they were kept by; the circuit's ``faithfulness`` with its
+        interval (0 is the source run, 1 the receiver run); and the mean metric of the circuit
+        (``circuit``) and with every edge kept (``full``)."""
+        import pyarrow.parquet as pq
+
+        from logogram.schema import EDGES_FILE
+
+        acdc = self._summary().get("acdc")
+        if not acdc:
+            raise LogogramError(f"{self.id} isn't an ACDC run: it found no circuit.")
+        table = pq.read_table(self.project.readable(self.folder / EDGES_FILE))
+        by_index = {int(r["edge"]): r for r in table.to_pylist()}
+        edges = []
+        for index in acdc["kept"]:
+            row = by_index[index]
+            edges.append(
+                {
+                    "index": index,
+                    "label": row["label"],
+                    "edge": _edge_of(row),
+                    "change": _number(row["effect_mean"]),
+                    "delta": _number(row["delta_mean"]),
+                }
+            )
+        return {
+            "edges": edges,
+            "n_kept": acdc["n_kept"],
+            "n_edges": acdc["n_edges"],
+            "threshold": acdc["threshold"],
+            "rule": acdc["rule"],
+            "faithfulness": acdc["faithfulness"],
+            "circuit": acdc["circuit"],
+            "full": acdc["full"],
+        }
+
     def curve(self) -> dict[str, Any] | None:
         """An edge attribution run's faithfulness curve: for each k, the faithfulness of the k
         strongest edges and of k edges chosen at random, with intervals; None without one."""
         return (self._summary().get("edges") or {}).get("curve")
+
+    def probes(self) -> Any:
+        """A probe run's sites, one row each: the held-out accuracy with its interval, the
+        control's (trained on shuffled labels) and their difference (selectivity) with its
+        interval, the training accuracy, and chance."""
+        summary = self._summary()
+        probe = summary.get("probe")
+        if not probe:
+            raise LogogramError(f"{self.id} isn't a probe run.")
+        sites = {s["index"]: s for s in summary["sites"]}
+        trained = {s["index"]: s for s in probe["sites"]}
+        chosen = {c["index"]: c for c in probe.get("selectivity") or []}
+        rows = []
+        for index, site in sites.items():
+            if (site.get("variant") or {}).get("control"):
+                continue
+            sel = chosen.get(index) or {}
+            control = sites.get(sel.get("control_index", -1))
+            rows.append(
+                {
+                    "site": index,
+                    "label": site["label"],
+                    "kind": site["kind"],
+                    "layer": site["layer"],
+                    "accuracy": site["effect"]["mean"],
+                    "accuracy_lo": site["effect"]["lo"],
+                    "accuracy_hi": site["effect"]["hi"],
+                    "control": None if control is None else control["effect"]["mean"],
+                    "selectivity": sel.get("difference"),
+                    "selectivity_lo": sel.get("lo"),
+                    "selectivity_hi": sel.get("hi"),
+                    "train_accuracy": (trained.get(index) or {}).get("train_accuracy"),
+                    "chance": probe["chance"],
+                }
+            )
+        return _table(rows)
+
+    def subspaces(self) -> Any:
+        """A distributed alignment search run's sites, one row each: the normalized effect on
+        held-out pairs of patching within the learned subspace, of the whole site and (with the
+        control) within a random subspace, the learned subspace's share of the whole site's
+        effect, and its effect on the training pairs."""
+        summary = self._summary()
+        das = summary.get("das")
+        if not das:
+            raise LogogramError(f"{self.id} isn't a distributed alignment search run.")
+        by_row: dict[int, dict[str, Any]] = {}
+        for site in summary["sites"]:
+            key = str((site.get("variant") or {}).get("subspace") or "")
+            row = by_row.setdefault(
+                site["row"], {"label": None, "kind": site["kind"], "layer": site["layer"]}
+            )
+            row[key] = site["effect"]["mean"]
+            if key == "learned":
+                row["site"] = site["index"]
+                row["label"] = site["label"].removesuffix(" learned")
+        trained = {s["row"]: s for s in das["sites"]}
+        rows = []
+        for r, row in sorted(by_row.items()):
+            learned, whole = row.get("learned"), row.get("full")
+            rows.append(
+                {
+                    "site": row.get("site"),
+                    "label": row["label"],
+                    "kind": row["kind"],
+                    "layer": row["layer"],
+                    "learned": learned,
+                    "whole": whole,
+                    "random": row.get("random"),
+                    "share": None if learned is None or not whole else learned / whole,
+                    "train_effect": (trained.get(r) or {}).get("train_effect"),
+                }
+            )
+        return _table(rows)
+
+    def save_direction(self, site: int, name: str, *, row: int | None = None) -> dict[str, Any]:
+        """Save what this probe or learned subspace run found at its site ``site`` (an index of
+        :meth:`sites`) as the project's direction ``name``: a subspace's rows, or a probe's
+        weights (with two classes, the direction toward the second; with more, class ``row``'s).
+        Steering, directional ablation, subspace patching and readouts can then use it."""
+        from logogram.directions import DirectionError, save_run_direction
+
+        try:
+            return save_run_direction(self.project, self.id, site, name, row=row).to_dict()
+        except DirectionError as exc:
+            raise LogogramError(str(exc)) from None
 
     def _repr_html_(self) -> str:
         if self.summary is None:
@@ -995,6 +1920,39 @@ class Sweep(list[Run]):
 
 def _num(x: float | None) -> str:
     return "—" if x is None else f"{x:+.3f}"
+
+
+def _number(x: Any) -> float | None:
+    """A float, or None for a value that isn't a finite number (as summary.json writes it)."""
+    import math
+
+    value = float(x)
+    return value if math.isfinite(value) else None
+
+
+def _edge_of(row: dict[str, Any]) -> dict[str, Any]:
+    """An edge of edges.parquet as the spec writes it: its sender and receiver."""
+    from logogram.spec import Edge
+
+    sender: dict[str, Any] = {"kind": row["sender"]}
+    if row["sender"] != "embed":
+        sender["layer"] = int(row["sender_layer"])
+    if row["sender"] == "head":
+        sender["head"] = int(row["sender_head"])
+    kind = row["receiver"]
+    receiver: dict[str, Any] = (
+        {"kind": "logits"}
+        if kind == "logits"
+        else {"kind": "mlp", "layer": int(row["receiver_layer"])}
+        if kind == "mlp"
+        else {
+            "kind": "head",
+            "layer": int(row["receiver_layer"]),
+            "head": int(row["receiver_head"]),
+            "input": kind,
+        }
+    )
+    return Edge.model_validate({"sender": sender, "receiver": receiver}).model_dump(mode="json")
 
 
 def heatmap_svg(summary: dict[str, Any], cell: int = 18) -> str:

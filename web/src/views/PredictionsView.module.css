@@ -22,3 +22,4 @@
 .tokens > span { border: 1px solid var(--line-soft); border-radius: 3px; padding: 3px 7px; display: inline-flex; gap: 7px; align-items: baseline; white-space: pre; }
 .tokens small, .tokens > span > span { font-size: 10px; color: var(--muted); }
 .tokens strong { font-size: 12px; font-weight: 550; }
+.readout { display: block; font-size: 10px; color: var(--muted); padding: 0 6px; }

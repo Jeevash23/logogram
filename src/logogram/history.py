@@ -166,9 +166,46 @@ def display_name(listing: RunListing) -> str:
     return f"“{listing.title or listing.name}”"
 
 
+def queued_drafts(project: Project) -> set[str]:
+    """The saved drafts waiting in the project's queue to run as they were saved (none when the
+    saved queue can't be read: clearing it is what is offered then)."""
+    from logogram import runqueue
+
+    try:
+        return {item.draft_id for item in runqueue.read_queue(project) if item.draft_id}
+    except (runqueue.QueueError, OSError):
+        return set()
+
+
+def check_deletable(project: Project, run_id: str) -> RunListing | None:
+    """Refuse (:class:`RunInUse`, saying why and what to do) a run that can't be deleted now: one
+    in progress, here or in another process, or a draft waiting in the queue. Returns its listing
+    (None for a folder whose run can't be listed)."""
+    run_folder(project, run_id)
+    listing = project.run_listing(run_id)
+    if listing is not None and listing.status not in DELETABLE:
+        if listing.status == "running":
+            raise RunInUse(
+                f"{display_name(listing)} is running, so its folder is in use. Wait for it to "
+                "end, or cancel it, then delete it."
+            )
+        raise RunInUse(
+            f"{display_name(listing)} can't be deleted while it is "
+            f"{listing.status.replace('_', ' ')}."
+        )
+    if run_id in queued_drafts(project):
+        name = display_name(listing) if listing is not None else run_id
+        raise RunInUse(
+            f"{name} is waiting in the queue to run. Take it out of the queue first, then "
+            "delete it."
+        )
+    return listing
+
+
 def delete_run(project: Project, run_id: str) -> None:
     """Delete a finished, failed or cancelled run, or a draft: its folder and everything in it.
-    A run in progress can't be deleted (the app also refuses runs that are queued).
+    A run in progress can't be deleted, nor a draft waiting in the queue (its turn would find its
+    folder gone).
 
     There is no trash. Files kept out of sight would still travel with the project when it is
     copied, zipped or shared (a run's manifest records the device it ran on), and take up space
@@ -186,17 +223,7 @@ def delete_run(project: Project, run_id: str) -> None:
             "runs through it. Delete the run's folder yourself."
         )
     folder = run_folder(project, run_id)
-    listing = project.run_listing(run_id)
-    if listing is not None and listing.status not in DELETABLE:
-        if listing.status == "running":
-            raise RunInUse(
-                f"{display_name(listing)} is running, so its folder is in use. Wait for it to "
-                "end, or cancel it, then delete it."
-            )
-        raise RunInUse(
-            f"{display_name(listing)} can't be deleted while it is "
-            f"{listing.status.replace('_', ' ')}."
-        )
+    check_deletable(project, run_id)
     try:
         if folder.is_symlink() or _is_junction(folder):
             os.unlink(folder)  # the link itself: what it points to stays

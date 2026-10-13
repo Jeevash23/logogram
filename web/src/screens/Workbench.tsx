@@ -10,20 +10,24 @@ import { RobustnessDialog } from "../components/RobustnessDialog";
 import { Splitter } from "../components/Splitter";
 import { StatusLine } from "../components/StatusLine";
 import { SweepDialog } from "../components/SweepDialog";
+import { TrainDialog } from "../components/TrainDialog";
 import { TokenStrip } from "../components/TokenStrip";
 import { TopBar } from "../components/TopBar";
+import { ViewTabs } from "../components/ViewTabs";
 import { Button, Dialog, escapeStaysInFields, Icon, Tip } from "../components/ui";
 import { useAnalysisContext } from "../lib/hooks";
 import { useStore, workspaceFor, WORKSPACE_VIEWS, type View, type Workspace } from "../store/app";
 import { AttentionView } from "../views/AttentionView";
 import { BaselineView } from "../views/BaselineView";
 import { CompareView } from "../views/CompareView";
+import { CorpusView } from "../views/CorpusView";
 import { ExperimentView } from "../views/ExperimentView";
 import { ExploreView } from "../views/ExploreView";
 import { HeadComparisonView } from "../views/HeadComparisonView";
 import { PredictionsView } from "../views/PredictionsView";
 import { FeaturesView } from "../views/FeaturesView";
 import { PromptsView } from "../views/PromptsView";
+import { RepresentationsView } from "../views/RepresentationsView";
 import { ResearchView, NoteEditorDialog } from "../views/ResearchView";
 import { ResultsView } from "../views/ResultsView";
 import { SpecView } from "../views/SpecView";
@@ -82,7 +86,14 @@ export function Workbench() {
     <a href="#main" className={s.skip} onClick={(e) => { e.preventDefault(); document.getElementById("main")?.focus(); }}>Skip to the view</a>
     <TopBar workspace={workspace} onWorkspace={goWorkspace} onHistory={() => setDrawer("history")} runs={runs} staged={staged} />
     <div className={s.subbar}>
-      <nav className={s.tabs} aria-label={`${workspace} views`}>{WORKSPACE_VIEWS.find(w => w.id === workspace)?.views.map((v, i) => <button key={v.id} type="button" className={s.tab} data-tour={`tab-${v.id}`} aria-current={view === v.id ? "page" : undefined} aria-keyshortcuts={singleKeys ? String(i + 1) : undefined} onClick={() => setView(v.id)}>{v.label}{v.id === "heads" && pins > 0 && <span className={s.count}>{pins}/2</span>}</button>)}</nav>
+      <ViewTabs
+        label={`${workspace} views`}
+        views={WORKSPACE_VIEWS.find((w) => w.id === workspace)?.views ?? []}
+        view={view}
+        onView={setView}
+        shortcuts={singleKeys}
+        badge={(id) => (id === "heads" && pins > 0 ? <span className={s.count}>{pins}/2</span> : null)}
+      />
       <div className={s.context}>
         <NextStep />
         <ModelChip />
@@ -93,7 +104,7 @@ export function Workbench() {
     <div className={s.body}>
       <main className={s.center} id="main" tabIndex={-1}>
         <div className={s.view} ref={viewPane}><ErrorBoundary key={view} name="This view"><ActiveView view={view} /></ErrorBoundary></div>
-        {!["notes", "compare", "sweep", "spec", "features", "text"].includes(view) && <ErrorBoundary name="The token strip" resetKey={view}><TokenStrip /></ErrorBoundary>}
+        {!["notes", "compare", "sweep", "spec", "features", "text", "corpus", "representations"].includes(view) && <ErrorBoundary name="The token strip" resetKey={view}><TokenStrip /></ErrorBoundary>}
       </main>
       {showInspector && <aside className={s.inspectorPane} aria-label="Inspector" data-tour="inspector"><Splitter orientation="vertical" label="Resize the inspector" value={inspectorWidth} min={280} max={480} onReset={() => setInspectorWidth(320)} onResize={(delta, phase) => {
         if (phase === "start") { startWidth.current = inspectorWidth; return; }
@@ -106,6 +117,7 @@ export function Workbench() {
     <ModelDialog />
     <RobustnessDialog />
     <SweepDialog />
+    <TrainDialog />
     <NoteEditorDialog />
     <Dialog open={drawer !== null} onOpenChange={open => { if (!open) setDrawer(null); }} title={drawer === "history" ? "Experiment history" : "Inspector"} wide onEscapeKeyDown={escapeStaysInFields}><div className={s.drawer}>{drawer === "history" ? <ErrorBoundary name="The history"><History onOpen={() => setDrawer(null)} /></ErrorBoundary> : <SafeInspector />}</div></Dialog>
   </div>;
@@ -160,5 +172,7 @@ function ActiveView({ view }: { view: View }) {
     case "sweep": return <SweepView />;
     case "spec": return <SpecView />;
     case "text": return <TextView />;
+    case "corpus": return <CorpusView />;
+    case "representations": return <RepresentationsView />;
   }
 }
