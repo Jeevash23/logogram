@@ -299,12 +299,16 @@ def _steering_method(spec: Spec, e: Steering, summary: dict[str, Any] | None) ->
     if isinstance(e.direction, FeatureDirection):
         f = e.direction.feature
         sae = spec.sae
-        named = (
-            f" of the SAE {sae.repo}{'/' + sae.path if sae.path else ''}"
-            f"{f' at revision {sae.revision}' if sae.revision else ''}"
-            if sae
-            else ""
-        )
+        if sae is not None and sae.source == "project":
+            pinned = f", whose files hash to {sae.sha256[:12]}" if sae.sha256 else ""
+            named = f" of the SAE {sae.repo} trained in the project{pinned}"
+        else:
+            named = (
+                f" of the SAE {sae.repo}{'/' + sae.path if sae.path else ''}"
+                f"{f' at revision {sae.revision}' if sae.revision else ''}"
+                if sae
+                else ""
+            )
         feature = steering.get("feature") or {}
         where = (
             f", {describe_sae_site(feature['site'], feature['layer'], feature['transcoder'])}"

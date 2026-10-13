@@ -11,7 +11,8 @@ silently. Version 3 (Logogram 0.5) added chat templates, local models, a steerin
 steered continuations; a version 2 spec reads as version 3 with each of them off, which is what
 version 2 did. Version 4 (Logogram 0.7) added methods that find and use directions in the model
 (probes, learned subspaces, directional ablation, readouts), automated circuit discovery, and SAEs
-and lenses trained in the project; a version 3 spec reads as version 4 unchanged.
+and lenses trained in the project; a version 3 spec reads as version 4 with those off (the SAE it
+names is a published one, its layer predictions read the logit lens).
 
 Specs refer to abstract sites (``resid_pre``, ``attn_out``, ``head``, ...). Backend-specific hook
 names never appear in a spec.
@@ -1214,23 +1215,87 @@ class DatasetRef(_Strict):
 
 
 class SAERef(_Strict):
-    """A published sparse autoencoder (or transcoder) on Hugging Face: the repository, the folder
-    holding it (empty for the top level) and the exact commit, pinned when a run starts."""
+    """A sparse autoencoder (or transcoder): one published on Hugging Face, named by the
+    repository, the folder holding it (empty for the top level) and the exact commit, pinned when a
+    run starts; or one trained in the project, named by its folder in ``saes/`` and pinned by the
+    hash of its files."""
 
     repo: str = Field(min_length=1)
-    """The Hugging Face repository, such as jbloom/GPT2-Small-SAEs-Reformatted."""
+    """The Hugging Face repository, such as jbloom/GPT2-Small-SAEs-Reformatted; for an SAE trained
+    in the project, its name."""
     path: str
-    """The folder in the repository that holds the SAE, such as blocks.8.hook_resid_pre; empty
-    for the top level."""
+    """The folder in the repository that holds the SAE, such as blocks.8.hook_resid_pre, empty for
+    the top level; for an SAE trained in the project, saes/ and its name."""
     revision: str | None
     """The exact commit; null resolves the main branch when a run starts, and the run's spec
-    pins it."""
+    pins it. Always null for an SAE trained in the project."""
+    source: Literal["hub", "project"]
+    """Where the SAE comes from: Hugging Face, or the project's saes folder (trained there)."""
+    sha256: str | None
+    """For an SAE trained in the project, the hash of its cfg.json and weights file (see
+    logogram.sae_training); null uses the SAE as it is when a run starts, and the run's spec pins
+    it. Always null for Hugging Face, where the revision pins the files."""
 
     @model_validator(mode="after")
     def _relative(self) -> SAERef:
+        if self.source == "project":
+            if not TRAINED_NAME.match(self.repo):
+                raise ValueError(
+                    "an SAE trained in the project is named by letters, digits, dots, dashes and "
+                    "underscores, starting with a letter or digit"
+                )
+            if self.path != f"{TRAINED_SAES}/{self.repo}":
+                raise ValueError(
+                    f"an SAE trained in the project lives in {TRAINED_SAES}/ and its name: set "
+                    f"sae.path to {TRAINED_SAES}/{self.repo}"
+                )
+            if self.revision is not None:
+                raise ValueError(
+                    "an SAE trained in the project has no revisions: set sae.revision to null"
+                )
+            if self.sha256 is not None and not SHA256.match(self.sha256):
+                raise ValueError("sae.sha256 is 64 lowercase hex digits")
+            return self
+        if self.sha256 is not None:
+            raise ValueError(
+                "sae.sha256 is for SAEs trained in the project: one on Hugging Face is pinned by "
+                "its revision"
+            )
         if self.path:
             check_relative_path(self.path, "sae.path")
         check_revision(self.revision, "sae.revision")
+        return self
+
+
+# ---------------------------------------------------------------------------------------------
+# SAEs and lenses trained in the project (logogram.sae_training, logogram.lenses)
+
+# Their folders in the project, each holding one, named by it.
+TRAINED_SAES = "saes"
+TRAINED_LENSES = "lenses"
+# A trained SAE's or lens's name, which is also its folder's.
+TRAINED_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
+
+
+class LensRef(_Strict):
+    """A tuned lens trained in the project (its folder in ``lenses/``), pinned by the hash of its
+    translators' file, lens.safetensors, when a run starts."""
+
+    name: str
+    """The lens's name in the project's lenses folder."""
+    sha256: str | None
+    """The hash of its lens.safetensors; null uses the lens as it is when a run starts, and the
+    run's spec pins it."""
+
+    @model_validator(mode="after")
+    def _named(self) -> LensRef:
+        if not TRAINED_NAME.match(self.name):
+            raise ValueError(
+                "a lens's name is letters, digits, dots, dashes and underscores, starting with a "
+                "letter or digit"
+            )
+        if self.sha256 is not None and not SHA256.match(self.sha256):
+            raise ValueError("a lens's sha256 is 64 lowercase hex digits")
         return self
 
 
@@ -1506,8 +1571,13 @@ class Execution(_Strict):
 class PredictionSettings(_Strict):
     """An optional, explicitly configured diagnostic; it never changes an intervention."""
 
-    method: Literal["final_norm_logit_lens"]
-    """Each layer's resid_post read through the final normalization and the unembedding."""
+    method: Literal["final_norm_logit_lens", "tuned_lens"]
+    """Each layer's resid_post read through the final normalization and the unembedding
+    (final_norm_logit_lens), or first through that layer's affine translator from a tuned lens
+    trained in the project (tuned_lens; layers it has no translator for are read as the logit lens
+    reads them)."""
+    lens: LensRef | None
+    """The tuned lens, for the tuned_lens method; null for the logit lens."""
     prompt_index: int = Field(ge=0)
     """The prompt pair's index in the dataset, from 0."""
     which: Literal["clean", "corrupt"]
@@ -1516,6 +1586,18 @@ class PredictionSettings(_Strict):
     """The token whose next-token predictions are read."""
     top_k: int = Field(ge=1, le=20)
     """How many of the most likely tokens are listed at each layer."""
+
+    @model_validator(mode="after")
+    def _lens_matches_method(self) -> PredictionSettings:
+        if self.method == "tuned_lens" and self.lens is None:
+            raise ValueError(
+                "the tuned lens method needs predictions.lens: a lens trained in the project"
+            )
+        if self.method != "tuned_lens" and self.lens is not None:
+            raise ValueError(
+                "only the tuned lens method reads a lens: set predictions.lens to null"
+            )
+        return self
 
 
 class Spec(_Strict):
@@ -1822,6 +1904,13 @@ def upgrade_v3(data: dict[str, Any]) -> dict[str, Any]:
     final-norm logit lens. These didn't exist to be chosen, so they aren't listed as filled."""
     data = copy.deepcopy(data)
     data["logogram_spec"] = 4
+    sae = data.get("sae")
+    if isinstance(sae, dict):
+        sae.setdefault("source", "hub")
+        sae.setdefault("sha256", None)
+    predictions = data.get("predictions")
+    if isinstance(predictions, dict):
+        predictions.setdefault("lens", None)
     return data
 
 

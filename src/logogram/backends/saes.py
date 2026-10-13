@@ -25,6 +25,10 @@ or tensors that sparsify's releases don't define) is refused with the reason.
 :func:`read_config` runs the same checks on an SAE's configuration alone, on parameters of the
 shapes it states, so the bundled catalogue of published SAEs (:mod:`logogram.backends.catalogue`)
 says what Logogram makes of each one without downloading its weights.
+
+SAEs trained in a project (:mod:`logogram.sae_training`) are written in SAELens's format by
+:func:`saelens_topk`, as SAELens writes a TopK SAE, and read back through the same reader as any
+other.
 """
 
 from __future__ import annotations
@@ -184,6 +188,64 @@ def site_of_hook(name: str) -> tuple[str, int]:
             "between attention and MLP aren't supported yet."
         )
     return _TL_SITES[match.group(2)], int(match.group(1))
+
+
+def hook_of_site(site: str, layer: int) -> str:
+    """The TransformerLens hook SAELens names for a site Logogram trains SAEs on (the inverse of
+    :func:`site_of_hook`), such as ``blocks.6.hook_resid_post``."""
+    hooks = {v: k for k, v in _TL_SITES.items() if v != "head"}
+    if site not in hooks:
+        raise BackendError(
+            f"SAEs are trained on the residual stream before or after a layer, or on its "
+            f"attention or MLP output, not on {site}."
+        )
+    return f"blocks.{layer}.{hooks[site]}"
+
+
+def saelens_topk(
+    *,
+    site: str,
+    layer: int,
+    k: int,
+    W_enc: torch.Tensor,
+    b_enc: torch.Tensor,
+    W_dec: torch.Tensor,
+    b_dec: torch.Tensor,
+    model_name: str,
+    prepend_bos: bool,
+    context_size: int,
+) -> tuple[dict[str, Any], dict[str, torch.Tensor]]:
+    """A TopK SAE (Gao et al. 2024) as SAELens 6 writes one: ``cfg.json``'s contents and the
+    tensors of ``sae_weights.safetensors``, in float32. It encodes ``x`` as the k largest of
+    ``(x - b_dec) @ W_enc + b_enc``, each through a ReLU, and decodes ``f @ W_dec + b_dec``, on
+    activations as the model computes them (``normalize_activations`` none: a trainer that scaled
+    them folds its factor into these weights first). :func:`read_sae` reads it back exactly, as it
+    reads SAELens's own."""
+    d_in, d_sae = int(W_enc.shape[0]), int(W_enc.shape[1])
+    hook = hook_of_site(site, layer)
+    cfg: dict[str, Any] = {
+        "architecture": "topk",
+        "d_in": d_in,
+        "d_sae": d_sae,
+        "k": int(k),
+        "dtype": "float32",
+        "device": "cpu",
+        "apply_b_dec_to_input": True,
+        "normalize_activations": "none",
+        "reshape_activations": "none",
+        "metadata": {
+            "model_name": model_name,
+            "hook_name": hook,
+            "hook_head_index": None,
+            "prepend_bos": bool(prepend_bos),
+            "context_size": int(context_size),
+        },
+    }
+    tensors = {
+        name: t.detach().to(device="cpu", dtype=torch.float32).contiguous()
+        for name, t in (("W_enc", W_enc), ("b_enc", b_enc), ("W_dec", W_dec), ("b_dec", b_dec))
+    }
+    return cfg, tensors
 
 
 def site_of_module(folder: str) -> tuple[str, int]:

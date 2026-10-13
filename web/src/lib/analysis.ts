@@ -36,7 +36,7 @@ export function tokensKey(
 }
 
 export function predictionSettingsKey(s: PredictionSettings): string {
-  return JSON.stringify([s.method, s.prompt_index, s.which, s.position.kind, s.position.kind === "index" ? s.position.index : null, s.top_k]);
+  return JSON.stringify([s.method, s.lens?.name ?? null, s.lens?.sha256 ?? null, s.prompt_index, s.which, s.position.kind, s.position.kind === "index" ? s.position.index : null, s.top_k]);
 }
 
 export type AnalysisSource = "run" | "form";

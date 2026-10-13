@@ -175,7 +175,7 @@ test("steering along an SAE feature is written where the SAE writes, with contin
     control: true,
     continuations: null,
   });
-  expect(spec.sae).toEqual({ repo: "owner/sae", path: "layer_1", revision: "abc" });
+  expect(spec.sae).toEqual({ repo: "owner/sae", path: "layer_1", revision: "abc", source: "hub", sha256: null });
   expect(spec.name).toBe("Steer corrupt along F3 · L1 resid pre @ last");
   // A saved spec fills the form, and the form builds the same spec again.
   expect(built(formFromSpec(spec), { sae })).toEqual(spec);
@@ -227,13 +227,22 @@ test("features belong to the SAE they were written for: another SAE loaded is sa
   expect(differences(saved, sae())).toEqual([]);
   // Another SAE where the same one writes: it runs with that SAE's feature 3, which is another feature.
   const other = sae({ repo: "other/sae-32k", path: "l1", revision: "c".repeat(40), d_sae: 128 });
-  expect(built(saved, { sae: other }).sae).toEqual({ repo: "other/sae-32k", path: "l1", revision: "c".repeat(40) });
+  expect(built(saved, { sae: other }).sae).toEqual({ repo: "other/sae-32k", path: "l1", revision: "c".repeat(40), source: "hub", sha256: null });
   expect(differences(saved, other)).toEqual([
     "It was written for the SAE owner/sae/layer_1; the loaded SAE is other/sae-32k/l1, where the same feature numbers are other features.",
   ]);
   expect(differences(saved, sae({ revision: "b".repeat(40) }))).toEqual([
     "It was written for revision aaaaaaa of the SAE owner/sae/layer_1; the loaded one is revision bbbbbbb.",
   ]);
+  // An SAE trained in the project is another SAE than a published one, and is pinned by its files' hash.
+  const trained = (sha256: string) => sae({ repo: "my-sae", path: "saes/my-sae", revision: null, source: "project", sha256 });
+  expect(differences(saved, trained("d".repeat(64)))).toEqual([
+    "It was written for the SAE owner/sae/layer_1; the loaded SAE is my-sae, trained in this project, where the same feature numbers are other features.",
+  ]);
+  const own = formFromSpec(built(steer, { sae: trained("d".repeat(64)) }));
+  expect(own.saeRef).toEqual({ repo: "my-sae", path: "saes/my-sae", revision: null, source: "project", sha256: "d".repeat(64) });
+  expect(differences(own, trained("d".repeat(64)))).toEqual([]);
+  expect(differences(own, trained("e".repeat(64)))).toEqual(["It was written for the SAE my-sae, trained in this project as it was then; its files have changed since."]);
   // A folder is the same with or without slashes around it; an unpinned SAE is any revision of it.
   expect(differences(saved, sae({ path: "/layer_1/" }))).toEqual([]);
   expect(differences({ ...saved, saeRef: { ...saved.saeRef!, revision: null } }, sae({ revision: "b".repeat(40) }))).toEqual([]);
@@ -313,7 +322,7 @@ test("every project-scoped route on the server says which project a tab means", 
       for (const path of [prefix, `${prefix}/x`, `${prefix}?a=1`]) expect(isProjectScoped(path), path).toBe(true);
     }
   }
-  for (const path of ["/api/state", "/api/tasks", "/api/sae/load", "/api/sae/suggestions?model=x", "/api/models/load", "/api/projectsx", "/api/runsx"]) {
+  for (const path of ["/api/state", "/api/tasks", "/api/sae/suggestions?model=x", "/api/models/load", "/api/projectsx", "/api/runsx"]) {
     expect(isProjectScoped(path), path).toBe(false);
   }
 });

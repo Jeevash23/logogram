@@ -151,7 +151,7 @@ test("a readout reads a value inside the model, for the methods that run it forw
     info: { repo: "owner/sae", path: "layer_1", revision: "abc", site: "resid_pre", layer: 1, d_in: 32, d_sae: 64, activation: "relu", k: null, normalize: "none", format: "test", note: "", fit: null },
   };
   const read = built({ ...reading, readout: feature }, { sae });
-  expect(read.sae).toEqual({ repo: "owner/sae", path: "layer_1", revision: "abc" });
+  expect(read.sae).toEqual({ repo: "owner/sae", path: "layer_1", revision: "abc", source: "hub", sha256: null });
   // Reading along a saved direction, at a site and layer.
   const along = { kind: "direction" as const, direction: toward, site: "resid_post" as const, layer: 1 };
   expect(built({ ...reading, readout: along }).metric).toMatchObject({ unit: along });

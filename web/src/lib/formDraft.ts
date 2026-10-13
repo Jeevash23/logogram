@@ -62,7 +62,21 @@ export function parseForm(value: unknown): FormState | null {
   }
   form.scope = upgradeScope(form.scope as Record<string, unknown>);
   form.modelRef = upgradeModelRef(form.modelRef as Record<string, unknown> | null);
+  form.saeRef = upgradeSaeRef(form.saeRef as Record<string, unknown> | null);
+  form.predictions = upgradePredictions(form.predictions as Record<string, unknown> | null);
   return form as unknown as FormState;
+}
+
+/** An SAE stored before SAEs could be trained in the project was a published one. */
+function upgradeSaeRef(ref: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!ref || "source" in ref) return ref;
+  return { ...ref, source: "hub", sha256: null };
+}
+
+/** A diagnostic stored before tuned lenses read the logit lens, with no lens. */
+function upgradePredictions(settings: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!settings || "lens" in settings) return settings;
+  return { ...settings, lens: null };
 }
 
 /** A model stored before models had a source came from Hugging Face. */
@@ -250,16 +264,25 @@ const isSender: Check = (v) =>
 
 const isEdge: Check = (v) => isObject(v) && isSender(v.sender) && isReceiver(v.receiver);
 
+const isLensRef: Check = (v) => isObject(v) && isString(v.name) && orNull(isString)(v.sha256);
+
 const isPredictions: Check = (v) =>
   isObject(v) &&
-  v.method === "final_norm_logit_lens" &&
+  (v.method === "final_norm_logit_lens" || v.method === "tuned_lens") &&
+  (!("lens" in v) || orNull(isLensRef)(v.lens)) &&
   isNumber(v.prompt_index) &&
   SIDES(v.which) &&
   isObject(v.position) &&
   (v.position.kind === "last" || (v.position.kind === "index" && isNumber(v.position.index))) &&
   isNumber(v.top_k);
 
-const isSaeRef: Check = (v) => isObject(v) && isString(v.repo) && isString(v.path) && orNull(isString)(v.revision);
+const isSaeRef: Check = (v) =>
+  isObject(v) &&
+  isString(v.repo) &&
+  isString(v.path) &&
+  orNull(isString)(v.revision) &&
+  (!("source" in v) || v.source === "hub" || v.source === "project") &&
+  (!("sha256" in v) || orNull(isString)(v.sha256));
 
 const isModelRef: Check = (v) =>
   isObject(v) && isString(v.id) && orNull(isString)(v.revision) && isString(v.dtype) && isString(v.device) && isBoolean(v.process_weights);

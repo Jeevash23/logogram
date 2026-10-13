@@ -347,12 +347,25 @@ def prediction_report(
     prepend_bos: bool,
     batch_size: int,
     chat_template: ChatTemplate = None,
+    lens: Any = None,
 ) -> dict[str, Any]:
-    """A descriptive logit lens, preserving the baseline's length groups and batch shape."""
+    """A descriptive logit lens, preserving the baseline's length groups and batch shape. With
+    the tuned_lens method, ``lens`` (a :class:`logogram.lenses.Lens`, the one the settings name,
+    checked against the model) translates each layer it has a translator for first; the settings
+    come back with its hash pinned."""
     if index != settings.prompt_index:
         raise ValueError("The prompt index must match the prediction settings in the spec.")
     if not 0 <= index < len(records):
         raise ValueError(f"There is no prompt {index}.")
+    translators = None
+    if settings.method == "tuned_lens":
+        named = settings.lens
+        if lens is None or named is None or lens.name != named.name:
+            raise ValueError("The tuned lens method reads the lens its settings name: load it.")
+        if named.sha256 is not None and named.sha256 != lens.sha256:
+            raise ValueError(f"The lens {lens.name} isn't the one these settings pinned.")
+        settings = settings.model_copy(update={"lens": lens.ref()})
+        translators = lens.translators
     prepared, issues = prepare_with_issues(
         backend, records, prepend_bos, chat_template=chat_template
     )
@@ -371,7 +384,7 @@ def prediction_report(
     start = (within // batch_size) * batch_size
     tokens = group.tokens(which)
     batch = tokens[start : start + batch_size]
-    logits = backend.layer_logits(batch, pos, within - start)
+    logits = backend.layer_logits(batch, pos, within - start, translators)
     if not torch.isfinite(logits).all():
         raise ValueError("The prediction diagnostic produced non-finite logits. Try float32.")
     probs = torch.softmax(logits, dim=-1)
@@ -401,6 +414,11 @@ def prediction_report(
                 "answer_prob": float(probs[layer, answer].sum()),
                 "distractor_prob": float(probs[layer, distractor].sum()),
                 "logit_diff": float(answer_logit - distractor_logit),
+                # How this layer was read: through a tuned lens's translator, or as the logit
+                # lens reads it (every layer without one).
+                "readout": "tuned_lens"
+                if translators is not None and layer in translators
+                else "logit_lens",
             }
         )
     return {
@@ -408,6 +426,7 @@ def prediction_report(
         "position": pos,
         "tokens": target.tokens_of(which).tokens,
         "settings": settings.model_dump(mode="json"),
+        "lens": None if lens is None or translators is None else lens.describe(),
         "layers": rows,
         "batch_members": [prepared[i].index for i in group.members[start : start + batch_size]],
         "answer": answer_text(target.record.answer),

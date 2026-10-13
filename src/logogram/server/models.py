@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from logogram.schema import (
     ContinuationsFile,
@@ -68,7 +68,9 @@ class ModelStatus(_Out):
 
 class JobInfo(_Out):
     id: str
-    kind: Literal["load_model", "load_sae", "run", "add_model", "import_corpus"]
+    kind: Literal[
+        "load_model", "load_sae", "run", "add_model", "import_corpus", "train_sae", "train_lens"
+    ]
     title: str
     status: Literal["running", "finished", "failed", "cancelled"]
     run_id: str | None
@@ -296,6 +298,58 @@ class ActivationsExported(_Out):
     sites: list[str]
     sha256: str
     bytes: int
+
+
+class TrainedSAEListing(_Out):
+    """An SAE trained in the project (logogram.sae_training), as its training recorded it, or why
+    it can't be read."""
+
+    name: str
+    path: str
+    error: str | None
+    sha256: str | None = None
+    site: str | None = None
+    layer: int | None = None
+    d_in: int | None = None
+    d_sae: int | None = None
+    k: int | None = None
+    model: dict[str, Any] | None = None
+    corpus: dict[str, Any] | None = None
+    steps: int | None = None
+    created: str | None = None
+    held_out: dict[str, Any] | None = None
+    spec: dict[str, Any] | None = None
+
+
+class LensListing(_Out):
+    """A tuned lens trained in the project (logogram.lenses), as its training recorded it, whether
+    it reads the loaded model (and if not why), or why it can't be read."""
+
+    name: str
+    path: str
+    error: str | None
+    sha256: str | None = None
+    layers: list[int] | None = None
+    width: int | None = None
+    model: dict[str, Any] | None = None
+    corpus: dict[str, Any] | None = None
+    steps: int | None = None
+    created: str | None = None
+    held_out: dict[str, Any] | None = None
+    spec: dict[str, Any] | None = None
+    fits: bool | None = None
+    reason: str | None = None
+
+
+class TrainingPlan(_Out):
+    """What training an SAE or a lens would take, or why it can't train (``refusal``)."""
+
+    refusal: str | None
+    layers: list[int] | None = None
+    texts: dict[str, Any] | None = None
+    tokens: dict[str, Any] | None = None
+    memory: dict[str, Any] | None = None
+    seconds: dict[str, float] | None = None
 
 
 class RecentProject(_Out):
@@ -766,6 +820,18 @@ class PredictionLayer(_Out):
     answer_prob: float
     distractor_prob: float
     logit_diff: float
+    # How the layer was read: through a tuned lens's translator, or as the logit lens reads it.
+    readout: Literal["logit_lens", "tuned_lens"] = "logit_lens"
+
+
+class PredictionLens(_Out):
+    """The tuned lens a report read, as it was: its name, hash, layers, width and model."""
+
+    name: str
+    sha256: str
+    layers: list[int]
+    width: int
+    model: dict[str, Any]
 
 
 class PredictionReport(_Out):
@@ -773,6 +839,8 @@ class PredictionReport(_Out):
     position: int
     tokens: list[str]
     settings: PredictionSettings
+    # The tuned lens read, with the tuned_lens method; None for the logit lens.
+    lens: PredictionLens | None = None
     layers: list[PredictionLayer]
     batch_members: list[int]
     answer: str
@@ -780,6 +848,15 @@ class PredictionReport(_Out):
     # How the lens reads the answer: one token, a set (summed), or a continuation's first token.
     answer_reading: Literal["token", "set", "first_token"] = "token"
     issues: list[PromptIssue]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _before_lenses(cls, data: Any) -> Any:
+        # predictions.json written before tuned lenses: the logit lens, with no lens to name.
+        settings = data.get("settings") if isinstance(data, dict) else None
+        if isinstance(settings, dict) and "lens" not in settings:
+            data = {**data, "settings": {**settings, "lens": None}}
+        return data
 
 
 class Presets(_Out):

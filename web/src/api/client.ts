@@ -38,7 +38,13 @@ import type {
   ModelStatus,
   SAECatalogue,
   SAEFit,
+  SAERef,
   SAEStatus,
+  SAETrainingSpec,
+  LensTrainingSpec,
+  TrainedLens,
+  TrainedSAE,
+  TrainingPlan,
   TokenFeatures,
   FeatureReport,
   FeatureWrites,
@@ -162,10 +168,13 @@ export const PROJECT_SCOPED = [
   "/api/baseline",
   "/api/attention",
   "/api/predictions",
+  "/api/sae/load",
   "/api/sae/fit",
   "/api/sae/tokens",
   "/api/sae/feature",
   "/api/sae/writes",
+  "/api/saes/",
+  "/api/lenses",
   "/api/runs",
   "/api/drafts",
   "/api/compare",
@@ -416,7 +425,18 @@ export const api = {
   saeCatalogue: (model: string, query: string, limit = 100) =>
     get<SAECatalogue>(`/api/sae/catalogue?model=${encodeURIComponent(model)}&q=${encodeURIComponent(query)}&limit=${limit}`),
   saeFolders: (repo: string) => get<{ repo: string; revision: string; folders: string[] }>(`/api/sae/folders?repo=${encodeURIComponent(repo)}`),
-  loadSae: (ref: { repo: string; path: string; revision: string | null }) => post<Job>("/api/sae/load", ref),
+  loadSae: (ref: SAERef) => post<Job>("/api/sae/load", ref),
+  /** The SAEs trained in the project, as their training recorded them. */
+  projectSaes: () => get<TrainedSAE[]>("/api/saes/project"),
+  /** What training this SAE on the loaded model would take; with measure, the time timed here. */
+  planSae: (spec: SAETrainingSpec, measure = true) => post<TrainingPlan>("/api/saes/plan", { spec, measure }),
+  /** Train an SAE in the project: a job whose progress carries the loss curve. */
+  trainSae: (spec: SAETrainingSpec) => post<Job>("/api/saes/train", { spec }),
+  /** The tuned lenses trained in the project, each saying whether it reads the loaded model. */
+  lenses: () => get<TrainedLens[]>("/api/lenses"),
+  planLens: (spec: LensTrainingSpec, measure = true) => post<TrainingPlan>("/api/lenses/plan", { spec, measure }),
+  /** Train a tuned lens in the project, as a job. */
+  trainLens: (spec: LensTrainingSpec) => post<Job>("/api/lenses/train", { spec }),
   unloadSae: () => post<SAEStatus>("/api/sae/unload"),
   saeFit: (dataset: string, options: Partial<AnalysisOptions>) => post<SAEFit>("/api/sae/fit", { dataset, ...options }),
   saeTokens: (dataset: string, index: number, which: "clean" | "corrupt", options: Partial<AnalysisOptions>) =>

@@ -24,6 +24,8 @@ seeds = lg.sweep(run, field="statistics.seed", values=[0, 1, 2, 3])  # one run p
 seeds.table()        # the strongest sites at every value: do they keep their sign and size?
 lg.list_saes(model, "layer 8")    # published SAEs for the model, and what Logogram reads of them
 sae = lg.load_sae(release="gpt2-small-res-jb", sae_id="blocks.8.hook_resid_pre", model=model)
+lg.train_sae(project, "sae.json", model=model)   # an SAE of your own, on a corpus of the project
+lg.train_lens(project, "lens.json", model=model) # a tuned lens for the layer predictions
 toy = lg.toy_model("induction")   # a model whose circuit is known, with experiments to run
 toy.run("which-heads").sites()    # the planted heads at 1, every other head at 0
 found = lg.run(acdc_spec, project, model=model)   # ACDC over the graph scope's edges
@@ -80,6 +82,8 @@ Every public name of `import logogram as lg`, from the docstrings in [`src/logog
 | [`lg.sweep`](#lgsweep) | Run a run's spec (or a spec, into `project`) across `values` of one `field`, one run after another, as `logogram sweep` does: a seed the spec states (`statistics.seed`, `experiment.baseline.seed`, `experiment.seed` or `scope.seed`), the dataset (`dataset.path`: dataset files of the project) or the model's revision (`model.revision`: commits, tags or branches, each run pinning its commit). |
 | [`lg.top_examples`](#lgtop_examples) | Where a unit is most active in the corpus `corpus`, as the app's Corpus view shows it. |
 | [`lg.toy_model`](#lgtoy_model) | A model whose circuit is known, to learn the methods on and to check them against: `"induction"` (a previous-token head and an induction head) or `"ioi"` (GPT-2 small's indirect-object circuit, one head per step), with weights set by hand (see `logogram.toys`). |
+| [`lg.train_lens`](#lgtrain_lens) | Train a tuned lens in `project`, as the app and `logogram lens train` do: an affine translator per layer, read through the model's final normalization and unembedding, trained against the model's own next-token distribution on a corpus of the project, deterministically, saved as lenses/NAME. |
+| [`lg.train_sae`](#lgtrain_sae) | Train a TopK SAE in `project`, as the app and `logogram sae train` do: on one site of one layer, from a corpus of the project, deterministically, saved as saes/NAME in SAELens's format. |
 | [`lg.verify_run`](#lgverify_run) | Patch, for real, the `top` sites an attribution patching run estimated to matter most; for an edge attribution run, path patch its `top` strongest edges one at a time, at most 50 (compare the two with [`edge_verification()`](#lgedge_verification)). |
 | [`lg.write_corpus`](#lgwrite_corpus) | Write `texts` as the corpus `name`, each with the label at the same place in `labels` (a string, a whole number or true/false) when they are given; empty texts are left out. |
 | [`lg.write_dataset`](#lgwrite_dataset) | Write prompt pairs into the project's datasets/ folder; returns its path in the project. |
@@ -435,6 +439,7 @@ lg.load_sae(
     revision: str | None = None,
     release: str | None = None,
     sae_id: str | None = None,
+    project: Project | None = None,
 ) -> Any
 ```
 
@@ -446,6 +451,9 @@ the SAE is its repository, folder and revision, which is what a spec records; wi
 revision, the repository's current commit is pinned. It is refused if Logogram can't read it
 exactly, was made for another model's sizes or reads a site the model doesn't have. Pass it to
 [`run()`](#lgrun) with a spec that names it, or explore its features with [`feature_writes()`](#lgfeature_writes).
+
+With `project`, `repo` names an SAE trained in that project (saes/NAME, see
+[`train_sae()`](#lgtrain_sae)), read from its files, nothing downloaded: `load_sae("my-sae", project=project, model=model)`. Its `warnings` say if it was trained on another model.
 
 ### lg.load_spec
 
@@ -707,6 +715,50 @@ projects folder): the model's files in `model/`, added to this machine's local m
 notes say what each method should find. Then loads it, checked as any model is, and checks
 that it does its task and that its planted heads attend where they were built to; a toy that
 doesn't is refused. Run its experiments with `toy.run("which-heads")`.
+
+### lg.train_lens
+
+```python
+lg.train_lens(
+    project: Project,
+    spec: Any,
+    *,
+    model: Any = None,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]
+```
+
+Train a tuned lens in `project`, as the app and `logogram lens train` do: an affine
+translator per layer, read through the model's final normalization and unembedding, trained
+against the model's own next-token distribution on a corpus of the project, deterministically,
+saved as lenses/NAME. `spec` is a training spec (a dict, its JSON, a file, or a
+`logogram.lenses.LensTrainingSpec`) that states every choice; `model` is reused when
+it is the spec's model. Returns its `name`, `path`, `sha256` (what a spec's prediction
+settings pin it by), the `spec` as it ran and the `metrics` it measured: the loss curve and
+each layer's held-out KL divergence with the logit lens and with the tuned lens. See
+`logogram.lenses`.
+
+### lg.train_sae
+
+```python
+lg.train_sae(
+    project: Project,
+    spec: Any,
+    *,
+    model: Any = None,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]
+```
+
+Train a TopK SAE in `project`, as the app and `logogram sae train` do: on one site of
+one layer, from a corpus of the project, deterministically, saved as saes/NAME in SAELens's
+format. `spec` is a training spec (a dict, its JSON, a file, or a
+`logogram.sae_training.SAETrainingSpec`) that states every choice; `model` is reused
+when it is the spec's model. `on_progress` hears each stage (reading, collecting, training
+with the loss curve so far, measuring, writing). Returns its `name`, `path`, `sha256`
+(what specs pin it by), the `spec` as it ran and the `metrics` it measured: the loss curve
+and, on the held-out texts, the variance explained, L0, the share of features that never fire
+and the next-token loss recovered. Load it with `load_sae(NAME, project=project, model=model)`. See `logogram.sae_training`.
 
 ### lg.verify_run
 

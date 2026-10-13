@@ -501,7 +501,11 @@ def test_a_steering_run_keeps_what_the_model_said_and_shows_it(
     outcome = run_spec(spec, project, backend=tiny_backend, sae=sae)
     assert outcome.status == "finished", outcome.manifest.get("error")
     feature = outcome.summary["steering"]["feature"]
-    assert feature["feature"] == f and feature["sae"] == SAE_REF
+    assert feature["feature"] == f and feature["sae"] == {
+        **SAE_REF,
+        "source": "hub",
+        "sha256": None,
+    }
 
     monkeypatch.setattr("platformdirs.user_config_path", lambda *a, **k: tmp_path / "config")
     monkeypatch.setattr("logogram.project.config_dir", lambda: tmp_path / "config")

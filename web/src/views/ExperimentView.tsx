@@ -10,7 +10,7 @@ import { KIND_SHORT, parseHeadQuery, queryHeadsOf, queryHeadsText } from "../lib
 import { buildSpec, carriedBy, datasetFacts, lastInstead, parseCounts, parseStrengths, parseThreshold, savedDifferences, unlinedReason, unevenPairsText, usesFeatures } from "../lib/buildSpec";
 import { metricWords } from "../lib/metrics";
 import { useEdgePlan, type EdgePlanState } from "../lib/edgePlan";
-import { edgeLabel, graphText, parseLayers, receiverLabel, receiverWords, saeWritesText, scopeFor, scopeShort, sharesKeys, siteText, steerSiteOf, suggestName, workload } from "../lib/spec";
+import { edgeLabel, graphText, parseLayers, receiverLabel, receiverWords, saeName, saeRefOf, saeWritesText, scopeFor, scopeShort, sharesKeys, siteText, steerSiteOf, suggestName, workload } from "../lib/spec";
 import { useStore, type FormState } from "../store/app";
 import { ChatTemplateSettings } from "./ChatTemplateSettings";
 import { DirectionPicker } from "./DirectionPicker";
@@ -209,7 +209,7 @@ export function ExperimentView() {
       <div className={e.form}>
         {form.predictions && <section className={e.section} aria-label="Included prediction diagnostic">
           <h2 className={e.sectionTitle}>Layer prediction diagnostic</h2>
-          <p className={s.small}>Final-norm logit lens · {form.predictions.which} prompt {form.predictions.prompt_index} · {form.predictions.position.kind === "last" ? "last token" : `token index ${form.predictions.position.index}`} · top {form.predictions.top_k} tokens. Saved as predictions.json beside this run’s intervention results.</p>
+          <p className={s.small}>{form.predictions.method === "tuned_lens" ? `Tuned lens ${form.predictions.lens?.name ?? ""}` : "Final-norm logit lens"} · {form.predictions.which} prompt {form.predictions.prompt_index} · {form.predictions.position.kind === "last" ? "last token" : `token index ${form.predictions.position.index}`} · top {form.predictions.top_k} tokens. Saved as predictions.json beside this run’s intervention results.</p>
           <div className={s.headActions}><Button size="small" onClick={() => useStore.getState().setView("predictions")}>Inspect predictions</Button><Button size="small" onClick={() => setForm({ predictions: null })}>Remove diagnostic</Button></div>
         </section>}
         <Field label="Name">
@@ -855,13 +855,13 @@ const wholeOrNull = (text: string): number | null => (text.trim() === "" ? null 
 function SteeringSettings({ form, onChange, sae }: { form: FormState; onChange: (patch: Partial<FormState>) => void; sae: SAEInfo | null }) {
   const strengths = parseStrengths(form.steerStrengths);
   const feature = form.steerDirection === "sae_feature";
-  const named = form.saeRef ? `${form.saeRef.repo}${form.saeRef.path ? `/${form.saeRef.path}` : ""}` : null;
+  const named = form.saeRef ? saeName(form.saeRef) : null;
   const chooseDirection = (steerDirection: FormState["steerDirection"]) => {
     if (steerDirection === "sae_feature") {
       // Added where the loaded SAE writes: the scope becomes that site.
       onChange({
         steerDirection,
-        ...(sae ? { saeRef: { repo: sae.repo, path: sae.path, revision: sae.revision }, scope: scopeFor("steering", form.scope, steerSiteOf(sae)) } : {}),
+        ...(sae ? { saeRef: saeRefOf(sae), scope: scopeFor("steering", form.scope, steerSiteOf(sae)) } : {}),
       });
     } else {
       onChange({ steerDirection, scope: scopeFor("steering", form.scope) });

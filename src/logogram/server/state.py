@@ -291,6 +291,7 @@ class AppState:
             # The queue of the project open until now stays in it, paused.
             self._release_queue(publish=False)
             self.project = project
+            self._drop_project_sae()
         remember_recent(project)
         log.info("Opened the project %s", project.root)
         self.hub.publish("project", {"session_id": project.session_id})
@@ -311,6 +312,7 @@ class AppState:
             self._check_switch()
             self._release_queue(publish=False)  # its queue stays in it, paused
             self.project = None
+            self._drop_project_sae()
         self.hub.publish("project", {"session_id": None})
 
     def require_project(self) -> Project:
@@ -426,12 +428,18 @@ class AppState:
             self.sae = None
             self._set_sae_status(state="none")
 
+    def _drop_project_sae(self) -> None:
+        """An SAE trained in a project belongs to it: another project may have one of the same
+        name."""
+        if self.sae is not None and self.sae.source == "project":
+            self._drop_sae()
+
     def load_sae(self, ref: Any, cancel: threading.Event | None = None) -> Any:
         """Load (or reuse) an SAE for the loaded model. Runs on a worker thread."""
         from logogram.sae import load_sae, sae_matches
 
         backend = self.require_backend()
-        if sae_matches(self.sae, ref):
+        if sae_matches(self.sae, ref, self.project if ref.source == "project" else None):
             return self.sae
         self.sae = None
         self._set_sae_status(state="loading", repo=ref.repo, path=ref.path, stage="downloading")
@@ -451,7 +459,15 @@ class AppState:
                 )
 
         try:
-            sae = load_sae(ref, backend.info.device, progress, cancel)
+            if ref.source == "project":
+                # Trained in the open project: read from its saes folder, nothing downloaded.
+                from logogram.sae_training import load_project_sae
+
+                sae = load_project_sae(
+                    self.require_project(), ref, backend.info.device, backend.info
+                )
+            else:
+                sae = load_sae(ref, backend.info.device, progress, cancel)
             from logogram.features import check_sae_fits
 
             check_sae_fits(sae, backend.info)
@@ -479,6 +495,86 @@ class AppState:
                 )
             self._drop_sae()
 
+    # -- SAEs and lenses trained in the project ----------------------------------------------
+
+    def train_sae_job(self, spec: Any) -> Job:
+        """Train an SAE in the open project (logogram.sae_training), as a job: its progress
+        carries the stage, the steps done and the loss curve so far. A cancelled training writes
+        nothing."""
+        from logogram.sae_training import train_sae
+        from logogram.spec import TRAINED_SAES
+        from logogram.training import check_new
+
+        project = self.require_project()
+
+        def prepare() -> None:
+            self.require_project()  # again, under the switch/job lock
+            check_new(project, TRAINED_SAES, spec.name, "an SAE")
+
+        def work(job: Job) -> None:
+            trained = train_sae(
+                spec,
+                project,
+                backend=self.backend,
+                provider=lambda ref: self.load_model(ref, cancel=job.cancel),
+                on_progress=self._training_progress(job),
+                cancel=job.cancel,
+            )
+            done = {"stage": "finished", "name": trained.name, "sha256": trained.sha256}
+            job.update(progress={**job.progress, **done})
+
+        return self.start_job(
+            "train_sae", f"Train the SAE {spec.name}", work, prepare=prepare, scoped=True
+        )
+
+    def train_lens_job(self, spec: Any) -> Job:
+        """Train a tuned lens in the open project (logogram.lenses), as a job, as for an SAE."""
+        from logogram.lenses import train_lens
+        from logogram.spec import TRAINED_LENSES
+        from logogram.training import check_new
+
+        project = self.require_project()
+
+        def prepare() -> None:
+            self.require_project()
+            check_new(project, TRAINED_LENSES, spec.name, "a lens")
+
+        def work(job: Job) -> None:
+            trained = train_lens(
+                spec,
+                project,
+                backend=self.backend,
+                provider=lambda ref: self.load_model(ref, cancel=job.cancel),
+                on_progress=self._training_progress(job),
+                cancel=job.cancel,
+            )
+            done = {"stage": "finished", "name": trained.name, "sha256": trained.sha256}
+            job.update(progress={**job.progress, **done})
+
+        return self.start_job(
+            "train_lens", f"Train the lens {spec.name}", work, prepare=prepare, scoped=True
+        )
+
+    def _training_progress(self, job: Job) -> Callable[[dict[str, Any]], None]:
+        """Tell the tabs how a training goes: each new stage and point of the loss curve, and
+        otherwise about ten times a second."""
+        last = {"stage": None, "points": 0, "time": 0.0}
+
+        def progress(data: dict[str, Any]) -> None:
+            curve = data.get("curve")
+            points = len(curve) if isinstance(curve, list) else last["points"]
+            snapshot = {**job.progress, **data}
+            if isinstance(curve, list):
+                snapshot["curve"] = list(curve)
+            job.update(progress=snapshot)
+            now = time.monotonic()
+            fresh = data.get("stage") != last["stage"] or points != last["points"]
+            if fresh or now - float(last["time"] or 0.0) >= 0.1:
+                last.update(stage=data.get("stage"), points=points, time=now)
+                self.hub.publish("job", job.to_dict())
+
+        return progress
+
     # -- jobs --------------------------------------------------------------------------------
 
     def start_job(
@@ -487,11 +583,13 @@ class AppState:
         title: str,
         work: Callable[[Job], None],
         prepare: Callable[[], str | None] | None = None,
+        scoped: bool = False,
     ) -> Job:
         """Run ``work`` on a worker thread, unless another job is running.
 
         ``prepare`` runs first, under the same lock, so nothing is written for a job that can't
-        start (a double-click on Run, say). It returns the job's run id, if it has one.
+        start (a double-click on Run, say). It returns the job's run id, if it has one. A job
+        with a run, or ``scoped`` (it writes into the open project), names the project's session.
         """
         with self._job_lock:
             if self.job is not None and self.job.status == "running":
@@ -504,7 +602,9 @@ class AppState:
                 kind=kind,
                 title=title,
                 run_id=run_id,
-                project_session=self.project.session_id if run_id and self.project else None,
+                project_session=self.project.session_id
+                if (run_id or scoped) and self.project
+                else None,
             )
             self.job = job
         self.hub.publish("job", job.to_dict())

@@ -51,6 +51,8 @@ _API = (
     "sweep",
     "top_examples",
     "toy_model",
+    "train_lens",
+    "train_sae",
     "verify_run",
     "write_corpus",
     "write_dataset",

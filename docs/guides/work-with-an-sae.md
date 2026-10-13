@@ -22,6 +22,10 @@ command line, and `lg.load_sae(release="gpt2-small-res-jb", sae_id="blocks.8.hoo
 model=model)` loads this one from Python. However it is chosen, specs record the SAE's repository,
 folder and revision, as in step 4.
 
+When no published SAE fits your model, site or text, [train one in the
+project](train-an-sae.md): it is listed under **Trained in this project**, above the published
+ones, and used in the same ways.
+
 An SAE fits activations like those it was trained on. These were trained on TransformerLens's
 processed weights, which is how Logogram loads models unless told otherwise; for SAEs trained on a
 model's own weights, such as Gemma Scope 2's, load the model with **Process weights** off. The fit
@@ -54,7 +58,7 @@ the prompts, reported on the other half, to avoid the winner's curse:
 "scope": {"kind": "features", "position": {"kind": "last"}, "top": 50,
           "choose_on": 0.5, "seed": 0},
 "sae": {"repo": "jbloom/GPT2-Small-SAEs-Reformatted", "path": "blocks.8.hook_resid_pre",
-        "revision": null}
+        "revision": null, "source": "hub", "sha256": null}
 ```
 
 The results show the strongest features and how much of the site's estimated effect they account

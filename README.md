@@ -102,15 +102,17 @@ The [documentation](docs/README.md) teaches the app and the methods:
   for, and [Models](docs/models.md) which models load and how.
 * [Concepts](docs/README.md#concepts): what each method computes, exactly, and the papers it
   comes from: activation patching, ablation, metrics and normalization, statistics, attribution
-  patching, path patching, edge attribution, ACDC, direct logit attribution, steering, SAE
-  features, circuits, and the logit lens with the checks each model passes when it loads.
+  patching, path patching, edge attribution, ACDC, direct logit attribution, steering, linear
+  probes, saved directions, distributed alignment search, SAE features, training an SAE, circuits,
+  corpora and representations, the logit lens with the checks each model passes when it loads,
+  and the tuned lens.
 * [How-to guides](docs/README.md#how-to-guides): replicate IOI, find induction heads, work with
-  an SAE, check a finding's robustness, compare runs, sweep seeds, datasets or checkpoints, queue
-  runs and run them headless, run a chat model on its template, study your own fine-tune, share a
-  result, and use a remote GPU.
+  an SAE, train an SAE and a tuned lens, check a finding's robustness, compare runs, sweep seeds,
+  datasets or checkpoints, queue runs and run them headless, run a chat model on its template,
+  study your own fine-tune, share a result, and use a remote GPU.
 * [Reference](docs/README.md#reference), generated from the code: every field of
-  [the spec](docs/reference/spec.md), every command and option of
-  [the command line](docs/reference/cli.md), and every function of
+  [the spec](docs/reference/spec.md) and of [the training specs](docs/reference/training.md),
+  every command and option of [the command line](docs/reference/cli.md), and every function of
   [the Python API](docs/reference/python-api.md).
 * [Notebooks](notebooks/README.md), which open in Colab: IOI head patching with its statistics,
   an attribution-patching estimate checked by patching, and an SAE's features on GPT-2 small.
@@ -186,11 +188,13 @@ The workbench has three workspaces, described view by view in [the workbench](do
   diagram connected the way the model was measured to add attention and the MLP, attention
   patterns and the [head finder](docs/guides/find-induction-heads.md), head comparison, layer
   predictions (a [final-norm logit lens](docs/concepts/logit-lens-and-model-checks.md), offered for
-  models where it reproduces their output), an [SAE's features](docs/concepts/sae-features.md),
-  **Your text**, which reads any text and continues it, with and without an SAE feature added,
-  **Corpus**, where a neuron, a feature, a direction or a head is most active in plain text, and
-  **Representations**, the principal components of activations and the directions saved from
-  them (see [corpora and representations](#corpora-and-representations)).
+  models where it reproduces their output, or a [tuned lens](docs/concepts/tuned-lens.md) trained in
+  the project), an [SAE's features](docs/concepts/sae-features.md) (a published SAE, or one
+  [trained in the project](docs/concepts/sae-training.md)), **Your text**, which reads any text
+  and continues it, with and without an SAE feature added, **Corpus**, where a neuron, a feature,
+  a direction or a head is most active in plain text, and **Representations**, the principal
+  components of activations and the directions saved from them (see
+  [corpora and representations](#corpora-and-representations)).
 * **Experiment** sets up what runs: the prompt pairs, the baseline check, the experiment form,
   which shows every choice that can change a number, and the complete spec. Choose components on
   the map and **Add to experiment** to measure them one by one, or **Test as a circuit** to
@@ -228,6 +232,10 @@ logogram queue clear          take every run out of the queue, after asking (--y
 logogram queue run            run the queue to the end, one run at a time, without the app
 logogram tasks                the tasks Logogram writes prompts for, with their options
 logogram saes MODEL [WORDS]   the published SAEs for a model, and whether Logogram reads each exactly
+logogram sae train SPEC.json  train an SAE on a corpus of the project (or options for every choice)
+logogram sae list             the SAEs trained in the project, with what they measured
+logogram lens train SPEC.json train a tuned lens on a corpus of the project (or options)
+logogram lens list            the tuned lenses trained in the project, with what they measured
 logogram generate TASK        a seeded dataset for a task (-n N --seed S, --option NAME=VALUE)
 logogram models add PATH --name NAME   add a model folder on this machine (its files are hashed)
 logogram models list          the model folders added here, with their hashes
@@ -344,6 +352,9 @@ lg.list_saes(model, "layer 8")   # SAELens's registry for this model, and what L
 sae = lg.load_sae(release="gpt2-small-res-jb", sae_id="blocks.8.hook_resid_pre", model=model)
 lg.feature_writes(model, sae, 1234, "When Mary and John went to the store, John gave a drink to",
                   prepend_bos=True)   # the tokens the feature promotes and suppresses directly
+trained = lg.train_sae(project, "sae.json", model=model)   # a TopK SAE on a corpus of the project
+mine = lg.load_sae(trained["name"], project=project, model=model)   # read from saes/NAME
+lg.train_lens(project, "lens.json", model=model)   # a tuned lens for the layer predictions
 
 lg.add_local_model("~/models/my-fine-tune", "my-fine-tune")   # hash a model folder, once
 tuned = lg.load_model("my-fine-tune", device="cuda:1")         # a local model, on the second GPU
@@ -369,7 +380,7 @@ steered = lg.run(lg.load_spec({**spec.model_dump(), "experiment": {
     "continuations": {"prompts": 3, "tokens": 20}},
     "scope": {"kind": "sites", "sites": [{"kind": "resid_pre", "layer": 8, "position": {"kind": "last"}}]},
     "sae": {"repo": "jbloom/GPT2-Small-SAEs-Reformatted", "path": "blocks.8.hook_resid_pre",
-            "revision": None}}), project, model=model, sae=sae)
+            "revision": None, "source": "hub", "sha256": None}}), project, model=model, sae=sae)
 steered.continuations()   # what the steered model said, prompt by prompt and strength by strength
 ```
 
@@ -849,6 +860,27 @@ it. `logogram saes MODEL` lists a model's SAEs, and `lg.load_sae(release=..., sa
 one. However an SAE is chosen, specs record its repository, folder and revision, pinned when it
 loads.
 
+**SAEs and tuned lenses trained in the project.** When no published SAE fits the model, the site or
+the text, Logogram trains one in the project, on a corpus of its texts: a TopK SAE (Gao et al.
+2024) on one site of one layer, from a training spec that states every choice that can change the
+weights (the model, the corpus by name and hash, the site, the width and k, the steps and tokens
+per step, the learning rate and Adam's settings, the seed, the held-out share, the normalization,
+AuxK). The same spec on the same machine gives the same weights, bit for bit. It is saved as
+`saes/NAME` in SAELens's format, read back by the same reader as published SAEs, with
+`training.json` and `metrics.json`: the loss curve and, on held-out texts it never trained on, the
+variance explained, the features that fire per token, the share that never fire and the next-token
+loss recovered. **Train an SAE…** in **Explore → Features** shows every choice, what training would
+take on this machine (the texts and tokens, the memory and the time) and its progress; a cancelled
+training writes nothing. Specs name such an SAE by its folder and the hash of its files
+(`"source": "project"`), which a run pins when it starts. A **tuned lens** (Belrose et al. 2023)
+trains an affine translator per layer so that the layer's residual stream, read through the final
+normalization and unembedding, predicts what the model predicts; it reads early layers more
+faithfully than the logit lens, and its training measures each layer's held-out KL divergence
+through both. **Layer predictions** reads through one (**Tuned lens**, or **Train a tuned
+lens…**), and a lens trained on another model, or of another width, is refused. See
+[training an SAE](docs/concepts/sae-training.md), [the tuned lens](docs/concepts/tuned-lens.md)
+and the [guide](docs/guides/train-an-sae.md).
+
 **Sites** are abstract: `resid_pre`, `resid_mid`, `resid_post`, `attn_out`, `mlp_out` and `head`
 (an attention head's output `z`), each at a layer, head and position. Positions are `all`,
 `last`, a token `index` or a named `label`. **Sweeps** cover every head at one position
@@ -959,8 +991,9 @@ version 1 gave it, the run's first warning lists each such value, and the spec s
 states them all. `logogram validate SPEC.json` shows the list without running anything. Version 2
 specs (Logogram 0.2 to 0.4) read with what version 3 added turned off, which is what they did: no
 chat template, a model from Hugging Face, and steering along the mean difference without
-continuations. Version 3 specs (Logogram 0.5 and 0.6) read as version 4 unchanged: version 4 adds
-methods and sources that a version 3 spec can't name.
+continuations. Version 3 specs (Logogram 0.5 and 0.6) read as version 4 with what version 4 adds
+turned off: the SAE a spec names is a published one, and the layer predictions read the logit
+lens. Version 4 also adds methods and sources that a version 3 spec can't name.
 
 | Field | Values |
 |---|---|
@@ -973,7 +1006,8 @@ methods and sources that a version 3 spec can't name.
 | `dataset.sha256` | If set, the run refuses a dataset file that has changed. |
 | `experiment` | `{"kind": "activation_patching", "direction": "clean_to_corrupt" \| "corrupt_to_clean"}`, `{"kind": "ablation", "baseline": …}` with `{"kind": "zero"}`, `{"kind": "mean", "reference": "clean" \| "corrupt"}` or `{"kind": "resample", "pool": "clean" \| "corrupt", "donors": 10, "seed": 0}`, `{"kind": "attribution_patching", "direction": …, "method": "gradient", "steps": null}` (same directions as patching; or `"method": "integrated_gradients", "steps": 8`), `{"kind": "direct_logit_attribution", "prompts": "clean" \| "corrupt"}`, `{"kind": "path_patching", "direction": …, "receivers": [{"kind": "head", "layer": 9, "head": 9, "input": "q" \| "k" \| "v"}, {"kind": "mlp", "layer": 3}, {"kind": "logits"}], "freeze_mlps": false}`, `{"kind": "edge_attribution", "direction": …, "method": "gradient", "steps": null, "curve": {"counts": [10, 100, 1000], "patch": "chosen" \| "rest", "control": {"seed": 0, "draws": 1}}}` (`curve` `null` for none) with a `graph` scope, `{"kind": "acdc", "direction": …, "threshold": 0.1, "rule": "toward_source" \| "either_way"}` with a `graph` scope (`threshold` in the metric's units), or `{"kind": "steering", "apply_to": "clean" \| "corrupt", "direction": {"kind": "mean_difference"}, "coefficients": [-1, 1, 2], "train_fraction": 0.5, "seed": 0, "control": true, "continuations": null}` with a scope of one residual component per layer (`layer_components`) or residual `sites`, at one token. The direction can instead be one SAE feature's decoder direction, `{"kind": "sae_feature", "feature": 1234}` (with the spec's `sae`, and `sites` naming where the SAE writes), and `continuations` can be `{"prompts": 3, "tokens": 20}` to record what the steered model goes on to say |
 | `scope` | `{"kind": "heads", "position": …}`, `{"kind": "layer_position", "site": "resid_pre", "positions": "each" \| "labels"}`, `{"kind": "layer_components", "components": ["attn_out", "mlp_out"], "position": …}` `{"kind": "sites", "sites": [{"kind": "head", "layer": 9, "head": 9, "position": {"kind": "label", "label": "end"}}]}` (feature sites are `{"kind": "sae_feature", "layer": 8, "feature": 1234, "position": …}`), `{"kind": "head_inputs", "input": "q" \| "k" \| "v", "position": …}`, `{"kind": "neurons", "layers": [3, 4], "position": …}`, for attribution patching, `{"kind": "features", "position": …, "top": 50, "choose_on": 0.5, "seed": 0}` (`choose_on` and `seed` both `null` to choose and report on every prompt), `{"kind": "site_sets", "universe": ["head"], "sets": [{"label": "circuit", "sites": […], "complement": true}]}`, for edge attribution and ACDC `{"kind": "graph", "layers": null, "logits": true}` (`layers` the heads and MLPs that receive edges, `null` for every layer), or, for path patching edges one at a time, `{"kind": "edges", "edges": [{"sender": {"kind": "head", "layer": 5, "head": 5}, "receiver": {"kind": "head", "layer": 9, "head": 6, "input": "v"}}]}` (senders `{"kind": "embed"}`, heads or `{"kind": "mlp", "layer": 0}`; `freeze_mlps` true, and the experiment's receivers those of the edges; a `k` or `v` receiver's `head` is a key/value head where heads share them) |
-| `sae` | The SAE that feature sites belong to: `{"repo": "…", "path": "blocks.8.hook_resid_pre", "revision": "…"}`. The revision is pinned when a run starts. |
+| `sae` | The SAE that feature sites belong to: a published one, `{"repo": "…", "path": "blocks.8.hook_resid_pre", "revision": "…", "source": "hub", "sha256": null}`, whose revision is pinned when a run starts, or one trained in the project, `{"repo": "NAME", "path": "saes/NAME", "revision": null, "source": "project", "sha256": "…"}`, pinned by the hash of its files. |
+| `predictions` | `null`, or the layer prediction diagnostic saved beside the results: `{"method": "final_norm_logit_lens" \| "tuned_lens", "lens": null, "prompt_index": 0, "which": "clean", "position": {"kind": "last"}, "top_k": 5}`, with `lens` `{"name": "NAME", "sha256": "…"}` naming a tuned lens trained in the project, pinned by the hash of its file. |
 | `metric` | `{"kind": "logit_diff" \| "logprob_diff" \| "logprob" \| "prob" \| "prob_diff", "normalization": …}` or `{"kind": "kl", "target": "clean" \| "corrupt", "normalization": …}` |
 | `metric.normalization` | `dataset_gap` or `prompt_gap` |
 | `statistics.cluster` | `null` to resample prompts, or a field of the prompts' `meta` (such as `"template"`) to resample clusters of prompts |
@@ -997,6 +1031,10 @@ my-project/
   experiments/<id>/manifest.json      versions, device, dtype, model revision, dataset hash, timing
   experiments/<id>/traceback.txt      a failed run's traceback, without this machine's paths
   experiments/<id>/owner.json         while a run runs: its process id and start time
+  saes/<name>/                        an SAE trained here: cfg.json, sae_weights.safetensors,
+                                      training.json (its spec) and metrics.json
+  lenses/<name>/                      a tuned lens trained here: lens.safetensors, training.json
+                                      and metrics.json
   .gitignore
 ```
 

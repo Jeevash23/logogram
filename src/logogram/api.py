@@ -19,6 +19,8 @@ the app would make, and it lands in the project like any other::
     seeds.table()        # the strongest sites at every value: do they keep their sign and size?
     lg.list_saes(model, "layer 8")    # published SAEs for the model, and what Logogram reads of them
     sae = lg.load_sae(release="gpt2-small-res-jb", sae_id="blocks.8.hook_resid_pre", model=model)
+    lg.train_sae(project, "sae.json", model=model)   # an SAE of your own, on a corpus of the project
+    lg.train_lens(project, "lens.json", model=model) # a tuned lens for the layer predictions
     toy = lg.toy_model("induction")   # a model whose circuit is known, with experiments to run
     toy.run("which-heads").sites()    # the planted heads at 1, every other head at 0
     found = lg.run(acdc_spec, project, model=model)   # ACDC over the graph scope's edges
@@ -85,6 +87,8 @@ __all__ = [
     "sweep",
     "top_examples",
     "toy_model",
+    "train_lens",
+    "train_sae",
     "verify_run",
     "write_corpus",
     "write_dataset",
@@ -270,6 +274,7 @@ def load_sae(
     revision: str | None = None,
     release: str | None = None,
     sae_id: str | None = None,
+    project: Project | None = None,
 ) -> Any:
     """Download (once) and read a published SAE or transcoder at an exact revision, onto
     ``model``'s device: by its Hugging Face repository and folder, or by its SAELens release and
@@ -278,11 +283,33 @@ def load_sae(
     the SAE is its repository, folder and revision, which is what a spec records; without a
     revision, the repository's current commit is pinned. It is refused if Logogram can't read it
     exactly, was made for another model's sizes or reads a site the model doesn't have. Pass it to
-    :func:`run` with a spec that names it, or explore its features with :func:`feature_writes`."""
+    :func:`run` with a spec that names it, or explore its features with :func:`feature_writes`.
+
+    With ``project``, ``repo`` names an SAE trained in that project (saes/NAME, see
+    :func:`train_sae`), read from its files, nothing downloaded: ``load_sae("my-sae",
+    project=project, model=model)``. Its ``warnings`` say if it was trained on another model."""
     from logogram.features import check_sae_fits
     from logogram.sae import load_sae as load
-    from logogram.spec import SAERef
+    from logogram.spec import TRAINED_SAES, SAERef
 
+    if project is not None:
+        from logogram.sae_training import load_project_sae
+        from logogram.training import TrainingError
+
+        if repo is None or path or revision is not None or release or sae_id:
+            raise LogogramError(
+                "An SAE trained in the project is named by its name alone: load_sae(NAME, "
+                "project=project, model=model)."
+            )
+        ref = SAERef(
+            repo=repo, path=f"{TRAINED_SAES}/{repo}", revision=None, source="project", sha256=None
+        )
+        try:
+            sae = load_project_sae(project, ref, model.info.device, model.info)
+        except TrainingError as exc:
+            raise LogogramError(str(exc)) from exc
+        check_sae_fits(sae, model.info)
+        return sae
     if release is not None or sae_id is not None:
         if repo is not None or path:
             raise LogogramError(
@@ -301,9 +328,88 @@ def load_sae(
             "Name the SAE: its Hugging Face repository (and folder), or release= and sae_id= as "
             "SAELens names it."
         )
-    sae = load(SAERef(repo=repo, path=path, revision=revision), model.info.device)
+    sae = load(
+        SAERef(repo=repo, path=path, revision=revision, source="hub", sha256=None),
+        model.info.device,
+    )
     check_sae_fits(sae, model.info)
     return sae
+
+
+def _training(spec: Any, kind: Any) -> Any:
+    """A training spec from a dict, its JSON, a file, or the spec itself."""
+    if isinstance(spec, kind):
+        return spec
+    if isinstance(spec, dict):
+        return kind.model_validate(spec)
+    text = str(spec)
+    if text.lstrip().startswith("{"):
+        return kind.model_validate_json(text)
+    from logogram.fileio import JSON_LIMIT, read_limited
+
+    data = read_limited(Path(text).expanduser(), JSON_LIMIT, "A training spec is a few kilobytes.")
+    return kind.model_validate_json(data)
+
+
+def train_sae(
+    project: Project,
+    spec: Any,
+    *,
+    model: Any = None,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    """Train a TopK SAE in ``project``, as the app and ``logogram sae train`` do: on one site of
+    one layer, from a corpus of the project, deterministically, saved as saes/NAME in SAELens's
+    format. ``spec`` is a training spec (a dict, its JSON, a file, or a
+    :class:`logogram.sae_training.SAETrainingSpec`) that states every choice; ``model`` is reused
+    when it is the spec's model. ``on_progress`` hears each stage (reading, collecting, training
+    with the loss curve so far, measuring, writing). Returns its ``name``, ``path``, ``sha256``
+    (what specs pin it by), the ``spec`` as it ran and the ``metrics`` it measured: the loss curve
+    and, on the held-out texts, the variance explained, L0, the share of features that never fire
+    and the next-token loss recovered. Load it with ``load_sae(NAME, project=project,
+    model=model)``. See :mod:`logogram.sae_training`."""
+    from logogram.backends.base import BackendError
+    from logogram.sae_training import SAETrainingSpec
+    from logogram.sae_training import train_sae as train
+    from logogram.training import TrainingError
+
+    try:
+        trained = train(
+            _training(spec, SAETrainingSpec), project, backend=model, on_progress=on_progress
+        )
+    except (TrainingError, BackendError) as exc:
+        raise LogogramError(str(exc)) from exc
+    return trained.to_dict()
+
+
+def train_lens(
+    project: Project,
+    spec: Any,
+    *,
+    model: Any = None,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    """Train a tuned lens in ``project``, as the app and ``logogram lens train`` do: an affine
+    translator per layer, read through the model's final normalization and unembedding, trained
+    against the model's own next-token distribution on a corpus of the project, deterministically,
+    saved as lenses/NAME. ``spec`` is a training spec (a dict, its JSON, a file, or a
+    :class:`logogram.lenses.LensTrainingSpec`) that states every choice; ``model`` is reused when
+    it is the spec's model. Returns its ``name``, ``path``, ``sha256`` (what a spec's prediction
+    settings pin it by), the ``spec`` as it ran and the ``metrics`` it measured: the loss curve and
+    each layer's held-out KL divergence with the logit lens and with the tuned lens. See
+    :mod:`logogram.lenses`."""
+    from logogram.backends.base import BackendError
+    from logogram.lenses import LensTrainingSpec
+    from logogram.lenses import train_lens as train
+    from logogram.training import TrainingError
+
+    try:
+        trained = train(
+            _training(spec, LensTrainingSpec), project, backend=model, on_progress=on_progress
+        )
+    except (TrainingError, BackendError) as exc:
+        raise LogogramError(str(exc)) from exc
+    return trained.to_dict()
 
 
 def list_saes(model: Any, search: str = "") -> Any:

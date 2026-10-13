@@ -3,6 +3,8 @@ import { useEffect, useRef, useState } from "react";
 import { bytes, count, duration, pct } from "../lib/format";
 import { modelName } from "../lib/hooks";
 import { milestone } from "../lib/milestones";
+import { progressText } from "../lib/training";
+import type { TrainingProgress } from "../api/types";
 import { useStore } from "../store/app";
 import { Button, Progress, Spinner } from "./ui";
 import s from "./StatusLine.module.css";
@@ -43,6 +45,13 @@ export function StatusLine() {
     } else {
       text = `Starting “${job.title}”`;
     }
+  } else if (running && (job.kind === "train_sae" || job.kind === "train_lens")) {
+    const what = job.kind === "train_sae" ? "SAE" : "lens";
+    const name = job.title.replace(/^Train the (SAE|lens) /, "");
+    const where = progressText(job.progress as TrainingProgress, what, name);
+    text = `Training the ${what} ${name}`;
+    detail = where.text;
+    progress = where.share;
   } else if (running && job.kind === "load_model") {
     text = `Loading ${modelName(model.id)}`;
     if (model.stage === "downloading" && model.total) {
@@ -94,7 +103,7 @@ export function StatusLine() {
             <Progress value={progress} label={job.kind === "run" ? "Progress of the run" : "Progress of the job"} />
           </div>
         )}
-        {running && job.kind === "run" && (
+        {running && (job.kind === "run" || job.kind === "train_sae" || job.kind === "train_lens") && (
           <Button size="small" onClick={() => useStore.setState({ cancelConfirmOpen: true })} disabled={job.cancelling}>
             {job.cancelling ? "Cancelling…" : "Cancel"}
           </Button>

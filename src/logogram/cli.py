@@ -6,8 +6,10 @@ commands that manage them: ``rename``, ``star``, ``archive`` and ``delete``; ``m
 ``models list`` and ``models remove`` for model folders on this machine; ``toy``, a model whose
 circuit is known; the project's run queue: ``queue add``, ``queue list``, ``queue clear`` and
 ``queue run``; its corpora (``corpora``, ``corpora import``, ``corpora rename`` and ``corpora
-delete``) and directions (``directions``, ``directions rename`` and ``directions delete``); and
-``activations``, which exports the activations at sites over a dataset or a corpus."""
+delete``) and directions (``directions``, ``directions save``, ``directions rename`` and
+``directions delete``); ``activations``, which exports the activations at sites over a dataset or
+a corpus; and SAEs and tuned lenses trained in the project: ``sae train``, ``sae list``, ``lens
+train`` and ``lens list``."""
 
 from __future__ import annotations
 
@@ -2809,6 +2811,518 @@ def activations(
         f"{written['path']}, and what they are to {written['json_path']}."
     )
     typer.echo(f"  SHA-256 of the tensors: {written['sha256']}")
+
+
+# -- SAEs and lenses trained in the project ----------------------------------------------------
+
+sae_app = typer.Typer(
+    add_completion=False,
+    no_args_is_help=True,
+    rich_markup_mode=None,
+    help="SAEs trained in the project: train one, deterministically, from a training spec or "
+    "from options that state every choice, or list them. Each is saved as saes/NAME in SAELens's "
+    "format, and specs name it by that folder and the hash of its files.",
+)
+app.add_typer(sae_app, name="sae")
+lens_app = typer.Typer(
+    add_completion=False,
+    no_args_is_help=True,
+    rich_markup_mode=None,
+    help="Tuned lenses trained in the project: train one, deterministically, from a training "
+    "spec or from options that state every choice, or list them. Each is saved as lenses/NAME; "
+    "the layer predictions of a spec read it by name and the hash of its file.",
+)
+app.add_typer(lens_app, name="lens")
+
+SpecArgument = typer.Argument(
+    metavar="SPEC.json",
+    help="A training spec. Leave it out to state every choice with the options instead.",
+)
+
+
+def _list_value(text: str, what: str, cast: Any = float) -> list[Any]:
+    try:
+        return [cast(part.strip()) for part in text.split(",") if part.strip()]
+    except ValueError as exc:
+        raise _fail(f"{what} is a list of numbers separated by commas.") from exc
+
+
+def _model_option(
+    model: str, revision: str, dtype: str, device: str, process_weights: bool
+) -> dict[str, Any]:
+    """The spec's model from options: a local model by the name it was added under (and the hash
+    of its files), otherwise a Hugging Face id."""
+    from logogram.local_models import find_model
+
+    local = find_model(name=model) if "/" not in model else None
+    revision_value = None if revision.lower() == "none" else revision
+    return {
+        "id": model,
+        "source": "local" if local else "hub",
+        "revision": None if local else revision_value,
+        "sha256": local.sha256 if local else None,
+        "dtype": dtype,
+        "device": device,
+        "process_weights": process_weights,
+    }
+
+
+def _training_spec(
+    spec_path: Path | None,
+    project_dir: Path | None,
+    options: dict[str, Any],
+    build: Any,
+    load: Any,
+) -> tuple[Any, Any]:
+    """The project and the training spec: read from ``spec_path``, or built by ``build`` from
+    ``options``, every one of which must then be given."""
+    from logogram.fileio import JSON_LIMIT, read_limited
+
+    given = {name: value for name, value in options.items() if value is not None}
+    if spec_path is not None:
+        if given:
+            names = ", ".join(f"--{n.replace('_', '-')}" for n in given)
+            raise _fail(f"give either SPEC.json or the options, not both ({names}).")
+        if not spec_path.exists():
+            raise _fail(f"{spec_path} doesn't exist.")
+        project = _open_project(project_dir, spec_path.absolute().parent)
+        try:
+            spec = load(
+                read_limited(
+                    project.readable(spec_path.absolute()),
+                    JSON_LIMIT,
+                    "A training spec is a few kilobytes: check the file.",
+                )
+            )
+        except (ValueError, OSError) as exc:
+            raise _fail(str(exc)) from exc
+        return project, spec
+    missing = [name for name, value in options.items() if value is None]
+    if missing:
+        names = ", ".join(f"--{n.replace('_', '-')}" for n in missing)
+        raise _fail(
+            f"a training states every choice: give SPEC.json, or these options too: {names}."
+        )
+    project = _open_project(project_dir)
+    try:
+        spec = build(options)
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
+    return project, spec
+
+
+class _TrainingPrinter:
+    """A training's progress on stderr: each stage, the loss curve's latest point."""
+
+    def __init__(self) -> None:
+        self.model = _ProgressPrinter()
+        self.stage: str | None = None
+        self.last = 0.0
+
+    def __call__(self, data: dict[str, Any]) -> None:
+        stage = data.get("stage")
+        now = time.monotonic()
+        done, total = int(data.get("done") or 0), int(data.get("total") or 0)
+        final = bool(total) and done == total
+        if stage == self.stage and not final and now - self.last < 0.2:
+            return
+        self.stage, self.last = stage, now
+        if stage == "collecting" and total:
+            self.model._line(
+                f"  collecting activations {100 * done / total:5.1f}% of {total:,} tokens"
+            )
+        elif stage == "training" and total:
+            point = (data.get("curve") or [{}])[-1]
+            loss = (
+                f"FVU {point['fvu']:.4f} · L0 {point['l0']:.1f}"
+                if "fvu" in point
+                else f"KL {point['kl']:.4f}"
+                if "kl" in point
+                else ""
+            )
+            self.model._line(f"  step {done:,} of {total:,} · {loss}")
+        elif stage == "evaluating" and total:
+            self.model._line(f"  measuring on the held-out texts: {done:,} of {total:,}")
+        elif stage in ("loading", "reading", "writing"):
+            words = {
+                "loading": "loading the model",
+                "reading": "reading and tokenizing the corpus",
+                "writing": "writing",
+            }
+            self.model._line(f"  {words[stage]}")
+
+    def close(self) -> None:
+        self.model.close()
+
+
+def _train(project: Any, spec: Any, train: Any, what: str) -> Any:
+    from logogram.backends.base import BackendError
+    from logogram.runner import default_provider
+    from logogram.training import TrainingError
+
+    _quiet_environment()
+    printer = _TrainingPrinter()
+    try:
+        trained = train(
+            spec, project, provider=default_provider(printer.model), on_progress=printer
+        )
+    except (TrainingError, BackendError, ValueError, OSError) as exc:
+        printer.close()
+        raise _fail(str(exc)) from exc
+    except KeyboardInterrupt:
+        printer.close()
+        typer.echo(f"\nInterrupted. Nothing was written: the {what} isn't saved.", err=True)
+        raise typer.Exit(130) from None
+    printer.close()
+    return trained
+
+
+@sae_app.command("train")
+def sae_train(
+    spec_path: Annotated[Path | None, SpecArgument] = None,
+    name: Annotated[str | None, typer.Option(help="Its name: it is saved as saes/NAME.")] = None,
+    model: Annotated[
+        str | None, typer.Option(help="A Hugging Face id, or the name of a local model.")
+    ] = None,
+    revision: Annotated[
+        str | None,
+        typer.Option(help="The model's commit, tag or branch, or none (the current main)."),
+    ] = None,
+    dtype: Annotated[str | None, typer.Option(help="float32, float16 or bfloat16.")] = None,
+    device: Annotated[str | None, typer.Option(help="auto, cpu, cuda, cuda:N or mps.")] = None,
+    process_weights: Annotated[
+        bool | None,
+        typer.Option(
+            "--process-weights/--no-process-weights",
+            help="Load the model with TransformerLens's weight processing, or without.",
+        ),
+    ] = None,
+    corpus: Annotated[str | None, typer.Option(help="The corpus's name, in corpora/.")] = None,
+    site: Annotated[
+        str | None,
+        typer.Option(
+            help="SITE:LAYER, such as resid_post:6 (resid_pre, resid_post, attn_out, mlp_out)."
+        ),
+    ] = None,
+    d_sae: Annotated[int | None, typer.Option(help="How many features.")] = None,
+    k: Annotated[int | None, typer.Option(help="How many features each token keeps.")] = None,
+    steps: Annotated[int | None, typer.Option(help="Steps of the optimizer.")] = None,
+    batch_tokens: Annotated[int | None, typer.Option(help="Tokens per step.")] = None,
+    lr: Annotated[float | None, typer.Option(help="Adam's learning rate.")] = None,
+    betas: Annotated[str | None, typer.Option(help="Adam's betas, such as 0.9,0.999.")] = None,
+    eps: Annotated[float | None, typer.Option(help="Adam's epsilon, such as 1e-8.")] = None,
+    seed: Annotated[int | None, typer.Option(help="The seed of everything random.")] = None,
+    held_out: Annotated[
+        float | None, typer.Option(help="The share of texts held out and measured on.")
+    ] = None,
+    normalize: Annotated[
+        str | None,
+        typer.Option(
+            help="mean_squared_norm (scaled to a mean squared norm of the width) or none."
+        ),
+    ] = None,
+    auxk: Annotated[
+        str | None,
+        typer.Option(help="The AuxK loss as K,COEFFICIENT,DEAD_AFTER (tokens), or none."),
+    ] = None,
+    log_every: Annotated[
+        int | None, typer.Option(help="Steps per point of the loss curve.")
+    ] = None,
+    prepend_bos: Annotated[
+        bool | None,
+        typer.Option("--prepend-bos/--no-prepend-bos", help="Begin each text with BOS, or not."),
+    ] = None,
+    max_tokens: Annotated[int | None, typer.Option(help="The most tokens read of a text.")] = None,
+    model_batch: Annotated[int | None, typer.Option(help="Texts per forward pass.")] = None,
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Train a TopK SAE on one site of one layer, on a corpus of the project, and save it as
+    saes/NAME (in SAELens's format, with training.json and metrics.json). The same spec on the
+    same machine gives the same weights, bit for bit."""
+    from logogram.sae_training import SAETrainingSpec, load_training_spec, train_sae
+
+    options = {
+        "name": name,
+        "model": model,
+        "revision": revision,
+        "dtype": dtype,
+        "device": device,
+        "process_weights": process_weights,
+        "corpus": corpus,
+        "site": site,
+        "d_sae": d_sae,
+        "k": k,
+        "steps": steps,
+        "batch_tokens": batch_tokens,
+        "lr": lr,
+        "betas": betas,
+        "eps": eps,
+        "seed": seed,
+        "held_out": held_out,
+        "normalize": normalize,
+        "auxk": auxk,
+        "log_every": log_every,
+        "prepend_bos": prepend_bos,
+        "max_tokens": max_tokens,
+        "model_batch": model_batch,
+    }
+
+    def build(o: dict[str, Any]) -> SAETrainingSpec:
+        where, _, layer = str(o["site"]).partition(":")
+        if not layer.isdigit():
+            raise ValueError("--site is SITE:LAYER, such as resid_post:6.")
+        aux = None
+        if str(o["auxk"]).lower() != "none":
+            parts = _list_value(o["auxk"], "--auxk")
+            if len(parts) != 3:
+                raise ValueError("--auxk is K,COEFFICIENT,DEAD_AFTER, or none.")
+            aux = {"k": int(parts[0]), "coefficient": parts[1], "dead_after": int(parts[2])}
+        return SAETrainingSpec.model_validate(
+            {
+                "logogram_sae_training": 1,
+                "name": o["name"],
+                "model": _model_option(
+                    o["model"], o["revision"], o["dtype"], o["device"], o["process_weights"]
+                ),
+                "corpus": {"name": o["corpus"], "sha256": None},
+                "tokenization": {"prepend_bos": o["prepend_bos"], "max_tokens": o["max_tokens"]},
+                "site": where,
+                "layer": int(layer),
+                "architecture": {"kind": "topk", "k": o["k"]},
+                "d_sae": o["d_sae"],
+                "steps": o["steps"],
+                "batch_tokens": o["batch_tokens"],
+                "lr": o["lr"],
+                "betas": _list_value(o["betas"], "--betas"),
+                "eps": o["eps"],
+                "seed": o["seed"],
+                "held_out": o["held_out"],
+                "normalize": o["normalize"],
+                "auxk": aux,
+                "log_every": o["log_every"],
+                "model_batch": o["model_batch"],
+            }
+        )
+
+    project, spec = _training_spec(spec_path, project_dir, options, build, load_training_spec)
+    typer.echo(
+        f"Training the SAE {spec.name}: {spec.site} of layer {spec.layer} of {spec.model.id}"
+    )
+    typer.echo(
+        f"  {spec.d_sae:,} features, the top {spec.architecture.k} per token · {spec.steps:,} "
+        f"steps of {spec.batch_tokens:,} tokens · corpus {spec.corpus.name}"
+    )
+    trained = _train(project, spec, train_sae, "SAE")
+    held = trained.metrics["held_out"]
+    typer.echo(f"Saved {trained.path} ({trained.metrics['wall_time_s']} s).")
+    explained = held["variance_explained"]
+    typer.echo(
+        f"  On {held['tokens']:,} held-out tokens: variance explained "
+        f"{'—' if explained is None else f'{explained:.1%}'} · {held['l0']:.1f} features per "
+        f"token · {held['dead_share']:.1%} of features never fire"
+    )
+    loss = held.get("loss")
+    if loss:
+        recovered = loss["recovered"]
+        typer.echo(
+            f"  Next-token loss: clean {loss['clean']:.3f} · with the SAE {loss['spliced']:.3f} · "
+            f"with the site zeroed {loss['zero']:.3f} · loss recovered "
+            f"{'—' if recovered is None else f'{recovered:.1%}'}"
+        )
+    ref = trained.ref().model_dump(mode="json")
+    typer.echo(f'  Specs name it "sae": {_json(ref)}')
+
+
+@sae_app.command("list")
+def sae_list(project_dir: Annotated[Path | None, ProjectOption] = None) -> None:
+    """List the SAEs trained in the project, with what their training measured."""
+    from logogram.sae_training import list_project_saes
+
+    project = _open_project(project_dir)
+    saes = list_project_saes(project)
+    if not saes:
+        typer.echo("No SAE has been trained in this project. Train one: logogram sae train --help")
+        return
+    for s in saes:
+        if s["error"]:
+            typer.echo(f"{s['name']}  can't be read: {s['error']}")
+            continue
+        held = s.get("held_out") or {}
+        explained = held.get("variance_explained")
+        typer.echo(
+            f"{s['name']}  {s['site']} of layer {s['layer']} · {s['d_sae']:,} features, top "
+            f"{s['k']} · {(s.get('model') or {}).get('id')} · variance explained "
+            f"{'—' if explained is None else f'{explained:.1%}'} · {str(s['sha256'])[:12]}"
+        )
+
+
+@lens_app.command("train")
+def lens_train(
+    spec_path: Annotated[Path | None, SpecArgument] = None,
+    name: Annotated[str | None, typer.Option(help="Its name: it is saved as lenses/NAME.")] = None,
+    model: Annotated[
+        str | None, typer.Option(help="A Hugging Face id, or the name of a local model.")
+    ] = None,
+    revision: Annotated[
+        str | None,
+        typer.Option(help="The model's commit, tag or branch, or none (the current main)."),
+    ] = None,
+    dtype: Annotated[str | None, typer.Option(help="float32, float16 or bfloat16.")] = None,
+    device: Annotated[str | None, typer.Option(help="auto, cpu, cuda, cuda:N or mps.")] = None,
+    process_weights: Annotated[
+        bool | None,
+        typer.Option(
+            "--process-weights/--no-process-weights",
+            help="Load the model with TransformerLens's weight processing, or without.",
+        ),
+    ] = None,
+    corpus: Annotated[str | None, typer.Option(help="The corpus's name, in corpora/.")] = None,
+    layers: Annotated[
+        str | None,
+        typer.Option(help="The layers that get a translator, such as 0,1,2, or all-but-last."),
+    ] = None,
+    steps: Annotated[int | None, typer.Option(help="Steps of the optimizer.")] = None,
+    batch_tokens: Annotated[int | None, typer.Option(help="Tokens per step.")] = None,
+    lr: Annotated[float | None, typer.Option(help="The learning rate.")] = None,
+    betas: Annotated[str | None, typer.Option(help="Adam's betas, such as 0.9,0.999.")] = None,
+    eps: Annotated[float | None, typer.Option(help="Adam's epsilon, such as 1e-8.")] = None,
+    weight_decay: Annotated[
+        str | None, typer.Option(help="AdamW's weight decay, such as 0.001, or none.")
+    ] = None,
+    seed: Annotated[int | None, typer.Option(help="The seed of everything random.")] = None,
+    held_out: Annotated[
+        float | None, typer.Option(help="The share of texts held out and measured on.")
+    ] = None,
+    log_every: Annotated[
+        int | None, typer.Option(help="Steps per point of the loss curve.")
+    ] = None,
+    prepend_bos: Annotated[
+        bool | None,
+        typer.Option("--prepend-bos/--no-prepend-bos", help="Begin each text with BOS, or not."),
+    ] = None,
+    max_tokens: Annotated[int | None, typer.Option(help="The most tokens read of a text.")] = None,
+    model_batch: Annotated[int | None, typer.Option(help="Texts per forward pass.")] = None,
+    project_dir: Annotated[Path | None, ProjectOption] = None,
+) -> None:
+    """Train a tuned lens (an affine translator per layer, read through the model's final
+    normalization and unembedding) on a corpus of the project, and save it as lenses/NAME. The
+    same spec on the same machine gives the same translators, bit for bit."""
+    from logogram.lenses import LensTrainingSpec, load_training_spec, train_lens
+
+    options = {
+        "name": name,
+        "model": model,
+        "revision": revision,
+        "dtype": dtype,
+        "device": device,
+        "process_weights": process_weights,
+        "corpus": corpus,
+        "layers": layers,
+        "steps": steps,
+        "batch_tokens": batch_tokens,
+        "lr": lr,
+        "betas": betas,
+        "eps": eps,
+        "weight_decay": weight_decay,
+        "seed": seed,
+        "held_out": held_out,
+        "log_every": log_every,
+        "prepend_bos": prepend_bos,
+        "max_tokens": max_tokens,
+        "model_batch": model_batch,
+    }
+
+    def build(o: dict[str, Any]) -> LensTrainingSpec:
+        chosen = (
+            None
+            if str(o["layers"]).lower() == "all-but-last"
+            else _list_value(o["layers"], "--layers", int)
+        )
+        decay = None if str(o["weight_decay"]).lower() == "none" else float(o["weight_decay"])
+        return LensTrainingSpec.model_validate(
+            {
+                "logogram_lens_training": 1,
+                "name": o["name"],
+                "model": _model_option(
+                    o["model"], o["revision"], o["dtype"], o["device"], o["process_weights"]
+                ),
+                "corpus": {"name": o["corpus"], "sha256": None},
+                "tokenization": {"prepend_bos": o["prepend_bos"], "max_tokens": o["max_tokens"]},
+                "layers": chosen,
+                "steps": o["steps"],
+                "batch_tokens": o["batch_tokens"],
+                "lr": o["lr"],
+                "betas": _list_value(o["betas"], "--betas"),
+                "eps": o["eps"],
+                "weight_decay": decay,
+                "seed": o["seed"],
+                "held_out": o["held_out"],
+                "log_every": o["log_every"],
+                "model_batch": o["model_batch"],
+            }
+        )
+
+    project, spec = _training_spec(spec_path, project_dir, options, build, load_training_spec)
+    which = "every layer but the last" if spec.layers is None else f"layers {spec.layers}"
+    typer.echo(f"Training the lens {spec.name} on {spec.model.id}: {which}")
+    typer.echo(
+        f"  {spec.steps:,} steps of {spec.batch_tokens:,} tokens · corpus {spec.corpus.name}"
+    )
+    trained = _train(project, spec, train_lens, "lens")
+    held = trained.metrics["held_out"]
+    typer.echo(f"Saved {trained.path} ({trained.metrics['wall_time_s']} s).")
+    typer.echo(
+        f"  KL divergence from the model's prediction on {held['tokens']:,} held-out tokens, "
+        "logit lens → tuned lens:"
+    )
+    for row in held["layers"]:
+        tuned = row["tuned_lens"]
+        after = "not trained" if tuned is None else f"{tuned:.4f}"
+        typer.echo(f"    layer {row['layer']:>3}  {row['logit_lens']:.4f} → {after}")
+    ref = trained.ref().model_dump(mode="json")
+    typer.echo(
+        f'  Specs read it with "predictions": {{"method": "tuned_lens", "lens": {_json(ref)}, ...}}'
+    )
+
+
+@lens_app.command("list")
+def lens_list(project_dir: Annotated[Path | None, ProjectOption] = None) -> None:
+    """List the tuned lenses trained in the project, with what their training measured."""
+    from logogram.lenses import list_lenses
+
+    project = _open_project(project_dir)
+    found = list_lenses(project)
+    if not found:
+        typer.echo(
+            "No lens has been trained in this project. Train one: logogram lens train --help"
+        )
+        return
+    for x in found:
+        if x["error"]:
+            typer.echo(f"{x['name']}  can't be read: {x['error']}")
+            continue
+        # The held-out KL divergence over the layers it trained, through each lens.
+        rows = [
+            row
+            for row in (x.get("held_out") or {}).get("layers") or []
+            if isinstance(row, dict) and isinstance(row.get("tuned_lens"), int | float)
+        ]
+        kl = (
+            f"held-out KL {sum(r['logit_lens'] for r in rows) / len(rows):.4f} with the logit "
+            f"lens, {sum(r['tuned_lens'] for r in rows) / len(rows):.4f} with this one · "
+            if rows
+            else ""
+        )
+        typer.echo(
+            f"{x['name']}  layers {', '.join(map(str, x['layers'] or []))} · "
+            f"{(x.get('model') or {}).get('id')} · {kl}{str(x['sha256'])[:12]}"
+        )
+
+
+def _json(value: Any) -> str:
+    import json
+
+    return json.dumps(value)
 
 
 def main() -> None:

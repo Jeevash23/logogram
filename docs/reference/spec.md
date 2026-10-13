@@ -4,7 +4,7 @@
 
 Every experiment is a `spec.json`: the single description of an experiment, which the app, `logogram run` and the Python API all run the same way. Nothing that can change a number is left implicit. A spec states every such field, and a spec that leaves one out is refused with the field's name. This page lists every field, from the models in [`src/logogram/spec.py`](https://github.com/Jeevash23/logogram/blob/main/src/logogram/spec.py).
 
-This is version 4. Version 1 specs (Logogram 0.1) still run: each choice one leaves out takes the value version 1 gave it, the run's first warning lists those values, and `logogram validate SPEC.json` shows them without running anything. Version 2 specs (Logogram 0.2 to 0.4) read with what version 3 added turned off, which is what they did: no chat template, a model from Hugging Face, and steering along the mean difference without continuations. Version 3 specs (Logogram 0.5 and 0.6) read as version 4 unchanged: version 4 adds methods and sources that a version 3 spec can't name.
+This is version 4. Version 1 specs (Logogram 0.1) still run: each choice one leaves out takes the value version 1 gave it, the run's first warning lists those values, and `logogram validate SPEC.json` shows them without running anything. Version 2 specs (Logogram 0.2 to 0.4) read with what version 3 added turned off, which is what they did: no chat template, a model from Hugging Face, and steering along the mean difference without continuations. Version 3 specs (Logogram 0.5 and 0.6) read as version 4 with what version 4 adds turned off: the SAE a spec names is a published one, and the layer predictions read the logit lens. Version 4 also adds methods and sources that a version 3 spec can't name.
 
 Objects that come in several kinds (an experiment, a scope, a position, ...) say which with their `kind`, and each kind has fields of its own.
 
@@ -598,7 +598,8 @@ An optional, explicitly configured diagnostic; it never changes an intervention.
 
 | Field | Type | Allowed values | Description |
 |---|---|---|---|
-| `method` | string | `"final_norm_logit_lens"` | Each layer's resid_post read through the final normalization and the unembedding. |
+| `method` | string | `"final_norm_logit_lens"` or `"tuned_lens"` | Each layer's resid_post read through the final normalization and the unembedding (`final_norm_logit_lens`), or first through that layer's affine translator from a tuned lens trained in the project (`tuned_lens`; layers it has no translator for are read as the logit lens reads them). |
+| `lens` | object or null | [Lens](#lens), or `null` | The tuned lens, for the tuned_lens method; `null` for the logit lens. |
 | `prompt_index` | integer | 0 or more | The prompt pair's index in the dataset, from 0. |
 | `which` | string | `"clean"` or `"corrupt"` | The pair's clean or corrupt prompt. |
 | `position` | object | one of [`last`](#position-last) or [`index`](#position-index) ([Position](#position)) | The token whose next-token predictions are read. |
@@ -608,14 +609,18 @@ An optional, explicitly configured diagnostic; it never changes an intervention.
 
 In a spec at `sae`.
 
-A published sparse autoencoder (or transcoder) on Hugging Face: the repository, the folder
-holding it (empty for the top level) and the exact commit, pinned when a run starts.
+A sparse autoencoder (or transcoder): one published on Hugging Face, named by the
+repository, the folder holding it (empty for the top level) and the exact commit, pinned when a
+run starts; or one trained in the project, named by its folder in `saes/` and pinned by the
+hash of its files.
 
 | Field | Type | Allowed values | Description |
 |---|---|---|---|
-| `repo` | string | not empty | The Hugging Face repository, such as jbloom/GPT2-Small-SAEs-Reformatted. |
-| `path` | string | any | The folder in the repository that holds the SAE, such as blocks.8.hook_resid_pre; empty for the top level. |
-| `revision` | string or null | any | The exact commit; `null` resolves the main branch when a run starts, and the run's spec pins it. |
+| `repo` | string | not empty | The Hugging Face repository, such as jbloom/GPT2-Small-SAEs-Reformatted; for an SAE trained in the project, its name. |
+| `path` | string | any | The folder in the repository that holds the SAE, such as blocks.8.hook_resid_pre, empty for the top level; for an SAE trained in the project, saes/ and its name. |
+| `revision` | string or null | any | The exact commit; `null` resolves the main branch when a run starts, and the run's spec pins it. Always `null` for an SAE trained in the project. |
+| `source` | string | `"hub"` or `"project"` | Where the SAE comes from: Hugging Face, or the project's saes folder (trained there). |
+| `sha256` | string or null | any | For an SAE trained in the project, the hash of its cfg.json and weights file (see logogram.sae_training); `null` uses the SAE as it is when a run starts, and the run's spec pins it. Always `null` for Hugging Face, where the revision pins the files. |
 
 ## Chat template
 
@@ -975,6 +980,18 @@ One feature of the spec's SAE: its activation, as the SAE encodes the activation
 |---|---|---|---|
 | `kind` | string | `"sae_feature"` | Which readout this is: always `sae_feature` here. |
 | `feature` | integer | 0 or more | The feature's index in the spec's SAE. |
+
+## Lens
+
+In a spec at `predictions.lens`.
+
+A tuned lens trained in the project (its folder in `lenses/`), pinned by the hash of its
+translators' file, lens.safetensors, when a run starts.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `name` | string | any | The lens's name in the project's lenses folder. |
+| `sha256` | string or null | any | The hash of its lens.safetensors; `null` uses the lens as it is when a run starts, and the run's spec pins it. |
 
 ## Random edges
 

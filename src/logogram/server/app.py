@@ -442,9 +442,25 @@ class PredictionRequest(AnalysisRequest):
 
 
 class SAELoadRequest(BaseModel):
+    """A published SAE (its repository, folder and revision), or with ``source`` "project" one
+    trained in the open project: ``repo`` is its name, and ``sha256``, when given, the hash its
+    files must have."""
+
     repo: str = Field(min_length=1)
     path: str = ""
     revision: str | None = None
+    source: Literal["hub", "project"] = "hub"
+    sha256: str | None = None
+
+
+class TrainingRequest(BaseModel):
+    """An SAE's or a lens's training spec (logogram.sae_training, logogram.lenses), and for a
+    plan whether to time a forward pass and a step here."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    spec: dict[str, Any]
+    measure: bool = True
 
 
 class SAEAnalysisRequest(AnalysisRequest):
@@ -1694,6 +1710,12 @@ def create_app(
 
         backend = _analysis_backend(body)
         records = _records(body.dataset, body.limit, body.dataset_sha256)
+        lens = None
+        if body.settings.lens is not None:
+            from logogram.lenses import pin_lens
+
+            # A tuned lens trained in the open project, checked against the loaded model.
+            lens = pin_lens(state.require_project(), body.settings.lens, backend.info)
         with backend.lock:
             return prediction_report(
                 backend,
@@ -1703,6 +1725,7 @@ def create_app(
                 prepend_bos=body.prepend_bos,
                 batch_size=body.batch_size,
                 chat_template=body.chat_template,
+                lens=lens,
             )
 
     # -- top activations and representations (logogram.top_activations, .representations) -----
@@ -1880,11 +1903,87 @@ def create_app(
 
     @app.post("/api/sae/load", response_model=M.JobInfo)
     def sae_load(body: SAELoadRequest) -> dict[str, Any]:
-        from logogram.spec import SAERef
+        from logogram.spec import TRAINED_SAES, SAERef
 
         state.require_backend()
-        ref = SAERef(repo=body.repo, path=body.path, revision=body.revision)
+        if body.source == "project":
+            state.require_project()
+            ref = SAERef(
+                repo=body.repo,
+                path=f"{TRAINED_SAES}/{body.repo}",
+                revision=None,
+                source="project",
+                sha256=body.sha256,
+            )
+        else:
+            ref = SAERef(
+                repo=body.repo, path=body.path, revision=body.revision, source="hub", sha256=None
+            )
         return state.load_sae_job(ref).to_dict()
+
+    # -- SAEs and lenses trained in the project ----------------------------------------------
+
+    @app.get("/api/saes/project", response_model=list[M.TrainedSAEListing])
+    def project_saes() -> list[dict[str, Any]]:
+        """The SAEs trained in the open project (logogram.sae_training), by name."""
+        from logogram.sae_training import list_project_saes
+
+        return list_project_saes(state.require_project())
+
+    @app.post("/api/saes/plan", response_model=M.TrainingPlan)
+    def plan_sae(body: TrainingRequest) -> dict[str, Any]:
+        """What training this SAE on the loaded model would take: texts, tokens, memory and the
+        time measured here, or why it can't train."""
+        from logogram.sae_training import load_training_spec
+        from logogram.sae_training import plan_sae as plan
+
+        spec = load_training_spec(body.spec)
+        backend = _training_backend(spec.model)
+        return plan(spec, state.require_project(), backend, measure=body.measure)
+
+    @app.post("/api/saes/train", response_model=M.JobInfo)
+    def train_sae(body: TrainingRequest) -> dict[str, Any]:
+        """Train an SAE in the open project, as a job."""
+        from logogram.sae_training import load_training_spec
+
+        return state.train_sae_job(load_training_spec(body.spec)).to_dict()
+
+    @app.get("/api/lenses", response_model=list[M.LensListing])
+    def lenses() -> list[dict[str, Any]]:
+        """The tuned lenses trained in the open project (logogram.lenses), by name, each saying
+        whether it reads the loaded model."""
+        from logogram.lenses import list_lenses
+
+        backend = state.backend
+        return list_lenses(state.require_project(), backend.info if backend else None)
+
+    @app.post("/api/lenses/plan", response_model=M.TrainingPlan)
+    def plan_lens(body: TrainingRequest) -> dict[str, Any]:
+        """What training this lens on the loaded model would take, or why it can't train."""
+        from logogram.lenses import load_training_spec
+        from logogram.lenses import plan_lens as plan
+
+        spec = load_training_spec(body.spec)
+        backend = _training_backend(spec.model)
+        return plan(spec, state.require_project(), backend, measure=body.measure)
+
+    @app.post("/api/lenses/train", response_model=M.JobInfo)
+    def train_lens(body: TrainingRequest) -> dict[str, Any]:
+        """Train a tuned lens in the open project, as a job."""
+        from logogram.lenses import load_training_spec
+
+        return state.train_lens_job(load_training_spec(body.spec)).to_dict()
+
+    def _training_backend(ref: ModelRef):  # type: ignore[no-untyped-def]
+        from logogram.runner import model_matches
+
+        backend = state.require_backend()
+        if not model_matches(backend, ref):
+            raise Conflict(
+                "The loaded model isn't the one this training names. Load it (its id, revision, "
+                "dtype, device and weight processing) to see what training takes."
+            )
+        return backend
 
     @app.post("/api/sae/unload")
     def sae_unload() -> dict[str, Any]:
@@ -2544,10 +2643,13 @@ PROJECT_SCOPED = (
     "/api/baseline",
     "/api/attention",
     "/api/predictions",
+    "/api/sae/load",
     "/api/sae/fit",
     "/api/sae/tokens",
     "/api/sae/feature",
     "/api/sae/writes",
+    "/api/saes/",
+    "/api/lenses",
     "/api/runs",
     "/api/drafts",
     "/api/compare",

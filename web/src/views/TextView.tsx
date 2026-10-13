@@ -11,7 +11,7 @@ import { CHAT_CHOICES, chatTemplateFor, hasChatTemplate, systemMessage, type Cha
 import { inkScale } from "../lib/color";
 import { count, num, pct, visibleToken } from "../lib/format";
 import { useAnalysisContext } from "../lib/hooks";
-import { saeWritesText } from "../lib/spec";
+import { saeRefOf, saeWritesText } from "../lib/spec";
 import { useStore } from "../store/app";
 import { SaidLines } from "./Continuations";
 import s from "./views.module.css";
@@ -77,7 +77,7 @@ export function TextView() {
   // The text is the view's own: the loaded model reads it, whichever run or form the other views
   // follow. A chat template writes the beginning of the text itself.
   const options = { ...withLoadedModel(context.options, model.info), prepend_bos: template ? false : bos, chat_template: template };
-  const loadedSae: SAERef | null = sae.state === "ready" && sae.info ? { repo: sae.info.repo, path: sae.info.path, revision: sae.info.revision } : null;
+  const loadedSae: SAERef | null = sae.state === "ready" && sae.info ? saeRefOf(sae.info) : null;
   const offered = hasChatTemplate(model.info) || template !== null;
   // The start of a reply answers a message: the text can't be read before it is written.
   const unanswered = template?.kind === "assistant_prefix" && !template.user.trim();

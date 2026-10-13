@@ -3,6 +3,8 @@
 
 * ``spec.md``: every field of the experiment spec, with its type, allowed values and description,
   from the pydantic models in ``src/logogram/spec.py`` (a string below a field describes it);
+* ``training.md``: the same for the training specs of SAEs and tuned lenses trained in a project,
+  from ``src/logogram/sae_training.py`` and ``src/logogram/lenses.py``;
 * ``cli.md``: every command of the command line and its arguments and options, from typer
   (``src/logogram/cli.py``);
 * ``python-api.md``: every public function and class of the Python API, from the docstrings in
@@ -253,22 +255,25 @@ def _length(limits: dict[str, Any], unit: str) -> str:
 class SpecPage:
     """The spec's models, each documented once, in the order a reader meets them from the top."""
 
-    def __init__(self) -> None:
+    def __init__(self, roots: list[Any] | None = None, modules: list[Any] | None = None) -> None:
         import logogram.spec as spec
 
         self.module = spec
-        self.root = spec.Spec
+        # The models documented from the top (the experiment spec, or the training specs).
+        self.roots = roots or [spec.Spec]
+        self.root = self.roots[0]
         # Union aliases defined in spec.py (Position, Experiment, ...), by their members.
         self.alias: dict[frozenset[type], str] = {}
         self.unions: list[tuple[type, ...]] = []
-        for name, value in vars(spec).items():
-            if typing.get_origin(value) is not typing.Annotated:
-                continue
-            members, _ = _members(value)
-            models = len(members) > 1 and all(_is_model(m) for m in members)
-            if models and frozenset(members) not in self.alias:
-                self.alias[frozenset(members)] = name
-                self.unions.append(tuple(members))
+        for module in modules or [spec]:
+            for name, value in vars(module).items():
+                if typing.get_origin(value) is not typing.Annotated:
+                    continue
+                members, _ = _members(value)
+                models = len(members) > 1 and all(_is_model(m) for m in members)
+                if models and frozenset(members) not in self.alias:
+                    self.alias[frozenset(members)] = name
+                    self.unions.append(tuple(members))
         self.order: list[Any] = []  # a model class, or a tuple of union members
         # Where each one appears: its paths in a spec, each with the kinds of the objects on the
         # way that have it (the experiment is an ablation, say).
@@ -288,7 +293,7 @@ class SpecPage:
         return min(holding, key=len) if holding else tuple(members)
 
     def _walk(self) -> None:
-        queue: list[tuple[Any, str, list[tuple[str, str]]]] = [(self.root, "", [])]
+        queue: list[tuple[Any, str, list[tuple[str, str]]]] = [(r, "", []) for r in self.roots]
         while queue:
             key, path, when = queue.pop(0)
             if key not in self.used_at:
@@ -395,6 +400,16 @@ class SpecPage:
             values = typing.get_args(tp)
             kind = {str: "string", bool: "boolean", int: "integer"}.get(type(values[0]), "value")
             return kind, either([json_value(v) for v in values])
+        if typing.get_origin(tp) is tuple:
+            items = [self._describe([_unwrap(i)[0]], _unwrap(i)[1]) for i in typing.get_args(tp)]
+            if len(set(items)) == 1:
+                item_kind, item_values = items[0]
+                plural = "objects" if item_kind == "object" else f"{item_kind}s"
+                return (
+                    f"list of {len(items)} {plural}",
+                    f"each {item_values}" if item_values else "",
+                )
+            return "list", "; ".join(f"{k} {v}".strip() for k, v in items)
         if typing.get_origin(tp) is list:
             item = typing.get_args(tp)[0]
             item_members, _ = _members(item)
@@ -459,14 +474,7 @@ class SpecPage:
 
     def render(self) -> str:
         # Anchors first, in page order, so links can point anywhere on the page.
-        self.anchors.add("The spec")
-        headings: list[tuple[Any, str]] = []
-        for key in self.order:
-            headings.append((key, self.title(key)))
-            if isinstance(key, tuple):
-                headings.extend(((key, m), self.variant_title(key, m)) for m in key)
-        for key, title in headings:
-            self.anchor[key] = self.anchors.add(title)
+        self.headings("The spec")
 
         package = Path(self.module.__file__ or "").parent
         example = package / "examples/ioi-gpt2/experiments/ioi-head-patching/spec.json"
@@ -487,8 +495,9 @@ class SpecPage:
             "anything. Version 2 specs (Logogram 0.2 to 0.4) read with what version 3 added turned "
             "off, which is what they did: no chat template, a model from Hugging Face, and steering "
             "along the mean difference without continuations. Version 3 specs (Logogram 0.5 and "
-            "0.6) read as version 4 unchanged: version 4 adds methods and sources that a version 3 "
-            "spec can't name.",
+            "0.6) read as version 4 with what version 4 adds turned off: the SAE a spec names is "
+            "a published one, and the layer predictions read the logit lens. Version 4 also adds "
+            "methods and sources that a version 3 spec can't name.",
             "",
             "Objects that come in several kinds (an experiment, a scope, a position, ...) say which "
             "with their `kind`, and each kind has fields of its own.",
@@ -500,10 +509,27 @@ class SpecPage:
             "```",
             "",
         ]
+        out += self.sections("a spec")
+        return "\n".join(out).rstrip() + "\n"
+
+    def headings(self, page: str) -> None:
+        """Every heading's anchor, in page order, so links can point anywhere on the page."""
+        self.anchors.add(page)
+        headings: list[tuple[Any, str]] = []
+        for key in self.order:
+            headings.append((key, self.title(key)))
+            if isinstance(key, tuple):
+                headings.extend(((key, m), self.variant_title(key, m)) for m in key)
+        for key, title in headings:
+            self.anchor[key] = self.anchors.add(title)
+
+    def sections(self, where: str) -> list[str]:
+        """Each model's section: where it appears in ``where`` (a spec), and its fields."""
+        out: list[str] = []
         for key in self.order:
             out += [f"## {self.title(key)}", ""]
             if self.used_at[key]:
-                out += [f"In a spec at {self.where(key)}.", ""]
+                out += [f"In {where} at {self.where(key)}.", ""]
             if isinstance(key, tuple):
                 kinds = [self.link((key, m), f"`{self.kind_of(m)}`") for m in key]
                 out += [f"One of these, chosen by `kind`: {either(kinds)}.", ""]
@@ -514,11 +540,43 @@ class SpecPage:
             else:
                 out += self.docstring(key)
                 out += [*self.fields(key, None), ""]
-        return "\n".join(out).rstrip() + "\n"
+        return out
 
 
 def spec_page() -> str:
     return SpecPage().render()
+
+
+def training_page() -> str:
+    """The training specs of SAEs and tuned lenses trained in a project, documented as the
+    experiment spec is."""
+    import logogram.lenses as lenses
+    import logogram.sae_training as sae_training
+
+    page = SpecPage(
+        roots=[sae_training.SAETrainingSpec, lenses.LensTrainingSpec],
+        modules=[sae_training, lenses],
+    )
+    page.headings("Training specs")
+    out = [
+        generated_note("src/logogram/sae_training.py and src/logogram/lenses.py"),
+        "",
+        "# Training specs",
+        "",
+        "An SAE or a tuned lens trained in a project is trained from a training spec, which the "
+        "app, `logogram sae train` and `logogram lens train`, and the Python API "
+        "(`lg.train_sae`, `lg.train_lens`) all train the same way. As in an experiment spec, every "
+        "choice that can change the weights is stated, with no default, and a spec that leaves one "
+        "out is refused with the field's name. The spec as it ran (with the corpus's hash and the "
+        "model's revision pinned) is saved beside what it trained, as training.json. This page "
+        f"lists every field, from the models in [`src/logogram/sae_training.py`]({BLOB}/src/"
+        f"logogram/sae_training.py) and [`src/logogram/lenses.py`]({BLOB}/src/logogram/lenses.py). "
+        "What is computed is described in [Training an SAE](../concepts/sae-training.md) and [The "
+        "tuned lens](../concepts/tuned-lens.md).",
+        "",
+    ]
+    out += page.sections("a training spec")
+    return "\n".join(out).rstrip() + "\n"
 
 
 # ---------------------------------------------------------------------------------------------
@@ -841,6 +899,7 @@ def pages() -> dict[str, str]:
     """Each reference page's path in the repository, and what it should hold."""
     return {
         f"{REFERENCE}/spec.md": spec_page(),
+        f"{REFERENCE}/training.md": training_page(),
         f"{REFERENCE}/cli.md": cli_page(),
         f"{REFERENCE}/python-api.md": api_page(),
     }
