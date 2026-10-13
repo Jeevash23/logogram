@@ -1,7 +1,7 @@
 // Runs as the history shows them: what each is called, how a search finds it, which runs a
 // filter shows, and the order and nesting of the history's rows.
 
-import type { DerivedFrom, RunListing } from "../api/types";
+import type { DerivedFrom, QueuedRun, RunListing } from "../api/types";
 import { usesFeatures } from "./buildSpec";
 import { modelName } from "./hooks";
 import { experimentShort, scopeShort } from "./spec";
@@ -160,6 +160,14 @@ export function keptText(run: RunListing | undefined): string {
   }
   if (run.scope.kind === "sites") return `${kept}: the sites that finished. The site in progress isn't kept.`;
   return `${kept}: the layers that finished. The layer in progress isn't kept.`;
+}
+
+/** What taking one run out of the queue does: it won't run, and its spec is kept only if it is a
+ * saved draft. */
+export function removeQueuedText(run: Pick<QueuedRun, "draft_id">): string {
+  return run.draft_id
+    ? "It won't run from the queue. It is a saved draft, so it stays in the history as it is, to run or change later."
+    : "It won't run, and its spec isn't kept anywhere else: queue it again from the form to run it later.";
 }
 
 /** What deleting a run takes with it, and what stays: said before it is deleted. */

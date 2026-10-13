@@ -1,13 +1,14 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 
-import type { Job, QueueState, RunListing } from "../api/types";
+import type { Job, QueuedRun, QueueState, RunListing } from "../api/types";
 import { ago, count, pct, plural } from "../lib/format";
 import { experimentShort, scopeShort } from "../lib/spec";
 import { layerProfile } from "../lib/logogram";
 import {
   deleteWarning,
   filterCounts,
+  removeQueuedText,
   historyLabel,
   historyRows,
   matchesRun,
@@ -568,21 +569,29 @@ function QueuedRuns() {
   const job = useStore((st) => st.job);
   const remove = useStore((st) => st.removeQueuedRun);
   const [clearing, setClearing] = useState(false);
+  // The queued run asked about before it is taken out, and where its button was.
+  const [removing, setRemoving] = useState<QueuedRun | null>(null);
+  const removingAt = useRef<{ index: number; removed: boolean }>({ index: 0, removed: false });
   const list = useRef<HTMLOListElement>(null);
   const clearButton = useRef<HTMLButtonElement>(null);
   const label = useId();
   if (queue.length === 0 && !error) return null;
 
-  const removeAt = async (index: number, id: string) => {
-    const focused = list.current?.contains(document.activeElement) ?? false;
-    await remove(id);
+  /** The keyboard goes to the remove button at `index`, or the last one if fewer are left, or to
+   * Clear the queue when none are. */
+  const focusRemove = (index: number) => {
+    const buttons = list.current?.querySelectorAll<HTMLButtonElement>("button");
+    if (buttons?.length) buttons[Math.min(index, buttons.length - 1)].focus();
+    else clearButton.current?.focus();
+  };
+  const confirmRemove = async () => {
+    const run = removing;
+    if (!run) return;
+    removingAt.current.removed = true;
+    setRemoving(null);
+    await remove(run.id);
     // Keep the keyboard in the list: on the run that took this one's place, or the one before it.
-    if (focused) {
-      requestAnimationFrame(() => {
-        const buttons = list.current?.querySelectorAll("button");
-        if (buttons?.length) buttons[Math.min(index, buttons.length - 1)].focus();
-      });
-    }
+    requestAnimationFrame(() => focusRemove(removingAt.current.index));
   };
   const store = useStore.getState();
   const here = !runner;
@@ -628,7 +637,10 @@ function QueuedRuns() {
                 className={s.remove}
                 aria-label={`Remove “${q.title}” from the queue`}
                 title="Remove from the queue"
-                onClick={() => void removeAt(i, q.id)}
+                onClick={() => {
+                  removingAt.current = { index: i, removed: false };
+                  setRemoving(q);
+                }}
               />
             </li>
           ))}
@@ -651,6 +663,22 @@ function QueuedRuns() {
         {error
           ? "The project's saved queue can't be read, so what it holds can't be shown. Clearing it starts a new, empty queue."
           : `${queue.length === 1 ? "The run waiting in the queue won't run." : `The ${count(queue.length)} runs waiting in the queue won't run.`} Their specs aren't kept anywhere else, unless they are saved drafts. A run in progress goes on.`}
+      </ConfirmDialog>
+      <ConfirmDialog
+        open={removing !== null}
+        onOpenChange={(value) => {
+          if (!value) setRemoving(null);
+        }}
+        title={`Remove “${removing?.title ?? ""}” from the queue?`}
+        keepLabel="Keep it"
+        confirmLabel="Remove from the queue"
+        onConfirm={() => void confirmRemove()}
+        returnFocus={() => {
+          // Kept: back to its button. Removed: confirmRemove moves on once it is gone.
+          if (!removingAt.current.removed) focusRemove(removingAt.current.index);
+        }}
+      >
+        {removing ? removeQueuedText(removing) : ""}
       </ConfirmDialog>
     </div>
   );

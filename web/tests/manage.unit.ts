@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 
 import type { DatasetListing, ProjectInfo } from "../src/api/types";
+import { removeQueuedText } from "../src/lib/runs";
 import { reproductionNotice, useStore } from "../src/store/app";
 
 // A dataset renamed or deleted, in this tab or another: the prompts chosen, and their unsaved
@@ -128,6 +129,15 @@ test("a finished rerun says whether it reproduced its run, and a difference offe
     globalThis.fetch = original;
     store.leaveProject();
   }
+});
+
+test("taking a run out of the queue says what is lost first", () => {
+  expect(removeQueuedText({ draft_id: null })).toBe(
+    "It won't run, and its spec isn't kept anywhere else: queue it again from the form to run it later.",
+  );
+  expect(removeQueuedText({ draft_id: "20260101-000000-draft" })).toBe(
+    "It won't run from the queue. It is a saved draft, so it stays in the history as it is, to run or change later.",
+  );
 });
 
 test("a tab that has left its project ignores the news that it closed", () => {

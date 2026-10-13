@@ -76,6 +76,9 @@ What changed in each version of Logogram.
 - `logogram delete` and `lg.delete_run` deleted a draft waiting in the queue, which the app
   refuses; the queue then failed when its turn came. Every front end now refuses it, saying to take
   it out of the queue first, and `logogram delete` says so before asking.
+- Taking one run out of the queue, in the history, happened at once and couldn't be undone, while
+  clearing the queue asked first. It now asks too, saying whether its spec is kept (a saved draft
+  stays in the history) or lost.
 - A settings file holding `null`, a list or anything else that isn't an object stopped the app
   from starting (an internal server error). It now reads as no settings, and settings are written
   whole, through a temporary file, so an interrupted write never leaves half a file.

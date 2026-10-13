@@ -55,7 +55,17 @@ test("a run queued while another runs starts when that one ends", async ({ page 
   const queued = history.getByRole("list", { name: "Queued" });
   await expect(queued.getByRole("listitem")).toHaveCount(2);
   await expect(queued.getByRole("listitem").first()).toContainText("Second run");
-  await queued.getByRole("button", { name: "Remove “Removed run” from the queue" }).click();
+  // It asks first, saying what is lost; keeping it leaves the keyboard on its button.
+  const removeButton = queued.getByRole("button", { name: "Remove “Removed run” from the queue" });
+  await removeButton.click();
+  const question = page.getByRole("alertdialog", { name: "Remove “Removed run” from the queue?" });
+  await expect(question).toContainText("It won't run, and its spec isn't kept anywhere else");
+  await question.getByRole("button", { name: "Keep it" }).click();
+  await expect(question).toBeHidden();
+  await expect(removeButton).toBeFocused();
+  await expect(queued.getByRole("listitem")).toHaveCount(2);
+  await removeButton.click();
+  await question.getByRole("button", { name: "Remove from the queue" }).click();
   await expect(queued.getByRole("listitem")).toHaveCount(1);
   // The keyboard stays in the list.
   await expect(queued.getByRole("button", { name: "Remove “Second run” from the queue" })).toBeFocused();
