@@ -11,7 +11,7 @@ the app would make, and it lands in the project like any other::
     spec = lg.load_spec(project.root / "experiments/ioi-head-patching/spec.json")
     run = lg.run(spec, project, model=model)  # reuses the model the spec names; another is refused
     lg.with_model(spec, model)   # the spec, naming this model as it was loaded
-    run.sites()         # one row per site: mean effect, interval, q-value, ...
+    run.sites()          # one row per site: mean effect, interval, q-value, ...
     run.per_prompt()     # one row per site and prompt: everything the statistics came from
     run                  # in a notebook: the method, the strongest sites and a heatmap
     run.rename("Name movers").star()   # as the history shows it; the spec never changes
