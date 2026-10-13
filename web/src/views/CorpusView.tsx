@@ -328,6 +328,7 @@ function FileImport({ taken, onCreated }: { taken: ReadonlySet<string>; onCreate
           accept=".txt,.text,.jsonl,.ndjson,.json,.csv,.tsv"
           className="visually-hidden"
           tabIndex={-1}
+          aria-label="The file to import as a corpus"
           onChange={(e) => {
             const chosen = e.target.files?.[0];
             if (chosen) void choose(chosen);
