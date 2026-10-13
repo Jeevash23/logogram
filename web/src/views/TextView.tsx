@@ -42,6 +42,23 @@ const kept: {
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 
+// A text another view opened here, read as soon as the view shows it, at this token.
+let opened: { position: number | null } | null = null;
+
+/** Show a text in Your text and read it at once, as it is (no chat template), with or without
+ * the beginning-of-sequence token, layer by layer at token `position`: an example a corpus showed,
+ * say. */
+export function openInText(text: string, prependBos: boolean, position: number | null = null): void {
+  kept.text = text;
+  kept.bos = prependBos;
+  kept.template = null;
+  kept.report = null;
+  kept.model = null;
+  kept.sae = null;
+  opened = { position };
+  useStore.getState().setView("text");
+}
+
 /** Any text, read without making a dataset: the model's predictions after each token, what each
  * layer would predict at one of them, where a head attends and which features fire. */
 export function TextView() {
@@ -95,6 +112,13 @@ export function TextView() {
   useEffect(() => {
     if (report && !changed && !kept.sae && loadedSae) kept.sae = loadedSae;
   }, [report, changed, loadedSae?.repo, loadedSae?.path, loadedSae?.revision]);
+  // A text opened from another view is read at once.
+  useEffect(() => {
+    if (!opened || model.state !== "ready") return;
+    const { position } = opened;
+    opened = null;
+    void read(position);
+  }, [model.state]);
 
   if (model.state !== "ready") {
     return (

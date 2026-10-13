@@ -1,8 +1,19 @@
 // A thin JSON client. The session cookie (set by the launch URL) authenticates every request.
 
 import type {
+  ActivationsExported,
+  CorpusFormat,
+  CorpusImported,
   CorpusListing,
+  CorpusPage,
+  CorpusTop,
   DirectionListing,
+  HubDatasetFiles,
+  ReadPosition,
+  ReadSite,
+  Representations,
+  RowsSource,
+  TopUnit,
   AttentionData,
   BaselineReport,
   ChatTemplateSpec,
@@ -100,6 +111,30 @@ export interface AnalysisOptions {
   batch_size: number;
 }
 
+/** What every reading of activations states, and what it reads. */
+export interface RepresentationsRequest {
+  source: RowsSource;
+  site: ReadSite;
+  position: ReadPosition;
+  prepend_bos: boolean;
+  batch_size: number;
+  model?: ModelRef;
+}
+
+/** Where a unit is most active in a corpus: every choice that changes the answer. */
+export interface CorpusTopRequest {
+  corpus: string;
+  corpus_sha256: string | null;
+  unit: TopUnit;
+  texts: number | null;
+  max_tokens: number;
+  top_k: number;
+  context: number;
+  prepend_bos: boolean;
+  batch_size: number;
+  model?: ModelRef;
+}
+
 function errorMessage(data: unknown): string | null {
   if (!data || typeof data !== "object") return null;
   const record = data as { error?: unknown; detail?: unknown };
@@ -118,6 +153,9 @@ export const PROJECT_SCOPED = [
   "/api/research",
   "/api/directions",
   "/api/corpora",
+  "/api/corpus",
+  "/api/representations",
+  "/api/activations",
   "/api/dataset",
   "/api/datasets/",
   "/api/tokenize",
@@ -285,7 +323,42 @@ export const api = {
     post<HeadKindsReport>("/api/heads/kinds", body),
   research: () => get<{ logogram_research: 1; notes: ResearchNote[] }>("/api/research"),
   directions: () => get<DirectionListing[]>("/api/directions"),
+  /** Give a saved direction another name; runs that used it keep their copy. */
+  renameDirection: (name: string, to: string) => post<DirectionListing>(`/api/directions/${encodeURIComponent(name)}/rename`, { name: to }),
+  deleteDirection: (name: string) => request<{ ok: boolean }>("DELETE", `/api/directions/${encodeURIComponent(name)}`),
   corpora: () => get<CorpusListing[]>("/api/corpora"),
+  /** A page of a corpus's texts: those containing `query`, a hundred at a time. */
+  corpus: (name: string, query = "", page = 0) =>
+    get<CorpusPage>(`/api/corpora/${encodeURIComponent(name)}?q=${encodeURIComponent(query)}&page=${page}`),
+  /** A corpus from a file's text, read as `format` says. */
+  importCorpus: (body: { name: string; text: string; filename: string; format: CorpusFormat; text_field: string; label_field: string | null; limit: number | null; overwrite?: boolean }) =>
+    post<CorpusImported>("/api/corpora/import", body),
+  /** A corpus from a dataset's prompts, labelled by side ("side"), a meta field ("meta:FIELD") or not. */
+  corpusFromPrompts: (body: { name: string; dataset: string; sides: "clean" | "corrupt" | "both"; label: string | null; limit: number | null; overwrite?: boolean }) =>
+    post<CorpusImported>("/api/corpora/import/dataset", body),
+  /** A Hugging Face dataset's files (one request to Hugging Face, when asked). */
+  hubDatasetFiles: (repo: string, revision: string | null) =>
+    get<HubDatasetFiles>(`/api/hub/dataset-files?repo=${encodeURIComponent(repo)}${revision ? `&revision=${encodeURIComponent(revision)}` : ""}`),
+  /** Download one file of a Hugging Face dataset and read it as a corpus: a job, with progress. */
+  importHubCorpus: (body: { name: string; repo: string; path: string; revision: string | null; split: "lines" | "paragraphs"; text_field: string; label_field: string | null; limit: number | null; overwrite?: boolean }) =>
+    post<Job>("/api/corpora/import/hub", body),
+  renameCorpus: (name: string, to: string) => post<CorpusListing>(`/api/corpora/${encodeURIComponent(name)}/rename`, { name: to }),
+  deleteCorpus: (name: string) => request<{ ok: boolean }>("DELETE", `/api/corpora/${encodeURIComponent(name)}`),
+  /** Where a unit is most active in a corpus. */
+  corpusTop: (body: CorpusTopRequest) => post<CorpusTop>("/api/corpus/top", body),
+  /** The principal components of the activations at a site over prompts or texts. */
+  representations: (body: RepresentationsRequest) => post<Representations>("/api/representations/pca", body),
+  /** Save a principal component, or the mean difference between two classes, as a direction. */
+  saveRepresentation: (
+    body: RepresentationsRequest & {
+      name: string;
+      save: { kind: "component"; component: number } | { kind: "mean_difference"; positive: string; negative: string };
+      overwrite?: boolean;
+    },
+  ) => post<DirectionListing>("/api/representations/direction", body),
+  /** Write the activations at some sites to activations/NAME.safetensors in the project. */
+  exportActivations: (body: Omit<RepresentationsRequest, "site"> & { sites: ReadSite[]; name: string; overwrite?: boolean }) =>
+    post<ActivationsExported>("/api/activations/export", body),
   saveNote: (value: NoteInput, edit?: { id: string; revision: number }) => edit
     ? request<ResearchNote>("PUT", `/api/research/${encodeURIComponent(edit.id)}`, { ...value, revision: edit.revision })
     : post<ResearchNote>("/api/research", value),
