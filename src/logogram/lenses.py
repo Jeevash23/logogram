@@ -328,6 +328,7 @@ def train_lens(
     waiting: list[torch.Tensor] = []
     held = 0
     curve: list[dict[str, Any]] = []
+    # float64 on the CPU
     sums = torch.zeros(len(layers), dtype=torch.float64)
     since = 0
     for step in range(1, spec.steps + 1):
@@ -343,6 +344,7 @@ def train_lens(
         waiting, held = ([rest], int(rest.shape[0])) if rest.shape[0] else ([], 0)
         check_cancel(cancel)
         optimizer.zero_grad(set_to_none=True)
+        # float64 on the CPU
         kl_sums = torch.zeros(len(layers), dtype=torch.float64)
         for start in range(0, spec.batch_tokens, CHUNK):
             chunk = batch[start : start + CHUNK].to(device)
@@ -493,7 +495,9 @@ def evaluate_lens(
     last = info.n_layers - 1
     every = list(range(last))
     translators = lens.translators if lens is not None else {}
+    # float64 on the CPU
     logit = torch.zeros(len(every), dtype=torch.float64)
+    # float64 on the CPU
     tuned = torch.zeros(len(every), dtype=torch.float64)
     n = 0
     device = backend.device

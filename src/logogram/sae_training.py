@@ -299,6 +299,7 @@ def collect(
 
 def _chunked_sums(pool: torch.Tensor, chunk: int = 65536) -> tuple[torch.Tensor, float]:
     """The sum of the rows of ``pool`` and the sum of their squared norms, in float64."""
+    # float64 on the CPU
     total = torch.zeros(pool.shape[1], dtype=torch.float64)
     squares = 0.0
     for start in range(0, pool.shape[0], chunk):
@@ -621,6 +622,7 @@ def evaluate_sae(
     in at its site (at every token it reads), clean, and with the site set to zero there; with
     the loss recovered, ``(zero − spliced) / (zero − clean)``."""
     rss = 0.0
+    # float64 on the CPU
     total = torch.zeros(sae.params.d_in, dtype=torch.float64)
     squares = 0.0
     n = 0

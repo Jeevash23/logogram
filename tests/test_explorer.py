@@ -22,6 +22,7 @@ from logogram.spec import PredictionSettings
 def prediction_settings(which="clean", position=None, index=3):
     return PredictionSettings(
         method="final_norm_logit_lens",
+        lens=None,
         which=which,
         prompt_index=index,
         position=position or {"kind": "last"},
