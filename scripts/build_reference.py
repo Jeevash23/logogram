@@ -659,7 +659,9 @@ def cli_page() -> str:
         if getattr(command, "commands", None) and command is not group:
             subs = [f"[`{p}`](#{anchor[p]})" for p, _ in commands if p.startswith(path + " ")]
             out += [f"Its commands: {either(subs, 'and')}.", ""]
-            continue
+            # A group that does something of its own without a command (lists, say) has options.
+            if not any(type(p).__name__.endswith("Option") for p in command.params):
+                continue
         out += ["```text", _usage(path, command), "```", ""]
         declared = _declared_help(command)
         arguments = [p for p in command.params if type(p).__name__.endswith("Argument")]

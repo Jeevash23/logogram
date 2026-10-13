@@ -26,6 +26,12 @@ lg.list_saes(model, "layer 8")    # published SAEs for the model, and what Logog
 sae = lg.load_sae(release="gpt2-small-res-jb", sae_id="blocks.8.hook_resid_pre", model=model)
 toy = lg.toy_model("induction")   # a model whose circuit is known, with experiments to run
 toy.run("which-heads").sites()    # the planted heads at 1, every other head at 0
+lg.import_corpus(project, "reviews", "reviews.csv", text_field="review", label_field="stars")
+lg.top_examples(model, project, "reviews", {"kind": "neuron", "layer": 6, "neuron": 1234})
+pcs = lg.principal_components(model, project, "datasets/ioi.jsonl", "resid_post:6", mark="side")
+lg.save_direction(project, "pc1", pcs["components"][0], model=model, site="resid_post:6",
+                  method="pca")
+acts = lg.activations(model, project, "reviews", ["resid_post:6"], "mean")  # NumPy arrays
 ```
 
 Tables come back as pandas DataFrames when pandas is installed, and as pyarrow Tables otherwise.
@@ -36,6 +42,7 @@ Every public name of `import logogram as lg`, from the docstrings in [`src/logog
 
 | Function | What it does |
 |---|---|
+| [`lg.activations`](#lgactivations) | The activations at `sites` and `position`, one row per prompt or text, as NumPy arrays `[rows, width]` in float64 by site (`"resid_post:6"`); nothing is written. |
 | [`lg.add_local_model`](#lgadd_local_model) | Add a model folder on this machine (config.json, the tokenizer's files and safetensors weights) under `name`: its files are hashed (`on_progress(bytes done, bytes in all, file)`), and specs then name it by `name` and that hash, never by its folder. |
 | [`lg.check_robustness`](#lgcheck_robustness) | Rerun with one choice changed (the experiment, or the dtype), as Check robustness does. |
 | [`lg.compare_runs`](#lgcompare_runs) | Compare two finished runs of one project: rank correlation, top-k overlap, conclusions that changed, and paired differences where they measured the same prompts. |
@@ -43,9 +50,13 @@ Every public name of `import logogram as lg`, from the docstrings in [`src/logog
 | [`lg.create_project`](#lgcreate_project) | Create a project folder called after `name` inside `parent`. |
 | [`lg.delete_run`](#lgdelete_run) | Delete a finished, failed or cancelled run, or a draft (a [`Run`](#lgrun-1) or a run id): its folder and everything in it, for good. |
 | [`lg.edge_verification`](#lgedge_verification) | An edge attribution run's estimates beside their measurements by path patching (the run [`verify_run()`](#lgverify_run) made from it), edge by edge, ranked both ways, with Spearman's rank correlation of the two and how many have the same sign. |
+| [`lg.export_activations`](#lgexport_activations) | Write the activations [`activations()`](#lgactivations) reads to `activations/NAME.safetensors` in the project (one float32 tensor per site, `[rows, width]`, named `"kind:layer"`) and what they are to `activations/NAME.json`: the model, the sites, the position, the dataset or corpus read and its hash, each row's index, side and class (`mark`: `"side"` or `"meta:FIELD"` for a dataset; a corpus's labels), and how texts were tokenized. |
 | [`lg.feature_writes`](#lgfeature_writes) | The tokens a feature promotes and suppresses directly, as the app's Features view shows them: one unit of the feature's decoder direction, added to the residual stream entering the final normalization at one token of `prompt`, read through that normalization with its scale held at its value there and through the unembedding, skipping every later layer. |
 | [`lg.generate`](#lggenerate) | Prompt pairs for a task (see `logogram.tasks.TASKS`). |
 | [`lg.head_kinds`](#lghead_kinds) | Score every head of `model` (from [`load_model()`](#lgload_model)) as a previous-token, duplicate-token and induction head, on `sequences` seeded random sequences of `length` tokens repeated twice. |
+| [`lg.import_corpus`](#lgimport_corpus) | Import texts as the corpus `name`, from one of three places: * `path`, a file on this machine: Parquet, JSON Lines, a JSON array, CSV, TSV or text (`format` says which when its name doesn't; a text file is split into `"lines"` or `"paragraphs"`, as `split` says). |
+| [`lg.list_corpora`](#lglist_corpora) | The project's corpora (plain texts in its `corpora/` folder), by name: how many texts each has, its labels, the hash of its file and where its texts came from; `error` says why one can't be read. |
+| [`lg.list_directions`](#lglist_directions) | The directions saved in the project (its `directions/` folder), by name: the model and site each was found on, how many dimensions it has, how it was made (`made_by`: the method, the run and in words) and the hash of its tensor file; `error` says why one can't be read. |
 | [`lg.list_local_models`](#lglist_local_models) | The models added from folders on this machine: name, folder, hash and size. |
 | [`lg.list_runs`](#lglist_runs) | Every run and draft in the project, newest first, as the history lists them: archived runs too (`archived`), and runs whose spec can't be read (`damaged`, with `error` saying why). |
 | [`lg.list_saes`](#lglist_saes) | The published SAEs trained on a model (a loaded model, or its Hugging Face id), from the catalogue of SAELens's registry that ships with Logogram (nothing is fetched): one row per SAE, those Logogram reads exactly first, with its release and id, repository and folder, the hook it reads, its site, layer and width, its architecture, whether Logogram reads it exactly (`reads`: exact, refused or unknown) and if not why (`reason`), and how it was checked on its files if it was (`verified`). |
@@ -55,14 +66,53 @@ Every public name of `import logogram as lg`, from the docstrings in [`src/logog
 | [`lg.load_spec`](#lgload_spec) | A spec from a dict, a JSON string or a spec.json file. |
 | [`lg.load_sweep`](#lgload_sweep) | A sweep of `project` by its id, as its runs record it: its runs in the order of its values (a value whose run is gone, or never ran, has none). |
 | [`lg.look`](#lglook) | Read any text with `model` (from [`load_model()`](#lgload_model)), without making a dataset: its tokens, the `top_k` most likely next tokens after each, and at `position` (the last token by default) what each layer would predict, as the app's Your text view shows. |
+| [`lg.mean_difference`](#lgmean_difference) | The mean activation at `site` and `position` over the rows of class `positive` minus the mean over those of class `negative` (read as [`activations()`](#lgactivations) reads them; a dataset's rows take their class from `mark`, `"side"` or `"meta:FIELD"`, a corpus's from their labels), as a NumPy vector. |
 | [`lg.open_example`](#lgopen_example) | Copy a bundled example into a folder of its own inside `parent` (by default the projects folder the app uses, Documents/Logogram) and open it, as the app's examples do: a copy made before is opened as it is, never replaced. |
 | [`lg.open_project`](#lgopen_project) | Open a project folder (one with a project.json). |
+| [`lg.principal_components`](#lgprincipal_components) | The principal components of the activations at `site` and `position` (read as [`activations()`](#lgactivations) reads them), as the app's Representations view shows them: the rows centered on their mean and decomposed in float64, each component signed so its largest-magnitude loading is positive. |
+| [`lg.read_corpus`](#lgread_corpus) | A corpus of the project: its `texts`, its `records` (each text with its label, id and meta), `labels()` (the distinct labels, as text), the `sha256` of its file and `meta` (where its texts came from). |
+| [`lg.read_direction`](#lgread_direction) | A saved direction: its `vectors` (`[k, width]`, orthonormal rows, float32) and `meta` (the model and site it was found on, how it was made, its hash). |
 | [`lg.remove_local_model`](#lgremove_local_model) | Forget a local model. |
 | [`lg.run`](#lgrun) | Run a spec and write its experiment folder into `project`, as the app does. |
+| [`lg.save_direction`](#lgsave_direction) | Save `vectors` (one vector `[width]`, or `[k, width]` for a subspace; a NumPy array, a tensor or a list) as the direction `name`, made orthonormal, with the length of each vector before kept. |
 | [`lg.sweep`](#lgsweep) | Run a run's spec (or a spec, into `project`) across `values` of one `field`, one run after another, as `logogram sweep` does: a seed the spec states (`statistics.seed`, `experiment.baseline.seed`, `experiment.seed` or `scope.seed`), the dataset (`dataset.path`: dataset files of the project) or the model's revision (`model.revision`: commits, tags or branches, each run pinning its commit). |
+| [`lg.top_examples`](#lgtop_examples) | Where a unit is most active in the corpus `corpus`, as the app's Corpus view shows it. |
 | [`lg.toy_model`](#lgtoy_model) | A model whose circuit is known, to learn the methods on and to check them against: `"induction"` (a previous-token head and an induction head) or `"ioi"` (GPT-2 small's indirect-object circuit, one head per step), with weights set by hand (see `logogram.toys`). |
 | [`lg.verify_run`](#lgverify_run) | Patch, for real, the `top` sites an attribution patching run estimated to matter most; for an edge attribution run, path patch its `top` strongest edges one at a time, at most 50 (compare the two with [`edge_verification()`](#lgedge_verification)). |
+| [`lg.write_corpus`](#lgwrite_corpus) | Write `texts` as the corpus `name`, each with the label at the same place in `labels` (a string, a whole number or true/false) when they are given; empty texts are left out. |
 | [`lg.write_dataset`](#lgwrite_dataset) | Write prompt pairs into the project's datasets/ folder; returns its path in the project. |
+
+### lg.activations
+
+```python
+lg.activations(
+    model: Any,
+    project: Project,
+    source: Any,
+    sites: Sequence[Any] | Any,
+    position: Any = 'last',
+    *,
+    prepend_bos: bool = True,
+    batch_size: int = 16,
+    sides: str = 'both',
+    mark: str | None = None,
+    limit: int | None = None,
+    max_tokens: int = 128,
+) -> dict[str, Any]
+```
+
+The activations at `sites` and `position`, one row per prompt or text, as NumPy
+arrays `[rows, width]` in float64 by site (`"resid_post:6"`); nothing is written.
+
+`source` is a project dataset's path (`"datasets/ioi.jsonl"`: its `sides`,
+`"clean"`, `"corrupt"` or `"both"`, each pair's clean prompt then its corrupt one) or a
+corpus's name (each text cut to its first `max_tokens` tokens); `limit` reads the first
+pairs or texts only. `sites` are `"KIND:LAYER"` (`resid_pre`, `resid_mid`,
+`resid_post`, `attn_out` or `mlp_out`). `position` is `"last"`, a token index
+(negative counts from the end), `"label:NAME"` (a labelled position of the prompts) or
+`"mean"` (the mean over the tokens after the beginning-of-sequence token). The same rows
+always run in the same batches, so they give the same numbers. Write them to the project
+with [`export_activations()`](#lgexport_activations).
 
 ### lg.add_local_model
 
@@ -154,6 +204,34 @@ An edge attribution run's estimates beside their measurements by path patching (
 [`verify_run()`](#lgverify_run) made from it), edge by edge, ranked both ways, with Spearman's rank
 correlation of the two and how many have the same sign.
 
+### lg.export_activations
+
+```python
+lg.export_activations(
+    model: Any,
+    project: Project,
+    name: str,
+    source: Any,
+    sites: Sequence[Any] | Any,
+    position: Any = 'last',
+    *,
+    prepend_bos: bool = True,
+    batch_size: int = 16,
+    sides: str = 'both',
+    mark: str | None = None,
+    limit: int | None = None,
+    max_tokens: int = 128,
+    overwrite: bool = False,
+) -> dict[str, Any]
+```
+
+Write the activations [`activations()`](#lgactivations) reads to `activations/NAME.safetensors` in
+the project (one float32 tensor per site, `[rows, width]`, named `"kind:layer"`) and what
+they are to `activations/NAME.json`: the model, the sites, the position, the dataset or
+corpus read and its hash, each row's index, side and class (`mark`: `"side"` or
+`"meta:FIELD"` for a dataset; a corpus's labels), and how texts were tokenized. Returns where
+they were written.
+
 ### lg.feature_writes
 
 ```python
@@ -219,6 +297,67 @@ tokens repeated twice. Returns, per kind, each head's mean score with its bootst
 over sequences, the per-sequence values, and the strongest heads; the app shows the same in
 the Attention view. `chat_template` (as a spec writes it, with `prepend_bos` false) puts
 each sequence where a prompt goes in the model's own chat template.
+
+### lg.import_corpus
+
+```python
+lg.import_corpus(
+    project: Project,
+    name: str,
+    path: str | Path | None = None,
+    *,
+    repo: str | None = None,
+    file: str | None = None,
+    revision: str | None = None,
+    dataset: str | None = None,
+    sides: str = 'both',
+    label: str | None = None,
+    format: str | None = None,
+    split: str = 'lines',
+    text_field: str = 'text',
+    label_field: str | None = None,
+    limit: int | None = None,
+    overwrite: bool = False,
+) -> Any
+```
+
+Import texts as the corpus `name`, from one of three places:
+
+* `path`, a file on this machine: Parquet, JSON Lines, a JSON array, CSV, TSV or text
+  (`format` says which when its name doesn't; a text file is split into `"lines"` or
+  `"paragraphs"`, as `split` says). The corpus records the file's name and hash, never
+  its folder.
+* `repo` and `file`, a file of a Hugging Face dataset, downloaded once at the exact
+  commit `revision` resolves to (the main branch when None), which the corpus records.
+* `dataset`, a project dataset's prompt pairs (`"datasets/ioi.jsonl"`): their
+  `sides` (`"clean"`, `"corrupt"` or `"both"`), labelled by `label`: `"side"`,
+  or `"meta:FIELD"` for a field of their meta.
+
+`text_field` and `label_field` name the field or column that holds each text and its
+label (no label when None); rows without text are left out. `limit` keeps the first texts
+(the first pairs, for a dataset). Returns the corpus (as [`read_corpus()`](#lgread_corpus) does).
+
+### lg.list_corpora
+
+```python
+lg.list_corpora(project: Project) -> list[dict[str, Any]]
+```
+
+The project's corpora (plain texts in its `corpora/` folder), by name: how many texts
+each has, its labels, the hash of its file and where its texts came from; `error` says why
+one can't be read. Import one with [`import_corpus()`](#lgimport_corpus) or write one with
+[`write_corpus()`](#lgwrite_corpus).
+
+### lg.list_directions
+
+```python
+lg.list_directions(project: Project) -> list[dict[str, Any]]
+```
+
+The directions saved in the project (its `directions/` folder), by name: the model and
+site each was found on, how many dimensions it has, how it was made (`made_by`: the method,
+the run and in words) and the hash of its tensor file; `error` says why one can't be
+read.
 
 ### lg.list_local_models
 
@@ -348,6 +487,33 @@ with `prepend_bos` false), the text is wrapped in the model's own chat template.
 on each token, with their activations, and `active` how many fire there (SAEs aren't
 trained on the beginning-of-sequence token, so read from `first_real_token` on).
 
+### lg.mean_difference
+
+```python
+lg.mean_difference(
+    model: Any,
+    project: Project,
+    source: Any,
+    site: Any,
+    position: Any,
+    positive: str,
+    negative: str,
+    *,
+    prepend_bos: bool = True,
+    batch_size: int = 16,
+    sides: str = 'both',
+    mark: str | None = None,
+    limit: int | None = None,
+    max_tokens: int = 128,
+) -> Any
+```
+
+The mean activation at `site` and `position` over the rows of class `positive`
+minus the mean over those of class `negative` (read as [`activations()`](#lgactivations) reads them; a
+dataset's rows take their class from `mark`, `"side"` or `"meta:FIELD"`, a corpus's from
+their labels), as a NumPy vector. Save it as a direction with [`save_direction()`](#lgsave_direction)
+(`method="mean_difference"`).
+
 ### lg.open_example
 
 ```python
@@ -367,6 +533,53 @@ lg.open_project(path: str | Path) -> Project
 ```
 
 Open a project folder (one with a project.json).
+
+### lg.principal_components
+
+```python
+lg.principal_components(
+    model: Any,
+    project: Project,
+    source: Any,
+    site: Any,
+    position: Any = 'last',
+    *,
+    prepend_bos: bool = True,
+    batch_size: int = 16,
+    sides: str = 'both',
+    mark: str | None = None,
+    limit: int | None = None,
+    max_tokens: int = 128,
+) -> dict[str, Any]
+```
+
+The principal components of the activations at `site` and `position` (read as
+[`activations()`](#lgactivations) reads them), as the app's Representations view shows them: the rows
+centered on their mean and decomposed in float64, each component signed so its
+largest-magnitude loading is positive. Returns `components` (`[k, width]`, at most ten),
+`explained` (each one's share of the variance), `coords` (`[rows, k]`), `mean`,
+`rows` (each row's index, side, class and text) and `settings`. Save a component as a
+direction with [`save_direction()`](#lgsave_direction).
+
+### lg.read_corpus
+
+```python
+lg.read_corpus(project: Project, name: str, sha256: str | None = None) -> Any
+```
+
+A corpus of the project: its `texts`, its `records` (each text with its label, id and
+meta), `labels()` (the distinct labels, as text), the `sha256` of its file and `meta`
+(where its texts came from). With `sha256`, it is refused unless its file still has that
+hash.
+
+### lg.read_direction
+
+```python
+lg.read_direction(project: Project, name: str) -> Any
+```
+
+A saved direction: its `vectors` (`[k, width]`, orthonormal rows, float32) and `meta`
+(the model and site it was found on, how it was made, its hash).
 
 ### lg.remove_local_model
 
@@ -392,6 +605,31 @@ lg.run(
 Run a spec and write its experiment folder into `project`, as the app does. `model`
 is reused when it matches the spec (otherwise the spec's model is loaded).
 
+### lg.save_direction
+
+```python
+lg.save_direction(
+    project: Project,
+    name: str,
+    vectors: Any,
+    *,
+    model: Any,
+    site: Any,
+    method: str = 'import',
+    detail: str = '',
+    notes: str = '',
+    overwrite: bool = False,
+) -> Any
+```
+
+Save `vectors` (one vector `[width]`, or `[k, width]` for a subspace; a NumPy array,
+a tensor or a list) as the direction `name`, made orthonormal, with the length of each
+vector before kept. `model` is the loaded model it was found on (from [`load_model()`](#lgload_model)),
+`site` where (`"resid_post:6"`, or None), `method` how (`"pca"`,
+`"mean_difference"`, `"probe"`, `"das"`, `"sae_feature"` or `"import"`) and
+`detail` in words. Steering, ablation along it and the analyses that read directions use
+it by name. An existing direction of that name is replaced only with `overwrite`.
+
 ### lg.sweep
 
 ```python
@@ -414,6 +652,37 @@ after another, as `logogram sweep` does: a seed the spec states (`statistics.see
 commits, tags or branches, each run pinning its commit). A finished run stands in for its own
 value, which isn't run again. Returns the runs, one per value in the order given; a run that
 doesn't finish is kept with its status, and the next value runs.
+
+### lg.top_examples
+
+```python
+lg.top_examples(
+    model: Any,
+    project: Project,
+    corpus: str,
+    unit: dict[str, Any],
+    *,
+    sae: Any = None,
+    texts: int | None = None,
+    max_tokens: int = 128,
+    prepend_bos: bool = True,
+    batch_size: int = 16,
+    top_k: int = 20,
+    context: int = 8,
+) -> dict[str, Any]
+```
+
+Where a unit is most active in the corpus `corpus`, as the app's Corpus view shows it.
+`unit` is `{"kind": "neuron", "layer": 3, "neuron": 12}`, `{"kind": "sae_feature", "feature": 1234}` (a feature of `sae`, from [`load_sae()`](#lgload_sae)), `{"kind": "direction", "name": "sides"}` (a saved direction, read at its site, or at `"site": {"kind": "resid_post", "layer": 6}`) or `{"kind": "head", "layer": 9, "head": 9}` (the length of
+what the head writes into the residual stream).
+
+The first `texts` texts (every text when None) are read, each cut to its first
+`max_tokens` tokens, after the beginning-of-sequence token with `prepend_bos` (that token
+is never counted). Returns the `top_k` tokens where the unit is largest (`top`), each with
+`context` tokens on either side and the unit's value at each, for a signed unit (a direction
+of one dimension) the `top_k` most negative (`bottom`), a `histogram` of its values, the
+share of tokens where it is above zero (`active_share`), and the `settings` that made
+them. Ties go to the earlier text, then the earlier token.
 
 ### lg.toy_model
 
@@ -446,6 +715,23 @@ lg.verify_run(estimated: Run, top: int = 10, *, model: Any = None) -> Run
 Patch, for real, the `top` sites an attribution patching run estimated to matter most;
 for an edge attribution run, path patch its `top` strongest edges one at a time, at most 50
 (compare the two with [`edge_verification()`](#lgedge_verification)).
+
+### lg.write_corpus
+
+```python
+lg.write_corpus(
+    project: Project,
+    name: str,
+    texts: Sequence[str],
+    labels: Sequence[Any] | None = None,
+    *,
+    overwrite: bool = False,
+) -> Any
+```
+
+Write `texts` as the corpus `name`, each with the label at the same place in
+`labels` (a string, a whole number or true/false) when they are given; empty texts are left
+out. Returns the corpus (as [`read_corpus()`](#lgread_corpus) does).
 
 ### lg.write_dataset
 

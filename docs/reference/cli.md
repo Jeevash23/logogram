@@ -9,11 +9,19 @@ Commands that read runs use the project in the current folder or above it, or `-
 | Command | What it does |
 |---|---|
 | [`logogram`](#logogram) | Start Logogram and open it in your browser. |
+| [`logogram activations`](#logogram-activations) | Write the activations at sites and a position, one row per prompt or text, to activations/NAME.safetensors (one float32 tensor per site, [rows, width]), with activations/NAME.json saying what they are: the model, the sites, the position, the dataset or corpus and its hash, and each row's index, side and class. |
 | [`logogram archive`](#logogram-archive) | Archive a run: it stays in the project, but out of `logogram list` and the app's history until they are asked to show archived runs. |
 | [`logogram check-updates`](#logogram-check-updates) | Ask PyPI whether a newer Logogram is out (sends nothing about you or your work). |
 | [`logogram compare`](#logogram-compare) | Compare two finished runs: rank correlation, top sites, conclusions that changed, and paired differences where they measured the same prompts. |
+| [`logogram corpora`](#logogram-corpora) | The project's corpora: plain texts in its corpora/ folder, for the analyses that read text rather than prompt pairs. |
+| [`logogram corpora delete`](#logogram-corpora-delete) | Delete a corpus: its texts and their description. |
+| [`logogram corpora import`](#logogram-corpora-import) | Import texts as a corpus: from a file, from one file of a Hugging Face dataset (downloaded once, at the exact commit its revision names), or from a project dataset's prompts. |
+| [`logogram corpora rename`](#logogram-corpora-rename) | Give a corpus another name. |
 | [`logogram delete`](#logogram-delete) | Delete a finished, failed or cancelled run, or a draft: its folder and everything in it. |
 | [`logogram diff`](#logogram-diff) | List every choice that differs between two specs (name and notes aside). |
+| [`logogram directions`](#logogram-directions) | The directions saved in the project (its directions/ folder): probes' weights, learned subspaces, principal components and mean differences. |
+| [`logogram directions delete`](#logogram-directions-delete) | Delete a direction. |
+| [`logogram directions rename`](#logogram-directions-rename) | Give a direction another name. |
 | [`logogram doctor`](#logogram-doctor) | Report the environment and hardware, with fixes for common problems. |
 | [`logogram env`](#logogram-env) | Print what results depend on beyond the spec, as JSON: Logogram's, Python's and the libraries' versions, the operating system's family and the devices PyTorch can use. |
 | [`logogram export`](#logogram-export) | Write a finished run's values as CSV: one row per site and prompt, or per site. |
@@ -61,6 +69,37 @@ logogram [OPTIONS]
 | `--log-file` | file | — | Also append the log to this file. |
 | `--forwarded-port` | integer, 1 to 65,535; repeat it for more | — | A port on the browser's computer that forwards to this server, such as an SSH tunnel's local end (ssh -L 9000:127.0.0.1:8765 HOST): addresses on it are accepted too. Repeat it for several, or list them in LOGOGRAM_FORWARDED_PORTS. |
 
+## logogram activations
+
+Write the activations at sites and a position, one row per prompt or text, to activations/NAME.safetensors (one float32 tensor per site, [rows, width]), with activations/NAME.json saying what they are: the model, the sites, the position, the dataset or corpus and its hash, and each row's index, side and class.
+
+```text
+logogram activations [OPTIONS] DATASET_OR_CORPUS
+```
+
+| Argument | Takes | Description |
+|---|---|---|
+| `DATASET_OR_CORPUS` | text | A dataset's path in the project (datasets/ioi.jsonl), or a corpus's name. |
+
+| Option | Takes | Default | Description |
+|---|---|---|---|
+| `--site` | text; repeat it for more | required | KIND:LAYER, such as resid_post:6; repeat it for more sites. |
+| `-o` / `--output` | text | required | The export's name: activations/NAME.safetensors. |
+| `--model` | text | required | The model: a Hugging Face id, or a local model's name. |
+| `--position` | text | `last` | last, mean, a token index (negative counts from the end) or label:NAME. |
+| `--revision` | text | — | The model's commit, branch or tag. |
+| `--dtype` | text | `float32` | float32, float16 or bfloat16. |
+| `--device` | text | `auto` | auto, cpu, cuda, cuda:N or mps. |
+| `--process-weights` / `--no-process-weights` | nothing | on | Fold LayerNorm weights as TransformerLens does by default. |
+| `--bos` / `--no-bos` | nothing | on | Begin each text with the beginning-of-sequence token. |
+| `--batch-size` | integer | `16` | Prompts or texts in a batch. |
+| `--sides` | text | `both` | A dataset's clean, corrupt or both prompts (each clean first). |
+| `--mark` | text | — | A dataset's rows' class, recorded with each: side, or meta:FIELD. |
+| `--limit` | integer | — | Read the first N prompt pairs or texts only. |
+| `--max-tokens` | integer | `128` | A corpus's texts are cut to their first N tokens. |
+| `--overwrite` / `--no-overwrite` | nothing | off | Replace an export of the same name. |
+| `--project` | path | — | Project folder (default: the one containing the current folder). |
+
 ## logogram archive
 
 Archive a run: it stays in the project, but out of `logogram list` and the app's history until they are asked to show archived runs. Nothing is deleted.
@@ -103,6 +142,83 @@ logogram compare [OPTIONS] RUN_A RUN_B
 |---|---|---|---|
 | `--project` | path | — | Project folder (default: the one containing the current folder). |
 
+## logogram corpora
+
+The project's corpora: plain texts in its corpora/ folder, for the analyses that read text rather than prompt pairs. Without a command, list them.
+
+Its commands: [`logogram corpora delete`](#logogram-corpora-delete), [`logogram corpora import`](#logogram-corpora-import) and [`logogram corpora rename`](#logogram-corpora-rename).
+
+```text
+logogram corpora [OPTIONS]
+```
+
+| Option | Takes | Default | Description |
+|---|---|---|---|
+| `--project` | path | — | Project folder (default: the one containing the current folder). |
+
+## logogram corpora delete
+
+Delete a corpus: its texts and their description. There is no undo.
+
+```text
+logogram corpora delete [OPTIONS] NAME
+```
+
+| Argument | Takes | Description |
+|---|---|---|
+| `NAME` | text | The corpus's name. |
+
+| Option | Takes | Default | Description |
+|---|---|---|---|
+| `--yes` / `-y` | nothing | off | Delete without asking first. |
+| `--project` | path | — | Project folder (default: the one containing the current folder). |
+
+## logogram corpora import
+
+Import texts as a corpus: from a file, from one file of a Hugging Face dataset (downloaded once, at the exact commit its revision names), or from a project dataset's prompts. Rows without text are left out, and counted.
+
+```text
+logogram corpora import [OPTIONS] NAME [FILE]
+```
+
+| Argument | Takes | Description |
+|---|---|---|
+| `NAME` | text | The corpus's name in the project. |
+| `FILE` | path | A file on this machine: Parquet, JSON Lines, JSON, CSV, TSV or text. |
+
+| Option | Takes | Default | Description |
+|---|---|---|---|
+| `--hub` | text | — | A Hugging Face dataset, such as stanfordnlp/imdb. |
+| `--file` | text | — | With --hub: the file in the dataset, such as data/train.parquet. |
+| `--revision` | text | — | With --hub: a commit, branch or tag (default: main), pinned as a commit. |
+| `--dataset` | text | — | A project dataset's prompts, such as datasets/ioi.jsonl. |
+| `--sides` | text | `both` | With --dataset: clean, corrupt or both (each pair's clean prompt first). |
+| `--label` | text | — | With --dataset: label texts by side, or by a meta field as meta:FIELD. |
+| `--format` | text | — | lines, paragraphs, jsonl, json, csv, tsv or parquet (default: from the file's name). |
+| `--split` | text | `lines` | A text file's texts: one per line (lines) or by blank lines (paragraphs). |
+| `--text-field` | text | `text` | The field or column that holds each text. |
+| `--label-field` | text | — | The field or column that holds each text's label. |
+| `--limit` | integer | — | Keep the first N texts (with --dataset, the first N pairs). |
+| `--overwrite` / `--no-overwrite` | nothing | off | Replace a corpus of the same name. |
+| `--project` | path | — | Project folder (default: the one containing the current folder). |
+
+## logogram corpora rename
+
+Give a corpus another name.
+
+```text
+logogram corpora rename [OPTIONS] NAME NEW
+```
+
+| Argument | Takes | Description |
+|---|---|---|
+| `NAME` | text | The corpus's name. |
+| `NEW` | text | Its new name. |
+
+| Option | Takes | Default | Description |
+|---|---|---|---|
+| `--project` | path | — | Project folder (default: the one containing the current folder). |
+
 ## logogram delete
 
 Delete a finished, failed or cancelled run, or a draft: its folder and everything in it. There is no undo; `logogram archive` keeps a run out of the way instead.
@@ -132,6 +248,54 @@ logogram diff [OPTIONS] A B
 |---|---|---|
 | `A` | text | A run id, its folder, or a spec file. |
 | `B` | text | Another run id, folder or spec file. |
+
+| Option | Takes | Default | Description |
+|---|---|---|---|
+| `--project` | path | — | Project folder (default: the one containing the current folder). |
+
+## logogram directions
+
+The directions saved in the project (its directions/ folder): probes' weights, learned subspaces, principal components and mean differences. Without a command, list them.
+
+Its commands: [`logogram directions delete`](#logogram-directions-delete) and [`logogram directions rename`](#logogram-directions-rename).
+
+```text
+logogram directions [OPTIONS]
+```
+
+| Option | Takes | Default | Description |
+|---|---|---|---|
+| `--project` | path | — | Project folder (default: the one containing the current folder). |
+
+## logogram directions delete
+
+Delete a direction. Runs that used it keep their own copy.
+
+```text
+logogram directions delete [OPTIONS] NAME
+```
+
+| Argument | Takes | Description |
+|---|---|---|
+| `NAME` | text | The direction's name. |
+
+| Option | Takes | Default | Description |
+|---|---|---|---|
+| `--yes` / `-y` | nothing | off | Delete without asking first. |
+| `--project` | path | — | Project folder (default: the one containing the current folder). |
+
+## logogram directions rename
+
+Give a direction another name. Runs that used it keep their own copy.
+
+```text
+logogram directions rename [OPTIONS] NAME NEW
+```
+
+| Argument | Takes | Description |
+|---|---|---|
+| `NAME` | text | The direction's name. |
+| `NEW` | text | Its new name. |
 
 | Option | Takes | Default | Description |
 |---|---|---|---|
