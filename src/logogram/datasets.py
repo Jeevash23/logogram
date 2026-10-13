@@ -371,8 +371,9 @@ def check_unused(project: Project, path: str, action: str) -> None:
     )
 
 
-def _dataset_file(project: Project, name: str) -> Path:
-    """The dataset file ``name`` in the project's datasets folder, which must be there."""
+def existing_dataset(project: Project, name: str) -> Path:
+    """The dataset file ``name`` (with or without .jsonl) in the project's datasets folder, which
+    must be there, in a folder that is the project's own."""
     path = project.datasets_dir / check_dataset_name(Path(name).name)
     if not (path.is_symlink() or path.is_file()):
         raise DatasetError(f"This project has no dataset called {path.name}.")
@@ -386,7 +387,7 @@ def delete_dataset(project: Project, name: str) -> str:
     what it points to stays."""
     from logogram.fileio import remove_file
 
-    path = _dataset_file(project, name)
+    path = existing_dataset(project, name)
     rel = f"datasets/{path.name}"
     check_unused(project, rel, "deleted")
     try:
@@ -406,8 +407,8 @@ def rename_dataset(project: Project, name: str, new: str) -> str:
     it."""
     from logogram.fileio import atomic_output, remove_file
 
-    path = _dataset_file(project, name)
-    target = project.dataset_file(check_dataset_name(Path(new).name))
+    path = existing_dataset(project, name)
+    target = project.dataset_file(check_dataset_name(new))
     rel = f"datasets/{path.name}"
     if target.name == path.name:
         return rel

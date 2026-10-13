@@ -19,7 +19,14 @@ from typing import Any
 from logogram import runqueue
 from logogram.backends.base import Cancelled, ModelBackend
 from logogram.fileio import write_text_atomic
-from logogram.project import Project, config_dir, remember_recent
+from logogram.project import (
+    DeletionPlan,
+    Project,
+    ProjectError,
+    config_dir,
+    remember_recent,
+)
+from logogram.project import deletion_plan as plan_deletion
 from logogram.runqueue import Queued, QueueError
 from logogram.schema import QueueRunner, RunListing, validate_event
 from logogram.spec import ModelRef, Spec
@@ -331,6 +338,112 @@ class AppState:
         if self.project is None:
             raise Missing("Open a project first.")
         return self.project
+
+    def project_changed(self, project: Project) -> None:
+        """Tell the tabs showing ``project`` to read it again (its name or its datasets)."""
+        payload = {"project_session": project.session_id}
+        self.hub.publish("project.changed", validate_event("project.changed", payload))
+
+    def rename_project(self, name: str) -> Project:
+        """Give the open project another name, in its project.json."""
+        project = self.require_project()
+        with self._job_lock:
+            self.require_project()
+            project.rename(name)
+        self.project_changed(project)
+        return project
+
+    def delete_dataset(self, name: str) -> str:
+        """Delete a dataset file of the open project (see logogram.datasets.delete_dataset):
+        under the job lock, so no run starts on it meanwhile. Returns the path it had."""
+        from logogram.datasets import delete_dataset
+
+        project = self.require_project()
+        with self._job_lock:
+            self.require_project()
+            rel = delete_dataset(project, name)
+        self.project_changed(project)
+        return rel
+
+    def rename_dataset(self, name: str, new: str) -> str:
+        """Give a dataset file of the open project another name (see
+        logogram.datasets.rename_dataset). Returns its new path."""
+        from logogram.datasets import rename_dataset
+
+        project = self.require_project()
+        with self._job_lock:
+            self.require_project()
+            rel = rename_dataset(project, name, new)
+        self.project_changed(project)
+        return rel
+
+    def project_at(self, path: str | None) -> Project:
+        """The open project (``path`` None, or its folder), or the project in the folder
+        ``path``, read without writing into it."""
+        if path is None:
+            return self.require_project()
+        target = Project.read(path)
+        current = self.project
+        return current if current is not None and current.root == target.root else target
+
+    def deletion_plan(self, path: str | None) -> DeletionPlan:
+        """What deleting the project at ``path`` (the open one when None) would delete, and what
+        stops it, with what this server is doing in it."""
+        with self._job_lock:
+            target = self.project_at(path)
+            plan = plan_deletion(target)
+            busy = self._busy_in(target)
+        if busy and not plan.busy:
+            plan.busy = busy
+        return plan
+
+    def _busy_in(self, project: Project) -> str | None:
+        """Why this server keeps ``project`` from being deleted now (under _job_lock)."""
+        if project is not self.project:
+            return None
+        job = self.job
+        if job is not None and job.status == "running":
+            return (
+                f"“{job.title}” is running. Wait for it to end, or cancel it, before deleting "
+                "the project."
+            )
+        if self._holds_queue(project):
+            return (
+                "This project's queue is being run here. Pause it, or wait for it to finish, "
+                "before deleting the project."
+            )
+        return None
+
+    def delete_project(self, path: str | None, name: str) -> None:
+        """Delete the project at ``path`` (the open one when None) for good, once ``name`` is
+        typed as the project is called. The open project is closed first. Refused while a job
+        runs in it or this server runs its queue, and whenever logogram.project.delete_project
+        refuses: a folder that holds what Logogram didn't make, a run in progress elsewhere."""
+        from logogram.project import ProjectInUse, delete_project
+
+        closed = False
+        try:
+            with self._job_lock:
+                target = self.project_at(path)
+                if name.strip() != target.meta.name:
+                    raise ProjectError(
+                        f"Type the project's name, “{target.meta.name}”, exactly, to delete it."
+                    )
+                busy = self._busy_in(target)
+                if busy:
+                    raise ProjectInUse(busy)
+                plan = plan_deletion(target)
+                if plan.problem:
+                    raise (ProjectError if plan.others else ProjectInUse)(plan.problem)
+                if target is self.project:
+                    self._release_queue(publish=False)  # its queue goes with it
+                    self.project = None
+                    closed = True
+                delete_project(target)
+            log.info("Deleted the project %s", target.root)
+        finally:
+            if closed:
+                self.hub.publish("project", {"session_id": None})
 
     # -- model -------------------------------------------------------------------------------
 

@@ -137,6 +137,26 @@ class RecentProject(_Out):
     problem: str | None = None
 
 
+class DeletionPlanOut(_Out):
+    """What deleting a project would delete, and what stops it now (see
+    logogram.project.DeletionPlan)."""
+
+    path: str
+    name: str
+    runs: int
+    drafts: int
+    datasets: int
+    queued: int
+    # The folder's entries Logogram doesn't make there: while there are any, it isn't deleted.
+    others: list[str]
+    # Why it can't be deleted now: a run in progress in it, its queue being run.
+    busy: str | None
+    # Why it can't be deleted (others, or busy), and what to do; None when it can.
+    problem: str | None
+    # What deleting it deletes, in words.
+    text: str
+
+
 class ExampleInfo(_Out):
     """A bundled example (logogram.gallery): what it asks, the result to expect and its spec."""
 
@@ -262,6 +282,13 @@ class DatasetCreated(_Out):
     name: str
     path: str
     n: int
+
+
+class DatasetChanged(_Out):
+    """A dataset file renamed (its new name and path) or deleted (the ones it had)."""
+
+    name: str
+    path: str
 
 
 class IOITemplateOut(_Out):

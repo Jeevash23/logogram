@@ -42,6 +42,8 @@ Every public name of `import logogram as lg`, from the docstrings in [`src/logog
 | [`lg.compare_runs`](#lgcompare_runs) | Compare two finished runs of one project: rank correlation, top-k overlap, conclusions that changed, and paired differences where they measured the same prompts. |
 | [`lg.continue_text`](#lgcontinue_text) | What `model` writes after `text`: `tokens` new tokens (1 to 64), each the most likely one (ties to the lowest token id), as the app's Your text view continues it (`plain`). |
 | [`lg.create_project`](#lgcreate_project) | Create a project folder called after `name` inside `parent`. |
+| [`lg.delete_dataset`](#lgdelete_dataset) | Delete the dataset file `name` (such as `ioi.jsonl`) from the project, for good; returns the path it had. |
+| [`lg.delete_project`](#lgdelete_project) | Delete a project's folder (a `Project`, or its folder) and everything in it, for good: its runs, drafts, datasets and queue. |
 | [`lg.delete_run`](#lgdelete_run) | Delete a finished, failed or cancelled run, or a draft (a [`Run`](#lgrun-1) or a run id): its folder and everything in it, for good. |
 | [`lg.edge_verification`](#lgedge_verification) | An edge attribution run's estimates beside their measurements by path patching (the run [`verify_run()`](#lgverify_run) made from it), edge by edge, ranked both ways, with Spearman's rank correlation of the two and how many have the same sign. |
 | [`lg.feature_writes`](#lgfeature_writes) | The tokens a feature promotes and suppresses directly, as the app's Features view shows them: one unit of the feature's decoder direction, added to the residual stream entering the final normalization at one token of `prompt`, read through that normalization with its scale held at its value there and through the unembedding, skipping every later layer. |
@@ -59,6 +61,7 @@ Every public name of `import logogram as lg`, from the docstrings in [`src/logog
 | [`lg.open_example`](#lgopen_example) | Copy a bundled example into a folder of its own inside `parent` (by default the projects folder the app uses, Documents/Logogram) and open it, as the app's examples do: a copy made before is opened as it is, never replaced. |
 | [`lg.open_project`](#lgopen_project) | Open a project folder (one with a project.json). |
 | [`lg.remove_local_model`](#lgremove_local_model) | Forget a local model. |
+| [`lg.rename_dataset`](#lgrename_dataset) | Give the dataset file `name` the name `new`; returns its new path in the project. |
 | [`lg.run`](#lgrun) | Run a spec and write its experiment folder into `project`, as the app does. |
 | [`lg.sweep`](#lgsweep) | Run a run's spec (or a spec, into `project`) across `values` of one `field`, one run after another, as `logogram sweep` does: a seed the spec states (`statistics.seed`, `experiment.baseline.seed`, `experiment.seed` or `scope.seed`), the dataset (`dataset.path`: dataset files of the project) or the model's revision (`model.revision`: commits, tags or branches, each run pinning its commit). |
 | [`lg.toy_model`](#lgtoy_model) | A model whose circuit is known, to learn the methods on and to check them against: `"induction"` (a previous-token head and an induction head) or `"ioi"` (GPT-2 small's indirect-object circuit, one head per step), with weights set by hand (see `logogram.toys`). |
@@ -134,7 +137,29 @@ largest activation on the text for reference.
 lg.create_project(parent: str | Path, name: str) -> Project
 ```
 
-Create a project folder called after `name` inside `parent`.
+Create a project folder called after `name` inside `parent`. `project.rename(name)`
+gives a project another name later (its folder keeps its own).
+
+### lg.delete_dataset
+
+```python
+lg.delete_dataset(project: Project, name: str) -> str
+```
+
+Delete the dataset file `name` (such as `ioi.jsonl`) from the project, for good;
+returns the path it had. Runs that ran on it keep their own copy of its prompts, in
+datasets/snapshots/. Refused while a saved draft or a queued run names it, naming them.
+
+### lg.delete_project
+
+```python
+lg.delete_project(project: Project | str | Path) -> None
+```
+
+Delete a project's folder (a `Project`, or its folder) and everything in it, for
+good: its runs, drafts, datasets and queue. Refused while a run is in progress in it or its
+queue is being run, and when the folder holds anything Logogram doesn't make there (it may
+be your own folder), listing it. The project leaves the recent list.
 
 ### lg.delete_run
 
@@ -381,6 +406,16 @@ lg.remove_local_model(name: str) -> None
 ```
 
 Forget a local model. Its folder and files are left as they are.
+
+### lg.rename_dataset
+
+```python
+lg.rename_dataset(project: Project, name: str, new: str) -> str
+```
+
+Give the dataset file `name` the name `new`; returns its new path in the project. Its
+prompts, and so its hash, stay the same, and runs that ran on it keep their own copy. Refused
+while a saved draft or a queued run names it, naming them, and when `new` is taken.
 
 ### lg.run
 

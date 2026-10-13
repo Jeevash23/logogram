@@ -48,6 +48,8 @@ __all__ = [
     "compare_runs",
     "continue_text",
     "create_project",
+    "delete_dataset",
+    "delete_project",
     "delete_run",
     "edge_verification",
     "feature_writes",
@@ -65,6 +67,7 @@ __all__ = [
     "open_example",
     "open_project",
     "remove_local_model",
+    "rename_dataset",
     "run",
     "sweep",
     "toy_model",
@@ -84,8 +87,22 @@ def open_project(path: str | Path) -> Project:
 
 
 def create_project(parent: str | Path, name: str) -> Project:
-    """Create a project folder called after ``name`` inside ``parent``."""
+    """Create a project folder called after ``name`` inside ``parent``. ``project.rename(name)``
+    gives a project another name later (its folder keeps its own)."""
     return Project.create(parent, name)
+
+
+def delete_project(project: Project | str | Path) -> None:
+    """Delete a project's folder (a :class:`Project`, or its folder) and everything in it, for
+    good: its runs, drafts, datasets and queue. Refused while a run is in progress in it or its
+    queue is being run, and when the folder holds anything Logogram doesn't make there (it may
+    be your own folder), listing it. The project leaves the recent list."""
+    from logogram.project import delete_project as delete
+
+    try:
+        delete(project if isinstance(project, Project) else Project.read(project))
+    except ProjectError as exc:
+        raise LogogramError(str(exc)) from exc
 
 
 def open_example(example: str = "ioi-gpt2", parent: str | Path | None = None) -> Project:
@@ -806,6 +823,30 @@ def write_dataset(
             raise LogogramError(str(exc)) from exc
     write(path, records)
     return rel
+
+
+def delete_dataset(project: Project, name: str) -> str:
+    """Delete the dataset file ``name`` (such as ``ioi.jsonl``) from the project, for good;
+    returns the path it had. Runs that ran on it keep their own copy of its prompts, in
+    datasets/snapshots/. Refused while a saved draft or a queued run names it, naming them."""
+    from logogram.datasets import delete_dataset as delete
+
+    try:
+        return delete(project, name)
+    except ValueError as exc:  # DatasetError, ProjectError
+        raise LogogramError(str(exc)) from exc
+
+
+def rename_dataset(project: Project, name: str, new: str) -> str:
+    """Give the dataset file ``name`` the name ``new``; returns its new path in the project. Its
+    prompts, and so its hash, stay the same, and runs that ran on it keep their own copy. Refused
+    while a saved draft or a queued run names it, naming them, and when ``new`` is taken."""
+    from logogram.datasets import rename_dataset as rename
+
+    try:
+        return rename(project, name, new)
+    except ValueError as exc:  # DatasetError, ProjectError
+        raise LogogramError(str(exc)) from exc
 
 
 def _table(rows: list[dict[str, Any]]) -> Any:

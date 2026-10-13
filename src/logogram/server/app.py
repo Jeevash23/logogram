@@ -40,7 +40,9 @@ from logogram.history import RunInUse, RunNotFound
 from logogram.project import (
     Project,
     ProjectError,
+    ProjectInUse,
     default_projects_parent,
+    forget_recent,
     load_recent,
     open_example,
 )
@@ -241,6 +243,18 @@ class CreateProject(BaseModel):
 
 class OpenProject(BaseModel):
     path: str
+
+
+class RenameProject(BaseModel):
+    """The open project's new name (one line; its folder keeps its name)."""
+
+    name: str = Field(min_length=1, max_length=1000)
+
+
+class RenameDataset(BaseModel):
+    """A dataset's new file name, in the project's datasets folder."""
+
+    name: str = Field(min_length=1, max_length=200)
 
 
 class OpenExample(BaseModel):
@@ -599,6 +613,7 @@ def create_app(
     @app.exception_handler(NoteConflict)
     @app.exception_handler(RunInUse)
     @app.exception_handler(DatasetInUse)
+    @app.exception_handler(ProjectInUse)
     async def _conflict(_: Request, exc: Conflict) -> JSONResponse:
         return JSONResponse({"error": str(exc)}, status_code=409)
 
@@ -755,6 +770,26 @@ def create_app(
 
     @app.get("/api/projects/recent", response_model=list[M.RecentProject])
     def recent() -> list[dict[str, Any]]:
+        """The projects opened lately; one whose folder is missing is listed as such."""
+        return load_recent()
+
+    @app.delete("/api/projects/recent", response_model=list[M.RecentProject])
+    def forget(path: str) -> list[dict[str, Any]]:
+        """Take a project out of the recent list (its folder is left as it is)."""
+        forget_recent(path)
+        return load_recent()
+
+    @app.get("/api/projects/deletion", response_model=M.DeletionPlanOut)
+    def project_deletion(path: str) -> dict[str, Any]:
+        """What deleting the project in the folder ``path`` would delete, and what stops it: what
+        the app asks about before it deletes anything."""
+        return state.deletion_plan(path).to_dict()
+
+    @app.delete("/api/projects", response_model=list[M.RecentProject])
+    def delete_project_at(path: str, name: str) -> list[dict[str, Any]]:
+        """Delete the project in the folder ``path`` for good, once ``name`` is typed as it is
+        called; the open project is closed first. Returns the recent projects."""
+        state.delete_project(path, name)
         return load_recent()
 
     def _enter(project: Project) -> dict[str, Any]:
@@ -791,6 +826,19 @@ def create_app(
     @app.get("/api/project", response_model=M.ProjectInfo)
     def get_project() -> dict[str, Any]:
         return state.require_project().to_dict()
+
+    @app.patch("/api/project", response_model=M.ProjectInfo)
+    def rename_project(body: RenameProject) -> dict[str, Any]:
+        """Give the open project another name (its project.json; the folder keeps its name)."""
+        return state.rename_project(body.name).to_dict()
+
+    @app.delete("/api/project", response_model=M.OkOut)
+    def delete_open_project(name: str) -> dict[str, bool]:
+        """Close the open project and delete its folder for good, once ``name`` is typed as it is
+        called. Refused while a run is in progress in it or its queue is being run, and when its
+        folder holds anything Logogram didn't make."""
+        state.delete_project(None, name)
+        return {"ok": True}
 
     @app.get("/api/research", response_model=Notebook)
     def research_notes() -> Notebook:
@@ -915,6 +963,20 @@ def create_app(
                 if not p.even
             ]
         return out
+
+    @app.delete("/api/datasets/{name}", response_model=M.DatasetChanged)
+    def delete_dataset(name: str) -> dict[str, Any]:
+        """Delete a dataset file, for good. Runs that ran on it keep their own copy of its prompts
+        (datasets/snapshots/); refused while a saved draft or a queued run names it."""
+        path = state.delete_dataset(name)
+        return {"name": Path(path).name, "path": path}
+
+    @app.post("/api/datasets/{name}/rename", response_model=M.DatasetChanged)
+    def rename_dataset(name: str, body: RenameDataset) -> dict[str, Any]:
+        """Give a dataset file another name; its prompts and hash stay the same. Refused while a
+        saved draft or a queued run names it, and when the name is taken."""
+        path = state.rename_dataset(name, body.name)
+        return {"name": Path(path).name, "path": path}
 
     @app.get("/api/ioi/templates", response_model=list[M.IOITemplateOut])
     def ioi_templates() -> list[dict[str, Any]]:

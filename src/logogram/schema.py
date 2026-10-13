@@ -767,6 +767,13 @@ class RunsChanged(_Model):
     deleted: bool = False
 
 
+class ProjectChanged(_Model):
+    """The open project renamed, or its datasets renamed or deleted: tabs showing it read it
+    again."""
+
+    project_session: str
+
+
 EVENT_SCHEMAS: dict[str, type[BaseModel]] = {
     "run.started": RunStarted,
     "run.layer": RunLayer,
@@ -777,6 +784,7 @@ EVENT_SCHEMAS: dict[str, type[BaseModel]] = {
     "queue": QueueChanged,
     "queue.skipped": QueueSkipped,
     "runs.changed": RunsChanged,
+    "project.changed": ProjectChanged,
 }
 
 

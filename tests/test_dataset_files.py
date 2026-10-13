@@ -107,3 +107,108 @@ def test_a_dataset_a_draft_or_queued_run_names_is_never_replaced(client, project
         "datasets/ioi.jsonl"
     )
     assert file_sha256(path) != before
+
+
+def _ran(project: Any, tiny_backend: Any, spec_factory: Any) -> Any:
+    from logogram.runner import run_spec
+
+    outcome = run_spec(_quick(spec_factory, "Ran"), project, backend=tiny_backend)
+    assert outcome.status == "finished", outcome.manifest.get("error")
+    return outcome
+
+
+def test_a_dataset_is_renamed_and_deleted_in_the_app(
+    app, client, project, tiny_backend, spec_factory
+):
+    ran = _ran(project, tiny_backend, spec_factory)
+    sha = file_sha256(project.datasets_dir / "ioi.jsonl")
+    tab = {**HEADERS, "x-logogram-project": app.state.logogram.project.session_id}
+    seen: list[tuple[str, dict[str, Any]]] = []
+    publish = app.state.logogram.hub.publish
+    app.state.logogram.hub.publish = lambda kind, data: (
+        seen.append((kind, data)),
+        publish(kind, data),
+    )
+
+    renamed = client.post("/api/datasets/ioi.jsonl/rename", json={"name": "names"}, headers=tab)
+    assert renamed.status_code == 200, renamed.text
+    assert renamed.json() == {"name": "names.jsonl", "path": "datasets/names.jsonl"}
+    assert not (project.datasets_dir / "ioi.jsonl").exists()
+    assert file_sha256(project.datasets_dir / "names.jsonl") == sha  # the same prompts
+    session = app.state.logogram.project.session_id
+    assert ("project.changed", {"project_session": session}) in seen
+    names = [d["name"] for d in client.get("/api/project", headers=tab).json()["datasets"]]
+    assert names == ["mixed.jsonl", "names.jsonl"]
+    taken = client.post("/api/datasets/names/rename", json={"name": "mixed"}, headers=tab)
+    assert taken.status_code == 400
+    assert taken.json()["error"] == "mixed.jsonl already exists. Choose another name."
+    bad = client.post("/api/datasets/names/rename", json={"name": "../x"}, headers=tab)
+    assert bad.status_code == 400 and "Dataset names can use letters" in bad.json()["error"]
+
+    deleted = client.delete("/api/datasets/names.jsonl", headers=tab)
+    assert deleted.status_code == 200 and deleted.json()["path"] == "datasets/names.jsonl"
+    assert not (project.datasets_dir / "names.jsonl").exists()
+    missing = client.delete("/api/datasets/names.jsonl", headers=tab)
+    assert missing.status_code == 400
+    assert missing.json()["error"] == "This project has no dataset called names.jsonl."
+    # The run that ran on it is untouched: it reads its own copy.
+    detail = client.get(f"/api/runs/{ran.run_id}/sites/0", headers=tab).json()
+    assert detail["prompts"][0]["clean"]
+    assert lg.load_run(project, ran.run_id).status == "finished"
+
+    # A draft that names a dataset keeps it from being renamed or deleted.
+    draft = _draft(project, _quick(spec_factory, "Mixed", "datasets/mixed.jsonl"))
+    for refused in (
+        client.delete("/api/datasets/mixed.jsonl", headers=tab),
+        client.post("/api/datasets/mixed.jsonl/rename", json={"name": "other"}, headers=tab),
+    ):
+        assert refused.status_code == 409
+        assert f"the draft “Mixed” (experiments/{draft}) names it" in refused.json()["error"]
+    assert (project.datasets_dir / "mixed.jsonl").is_file()
+
+
+def test_datasets_are_listed_renamed_and_deleted_from_the_command_line_and_python(
+    project, spec_factory
+):
+    where = ["--project", str(project.root)]
+    _draft(project, _quick(spec_factory, "Heads"))
+    listed = runner.invoke(cli, ["datasets", *where])
+    assert listed.exit_code == 0, listed.output
+    assert listed.output.splitlines() == [
+        "ioi.jsonl    12 prompt pairs",
+        "             named by the draft “Heads” (experiments/" + project.list_runs()[0].id + ")",
+        "mixed.jsonl  12 prompt pairs",
+    ]
+    refused = runner.invoke(cli, ["datasets", "delete", "ioi.jsonl", *where])
+    assert refused.exit_code == 1 and "can't be deleted" in refused.output
+    assert "Delete it?" not in refused.output  # refused before asking
+    kept = runner.invoke(cli, ["datasets", "delete", "mixed", *where], input="n\n")
+    assert kept.exit_code == 1 and "Nothing was deleted." in kept.output
+    assert "Runs that ran on it keep their own copy of its prompts" in " ".join(kept.output.split())
+    renamed = runner.invoke(cli, ["datasets", "rename", "mixed", "templates", *where])
+    assert renamed.exit_code == 0, renamed.output
+    assert "Renamed datasets/mixed.jsonl to datasets/templates.jsonl." in renamed.output
+    deleted = runner.invoke(cli, ["datasets", "delete", "templates.jsonl", "--yes", *where])
+    assert deleted.exit_code == 0 and "Deleted datasets/templates.jsonl." in deleted.output
+    assert sorted(p.name for p in project.datasets_dir.glob("*.jsonl")) == ["ioi.jsonl"]
+
+    # Python
+    with pytest.raises(LogogramError, match="can't be renamed: the draft “Heads”"):
+        lg.rename_dataset(project, "ioi", "names")
+    lg.write_dataset(project, "spare", generate_ioi(3, seed=1))
+    assert lg.rename_dataset(project, "spare", "extra") == "datasets/extra.jsonl"
+    assert lg.delete_dataset(project, "extra.jsonl") == "datasets/extra.jsonl"
+    with pytest.raises(LogogramError, match=r"no dataset called extra\.jsonl"):
+        lg.delete_dataset(project, "extra")
+
+
+def test_a_dataset_that_is_a_link_is_deleted_as_a_link(project, tmp_path):
+    import sys
+
+    if sys.platform == "win32":
+        pytest.skip("POSIX symlinks")
+    outside = tmp_path / "outside.jsonl"
+    outside.write_bytes((project.datasets_dir / "ioi.jsonl").read_bytes())
+    (project.datasets_dir / "linked.jsonl").symlink_to(outside)
+    assert lg.delete_dataset(project, "linked") == "datasets/linked.jsonl"
+    assert outside.is_file()  # what it pointed to stays
