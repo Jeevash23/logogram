@@ -1,6 +1,8 @@
 // A thin JSON client. The session cookie (set by the launch URL) authenticates every request.
 
 import type {
+  CorpusListing,
+  DirectionListing,
   AttentionData,
   BaselineReport,
   ChatTemplateSpec,
@@ -114,6 +116,8 @@ function errorMessage(data: unknown): string | null {
 export const PROJECT_SCOPED = [
   "/api/project",
   "/api/research",
+  "/api/directions",
+  "/api/corpora",
   "/api/dataset",
   "/api/datasets/",
   "/api/tokenize",
@@ -280,6 +284,8 @@ export const api = {
   headKinds: (body: { seed: number; sequences: number; length: number; bootstrap: number; ci: number } & AnalysisOptions) =>
     post<HeadKindsReport>("/api/heads/kinds", body),
   research: () => get<{ logogram_research: 1; notes: ResearchNote[] }>("/api/research"),
+  directions: () => get<DirectionListing[]>("/api/directions"),
+  corpora: () => get<CorpusListing[]>("/api/corpora"),
   saveNote: (value: NoteInput, edit?: { id: string; revision: number }) => edit
     ? request<ResearchNote>("PUT", `/api/research/${encodeURIComponent(edit.id)}`, { ...value, revision: edit.revision })
     : post<ResearchNote>("/api/research", value),

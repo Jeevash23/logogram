@@ -546,3 +546,42 @@ def test_how_the_walkthrough_ended_is_kept_in_the_settings(client, tmp_path):
     saved["walkthrough"] = ["finished"]
     settings_file.write_text(json.dumps(saved), encoding="utf-8")
     assert client.get("/api/state", headers=AUTH).json()["walkthrough"] is None
+
+
+def test_directions_and_corpora_are_listed_for_the_open_project(client, tmp_path):
+    import torch
+
+    from logogram.corpora import CorpusSource, TextRecord, write_corpus
+    from logogram.directions import save_direction
+    from logogram.project import Project
+
+    headers = {**AUTH, **ORIGIN}
+    project = Project.create(tmp_path, "Listed")
+    save_direction(
+        project,
+        "toward-answer",
+        torch.tensor([1.0, 0.0]),
+        model={"id": "tiny", "source": "hub", "revision": "r", "sha256": None},
+        site={"kind": "resid_post", "layer": 0},
+        method="mean_difference",
+        run=None,
+        detail="a test",
+    )
+    write_corpus(
+        project,
+        "facts",
+        [TextRecord(text="x", label="a")],
+        CorpusSource(kind="texts", detail="a test"),
+    )
+    assert client.get("/api/directions", headers=headers).status_code == 409  # no project open
+    assert (
+        client.post(
+            "/api/projects/open", json={"path": str(project.root)}, headers=headers
+        ).status_code
+        == 200
+    )
+    directions = client.get("/api/directions", headers=headers).json()
+    assert [d["name"] for d in directions] == ["toward-answer"] and directions[0]["error"] is None
+    assert directions[0]["made_by"]["method"] == "mean_difference"
+    corpora = client.get("/api/corpora", headers=headers).json()
+    assert corpora[0]["name"] == "facts" and corpora[0]["labels"] == ["a"] and corpora[0]["n"] == 1

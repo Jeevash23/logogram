@@ -125,6 +125,37 @@ class ProjectInfo(_Out):
     datasets: list[DatasetListing]
 
 
+class DirectionListing(_Out):
+    """A direction saved in the project (logogram.directions), or why it can't be read."""
+
+    name: str
+    error: str | None
+    logogram_direction: int | None = None
+    model: dict[str, Any] | None = None
+    site: dict[str, Any] | None = None
+    width: int | None = None
+    dimensions: int | None = None
+    made_by: dict[str, Any] | None = None
+    created: str | None = None
+    sha256: str | None = None
+    norms: list[float] | None = None
+    notes: str | None = None
+    path: str | None = None
+
+
+class CorpusListing(_Out):
+    """A corpus in the project (logogram.corpora), or why it can't be read."""
+
+    name: str
+    path: str
+    error: str | None
+    n: int | None = None
+    sha256: str | None = None
+    labels: list[str] | None = None
+    source: dict[str, Any] | None = None
+    created: str | None = None
+
+
 class RecentProject(_Out):
     path: str
     name: str

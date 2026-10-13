@@ -790,6 +790,22 @@ def create_app(
         state.hub.publish("research.updated", {"project_session": project.session_id})
         return {"ok": True}
 
+    # -- directions and corpora ----------------------------------------------------------------
+
+    @app.get("/api/directions", response_model=list[M.DirectionListing])
+    def directions() -> list[dict[str, Any]]:
+        """The directions saved in the project (logogram.directions), by name."""
+        from logogram.directions import list_directions
+
+        return list_directions(state.require_project())
+
+    @app.get("/api/corpora", response_model=list[M.CorpusListing])
+    def corpora() -> list[dict[str, Any]]:
+        """The corpora in the project (logogram.corpora), by name."""
+        from logogram.corpora import list_corpora
+
+        return list_corpora(state.require_project())
+
     # -- datasets ----------------------------------------------------------------------------
 
     def _dataset_path(project: Project, name: str) -> Path:
@@ -2073,6 +2089,8 @@ def create_app(
 PROJECT_SCOPED = (
     "/api/project",
     "/api/research",
+    "/api/directions",
+    "/api/corpora",
     "/api/dataset",
     "/api/datasets/",
     "/api/tokenize",

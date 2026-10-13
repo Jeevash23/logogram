@@ -155,6 +155,36 @@ export interface DatasetListing {
   error?: string;
 }
 
+/** A direction saved in the project (logogram.directions): vectors in the model's activation
+ * space, orthonormal rows, found by a probe, a learned subspace, a principal component or a mean
+ * difference. One that can't be read has only its name and why. */
+export interface DirectionListing {
+  name: string;
+  error: string | null;
+  model?: { id: string; source: "hub" | "local"; revision: string | null; sha256: string | null };
+  site?: { kind: string; layer: number } | null;
+  width?: number;
+  dimensions?: number;
+  made_by?: { method: "probe" | "das" | "pca" | "mean_difference" | "import" | "sae_feature"; run: string | null; detail: string };
+  created?: string;
+  sha256?: string;
+  norms?: number[];
+  notes?: string;
+  path?: string;
+}
+
+/** A corpus in the project (logogram.corpora): plain texts, each with an optional label. */
+export interface CorpusListing {
+  name: string;
+  path: string;
+  error: string | null;
+  n?: number;
+  sha256?: string;
+  labels?: string[];
+  source?: { kind: "file" | "hub" | "dataset" | "texts"; detail: string; repo?: string | null; path?: string | null; revision?: string | null } | null;
+  created?: string | null;
+}
+
 export interface ProjectInfo {
   session_id: string;
   name: string;
