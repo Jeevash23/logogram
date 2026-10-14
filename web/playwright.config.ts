@@ -16,6 +16,10 @@ export default defineConfig({
     baseURL: BASE,
     viewport: { width: 1440, height: 900 },
     colorScheme: process.env.LOGOGRAM_COLOR_SCHEME === "dark" ? "dark" : "light",
+    // On CI a failed check keeps its trace and a screenshot in test-results/, which CI uploads: a
+    // check that fails once and passes when rerun can then be read as it happened.
+    trace: process.env.CI ? "retain-on-failure" : "off",
+    screenshot: process.env.CI ? "only-on-failure" : "off",
   },
   projects: [
     { name: "logic", testMatch: "**/*.unit.ts" },

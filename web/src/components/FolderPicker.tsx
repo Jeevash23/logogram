@@ -29,8 +29,9 @@ export function FolderPicker({
   const [pending, setPending] = useState(false);
 
   // Only the folder asked for last is shown: the first listing, arriving after a typed path was
-  // listed, doesn't take its place. Nor does a listing replace a path typed since it was asked
-  // for: Go would then list the folder the picker opened in.
+  // listed, doesn't take its place. Nor does a listing replace the box's text once the box has been
+  // entered or typed in since it was asked for: Go would then list the folder the picker opened
+  // in, and a path typed or pasted over the box's selected text would be added to the listed one.
   const latest = useRef(0);
   const edited = useRef(false);
   const go = async (path?: string): Promise<FolderListing | null> => {
@@ -102,6 +103,9 @@ export function FolderPicker({
         />
         <Input
           value={typed}
+          onFocus={() => {
+            edited.current = true;
+          }}
           onChange={(e) => {
             edited.current = true;
             setTyped(e.target.value);
@@ -113,7 +117,11 @@ export function FolderPicker({
           Go
         </Button>
       </form>
-      {error && <div className={s.error}>{error}</div>}
+      {error && (
+        <div className={s.error} role="alert">
+          {error}
+        </div>
+      )}
       <div className={s.list} role="listbox" aria-label="Folders">
         {listing?.entries.length === 0 && <div className={s.empty}>No folders here.</div>}
         {listing?.entries.map((entry) => (

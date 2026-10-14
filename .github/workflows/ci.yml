@@ -207,3 +207,13 @@ jobs:
         working-directory: web
         env:
           LOGOGRAM_COLOR_SCHEME: dark
+      # What a failed check saw (its error, a screenshot and a trace of the page and its requests),
+      # named by attempt so a rerun of the job doesn't collide with the first attempt's.
+      - name: Keep the failed checks' results
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: browser-test-results-attempt-${{ github.run_attempt }}
+          path: web/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
