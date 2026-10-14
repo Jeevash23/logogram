@@ -2,7 +2,11 @@
 
 What changed in each version of Logogram.
 
-## Unreleased
+## 0.7.1 (2026-10-14)
+
+Start here, a first page in the guide for someone new to Logogram or to interpretability, and two
+fixes: a path typed into the folder picker as it opened, and the first screens' top bar in a
+narrow window.
 
 ### Added
 
