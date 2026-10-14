@@ -34,18 +34,21 @@
   font-size: var(--text-xs);
 }
 
-/* Ink dropped into colored water: three soft blooms under the glyph. */
+/* Ink dropped into colored water: three soft blooms under the glyph. In a short window the stage
+   gives way first: it takes only the height left over, and the glyph and its blooms shrink to fit
+   it, so the tagline and Start here below stay whole. */
 .stage {
   position: relative;
   display: grid;
   place-items: center;
-  flex: 1;
-  min-height: 260px;
+  flex: 1 1 0;
+  min-height: 0;
+  container-type: size;
 }
 
 .stage > span {
   position: absolute;
-  width: 46%;
+  width: min(46cqw, 64cqh);
   aspect-ratio: 1;
   border-radius: 50%;
   filter: blur(42px);
@@ -73,7 +76,7 @@
 
 .heroGlyph {
   position: relative;
-  width: min(280px, 64%);
+  width: min(280px, 64cqw, 90cqh);
   height: auto;
   color: var(--text);
 }
@@ -111,6 +114,25 @@
   letter-spacing: -0.022em;
   line-height: 1.08;
   max-width: 520px;
+}
+
+/* Start here, under the tagline: a plain ink button, and one quiet line beside it. */
+.start {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.start > button {
+  flex: none;
+}
+
+.startNote {
+  max-width: 330px;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.4;
+  text-wrap: pretty;
 }
 
 .word {
@@ -151,7 +173,9 @@
 @media (max-width: 900px) {
   .welcome {
     grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr;
+    /* The bar clips its glyph's bloom, so an auto row could shrink it below its content: it keeps
+       its height, and its glyph and Start here stay whole. */
+    grid-template-rows: max-content 1fr;
     overflow: auto;
   }
   .hero {
@@ -175,6 +199,13 @@
     width: 44px;
   }
   .tagline {
+    display: none;
+  }
+  /* In the slim bar, Start here goes to its end, without its line. */
+  .start {
+    margin-left: auto;
+  }
+  .startNote {
     display: none;
   }
   .paper {
@@ -286,6 +317,12 @@
 .muted {
   color: var(--muted);
   font-size: var(--text-sm);
+}
+
+/* A heading the keyboard is sent to (Start here's Go to the examples) is a place, not a control:
+   no ring around it, as the workbench's main region has none. */
+.sectionTitle:focus {
+  outline: none;
 }
 
 .recent {

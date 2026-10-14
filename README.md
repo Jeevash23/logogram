@@ -112,7 +112,11 @@ This starts a local server on 127.0.0.1, prints its address and opens your brows
 report, figures and CSV a finished run exports. **Help**, in the top bar, opens a short guide, a
 walkthrough of the IOI example at its own controls, the keyboard shortcuts, the documentation on
 GitHub, a problem report to paste into an issue (nothing is sent: you copy it), the system check,
-and About.
+and About. The guide starts with the basics: **Start here**, for someone new to Logogram or to
+interpretability, follows the IOI example from its two prompts to what patching finds, names the
+parts of a model, and lays out a first hour. The first screens offer it under the tagline,
+**Learn the basics** in the command palette opens it from anywhere, and it is part of the app, so
+it reads the same without a network.
 
 ## Documentation
 

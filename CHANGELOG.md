@@ -4,6 +4,18 @@ What changed in each version of Logogram.
 
 ## Unreleased
 
+### Added
+
+- **Start here.** The guide opens on a new first page for people new to Logogram or to
+  interpretability: one question asked with two prompts, what patching a head does and what its
+  effect means, with a figure of the three runs, the parts of a model the map shows, the first
+  hour with the IOI example, what that example finds and how it can mislead, and what to try next.
+  Its prompt and heads are the example's own, checked by a test. It is part of the app, so it
+  reads the same without a network. The first screens offer it under the tagline, as the first
+  thing the keyboard reaches, and **Learn the basics** in the command palette opens it from
+  anywhere. Its **Walk me through the example** stays after the walkthrough is finished or
+  skipped, and the walkthrough's last step points to it.
+
 ### Fixed
 
 - The folder picker could put the folder it opens in before a path typed into its box: when its
@@ -12,6 +24,8 @@ What changed in each version of Logogram.
   folder isn't one. A listing no longer changes the box once you have gone into it since the
   listing was asked for. The picker's error is now announced as an alert. This was why the model
   folder's browser check failed now and then on CI (#14).
+- In a window 900 pixels wide or less, the first screens' top bar keeps its height, so its glyph
+  and name are no longer cut off when the page below it is longer than the window.
 
 ### Development
 
