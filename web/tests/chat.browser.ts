@@ -78,8 +78,9 @@ test("a model folder on this machine is added under a name, offered, and removed
   const picker = page.getByRole("dialog", { name: "Choose a model folder" });
   await picker.getByLabel("Folder path").fill(folder);
   await picker.getByRole("button", { name: "Go", exact: true }).click();
-  // Listed: the box then holds the folder's own path, without "..".
-  await expect(picker.getByLabel("Folder path")).toHaveValue(/^(?!.*\/\.\.\/).*\/model$/, { timeout: 15_000 });
+  // Listed: the box then holds the folder's own path, without "..", and no error is shown.
+  await expect(picker.getByLabel("Folder path")).toHaveValue(/^(?!.*\/\.\.\/).*\/model$/);
+  await expect(picker.getByRole("alert")).toHaveCount(0);
   await picker.getByRole("button", { name: "Choose this folder" }).click();
   await expect(picker).toBeHidden();
   const adding = dialog.getByRole("region", { name: "Add a model folder" });
@@ -124,6 +125,36 @@ test("a folder typed while the first listing is on its way isn't replaced by it"
   await page.unroute(/\/api\/fs$/);
   await picker.getByRole("button", { name: "Go", exact: true }).click();
   await expect(picker.getByLabel("Folder path")).toHaveValue(/model$/);
+  await picker.getByRole("button", { name: "Cancel" }).click();
+});
+
+test("a folder typed over the box's selected text as the first listing arrives isn't added to the listed folder's path", async ({ page }) => {
+  const state = await (await page.request.get("/api/state")).json();
+  const folder = `${state.projects_parent}/../model`;
+  // The picker's first listing arrives after the box's text is selected and before the folder is
+  // typed over it, as when fill() selects and then types, or a paste follows select-all.
+  let release = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  await page.route(/\/api\/fs$/, async (route) => {
+    await held;
+    await route.continue();
+  });
+  await page.getByRole("button", { name: /^tiny-gpt2 · / }).click();
+  const dialog = page.getByRole("dialog", { name: "Load a model" });
+  await dialog.getByRole("button", { name: "Add a model folder" }).click();
+  const picker = page.getByRole("dialog", { name: "Choose a model folder" });
+  await picker.getByLabel("Folder path").selectText();
+  const late = page.waitForResponse(/\/api\/fs$/);
+  release();
+  await late;
+  // Two frames: time for the late listing to land in the box, were it written there.
+  await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+  await page.keyboard.insertText(folder);
+  await expect(picker.getByLabel("Folder path")).toHaveValue(folder);
+  await page.unroute(/\/api\/fs$/);
+  await picker.getByRole("button", { name: "Go", exact: true }).click();
+  await expect(picker.getByLabel("Folder path")).toHaveValue(/^(?!.*\/\.\.\/).*\/model$/);
+  await expect(picker.getByRole("alert")).toHaveCount(0);
   await picker.getByRole("button", { name: "Cancel" }).click();
 });
 

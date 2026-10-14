@@ -2,6 +2,22 @@
 
 What changed in each version of Logogram.
 
+## Unreleased
+
+### Fixed
+
+- The folder picker could put the folder it opens in before a path typed into its box: when its
+  first listing arrived after the box's text was selected and before the path was typed or pasted
+  over it, the box held the listed folder's path with the typed one after it, and Go then said that
+  folder isn't one. A listing no longer changes the box once you have gone into it since the
+  listing was asked for. The picker's error is now announced as an alert. This was why the model
+  folder's browser check failed now and then on CI (#14).
+
+### Development
+
+- When the browser checks fail on CI, their results are uploaded: each failed check's error, a
+  screenshot and a trace of the page and its requests.
+
 ## 0.7.0 (2026-10-13)
 
 Methods that find directions in the model and test them: linear probes, distributed alignment
