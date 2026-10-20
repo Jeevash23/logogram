@@ -2,6 +2,57 @@
 
 What changed in each version of Logogram.
 
+## Unreleased
+
+Start here and the guide in moving figures, what Logogram can find out on the first screens, and a
+walkthrough that notices what you do.
+
+### Added
+
+- **Figures that move.** Start here explains in figures that play through their stages: the IOI
+  example's two prompts, token by token, and the logit difference each gives; activation
+  patching, as three runs of GPT-2 small with head 9.9's output copied from the clean run into the
+  corrupt one and the answer moving back toward Mary by its effect; the parts of a model, each
+  term drawing its part, with one layer as a row of the map; and what the example finds, its heads
+  painting in layer by layer and then ringed role by role, with the effects the guide to
+  replicating IOI lists (a test checks them against it). The guide's other pages draw the
+  workbench part by part, how to read the map, how a run's results write its logogram (with the
+  app's own glyph), and a bootstrap interval built from each prompt's effect. A figure plays only
+  while it is in view and the page is shown; its stages are one Tab stop, chosen with the arrow
+  keys or the pointer, **Pause** stops it, and under reduced motion it doesn't move and shows the
+  whole picture. The figures load with
+  the guide, from this computer.
+- **What you can find out.** Start here, the first screens and the documentation's index open on
+  the four questions Logogram's methods answer (where is it computed, how does it flow, what does
+  a site represent, what does adding a direction do), each with what it finds out and where to
+  begin. The experiment form groups its methods under the same questions, from one list.
+- The documentation shows activation patching in a figure, in the README, Getting started and
+  the page on activation patching.
+
+### Changed
+
+- **The first screens say what Logogram is for.** Under the tagline, in two sentences: it finds
+  which parts of a language model an answer depends on, by changing one part at a time and
+  measuring how far the answer moves. Start here is the solid ink button until the walkthrough
+  has been finished or skipped. All projects shows what you can find out and the examples first
+  when there are no projects yet, and the system check lists the examples before the settings.
+- **Start here is shorter to read.** Its paragraphs are fewer, as the figures carry what they
+  said, and the first hour is a line of numbered steps, each in the color of where it happens. The
+  guide is a larger dialog.
+- **The walkthrough notices what you do.** A step says when what it asks for is done (the
+  baseline checked, with how many clean prompts prefer the answer, or a cell chosen), pressing
+  **Run** at the experiment's step goes on to the run's results by itself, and each step shows
+  where it is among the six. While it is shown, the button beside the tabs that names the next of
+  four steps steps aside, so there is one count, not two. The experiment's step stands beside
+  **Run**, so the form's name and notes stay in view.
+- The baseline, before it is checked, says what the check will show.
+
+### Fixed
+
+- A run's own copy of its prompts is named as the dataset chip names it, the saved prompts of the
+  run, not by its file in `datasets/snapshots/`, a 64-character hash, in the baseline and the
+  experiment form.
+
 ## 0.7.1 (2026-10-14)
 
 Start here, a first page in the guide for someone new to Logogram or to interpretability, and two

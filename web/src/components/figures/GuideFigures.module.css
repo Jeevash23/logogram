@@ -1,0 +1,109 @@
+/* The guide's figures: a sketch of the workbench in hairlines and ink, the model map, a logogram
+   with its layers' places around it, and an interval built from each prompt's effect. */
+
+.frame {
+  fill: var(--surface);
+  stroke: var(--line);
+}
+
+.ink {
+  fill: var(--text);
+}
+
+/* A line of text, sketched. */
+.text {
+  fill: var(--line);
+}
+
+.pill {
+  fill: none;
+  stroke: var(--line);
+}
+
+.tool {
+  fill: none;
+  stroke: var(--control-line);
+}
+
+.chip {
+  fill: none;
+  stroke: var(--control-line);
+}
+
+.token {
+  fill: none;
+  stroke: var(--line);
+}
+
+.marked {
+  fill: none;
+  stroke: var(--text);
+  stroke-width: 1.4;
+}
+
+/* The part of the workbench a stage is about, outlined in ink as the walkthrough outlines a
+   control. */
+.focus {
+  fill: none;
+  stroke: var(--text);
+  stroke-width: 2;
+  animation: focus 260ms var(--ease) both;
+}
+
+@keyframes focus {
+  from {
+    opacity: 0;
+  }
+}
+
+.strong {
+  fill: var(--text);
+  font-weight: 700;
+}
+
+.card {
+  fill: var(--raised);
+  stroke: var(--line);
+}
+
+.big {
+  font-size: 28px;
+  font-weight: 680;
+  font-stretch: var(--display-stretch);
+  font-variant-numeric: tabular-nums;
+}
+
+.interval {
+  stroke: var(--text);
+  stroke-width: 4;
+  stroke-linecap: round;
+  opacity: 0.85;
+}
+
+.mean {
+  stroke: var(--text);
+  stroke-width: 1.5;
+}
+
+/* One draw's mean: faint, so that many of them pile up into the shape of the interval. */
+.draw {
+  stroke: var(--text);
+  stroke-width: 1;
+  opacity: 0.22;
+}
+
+/* The logogram, and its layers' places around it. */
+.glyph {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 240px;
+  height: 240px;
+  margin: 0 auto;
+  color: var(--text);
+}
+
+.dial {
+  position: absolute;
+  inset: 0;
+}

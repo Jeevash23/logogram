@@ -8,7 +8,7 @@ import { useElementSize } from "../lib/canvas";
 import { divergingScale, markColor, niceBound } from "../lib/color";
 import { chatAdvice, chatReason } from "../lib/chat";
 import { answerText, capitalize, num, plural, prob, signed, visibleToken } from "../lib/format";
-import { modelName, useAnalysisContext } from "../lib/hooks";
+import { datasetLabel, modelName, useAnalysisContext } from "../lib/hooks";
 import { analysisContext } from "../lib/analysis";
 import { gapCheck, metricWords, signedMetric } from "../lib/metrics";
 import { behaviorPresent, PRESENT_GAP } from "../lib/thresholds";
@@ -18,6 +18,7 @@ import b from "./BaselineView.module.css";
 
 export function BaselineView() {
   const datasetPath = useStore((st) => st.datasetPath);
+  const datasets = useStore((st) => st.project?.datasets);
   const model = useStore((st) => st.model);
   const context = useAnalysisContext();
   const report = useStore((st) => st.baselines[context.baselineKey]);
@@ -81,9 +82,16 @@ export function BaselineView() {
         </Empty>
       )}
       {ready && !report && !busy && (
-        <p className={s.small}>
-          {modelName(model.info?.id)} on {datasetPath}. This takes a moment on a CPU.
-        </p>
+        <div className={b.before}>
+          <p className={s.small} title={datasetPath ?? undefined}>
+            {modelName(model.info?.id)} on {datasetLabel(datasetPath, datasets ?? [], true)}. This takes a moment on a CPU, and shows:
+          </p>
+          <ul className={b.shows}>
+            <li>how strongly the clean prompts prefer the answer, and the corrupt prompts the distractor;</li>
+            <li>the gap between the two, which every effect is measured against;</li>
+            <li>each prompt's own values, and the tokens the model predicts after it.</li>
+          </ul>
+        </div>
       )}
       {report && <Report report={report} index={index} normalization={context.metric?.normalization ?? "dataset_gap"} />}
     </div>

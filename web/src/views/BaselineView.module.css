@@ -157,3 +157,21 @@
   align-self: flex-start;
   border-radius: var(--radius-sm);
 }
+
+/* Before the check: what it will show. */
+.before {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 64ch;
+}
+
+.shows {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}

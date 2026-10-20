@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 488" width="900" height="488" role="img" aria-labelledby="title desc">
+<title id="title">Activation patching</title>
+<desc id="desc">Three runs of GPT-2 small, each drawn as its 144 attention heads, a row per layer. The clean prompt prefers Mary, the corrupt prompt prefers John. In the patched run, the corrupt prompt runs again with head 9.9's output copied in from the clean run, and the answer moves back toward Mary by about a sixth of the gap: head 9.9's effect.</desc>
+<style>
+text { font-family: "Instrument Sans", -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+.name { font-size: 13px; font-weight: 600; fill: #0a0a0b; }
+.note { font-size: 12px; fill: #5d5d66; }
+.tick { font-size: 11px; fill: #6f6f78; }
+.strong { font-size: 12.5px; font-weight: 600; fill: #0a0a0b; }
+.still { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .moving { display: none; }
+  .still { display: inline; }
+}
+</style>
+<rect x="0.5" y="0.5" width="899" height="487" rx="12" fill="#ffffff" stroke="#e3e3e8"/>
+<defs>
+<pattern id="cells" x="79" y="100" width="12" height="12" patternUnits="userSpaceOnUse"><rect width="10" height="10" fill="#b9b9c2"/></pattern>
+</defs>
+<text class="strong" x="40" y="36">Activation patching: copy one head's output from the clean run into the corrupt run, and measure the answer</text>
+<text class="name" x="79" y="76">Clean</text>
+<text class="note" x="79" y="91">prefers Mary</text>
+<rect x="79" y="100" width="142" height="142" fill="url(#cells)"/>
+<text class="name" x="379" y="76">Corrupt</text>
+<text class="note" x="379" y="91">prefers John</text>
+<rect x="379" y="100" width="142" height="142" fill="url(#cells)"/>
+<text class="name" x="679" y="76">Patched</text>
+<text class="note" x="679" y="91">moves toward Mary</text>
+<rect x="679" y="100" width="142" height="142" fill="url(#cells)"/>
+<circle cx="192.0" cy="213.0" r="8.5" fill="none" stroke="#0a0a0b" stroke-width="1.6"/>
+<rect x="787.0" y="208.0" width="10" height="10" fill="#0a0a0b"/>
+<path d="M 192.0 221.0 C 192.0 331.0, 792.0 331.0, 792.0 221.0" fill="none" stroke="#0a0a0b" stroke-width="1.3" opacity="0.75"/>
+<path d="M 788.5 226.5 L 792.0 221.0 L 795.5 226.5" fill="none" stroke="#0a0a0b" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+<circle class="moving" r="4" fill="#0a0a0b"><animateMotion dur="5s" repeatCount="indefinite" calcMode="linear" keyPoints="0;0;1;1" keyTimes="0;0.15;0.55;1" path="M 192.0 221.0 C 192.0 331.0, 792.0 331.0, 792.0 221.0"/></circle>
+<text class="note" x="190" y="342">logit difference: Mary minus John</text>
+<line x1="190" x2="710" y1="382" y2="382" stroke="#8a8a94"/>
+<line x1="450" x2="450" y1="376" y2="388" stroke="#8a8a94"/>
+<text class="tick" x="450" y="370" text-anchor="middle">0</text>
+<text class="name" x="180" y="386" text-anchor="end">John</text>
+<text class="name" x="720" y="386">Mary</text>
+<g transform="translate(642.4 382)"><circle r="6" fill="#1f4fe0" stroke="#ffffff" stroke-width="1.5"/><text class="note" y="-12" text-anchor="middle">clean</text></g>
+<g transform="translate(294.0 382)"><circle r="6" fill="#c27a0e" stroke="#ffffff" stroke-width="1.5"/><text class="note" y="-12" text-anchor="middle">corrupt</text></g>
+<g class="moving"><g transform="translate(294.0 382)"><g><animateTransform attributeName="transform" type="translate" dur="5s" repeatCount="indefinite" calcMode="spline" values="0 0;0 0;59.2 0;59.2 0" keyTimes="0;0.55;0.75;1" keySplines="0 0 1 1;0.2 0 0 1;0 0 1 1"/><animate attributeName="opacity" dur="5s" repeatCount="indefinite" values="0;0;1;1" keyTimes="0;0.5;0.56;1"/><circle r="6" fill="#e9a73a" stroke="#ffffff" stroke-width="1.5"/><text class="note" y="-12" text-anchor="middle">patched</text></g></g></g>
+<g class="still"><g transform="translate(353.228 382)"><circle r="6" fill="#e9a73a" stroke="#ffffff" stroke-width="1.5"/><text class="note" y="-12" text-anchor="middle">patched</text></g></g>
+<path d="M 294.0 401 V 406 H 353.228 V 401" fill="none" stroke="#0a0a0b" stroke-width="1.6" opacity="1"/><text class="strong" x="323.61400000000003" y="421" text-anchor="middle">effect</text>
+<path d="M 294.0 429 V 434 H 642.4 V 429" fill="none" stroke="#0a0a0b" stroke-width="1" opacity="0.7"/><text class="note" x="468.2" y="449" text-anchor="middle">the gap</text>
+<text class="note" x="40" y="474">Head 9.9 brings the answer back by about a sixth of the gap: that share is its effect. 1 would restore Mary completely; 0 would change nothing.</text>
+</svg>

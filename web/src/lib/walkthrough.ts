@@ -1,6 +1,7 @@
 // The walkthrough of the bundled IOI example: six steps, each pointing at a real control, found by
-// its data-tour attribute (never by a class name or a position, which change). tests/guide.unit.ts
-// checks that every control named here carries its attribute in the code.
+// its data-tour attribute (never by a class name or a position, which change). A step says when
+// what it asks for is done, and the experiment's step moves on by itself once the run starts.
+// tests/guide.unit.ts checks that every control named here carries its attribute in the code.
 
 import type { View } from "../store/app";
 
@@ -21,6 +22,11 @@ export interface TourContext {
   modelLoaded: boolean;
   /** The window is wide enough for the inspector to sit beside the view. */
   wide: boolean;
+  /** The baseline of the prompts shown, once checked: how many clean prompts prefer the answer,
+   * of how many. */
+  baseline: { prefer: number; n: number } | null;
+  /** A component is chosen on the map, so the inspector shows its evidence. */
+  chosen: boolean;
 }
 
 export interface TourStep {
@@ -36,6 +42,10 @@ export interface TourStep {
   align: "start" | "center" | "end";
   /** What the step says, a paragraph each. Text between ** and ** names a control. */
   text: (ctx: TourContext) => string[];
+  /** Once what the step asks for is done: a line saying so. */
+  done?: (ctx: TourContext) => string | null;
+  /** The step moves on by itself when this turns true while it is shown. */
+  next?: (ctx: TourContext) => boolean;
 }
 
 /** Where the map is: on the results once a run is open, else on the model map of a loaded model. */
@@ -69,18 +79,23 @@ export const STEPS: TourStep[] = [
         ? "**Check the baseline** runs the model on both prompts of each pair, without changing anything."
         : "The check needs the model: choose **Load a model** beside the tabs, or press **Run** in the next step, which loads it.",
     ],
+    done: (ctx) => (ctx.baseline ? `Checked: ${ctx.baseline.prefer} of ${ctx.baseline.n} clean prompts prefer the answer.` : null),
   },
   {
     id: "experiment",
     title: "The experiment",
     view: () => "experiment",
-    anchors: ["experiment-form", "run"],
-    side: "bottom",
-    align: "start",
+    // Beside Run, so the form's name and notes, and the summary above Run, stay in view.
+    anchors: ["run", "experiment-form"],
+    side: "left",
+    align: "end",
     text: () => [
       "The form is the experiment's spec: the method, what to sweep, the metric and the statistics. Every choice that can change a number is here, and none is filled in for you.",
       `This one patches each head's output from the clean prompt into the corrupt one, at every position. Press **Run**: GPT-2 small downloads once, ${FIRST_RUN.download}, and the sweep takes ${FIRST_RUN.cpu}.`,
     ],
+    done: (ctx) => (ctx.hasRun ? (ctx.finished ? "Its run has finished: the next steps read it." : "The run has started: the next step shows its results.") : null),
+    // Pressing Run opens the run's results: the walkthrough follows it there.
+    next: (ctx) => ctx.hasRun,
   },
   {
     id: "map",
@@ -92,7 +107,9 @@ export const STEPS: TourStep[] = [
     text: (ctx) =>
       ctx.hasRun
         ? [
-            "Each row is a layer, from layer 0 at the top, and each cell a head. Color is the effect, with its scale beside the map: cobalt where patching that head brings the answer back, amber where it pushes the other way.",
+            ctx.finished
+              ? "Each row is a layer, from layer 0 at the top, and each cell a head. Color is the effect, with its scale beside the map: cobalt where patching that head brings the answer back, amber where it pushes the other way."
+              : "The results paint in here as each layer finishes, from layer 0 at the top, a cell per head. Color is the effect, with its scale beside the map: cobalt where patching that head brings the answer back, amber where it pushes the other way.",
             "An effect of 1 restores the clean answer completely, and 0 changes nothing. **Show values** prints each cell's number.",
           ]
         : [
@@ -114,6 +131,7 @@ export const STEPS: TourStep[] = [
         : "Choose a cell, with the mouse or the arrow keys, then **Inspector** to open it in a panel.",
       "It shows everything behind the number: the exact intervention and metric, the effect with its confidence interval, how many prompts flipped, and each prompt's own effect, the strongest and weakest first.",
     ],
+    done: (ctx) => (ctx.chosen ? "Chosen: the inspector shows its evidence." : null),
   },
   {
     id: "robustness",

@@ -10,6 +10,7 @@ const PATHS: Record<string, string> = {
   chevronDown: "M3.5 6L8 10.5 12.5 6",
   chevronUp: "M3.5 10L8 5.5 12.5 10",
   play: "M5 3.5v9l7.5-4.5z",
+  pause: "M5.5 3.5v9M10.5 3.5v9",
   stop: "M4.5 4.5h7v7h-7z",
   plus: "M8 3v10M3 8h10",
   minus: "M3 8h10",

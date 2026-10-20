@@ -148,8 +148,15 @@ a diverging cobalt to amber scale, always with its legend, and nothing else does
 * **Commands** (Ctrl/⌘ K) runs any action by name, or jumps to a head (`L9H9`).
 * **Help** opens the guide, the walkthrough of the example, the keyboard shortcuts, these pages
   on GitHub, a problem report to paste into an issue, the system check, and About. The guide's
-  first page, **Start here**, is for someone new: the IOI example's two prompts, what patching a
-  head measures, the parts of a model, a first hour and what to try next. The guide opens on it
-  the first time in a session, the first screens offer it under the tagline, and **Learn the
-  basics** in the commands opens it from anywhere. Its pages are part of the app, so they read
-  the same without a network.
+  first page, **Start here**, is for someone new: what Logogram can find out, then the IOI
+  example's two prompts, what patching a head measures, the parts of a model and what the example
+  finds, each in a figure that moves through its stages, and a first hour and what to try next.
+  Its other pages draw the workbench, the map, the logogram and an interval. A figure plays while
+  it is in view; its stages can be chosen one by one, with the arrow keys or the pointer, and
+  **Pause** stops it. Under reduced motion
+  it doesn't move: it shows the whole picture. The guide opens on Start here the first time in a
+  session, the first screens offer it under the tagline, and **Learn the basics** in the commands
+  opens it from anywhere. Its pages are part of the app, so they read the same without a network.
+* **The walkthrough** shows the IOI example step by step at its own controls. Each step says when
+  what it asks for is done (the baseline checked, a cell chosen), and pressing **Run** at the
+  experiment's step goes on to the run's results by itself.

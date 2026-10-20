@@ -13,6 +13,10 @@ prompt that differs in what the behavior depends on. In the IOI example:
 * clean: *When Mary and John went to the store, John gave a drink to* → *Mary*
 * corrupt: *When Mary and John went to the store, Mary gave a drink to* → *John*
 
+![Activation patching on the IOI example: the clean prompt prefers Mary and the corrupt prompt
+John; with head 9.9's output copied from the clean run into the corrupt run, the answer moves back
+toward Mary by about a sixth of the gap, which is head 9.9's effect](../images/activation-patching.svg)
+
 For each site and each pair, Logogram makes three forward passes' worth of measurements:
 
 * the **receiver** run, the prompt the intervention happens in, unchanged;

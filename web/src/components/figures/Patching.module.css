@@ -1,0 +1,70 @@
+/* The prompt pair: each prompt as tokens, coming in one after another, as the token strip shows
+   them, the token the corruption changes circled in ink, and the name the model prefers after it.
+   A row's tokens are 55 ms apart (PatchingFigures.tsx times the scale's marks by it). */
+
+.pair {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.rowLabel {
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+.tokens {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+}
+
+.token {
+  padding: 2px 5px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font-size: var(--text-sm);
+  line-height: 1.35;
+  animation: token 240ms var(--ease) calc(var(--i) * 55ms) both;
+}
+
+.changed {
+  border-color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--text);
+  font-weight: 620;
+}
+
+.answer {
+  margin-left: 8px;
+  font-size: var(--text-sm);
+  font-weight: 620;
+  white-space: nowrap;
+  animation: token 240ms var(--ease) calc(var(--i) * 55ms + 160ms) both;
+}
+
+@keyframes token {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}
+
+.scale {
+  margin-top: 4px;
+}
+
+@media (max-width: 640px) {
+  .row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+}

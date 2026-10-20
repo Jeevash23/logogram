@@ -17,6 +17,7 @@ import { ViewTabs } from "../components/ViewTabs";
 import { Button, Dialog, escapeStaysInFields, Icon, Tip } from "../components/ui";
 import { useAnalysisContext } from "../lib/hooks";
 import { useStore, workspaceFor, WORKSPACE_VIEWS, type View, type Workspace } from "../store/app";
+import { useHelp } from "../store/help";
 import { AttentionView } from "../views/AttentionView";
 import { BaselineView } from "../views/BaselineView";
 import { CompareView } from "../views/CompareView";
@@ -125,14 +126,16 @@ export function Workbench() {
 
 const STEPS = ["Load a model", "Prepare prompts", "Check the baseline", "Run the experiment"];
 
-/** Until the first run finishes: the next of four steps, one click away. */
+/** Until the first run finishes: the next of four steps, one click away. The walkthrough, while it
+ * is shown, counts its own steps instead. */
 function NextStep() {
+  const touring = useHelp((st) => st.tourStep !== null);
   const model = useStore((st) => st.model);
   const dataset = useStore((st) => st.dataset);
   const completed = useStore((st) => st.runs.some((r) => r.status === "finished"));
   const context = useAnalysisContext();
   const baseline = useStore((st) => st.baselines[context.baselineKey]);
-  if (completed) return null;
+  if (completed || touring) return null;
   const step = model.state !== "ready" ? 0 : !dataset ? 1 : !baseline ? 2 : 3;
   const go = () =>
     step === 0 ? useStore.setState({ modelDialogOpen: true }) : useStore.getState().setView(step === 1 ? "prompts" : step === 2 ? "baseline" : "experiment");

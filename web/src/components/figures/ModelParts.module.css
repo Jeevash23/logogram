@@ -1,0 +1,97 @@
+/* The parts of a model: hairline bands for layers, thin streams with the last token's in ink,
+   attention as a curve into a head, MLPs as small boxes on every stream, and one layer as a row of
+   the map. */
+
+.band {
+  fill: none;
+  stroke: var(--line);
+}
+
+.bandOn {
+  fill: none;
+  stroke: var(--text);
+  stroke-width: 1.5;
+}
+
+.stream {
+  stroke: var(--control-line);
+  stroke-width: 1;
+}
+
+.lastStream {
+  stroke: var(--text);
+  stroke-width: 2;
+}
+
+/* The residual stream carrying the token up to the prediction. */
+.pulse {
+  fill: var(--text);
+  animation: rise 1800ms var(--ease) infinite;
+}
+
+@keyframes rise {
+  from {
+    transform: translateY(0);
+    opacity: 0;
+  }
+  15% {
+    opacity: 1;
+  }
+  85% {
+    opacity: 1;
+  }
+  to {
+    transform: translateY(-228px);
+    opacity: 0;
+  }
+}
+
+.attend {
+  fill: none;
+  stroke: var(--text);
+  stroke-width: 1.25;
+  stroke-linecap: round;
+}
+
+/* Information flowing along attention, from John to the last token. */
+.flow {
+  stroke-dasharray: 4 4;
+  animation: flow 700ms linear infinite;
+}
+
+@keyframes flow {
+  to {
+    stroke-dashoffset: -8;
+  }
+}
+
+.mlp {
+  fill: var(--surface);
+  stroke: var(--text);
+  stroke-width: 1.25;
+}
+
+.token {
+  fill: var(--surface);
+  stroke: var(--line);
+}
+
+.tokenOn {
+  fill: var(--surface);
+  stroke: var(--text);
+  stroke-width: 1.5;
+}
+
+.tokenText {
+  fill: currentColor;
+  font-size: 11px;
+}
+
+.mapOn {
+  fill: var(--text);
+  opacity: 0.55;
+}
+
+.mapOff {
+  fill: var(--line);
+}

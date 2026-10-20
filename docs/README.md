@@ -12,6 +12,19 @@ the app and the methods, from a first run to the exact definition of every numbe
 * [The workbench](workbench.md): what each workspace and view is for.
 * [Models](models.md): which models load, memory, precision, weight processing, devices and GPUs.
 
+## What you can find out
+
+Logogram's methods answer four kinds of question. [Choosing a method](concepts/choosing-a-method.md)
+says which methods answer each, what they cost and where they mislead; the app's guide opens on
+the same four, and walks through the first in moving figures.
+
+| Question | What it finds out | Begin with |
+|---|---|---|
+| [Where is it computed?](concepts/choosing-a-method.md#where-is-it-computed) | Which heads, MLPs or positions an answer depends on. | [Replicate IOI on GPT-2](guides/replicate-ioi.md) |
+| [How does it flow?](concepts/choosing-a-method.md#how-does-it-flow) | Which paths carry the answer, and the circuit they form. | [Find a circuit with ACDC](concepts/acdc.md) |
+| [What does a site represent?](concepts/choosing-a-method.md#what-does-a-site-represent) | What a part of the model encodes, and whether the model uses it. | [Find a direction and test it](guides/find-and-test-a-direction.md) |
+| [What does adding a direction do?](concepts/choosing-a-method.md#what-does-adding-a-direction-do) | How the answer moves when the model is pushed along a direction. | [Steering](concepts/steering.md) |
+
 ## Concepts
 
 What Logogram computes, exactly, and when to use each method. Each page cites the papers the

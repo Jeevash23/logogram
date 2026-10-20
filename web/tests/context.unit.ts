@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { analysisContext, tokensKey } from "../src/lib/analysis";
 import { moveCell } from "../src/lib/heatmapNavigation";
+import { datasetLabel } from "../src/lib/hooks";
 import { DEFAULT_FORM, useStore } from "../src/store/app";
 import type { MetricSpec, ModelInfo, ProjectInfo, PromptRecord, Spec } from "../src/api/types";
 
@@ -179,4 +180,13 @@ test("project boundaries clear saved selection drafts and pinned heads", () => {
   expect(useStore.getState().noteEditor).toBeNull();
   expect(useStore.getState().headPins).toEqual([]);
   expect(useStore.getState().tokenPosition).toBeNull();
+});
+
+test("prompts are named as their dataset is, and a run's own copy of them never by its hash", () => {
+  const datasets = [{ path: "datasets/ioi.jsonl", name: "ioi.jsonl" }];
+  expect(datasetLabel("datasets/ioi.jsonl", datasets)).toBe("ioi.jsonl");
+  const snapshot = `datasets/snapshots/${"5d0d071ce6b3".repeat(5)}.jsonl`;
+  expect(datasetLabel(snapshot, datasets)).toBe("Saved prompts of this run");
+  expect(datasetLabel(snapshot, datasets, true)).toBe("the saved prompts of this run");
+  expect(datasetLabel(null, datasets)).toBeNull();
 });
