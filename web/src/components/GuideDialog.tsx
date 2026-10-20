@@ -1,4 +1,4 @@
-import { lazy, Suspense, useId, useRef, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useId, useRef, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 
 import { GUIDE_PAGES, type GuidePageId } from "../lib/guide";
 import { guideUrl } from "../lib/help";
@@ -10,8 +10,9 @@ import s from "./GuideDialog.module.css";
 
 // The pages' figures come with the guide, in a part of the app loaded when it first opens: from
 // this computer, like the rest.
-const StartHere = lazy(() => import("./StartHere").then((m) => ({ default: m.StartHere })));
+const startHere = () => import("./StartHere");
 const figures = () => import("./figures/GuideFigures");
+const StartHere = lazy(() => startHere().then((m) => ({ default: m.StartHere })));
 const WorkbenchFigure = lazy(() => figures().then((m) => ({ default: m.WorkbenchFigure })));
 const MapFigure = lazy(() => figures().then((m) => ({ default: m.MapFigure })));
 const LogogramFigure = lazy(() => figures().then((m) => ({ default: m.LogogramFigure })));
@@ -26,6 +27,12 @@ const IntervalFigure = lazy(() => figures().then((m) => ({ default: m.IntervalFi
  */
 export function GuideDialog() {
   const open = useStore((st) => st.helpDialog === "guide");
+  // Every page's figures load as the guide opens, so moving from page to page doesn't wait for them.
+  useEffect(() => {
+    if (!open) return;
+    void startHere();
+    void figures();
+  }, [open]);
   const page = useHelp((st) => st.guidePage);
   const inWorkbench = useStore((st) => st.screen === "workbench");
   const tabs = useRef<(HTMLButtonElement | null)[]>([]);
@@ -97,40 +104,41 @@ export function GuideDialog() {
         ))}
       </div>
       <div className={s.panel} role="tabpanel" id={`${id}-panel`} aria-labelledby={`${id}-${current.id}`} tabIndex={0}>
+        {/* A page shows whole, once its figures have loaded: nothing below them moves as they arrive. */}
         <Suspense fallback={<p className={s.loading}>Opening the page…</p>}>
           {current.id === "start" ? <StartHere inWorkbench={inWorkbench} go={go} toExamples={toExamples} /> : <PageText page={current.id} />}
-        </Suspense>
-        {(inWorkbench && current.views.length > 0) || current.id === "keys" ? (
-          <div className={s.actions}>
-            {inWorkbench &&
-              current.views.map((v) => (
-                <Button key={v.label} size="small" onClick={() => go(v.view)}>
-                  {v.label}
+          {(inWorkbench && current.views.length > 0) || current.id === "keys" ? (
+            <div className={s.actions}>
+              {inWorkbench &&
+                current.views.map((v) => (
+                  <Button key={v.label} size="small" onClick={() => go(v.view)}>
+                    {v.label}
+                  </Button>
+                ))}
+              {current.id === "keys" && (
+                <Button size="small" onClick={() => useStore.setState({ helpDialog: null, shortcutsOpen: true })}>
+                  Show every shortcut
                 </Button>
+              )}
+            </div>
+          ) : null}
+          <div className={s.docs}>
+            <h3 className={s.docsTitle} id={`${id}-docs`}>
+              In the documentation
+            </h3>
+            <ul aria-labelledby={`${id}-docs`}>
+              {current.docs.map((d) => (
+                <li key={d.title}>
+                  <a className={s.link} href={guideUrl(d)} target="_blank" rel="noopener noreferrer">
+                    {d.title}
+                    <span className="visually-hidden"> (opens in a new tab)</span>
+                    <span aria-hidden="true"> ↗</span>
+                  </a>
+                </li>
               ))}
-            {current.id === "keys" && (
-              <Button size="small" onClick={() => useStore.setState({ helpDialog: null, shortcutsOpen: true })}>
-                Show every shortcut
-              </Button>
-            )}
+            </ul>
           </div>
-        ) : null}
-        <div className={s.docs}>
-          <h3 className={s.docsTitle} id={`${id}-docs`}>
-            In the documentation
-          </h3>
-          <ul aria-labelledby={`${id}-docs`}>
-            {current.docs.map((d) => (
-              <li key={d.title}>
-                <a className={s.link} href={guideUrl(d)} target="_blank" rel="noopener noreferrer">
-                  {d.title}
-                  <span className="visually-hidden"> (opens in a new tab)</span>
-                  <span aria-hidden="true"> ↗</span>
-                </a>
-              </li>
-            ))}
-          </ul>
-        </div>
+        </Suspense>
       </div>
     </Dialog>
   );
