@@ -81,7 +81,10 @@ traceability come before features.
   narrow, so body text widens it (`--word-space`). Monospace appears only in the spec view.
   Sentence case everywhere; no all-caps labels.
 * Motion only explains state changes, such as cells filling as results stream in, a glyph
-  appearing, or panels opening. Respect reduced motion.
+  appearing, or panels opening, and, in the guide's figures (`web/src/components/figures/`), how
+  a method works, stage by stage. A figure plays only while it is in view, can be paused and
+  stepped through, and is still under reduced motion, showing the whole picture. Respect reduced
+  motion everywhere.
 * Copy uses plain verbs that say exactly what happens. Errors say what went wrong and how to fix
   it. Titles say what a view found or is for; they don't repeat the tab's name.
 * Avoid the generic AI-app look and the enterprise look: no sidebars of icons, grey dashboards,

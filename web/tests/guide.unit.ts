@@ -2,14 +2,16 @@ import { test, expect } from "@playwright/test";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { GUIDE_PAGES } from "../src/lib/guide";
+import { GUIDE_FIGURES, GUIDE_PAGES } from "../src/lib/guide";
 import { guideUrl, REPOSITORY } from "../src/lib/help";
 import { componentLabel, type Selection } from "../src/lib/sites";
-import { FIGURE_CAPTION, START, START_NOTE, startTexts, startWords, type StartAction } from "../src/lib/start";
+import { IOI_HEADS, METER, PAIR, PATCHED_HEAD, patchedAt, patchedEffect, promptText } from "../src/lib/figures";
+import { METHODS, QUESTIONS } from "../src/lib/questions";
+import { FIGURE_CAPTION, START, START_NOTE, figureStages, startTexts, startWords, type StartAction } from "../src/lib/start";
 import { emphasis, FIRST_RUN, STEPS, TOUR_EXAMPLE, type TourContext } from "../src/lib/walkthrough";
 import { useStore, VIEWS } from "../src/store/app";
 import { endTour, goToStep, openGuide, startTour, useHelp } from "../src/store/help";
-import { anchorsOf, readRepo, webSources } from "./docs";
+import { anchorsOf, readRepo, slug, webSources } from "./docs";
 
 // The in-app guide and the walkthrough of the example: the documentation they point to exists,
 // with its headings; every control the walkthrough points at carries its data-tour attribute in
@@ -18,17 +20,26 @@ import { anchorsOf, readRepo, webSources } from "./docs";
 // walkthrough ended is remembered in the person's settings.
 
 /** The words a title in sentence case may still capitalize: names of models, parts and tasks. */
-const NAMES = new Set(["GPT-2", "IOI", "MLP", "MLPs"]);
+const NAMES = new Set(["GPT-2", "IOI", "MLP", "MLPs", "S-inhibition"]);
 
 /** Whether a title is in sentence case: a capital first, then lower case but for names. */
 function sentenceCase(title: string): boolean {
   const [first, ...rest] = title.split(" ");
-  return /^[A-Z][a-z]/.test(first) && rest.every((word) => !/^[A-Z]/.test(word) || NAMES.has(word.replace(/[^\w-]/g, "")));
+  return (/^[A-Z][a-z]/.test(first) || NAMES.has(first)) && rest.every((word) => !/^[A-Z]/.test(word) || NAMES.has(word.replace(/[^\w-]/g, "")));
 }
 
 const CONTEXTS: TourContext[] = [true, false].flatMap((hasRun) =>
   [true, false].flatMap((modelLoaded) =>
-    [true, false].map((wide) => ({ hasRun, finished: hasRun, modelLoaded, wide })),
+    [true, false].flatMap((wide) =>
+      [true, false].map((checked) => ({
+        hasRun,
+        finished: hasRun,
+        modelLoaded,
+        wide,
+        baseline: checked ? { prefer: 29, n: 32 } : null,
+        chosen: checked,
+      })),
+    ),
   ),
 );
 
@@ -75,13 +86,25 @@ test("each step shows a view, and says something in every state the app can be i
         // Names of controls are paired: none is left open.
         expect(paragraph.split("**").length % 2).toBe(1);
       }
+      const done = step.done?.(ctx);
+      if (done) expect(done.trim()).toMatch(/[.!?]$/);
     }
   }
+  // A step says when what it asks for is done; the experiment's moves on by itself once its run
+  // starts, as pressing Run opens the run's results.
+  const done = (id: string, ctx: TourContext) => STEPS.find((st) => st.id === id)!.done?.(ctx) ?? null;
+  const blank: TourContext = { hasRun: false, finished: false, modelLoaded: true, wide: true, baseline: null, chosen: false };
+  expect(done("baseline", blank)).toBeNull();
+  expect(done("baseline", { ...blank, baseline: { prefer: 29, n: 32 } })).toContain("29 of 32");
+  expect(done("site", { ...blank, chosen: true })).not.toBeNull();
+  expect(STEPS.filter((st) => st.next).map((st) => st.id)).toEqual(["experiment"]);
+  expect(STEPS.find((st) => st.id === "experiment")!.next!({ ...blank, hasRun: true })).toBe(true);
   // The map is the run's once there is one, else the loaded model's.
   const map = STEPS.find((s) => s.id === "map")!;
-  expect(map.view({ hasRun: true, finished: true, modelLoaded: true, wide: true })).toBe("results");
-  expect(map.view({ hasRun: false, finished: false, modelLoaded: true, wide: true })).toBe("explore");
-  expect(map.view({ hasRun: false, finished: false, modelLoaded: false, wide: true })).toBe("results");
+  const at = (ctx: Pick<TourContext, "hasRun" | "finished" | "modelLoaded">): TourContext => ({ ...ctx, wide: true, baseline: null, chosen: false });
+  expect(map.view(at({ hasRun: true, finished: true, modelLoaded: true }))).toBe("results");
+  expect(map.view(at({ hasRun: false, finished: false, modelLoaded: true }))).toBe("explore");
+  expect(map.view(at({ hasRun: false, finished: false, modelLoaded: false }))).toBe("results");
 });
 
 test("leaving the workbench or the project ends the walkthrough, without saying it was skipped", () => {
@@ -176,11 +199,44 @@ function galleryField(example: string, field: string): string {
   return [...value![1].matchAll(/"([^"]*)"/g)].map((m) => m[1]).join("");
 }
 
+/** How many words some text has, as startWords counts them. */
+function words(texts: string[]): number {
+  return texts
+    .join(" ")
+    .replace(/\*\*/g, "")
+    .split(/\s+/)
+    .filter((word) => /[\p{L}\p{N}]/u.test(word)).length;
+}
+
 test("Start here stays short and plain, and names only what the app has", () => {
-  expect(startWords()).toBeLessThanOrEqual(850);
-  // Every paragraph, definition, step and caption is a sentence, with the names of controls paired.
+  // Its figures carry most of it: the words to read stay few, and so does each figure's line.
+  const prose = START.flatMap((section) => [
+    ...(section.title ? [section.title] : []),
+    ...section.paragraphs,
+    ...(section.terms ?? []).flatMap((t) => [t.term, t.text]),
+    ...(section.steps ?? []).flatMap((st) => [st.text, ...(st.action ? [st.action.label] : [])]),
+    ...(section.actions ?? []).map((a) => a.label),
+  ]);
+  expect(words(prose)).toBeLessThanOrEqual(720);
+  expect(startWords()).toBeLessThanOrEqual(900);
+  // The parts of a model draw their terms, counted above; the other figures have lines of their own.
+  const stages = START.flatMap((section) => section.figure?.stages ?? []);
+  for (const stage of stages) {
+    expect(words([stage.title]), stage.title).toBeLessThanOrEqual(3);
+    expect(words([stage.text]), stage.text).toBeLessThanOrEqual(20);
+    expect(sentenceCase(stage.title), stage.title).toBe(true);
+  }
+  // Every figure has stages to show, two or more.
+  for (const section of START) if (section.figure) expect(figureStages(section).length, section.id).toBeGreaterThanOrEqual(2);
+  // Every paragraph, definition, step, figure's line and caption is a sentence, with the names of
+  // controls paired.
   const sentences = [
-    ...START.flatMap((section) => [...section.paragraphs, ...(section.terms ?? []).map((t) => t.text), ...(section.steps ?? []).map((st) => st.text)]),
+    ...START.flatMap((section) => [
+      ...section.paragraphs,
+      ...(section.terms ?? []).map((t) => t.text),
+      ...(section.steps ?? []).map((st) => st.text),
+      ...(section.figure?.stages ?? []).map((st) => st.text),
+    ]),
     FIGURE_CAPTION,
     START_NOTE,
   ];
@@ -254,4 +310,78 @@ test("Start here says what the bundled IOI example says: its prompt and its head
   const greater = START.find((section) => section.id === "then")!.paragraphs.join(" ").match(/MLPs 9 and 10 [^.]+/);
   expect(greater).not.toBeNull();
   expect(galleryField("greater-than-gpt2", "expect")).toContain(greater![0]);
+});
+
+test("the figures draw the example's own prompt pair, and the heads the guide to IOI lists", () => {
+  // The pair is the example's question, a token each, and the corrupt prompt changes only the
+  // repeated name, to the answer.
+  const question = galleryField(TOUR_EXAMPLE, "question");
+  expect(question).toContain(`“${promptText(PAIR.clean)}”`);
+  expect(startTexts().join(" ")).toContain(`“${promptText(PAIR.clean)}”`);
+  expect(PAIR.corrupt.length).toBe(PAIR.clean.length);
+  const changed = PAIR.clean.flatMap((token, i) => (token === PAIR.corrupt[i] ? [] : [i]));
+  expect(changed).toEqual([PAIR.changed]);
+  expect(PAIR.clean[PAIR.changed]).toBe(PAIR.distractor);
+  expect(PAIR.corrupt[PAIR.changed]).toBe(PAIR.answer);
+  expect(question).toContain(`${PAIR.answer}?`);
+
+  // The heads and their effects are the replication guide's table, row for row.
+  const table = [...readRepo("docs/guides/replicate-ioi.md").matchAll(/^\| (\d+)\.(\d+) \| (−?[\d.]+) \| ([^|]+) \|$/gm)].map((m) => ({
+    layer: Number(m[1]),
+    head: Number(m[2]),
+    effect: Number(m[3].replace("−", "-")),
+    role: m[4].trim(),
+  }));
+  expect(table.length).toBe(IOI_HEADS.length);
+  const ROLE_NAMES = { induction: "induction head", "s-inhibition": "S-inhibition head", "name-mover": "name mover", "negative-name-mover": "negative name mover" };
+  expect(IOI_HEADS.map((h) => ({ layer: h.layer, head: h.head, effect: h.effect, role: ROLE_NAMES[h.role] }))).toEqual(table);
+  // Every head drawn is one the example expects.
+  const expected = galleryField(TOUR_EXAMPLE, "expect");
+  for (const h of IOI_HEADS) expect(expected).toContain(`${h.layer}.${h.head}`);
+
+  // The patched head is the one Start here names, and "about a sixth of the gap" is its effect.
+  const name = `${PATCHED_HEAD.layer}.${PATCHED_HEAD.head}`;
+  expect(START.find((section) => section.id === "patch")!.figure!.stages.map((st) => st.text).join(" ")).toContain(`head ${name}'s`);
+  expect(Math.abs(patchedEffect() - 1 / 6)).toBeLessThan(0.02);
+  // On the figures' scale the clean prompt prefers the answer and the corrupt one the distractor,
+  // and the patched run sits its effect of the way from one to the other.
+  expect(METER.clean).toBeGreaterThan(0);
+  expect(METER.corrupt).toBeLessThan(0);
+  expect((patchedAt(patchedEffect()) - METER.corrupt) / (METER.clean - METER.corrupt)).toBeCloseTo(patchedEffect(), 10);
+});
+
+test("the questions Logogram answers are the documentation's, and every method answers one", () => {
+  const headings = anchorsOf("docs/concepts/choosing-a-method.md");
+  expect(QUESTIONS.map((q) => q.id)).toEqual(["where", "flow", "represent", "steer"]);
+  for (const q of QUESTIONS) {
+    // Its title is the page on choosing a method's heading for it, and its text a sentence.
+    expect(headings).toContain(slug(q.title));
+    expect(q.text.trim()).toMatch(/[.!?]$/);
+    expect(existsSync(fileURLToPath(new URL(`../../${q.guide.path}`, import.meta.url))), q.guide.path).toBe(true);
+    if (q.guide.anchor) expect(anchorsOf(q.guide.path)).toContain(q.guide.anchor);
+    expect(METHODS.some((m) => m.question === q.id), q.id).toBe(true);
+    if (q.example) expect(existsSync(fileURLToPath(new URL(`../../src/logogram/examples/${q.example}/project.json`, import.meta.url)))).toBe(true);
+  }
+  // Start here asks them as they are, and the documentation's index lists them the same way.
+  const ask = START.find((section) => section.id === "ask")!;
+  expect(ask.terms!.map((t) => t.term)).toEqual(QUESTIONS.map((q) => q.title));
+  const index = readRepo("docs/README.md");
+  for (const q of QUESTIONS) {
+    const row = index.split("\n").find((line) => line.startsWith(`| [${q.title}](concepts/choosing-a-method.md#${slug(q.title)})`));
+    expect(row, q.title).toBeDefined();
+    expect(row).toContain(`| ${q.text} |`);
+    expect(row).toContain(`[${q.guide.title}](${q.guide.path.replace(/^docs\//, "")})`);
+  }
+});
+
+test("the guide's figures say each stage in a short sentence", () => {
+  for (const [name, figure] of Object.entries(GUIDE_FIGURES)) {
+    expect(figure.stages.length, name).toBeGreaterThanOrEqual(2);
+    expect(new Set(figure.stages.map((stage) => stage.title)).size, name).toBe(figure.stages.length);
+    for (const stage of figure.stages) {
+      expect(sentenceCase(stage.title), stage.title).toBe(true);
+      expect(words([stage.text]), stage.text).toBeLessThanOrEqual(22);
+      expect(stage.text.trim(), stage.text).toMatch(/[.!?]$/);
+    }
+  }
 });

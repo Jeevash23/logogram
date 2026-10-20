@@ -14,6 +14,7 @@
   padding: 36px 44px 44px;
   border-right: 1px solid var(--line);
   overflow: hidden;
+  container: hero / size;
 }
 
 .brand {
@@ -116,7 +117,24 @@
   max-width: 520px;
 }
 
-/* Start here, under the tagline: a plain ink button, and one quiet line beside it. */
+/* What Logogram finds, plainly, under the tagline. A short window keeps the tagline and Start
+   here whole, and leaves this out. */
+.purpose {
+  max-width: 500px;
+  margin-top: -10px;
+  color: var(--muted);
+  font-size: var(--text-lg);
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+@container hero (max-height: 640px) {
+  .purpose {
+    display: none;
+  }
+}
+
+/* Start here, under the tagline: an ink button, and one quiet line beside it. */
 .start {
   display: flex;
   align-items: center;
@@ -179,6 +197,8 @@
     overflow: auto;
   }
   .hero {
+    /* The slim bar takes its height from what it holds. */
+    container-type: normal;
     flex-direction: row;
     align-items: center;
     gap: 14px;
@@ -198,7 +218,8 @@
   .heroGlyph {
     width: 44px;
   }
-  .tagline {
+  .tagline,
+  .purpose {
     display: none;
   }
   /* In the slim bar, Start here goes to its end, without its line. */

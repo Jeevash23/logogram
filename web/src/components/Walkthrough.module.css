@@ -50,11 +50,54 @@
   outline-offset: 2px;
 }
 
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
 .count {
   margin: 0;
   color: var(--muted);
   font-size: var(--text-xs);
   font-variant-numeric: tabular-nums;
+}
+
+/* Where the step is in the walkthrough: a short line per step, ink up to this one. */
+.dots {
+  display: flex;
+  gap: 3px;
+}
+
+.dots > span {
+  width: 14px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--line);
+}
+
+.dots > span[data-state="done"] {
+  background: var(--control-line);
+}
+
+.dots > span[data-state="now"] {
+  background: var(--text);
+}
+
+/* What the step asked for, done: checked off in ink. */
+.done {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+  font-weight: 600;
+}
+
+.done svg {
+  flex: none;
+  margin-top: 2px;
 }
 
 .title {

@@ -175,3 +175,8 @@
   text-decoration-thickness: 1px;
   text-underline-offset: 3px;
 }
+
+.loading {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}

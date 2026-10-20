@@ -12,19 +12,31 @@ watching what changes. Interpretability works the same way: replace one activati
 from a different input, remove a direction, add a feature, and measure what happens. Logogram
 makes those experiments visual, fast and rigorous, and asks the questions interpretability asks:
 
-* **Where is it computed?** Activation patching and ablation (zero, mean, resample, scaled or
-  along a direction), attribution patching with integrated gradients, and direct logit
-  attribution, over residual streams, heads, queries, keys, values, neurons and SAE features.
-* **How does it flow?** Path patching, edge attribution (EAP and EAP-IG) with its faithfulness
-  curve, and ACDC, which finds a circuit by removing edges one at a time.
-* **What does a site represent?** Linear probes against shuffled-label controls, distributed
+* **Where is it computed?** Which heads, MLPs or positions an answer depends on. Activation
+  patching and ablation (zero, mean, resample, scaled or along a direction), attribution patching
+  with integrated gradients, and direct logit attribution, over residual streams, heads, queries,
+  keys, values, neurons and SAE features.
+* **How does it flow?** Which paths carry the answer, and the circuit they form. Path patching,
+  edge attribution (EAP and EAP-IG) with its faithfulness curve, and ACDC, which finds a circuit
+  by removing edges one at a time.
+* **What does a site represent?** What a part of the model encodes, and whether the model uses
+  it. Linear probes against shuffled-label controls, distributed
   alignment search, and directions saved in the project and tested by patching along them,
   removing them, steering along them and reading them out; where a neuron, feature or direction
   is most active in your own texts; the principal components of activations over prompts or texts;
   SAEs, published or trained in the project; the logit lens, and a tuned lens trained in the
   project.
-* **What does adding a direction do?** Steering along a mean difference, an SAE feature or a saved
-  direction, on held-out prompts, against a random direction.
+* **What does adding a direction do?** How the answer moves when the model is pushed along a
+  direction. Steering along a mean difference, an SAE feature or a saved direction, on held-out
+  prompts, against a random direction.
+
+The simplest of these experiments, on the bundled IOI example, copies one attention head's output
+from a prompt where GPT-2 small answers *Mary* into one where it answers *John*, and measures how
+far the answer moves back:
+
+![Activation patching on the IOI example: the clean prompt prefers Mary and the corrupt prompt
+John; with head 9.9's output copied from the clean run into the corrupt run, the answer moves back
+toward Mary by about a sixth of the gap, which is head 9.9's effect](docs/images/activation-patching.svg)
 
 Load GPT-2 (or Llama, Qwen, Gemma, Pythia and others, on a CPU, a GPU or Apple's MPS), set up
 prompt pairs from a task or your own file, run a sweep, watch the results paint onto a map of the
@@ -113,10 +125,17 @@ report, figures and CSV a finished run exports. **Help**, in the top bar, opens 
 walkthrough of the IOI example at its own controls, the keyboard shortcuts, the documentation on
 GitHub, a problem report to paste into an issue (nothing is sent: you copy it), the system check,
 and About. The guide starts with the basics: **Start here**, for someone new to Logogram or to
-interpretability, follows the IOI example from its two prompts to what patching finds, names the
-parts of a model, and lays out a first hour. The first screens offer it under the tagline,
+interpretability, says what Logogram can find out, then follows the IOI example in figures that
+move: its two prompts and the logit difference each gives, a head's output copied from one run
+into the other, the parts of a model, and what the example finds, head by head; and it lays out a
+first hour. The guide's other pages draw the workbench part by part, how to read the map, how a
+run's results write its logogram, and how an interval is built from each prompt's effect. Each
+figure plays through its stages while it is in view, can be paused or stepped through, and stays
+still when the system asks for less motion. The first screens offer Start here under the tagline,
 **Learn the basics** in the command palette opens it from anywhere, and it is part of the app, so
-it reads the same without a network.
+it reads the same without a network. The walkthrough notices what you do: it says when the
+baseline is checked or a cell is chosen, and when you press **Run** it follows the run to its
+results.
 
 ## Documentation
 

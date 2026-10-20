@@ -2,18 +2,21 @@ import { useEffect, useId, useRef, type CSSProperties, type ReactNode } from "re
 
 import { BRAND_SEED, Logogram } from "../components/Logogram";
 import { Button } from "../components/ui";
-import { START_NOTE } from "../lib/start";
+import { PURPOSE, START_NOTE } from "../lib/start";
 import { useStore } from "../store/app";
 import { openGuide, useHelp } from "../store/help";
 import s from "./Screens.module.css";
 
 /**
- * The first screens: the logogram over a bloom of the three workspace colors, and what each
- * workspace is for, in its color. Under it, Start here opens the guide at its first page; it is
- * the first thing the keyboard reaches, and stays in view while the work beside it scrolls.
+ * The first screens: the logogram over a bloom of the three workspace colors, what each workspace
+ * is for, in its color, and what Logogram finds, plainly. Under it, Start here opens the guide at
+ * its first page: the first thing the keyboard reaches, it stays in view while the work beside it
+ * scrolls, and it is the solid ink button until the walkthrough of the example has been finished
+ * or skipped.
  */
 export function Welcome({ children }: { children: ReactNode }) {
   const version = useStore((st) => st.version);
+  const fresh = useStore((st) => st.walkthrough === null);
   const noteId = useId();
   const start = useRef<HTMLButtonElement>(null);
   const opened = useRef(false);
@@ -50,9 +53,11 @@ export function Welcome({ children }: { children: ReactNode }) {
           <span className={s.word} style={word("--experiment")}>Experiment</span> on it, one component at a time.{" "}
           <span className={s.word} style={word("--evidence")}>Read the evidence</span>, prompt by prompt.
         </p>
+        <p className={s.purpose}>{PURPOSE}</p>
         <div className={s.start}>
           <Button
             ref={start}
+            variant={fresh ? "primary" : "secondary"}
             onClick={() => {
               opened.current = true;
               openGuide("start");

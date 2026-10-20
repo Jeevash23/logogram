@@ -2,11 +2,12 @@ import * as Popover from "@radix-ui/react-popover";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 
+import { useAnalysisContext } from "../lib/hooks";
 import { usePrefersReducedMotion } from "../lib/motion";
 import { emphasis, STEPS, type TourContext, type TourStep } from "../lib/walkthrough";
 import { useStore } from "../store/app";
 import { endTour, goToStep, useHelp } from "../store/help";
-import { Button } from "./ui";
+import { Button, Icon } from "./ui";
 import s from "./Walkthrough.module.css";
 
 /** How long a step waits for its control to appear before pointing at its view's tab instead. */
@@ -18,10 +19,11 @@ const WIDE = 1120;
 
 /**
  * The walkthrough of the example: one step at a time, a popover beside a real control, which an
- * ink outline marks. Nothing dims or blocks the page: it can be used while a step is shown. Next,
- * Back, Skip and Escape move through it or end it; the keyboard goes to each step as it opens,
- * Tab from its last button goes on to the control it points at, and when it ends the keyboard goes
- * back to the page.
+ * ink outline marks. Nothing dims or blocks the page: it can be used while a step is shown, and a
+ * step says so once what it asks for is done (the experiment's step moves on by itself when the
+ * run starts). Next, Back, Skip and Escape move through it or end it; the keyboard goes to each
+ * step as it opens, Tab from its last button goes on to the control it points at, and when it ends
+ * the keyboard goes back to the page.
  */
 export function Walkthrough() {
   const step = useHelp((st) => st.tourStep);
@@ -51,7 +53,15 @@ function useTourContext(wide: boolean): TourContext {
   });
   const finished = useStore((st) => !!st.activeRunId && st.runs.find((r) => r.id === st.activeRunId)?.status === "finished");
   const modelLoaded = useStore((st) => st.model.state === "ready");
-  return useMemo(() => ({ hasRun, finished, modelLoaded, wide }), [hasRun, finished, modelLoaded, wide]);
+  const { baselineKey } = useAnalysisContext();
+  const report = useStore((st) => st.baselines[baselineKey]);
+  const prefer = report?.summary ? report.summary.clean_prefers_answer : null;
+  const n = report?.summary ? report.n : null;
+  const chosen = useStore((st) => st.selection !== null);
+  return useMemo(
+    () => ({ hasRun, finished, modelLoaded, wide, baseline: prefer !== null && n !== null ? { prefer, n } : null, chosen }),
+    [hasRun, finished, modelLoaded, wide, prefer, n, chosen],
+  );
 }
 
 function shown(name: string): HTMLElement | null {
@@ -171,9 +181,19 @@ function TourStepView({ index }: { index: number }) {
   const wide = useWidth() >= WIDE;
   const ctx = useTourContext(wide);
   const view = step.view(ctx);
+  const done = step.done?.(ctx) ?? null;
   const [targets, setTargets] = useState<HTMLElement[]>([]);
   const content = useRef<HTMLDivElement>(null);
   const titleId = `tour-${step.id}-title`;
+
+  // A step that moves on by itself does so when its condition turns true while it is shown, not
+  // when it was true already.
+  const ready = step.next?.(ctx) ?? false;
+  const wasReady = useRef(ready);
+  useEffect(() => {
+    if (ready && !wasReady.current && !last) goToStep(index + 1);
+    wasReady.current = ready;
+  }, [ready, index, last]);
 
   // Show the step's view (again, if the run it depends on starts or ends meanwhile).
   useEffect(() => {
@@ -251,14 +271,27 @@ function TourStepView({ index }: { index: number }) {
             onInteractOutside={(e) => e.preventDefault()}
           >
             <div ref={content} className={s.inner} tabIndex={-1} onKeyDown={onKeyDown}>
-              <p className={s.count}>
-                Walkthrough · {index + 1} of {STEPS.length}
-              </p>
+              <div className={s.head}>
+                <p className={s.count}>
+                  Walkthrough · {index + 1} of {STEPS.length}
+                </p>
+                <span className={s.dots} aria-hidden="true">
+                  {STEPS.map((st, i) => (
+                    <span key={st.id} data-state={i < index ? "done" : i === index ? "now" : "todo"} />
+                  ))}
+                </span>
+              </div>
               <Popover.Title id={titleId} className={s.title}>
                 {step.title}
               </Popover.Title>
               <Popover.Description asChild>
                 <div className={s.body}>
+                  {done && (
+                    <p className={s.done}>
+                      <Icon name="check" size={14} />
+                      <span>{done}</span>
+                    </p>
+                  )}
                   {step.text(ctx).map((paragraph, i) => (
                     <p key={i}>
                       {emphasis(paragraph).map((part, j) => (part.strong ? <strong key={j}>{part.text}</strong> : part.text))}

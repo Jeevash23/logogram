@@ -406,6 +406,7 @@ export function Dialog({
   children,
   footer,
   wide,
+  large,
   onEscapeKeyDown,
   onCloseAutoFocus,
 }: {
@@ -416,6 +417,8 @@ export function Dialog({
   children: ReactNode;
   footer?: ReactNode;
   wide?: boolean;
+  /** Wider and taller than wide: a page to read with figures, such as the guide. */
+  large?: boolean;
   /** Called before Escape closes the dialog; preventing its default keeps it open. */
   onEscapeKeyDown?: (event: globalThis.KeyboardEvent) => void;
   /** Called as the dialog closes, before the keyboard goes back where it was; preventing its
@@ -427,7 +430,7 @@ export function Dialog({
       <RadixDialog.Portal>
         <RadixDialog.Overlay className={s.overlay} />
         <RadixDialog.Content
-          className={cx(s.dialog, wide && s.dialogWide)}
+          className={cx(s.dialog, wide && s.dialogWide, large && s.dialogLarge)}
           onEscapeKeyDown={onEscapeKeyDown}
           onCloseAutoFocus={onCloseAutoFocus}
         >

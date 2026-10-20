@@ -159,11 +159,11 @@ test("Start here explains the basics, and its buttons open Your text and the exa
   const dialog = guide(page);
   const panel = dialog.getByRole("tabpanel", { name: "Start here" });
   await expect(panel).toBeVisible();
-  // Its sections, the figure of the three runs, named by its caption, the parts of a model and the
-  // first hour, step by step.
+  // Its sections, the figure of the three runs, named by its caption, the parts of a model, each a
+  // stage of their figure, and the first hour, step by step.
   for (const section of START) if (section.title) await expect(panel.getByRole("heading", { level: 3, name: section.title, exact: true })).toBeVisible();
   await expect(panel.getByRole("figure", { name: FIGURE_CAPTION })).toBeVisible();
-  for (const term of ["Token", "Layer", "Residual stream", "Attention head", "MLP", "Site"]) await expect(panel.getByRole("term").filter({ hasText: term }).first()).toBeVisible();
+  for (const term of ["Token", "Layer", "Residual stream", "Attention head", "MLP", "Site"]) await expect(panel.getByRole("radio", { name: term, exact: true })).toBeVisible();
   const hour = panel.getByRole("list", { name: "Your first hour" });
   await expect(hour.getByRole("listitem")).toHaveCount(6);
   await expect(hour.getByRole("listitem").first().getByRole("button", { name: "Walk me through the example", exact: true })).toBeVisible();

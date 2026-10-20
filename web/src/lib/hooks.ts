@@ -41,6 +41,17 @@ const MODEL_NAMES: Record<string, string> = {
   "microsoft/phi-1_5": "Phi-1.5",
 };
 
+/** What the prompts at a path are called: their dataset's name, or, for a run's own copy of the
+ * prompts it read (datasets/snapshots/, named by its hash), the saved prompts of that run, as the
+ * dataset chip says it (or, `inSentence`, as a sentence goes on with it). */
+export function datasetLabel(path: string | null, datasets: readonly { path: string; name: string }[], inSentence = false): string | null {
+  if (!path) return null;
+  const listed = datasets.find((d) => d.path === path);
+  if (listed) return listed.name;
+  if (!path.startsWith("datasets/snapshots/")) return path;
+  return inSentence ? "the saved prompts of this run" : "Saved prompts of this run";
+}
+
 export function modelName(id: string | null | undefined): string {
   if (!id) return "No model";
   return MODEL_NAMES[id] ?? id;

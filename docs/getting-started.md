@@ -6,8 +6,8 @@ takes about ten minutes, most of it the first download of GPT-2 small. The app c
 through the same steps: open the example from the first screen with **Walk me through it**, or
 choose **Help → Walk me through the example** at any time. New to interpretability? **Start
 here**, under the tagline on the first screens and the first page of **Help → Guide**, explains in
-five minutes the ideas this page relies on: clean and corrupt prompts, patching a head, what its
-effect means, and the parts of a model.
+five minutes, in moving figures, the ideas this page relies on: clean and corrupt prompts,
+patching a head, what its effect means, and the parts of a model.
 
 ## Install
 
@@ -47,6 +47,10 @@ The example holds 32 prompt pairs and one experiment, ready to run:
 * **The experiment.** For each attention head, run the corrupt prompt, copy that head's output
   in from the clean prompt at every position, and measure how much of the clean answer comes
   back. This is [activation patching](concepts/activation-patching.md).
+
+![Activation patching on the IOI example: the clean prompt prefers Mary and the corrupt prompt
+John; with head 9.9's output copied from the clean run into the corrupt run, the answer moves back
+toward Mary by about a sixth of the gap, which is head 9.9's effect](images/activation-patching.svg)
 
 ## Run it
 

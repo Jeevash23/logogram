@@ -118,16 +118,17 @@ export function SystemCheck() {
           </>
         )}
 
-        <section className={s.updates} aria-label="Updates">
-          <h2 className={s.sectionTitle}>Updates</h2>
-          <UpdateDetails />
-        </section>
-
+        {/* The examples come before the settings: they are where a first experiment starts. */}
         <section className={s.examples} aria-labelledby="examples-title">
           <h2 id="examples-title" className={s.sectionTitle}>
             Examples
           </h2>
           <ExampleGallery onOpen={markSeen} />
+        </section>
+
+        <section className={s.updates} aria-label="Updates">
+          <h2 className={s.sectionTitle}>Updates</h2>
+          <UpdateDetails />
         </section>
 
         <div className={s.actions}>

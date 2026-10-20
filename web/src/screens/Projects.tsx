@@ -7,6 +7,7 @@ import { ExampleGallery } from "../components/ExampleGallery";
 import { FolderPicker } from "../components/FolderPicker";
 import { Logogram } from "../components/Logogram";
 import { DeleteProjectDialog } from "../components/ManageDialogs";
+import { QuestionList } from "../components/Questions";
 import { Button, Field, Icon, Input, menuClasses } from "../components/ui";
 import { ago } from "../lib/format";
 import { useStore } from "../store/app";
@@ -63,12 +64,38 @@ export function Projects() {
     await enter(project);
   };
 
+  // A question's example, opened from what Logogram can find out, as the examples open it.
+  const openExample = async (id: string) => {
+    setBusy(true);
+    const project = await guard(() => api.openExample(id));
+    setBusy(false);
+    if (project) await enter(project);
+  };
+
   const create = async () => {
     setBusy(true);
     const project = await guard(() => api.createProject(name.trim(), parent || null));
     setBusy(false);
     if (project) await enter(project);
   };
+
+  const discover = (
+    <>
+      <section className={s.examples} aria-labelledby="questions-title">
+        <h2 id="questions-title" className={s.sectionTitle}>
+          What you can find out
+        </h2>
+        <QuestionList onExample={(id) => void openExample(id)} exampleLabel={() => "Open the IOI example"} />
+      </section>
+      <section className={s.examples} aria-labelledby="examples-title">
+        {/* The guide's Start here can send the keyboard here. */}
+        <h2 id="examples-title" className={s.sectionTitle} tabIndex={-1}>
+          Examples
+        </h2>
+        <ExampleGallery disabled={busy} />
+      </section>
+    </>
+  );
 
   return (
     <Welcome>
@@ -86,6 +113,9 @@ export function Projects() {
             </Button>
           </div>
         )}
+
+        {/* Someone with no projects yet sees first what Logogram can find out, and the examples. */}
+        {recent?.length === 0 && discover}
 
         <div className={s.projectGrid}>
           <section>
@@ -188,13 +218,7 @@ export function Projects() {
           </section>
         </div>
 
-        <section className={s.examples} aria-labelledby="examples-title">
-          {/* The guide's Start here can send the keyboard here. */}
-          <h2 id="examples-title" className={s.sectionTitle} tabIndex={-1}>
-            Examples
-          </h2>
-          <ExampleGallery disabled={busy} />
-        </section>
+        {recent?.length !== 0 && discover}
       </div>
       <FolderPicker
         open={picker === "parent"}

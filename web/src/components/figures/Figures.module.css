@@ -1,0 +1,365 @@
+/* Explanatory figures (StagedFigure and the drawings it shows): ink and hairlines, the effect
+   colors only for effects, and motion only to show what changes from one stage to the next. Under
+   reduced motion nothing moves: each stage is drawn as it ends. */
+
+.figure {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 6px 0 2px;
+}
+
+.drawing {
+  display: flex;
+  justify-content: center;
+  min-width: 0;
+  color: var(--text);
+}
+
+.drawing > :not(svg) {
+  flex: 1;
+  min-width: 0;
+}
+
+/* A drawing is drawn at its own size, so its type matches the page's, and shrinks to fit a
+   narrower window. */
+.drawing svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drawing *,
+  .drawing *::before,
+  .drawing *::after,
+  .line > span {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* The play button and the stages, in a row under the drawing. */
+.controls {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.play {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--control-line);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.play:hover {
+  background: var(--hover);
+}
+
+.play:focus-visible,
+.stage:focus-visible,
+.item:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+.stages {
+  flex: 1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+
+.stage {
+  flex: 1 1 96px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 3px 0 2px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--text-xs);
+  font-weight: 560;
+  line-height: 1.3;
+  text-align: left;
+  cursor: pointer;
+}
+
+.stage:hover,
+.stage[aria-checked="true"] {
+  color: var(--text);
+}
+
+.stageNumber {
+  font-variant-numeric: tabular-nums;
+  color: var(--faint);
+}
+
+.stage[aria-checked="true"] .stageNumber {
+  color: var(--text);
+}
+
+/* Each stage's line: full once shown, filling while it plays, empty before. */
+.line {
+  position: relative;
+  display: block;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.line > span {
+  position: absolute;
+  inset: 0;
+  background: var(--text);
+  transform-origin: left center;
+  transform: scaleX(0);
+}
+
+.line[data-state="done"] > span,
+.line[data-state="now"] > span {
+  transform: none;
+}
+
+.line[data-state="playing"] > span {
+  animation-name: fill;
+  animation-timing-function: linear;
+  animation-fill-mode: both;
+}
+
+@keyframes fill {
+  to {
+    transform: scaleX(1);
+  }
+}
+
+.caption {
+  max-width: 68ch;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.stageText {
+  color: var(--text);
+}
+
+/* The list layout: the drawing, and beside it every stage with its sentence. */
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 22px;
+  align-items: start;
+}
+
+@media (max-width: 760px) {
+  .split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.side {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.items {
+  display: flex;
+  flex-direction: column;
+}
+
+/* A stage of the list: its title and its sentence, the one shown marked by an ink rule. */
+.item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 0 7px 12px;
+  border: 0;
+  border-left: 2px solid var(--line);
+  border-radius: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--dur) var(--ease);
+}
+
+.item:hover {
+  border-left-color: var(--control-line);
+}
+
+.item[data-current],
+.item[data-current]:hover {
+  border-left-color: var(--text);
+}
+
+.itemTitle {
+  font-weight: 620;
+}
+
+.itemText {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+
+.item[data-current] .itemText {
+  color: var(--text);
+}
+
+.listFoot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* -- Shared marks ----------------------------------------------------------------------------- */
+
+/* Ink text in a drawing. */
+.label {
+  fill: currentColor;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.note {
+  fill: var(--muted);
+  font-size: 11px;
+}
+
+.hairline {
+  fill: none;
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.axis {
+  fill: none;
+  stroke: var(--control-line);
+  stroke-width: 1;
+}
+
+.tick {
+  fill: var(--faint);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ink {
+  fill: currentColor;
+}
+
+.ring {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+
+.arrow {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.25;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Something that appears in a stage: it fades and settles into place. Its delay, if any, is
+   --delay. */
+.appear {
+  opacity: 0;
+  transition: opacity 320ms var(--ease) var(--delay, 0ms);
+}
+
+.appear[data-on] {
+  opacity: 1;
+}
+
+/* Cells of a model drawn as on the map: light until computed. */
+.cell {
+  fill: var(--line);
+}
+
+.computed {
+  opacity: 0;
+  transition: opacity 260ms var(--ease) var(--delay, 0ms);
+}
+
+.computed[data-on] {
+  opacity: 1;
+}
+
+.cellInk {
+  fill: var(--text);
+  opacity: 0.42;
+}
+
+:root[data-theme="dark"] .cellInk {
+  opacity: 0.5;
+}
+
+/* A part of a drawing out of focus while another stage is shown. */
+.dim {
+  transition: opacity 320ms var(--ease);
+}
+
+.dim[data-off] {
+  opacity: 0.28;
+}
+
+/* Marks that enter as their stage begins, after --delay: they play once as they appear, so a
+   drawing draws a stage afresh by drawing its marks again. */
+.enter {
+  animation: enter 300ms var(--ease) var(--delay, 0ms) both;
+}
+
+@keyframes enter {
+  from {
+    opacity: 0;
+  }
+}
+
+/* A line drawn from its start: its length is --length. */
+.draw {
+  stroke-dasharray: var(--length);
+  animation: draw 900ms var(--ease) var(--delay, 0ms) both;
+}
+
+@keyframes draw {
+  from {
+    stroke-dashoffset: var(--length);
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* A mark that slides along the scale to its value from --from (in px, relative to it). */
+.slide {
+  animation: slide 900ms var(--ease) var(--delay, 0ms) both;
+}
+
+@keyframes slide {
+  from {
+    opacity: 0;
+    transform: translateX(var(--from));
+  }
+  30% {
+    opacity: 1;
+  }
+}

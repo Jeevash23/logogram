@@ -4,11 +4,12 @@ import type { BaselineSpec, ExperimentKind, HeadInputKind, ModelInfo, PathReceiv
 import { Button, Checkbox, Choices, Field, Input, Segmented, Select, TextArea } from "../components/ui";
 import { MOD } from "../components/Header";
 import { capitalize, count, plural, shortRevision } from "../lib/format";
-import { modelName } from "../lib/hooks";
+import { datasetLabel, modelName } from "../lib/hooks";
 import { EVERYTHING, SET_SITE_KINDS } from "../lib/circuits";
 import { KIND_SHORT, parseHeadQuery, queryHeadsOf, queryHeadsText } from "../lib/sites";
 import { buildSpec, carriedBy, datasetFacts, lastInstead, parseCounts, parseStrengths, parseThreshold, savedDifferences, unlinedReason, unevenPairsText, usesFeatures } from "../lib/buildSpec";
 import { metricWords } from "../lib/metrics";
+import { METHODS as ALL_METHODS, question } from "../lib/questions";
 import { useEdgePlan, type EdgePlanState } from "../lib/edgePlan";
 import { edgeLabel, graphText, parseLayers, receiverLabel, receiverWords, saeName, saeRefOf, saeWritesText, scopeFor, scopeShort, sharesKeys, siteText, steerSiteOf, suggestName, workload } from "../lib/spec";
 import { useStore, type FormState } from "../store/app";
@@ -24,70 +25,10 @@ import e from "./ExperimentView.module.css";
 
 const STREAM_KINDS: StreamKind[] = ["resid_pre", "resid_mid", "resid_post", "attn_out", "mlp_out"];
 
-// The methods, grouped by the question each answers.
-const LOCATE = "Where is it computed?";
-const TRACE = "How does it flow?";
-const REPRESENT = "What does a site represent?";
-const STEER = "What does adding a direction do?";
+const NO_DATASETS: { path: string; name: string }[] = [];
 
-const METHODS: { value: ExperimentKind; title: string; detail: string; group: string }[] = [
-  { value: "activation_patching", title: "Activation patching", detail: "Copy an activation from the other prompt of each pair.", group: LOCATE },
-  { value: "ablation", title: "Ablation", detail: "Replace an activation with a baseline you choose.", group: LOCATE },
-  {
-    value: "attribution_patching",
-    title: "Attribution patching",
-    detail: "Estimate patching at every site from gradients, then verify the strongest.",
-    group: LOCATE,
-  },
-  {
-    value: "direct_logit_attribution",
-    title: "Direct logit attribution",
-    detail: "Split the logit difference into what each component writes directly. No intervention.",
-    group: LOCATE,
-  },
-  {
-    value: "path_patching",
-    title: "Path patching",
-    detail: "Patch a component's effect through chosen receivers only, holding the other heads.",
-    group: TRACE,
-  },
-  {
-    value: "edge_attribution",
-    title: "Edge attribution",
-    detail: "Estimate every edge between components from gradients, then patch the strongest as a circuit.",
-    group: TRACE,
-  },
-  {
-    value: "acdc",
-    title: "Circuit discovery (ACDC)",
-    detail: "Remove the edges between components one at a time, keeping those whose removal changes the metric.",
-    group: TRACE,
-  },
-  {
-    value: "probe",
-    title: "Linear probe",
-    detail: "Train a probe at each site to read a label, and measure it on held-out pairs. Reads; doesn't intervene.",
-    group: REPRESENT,
-  },
-  {
-    value: "das",
-    title: "Learned subspace (DAS)",
-    detail: "Learn a few directions at each site whose patching carries the effect, measured on held-out pairs.",
-    group: REPRESENT,
-  },
-  {
-    value: "subspace_patching",
-    title: "Subspace patching",
-    detail: "Patch only the component of each site along a saved direction: how much of the effect it carries.",
-    group: REPRESENT,
-  },
-  {
-    value: "steering",
-    title: "Steering",
-    detail: "Add the mean clean–corrupt difference, an SAE feature or a saved direction at several strengths, against a random control.",
-    group: STEER,
-  },
-];
+// The methods, under the question each answers (lib/questions.ts).
+const METHODS = ALL_METHODS.map((m) => ({ ...m, group: question(m.question).title }));
 
 
 export function ExperimentView() {
@@ -96,6 +37,7 @@ export function ExperimentView() {
   const model = useStore((st) => st.model);
   const dataset = useStore((st) => st.dataset);
   const datasetPath = useStore((st) => st.datasetPath);
+  const datasets = useStore((st) => st.project?.datasets ?? NO_DATASETS);
   const startRun = useStore((st) => st.startRun);
   const queueRun = useStore((st) => st.queueRun);
 
@@ -372,7 +314,7 @@ export function ExperimentView() {
             <dd>
               {datasetPath ? (
                 <>
-                  {datasetPath} · {dataset ? plural(dataset.n, "prompt") : "…"}
+                  <span title={datasetPath}>{datasetLabel(datasetPath, datasets)}</span> · {dataset ? plural(dataset.n, "prompt") : "…"}
                   {dataset && <span className="faint"> · sha256 {dataset.sha256.slice(0, 12)}</span>}
                 </>
               ) : (

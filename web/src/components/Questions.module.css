@@ -1,0 +1,117 @@
+/* The four questions: a drawing and the question in ink, what it finds out, its methods, and
+   where to begin, two to a row and separated by hairlines. */
+
+.list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+  border-top: 1px solid var(--line);
+}
+
+@container (max-width: 560px) {
+  .list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 560px) {
+  .list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 12px 14px 13px 48px;
+  border-bottom: 1px solid var(--line);
+}
+
+.item:nth-child(odd) {
+  border-right: 1px solid var(--line);
+}
+
+@media (max-width: 560px) {
+  .item:nth-child(odd) {
+    border-right: 0;
+  }
+}
+
+.pictogram {
+  position: absolute;
+  left: 8px;
+  top: 11px;
+  width: 30px;
+  height: 30px;
+  color: var(--text);
+}
+
+.cell {
+  fill: var(--line);
+}
+
+.ink {
+  fill: currentColor;
+}
+
+.stroke {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.title {
+  font-size: var(--text-md);
+  font-weight: 620;
+}
+
+.text,
+.methods,
+.links {
+  margin: 0;
+}
+
+.text {
+  color: var(--text);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+
+.methods {
+  color: var(--faint);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+}
+
+.links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  margin-top: 4px;
+  font-size: var(--text-sm);
+}
+
+.link {
+  color: var(--text);
+  font-size: var(--text-xs);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.link:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* In Start here, between the guide's own type. */
+.compact .item {
+  padding-top: 10px;
+  padding-bottom: 11px;
+}

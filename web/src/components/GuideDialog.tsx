@@ -1,13 +1,22 @@
-import { useId, useRef, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useId, useRef, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 
 import { GUIDE_PAGES, type GuidePageId } from "../lib/guide";
 import { guideUrl } from "../lib/help";
 import { useStore, type View } from "../store/app";
 import { useHelp, walkThroughExample } from "../store/help";
 import { MOD } from "./Header";
-import { StartHere } from "./StartHere";
 import { Button, Dialog, Kbd } from "./ui";
 import s from "./GuideDialog.module.css";
+
+// The pages' figures come with the guide, in a part of the app loaded when it first opens: from
+// this computer, like the rest.
+const startHere = () => import("./StartHere");
+const figures = () => import("./figures/GuideFigures");
+const StartHere = lazy(() => startHere().then((m) => ({ default: m.StartHere })));
+const WorkbenchFigure = lazy(() => figures().then((m) => ({ default: m.WorkbenchFigure })));
+const MapFigure = lazy(() => figures().then((m) => ({ default: m.MapFigure })));
+const LogogramFigure = lazy(() => figures().then((m) => ({ default: m.LogogramFigure })));
+const IntervalFigure = lazy(() => figures().then((m) => ({ default: m.IntervalFigure })));
 
 /**
  * Help → Guide: short pages, starting with the basics for someone new (Start here), then what each
@@ -18,6 +27,12 @@ import s from "./GuideDialog.module.css";
  */
 export function GuideDialog() {
   const open = useStore((st) => st.helpDialog === "guide");
+  // Every page's figures load as the guide opens, so moving from page to page doesn't wait for them.
+  useEffect(() => {
+    if (!open) return;
+    void startHere();
+    void figures();
+  }, [open]);
   const page = useHelp((st) => st.guidePage);
   const inWorkbench = useStore((st) => st.screen === "workbench");
   const tabs = useRef<(HTMLButtonElement | null)[]>([]);
@@ -58,13 +73,13 @@ export function GuideDialog() {
       }}
       title="Guide"
       description="How Logogram works, in short. These pages are part of the app and work without a network; the documentation on GitHub says more."
-      wide
+      large
       onCloseAutoFocus={(e) => {
         if (!useHelp.getState().toView) return;
         e.preventDefault();
         useHelp.setState({ toView: false });
-        // The view a button opened, or the examples on All projects.
-        document.getElementById(useStore.getState().screen === "workbench" ? "main" : "examples-title")?.focus();
+        // The view a button opened, or the examples on All projects, once they are drawn.
+        focusWhenShown(useStore.getState().screen === "workbench" ? "main" : "examples-title");
       }}
     >
       <div className={s.tabs} role="tablist" aria-label="Pages of the guide">
@@ -89,41 +104,56 @@ export function GuideDialog() {
         ))}
       </div>
       <div className={s.panel} role="tabpanel" id={`${id}-panel`} aria-labelledby={`${id}-${current.id}`} tabIndex={0}>
-        {current.id === "start" ? <StartHere inWorkbench={inWorkbench} go={go} toExamples={toExamples} /> : <PageText page={current.id} />}
-        {(inWorkbench && current.views.length > 0) || current.id === "keys" ? (
-          <div className={s.actions}>
-            {inWorkbench &&
-              current.views.map((v) => (
-                <Button key={v.label} size="small" onClick={() => go(v.view)}>
-                  {v.label}
+        {/* A page shows whole, once its figures have loaded: nothing below them moves as they arrive. */}
+        <Suspense fallback={<p className={s.loading}>Opening the page…</p>}>
+          {current.id === "start" ? <StartHere inWorkbench={inWorkbench} go={go} toExamples={toExamples} /> : <PageText page={current.id} />}
+          {(inWorkbench && current.views.length > 0) || current.id === "keys" ? (
+            <div className={s.actions}>
+              {inWorkbench &&
+                current.views.map((v) => (
+                  <Button key={v.label} size="small" onClick={() => go(v.view)}>
+                    {v.label}
+                  </Button>
+                ))}
+              {current.id === "keys" && (
+                <Button size="small" onClick={() => useStore.setState({ helpDialog: null, shortcutsOpen: true })}>
+                  Show every shortcut
                 </Button>
+              )}
+            </div>
+          ) : null}
+          <div className={s.docs}>
+            <h3 className={s.docsTitle} id={`${id}-docs`}>
+              In the documentation
+            </h3>
+            <ul aria-labelledby={`${id}-docs`}>
+              {current.docs.map((d) => (
+                <li key={d.title}>
+                  <a className={s.link} href={guideUrl(d)} target="_blank" rel="noopener noreferrer">
+                    {d.title}
+                    <span className="visually-hidden"> (opens in a new tab)</span>
+                    <span aria-hidden="true"> ↗</span>
+                  </a>
+                </li>
               ))}
-            {current.id === "keys" && (
-              <Button size="small" onClick={() => useStore.setState({ helpDialog: null, shortcutsOpen: true })}>
-                Show every shortcut
-              </Button>
-            )}
+            </ul>
           </div>
-        ) : null}
-        <div className={s.docs}>
-          <h3 className={s.docsTitle} id={`${id}-docs`}>
-            In the documentation
-          </h3>
-          <ul aria-labelledby={`${id}-docs`}>
-            {current.docs.map((d) => (
-              <li key={d.title}>
-                <a className={s.link} href={guideUrl(d)} target="_blank" rel="noopener noreferrer">
-                  {d.title}
-                  <span className="visually-hidden"> (opens in a new tab)</span>
-                  <span aria-hidden="true"> ↗</span>
-                </a>
-              </li>
-            ))}
-          </ul>
-        </div>
+        </Suspense>
       </div>
     </Dialog>
   );
+}
+
+/** Put the keyboard on the element with this id as soon as it is on the page: a screen the guide
+ * opened may draw it a moment later. Gives up after two seconds. */
+function focusWhenShown(id: string): void {
+  const until = performance.now() + 2000;
+  const attempt = () => {
+    const el = document.getElementById(id);
+    if (el) el.focus();
+    else if (performance.now() < until) requestAnimationFrame(attempt);
+  };
+  attempt();
 }
 
 /** A workspace's word, underlined in its color: the color marks it, the word stays ink. */
@@ -164,6 +194,7 @@ function PageText({ page }: { page: GuidePageId }) {
     return (
       <>
         <p>Three workspaces run across the top. Each has a color, which marks its tabs and its choices.</p>
+        <WorkbenchFigure />
         <dl className={s.rows}>
           <Row term={<Workspace color="--explore">Explore</Workspace>}>
             Look inside the model: the model map, where heads attend and which heads the head finder finds, what each
@@ -198,6 +229,7 @@ function PageText({ page }: { page: GuidePageId }) {
           component, such as each attention head, the attention output, the MLP and the residual stream. The results
           view draws the sites a run measured as a grid of their own.
         </p>
+        <MapFigure />
         <p>
           Queries, keys, values, neurons and the edges between components have no cell on the map. The results view
           shows queries, keys and values as a grid of layers by heads, neurons layer by layer with the strongest
@@ -213,6 +245,7 @@ function PageText({ page }: { page: GuidePageId }) {
           Choose a cell, with the mouse or the arrow keys, to circle it in ink and open it in the inspector, with the
           evidence behind its number.
         </p>
+        <LogogramFigure />
         <p>
           The <strong>logogram</strong> is a run&rsquo;s glyph, written by its results: layers run clockwise from the top,
           and the ink swells outward where a layer&rsquo;s strongest effect is positive and inward where it is negative. A
@@ -224,6 +257,7 @@ function PageText({ page }: { page: GuidePageId }) {
   if (page === "numbers") {
     return (
       <>
+        <IntervalFigure />
         <dl className={s.rows}>
           <Row term="Effect">
             The change in the metric, divided by the gap between the two prompts of each pair: 1 is as far as switching
