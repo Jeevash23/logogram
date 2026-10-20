@@ -2,7 +2,7 @@
 
 What changed in each version of Logogram.
 
-## Unreleased
+## 0.7.2 (2026-10-20)
 
 Start here and the guide in moving figures, what Logogram can find out on the first screens, and a
 walkthrough that notices what you do.
