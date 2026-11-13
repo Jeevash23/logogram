@@ -2,7 +2,7 @@
 
 What changed in each version of Logogram.
 
-## 0.7.2 (2026-10-20)
+## 0.7.2 (2026-11-13)
 
 Start here and the guide in moving figures, what Logogram can find out on the first screens, and a
 walkthrough that notices what you do.
@@ -52,6 +52,20 @@ walkthrough that notices what you do.
 - A run's own copy of its prompts is named as the dataset chip names it, the saved prompts of the
   run, not by its file in `datasets/snapshots/`, a 64-character hash, in the baseline and the
   experiment form.
+- With transformers 5.22 or later, every model's chat template was refused as one that writes
+  today's date, and runs with a chat template failed: transformers now rebuilds what a template is
+  given out of plain values, and the markers Logogram gives it for no clock and for special tokens
+  the model lacks broke in that. Logogram now renders the template as transformers compiles it,
+  with those markers as they are, so the text is the same as before.
+
+### Development
+
+- The dependencies are brought up to date (fastapi, pydantic, transformer-lens 4.4, transformers,
+  huggingface-hub, pyarrow, filelock, setuptools, certifi and others, and the GitHub Actions),
+  which also clears the known vulnerabilities in filelock, setuptools and certifi. ruff is 0.17.2.
+- The reference pages are written the same way with Typer 0.29, whose options no longer carry a
+  Click type, and the check that every spec model is described skips the generic class pydantic
+  2.14 adds to the spec's module.
 
 ## 0.7.1 (2026-10-14)
 
