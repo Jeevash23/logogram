@@ -22,6 +22,7 @@ nothing in them depends on where or when they were made.
 from __future__ import annotations
 
 import dataclasses
+import enum
 import inspect
 import json
 import re
@@ -585,6 +586,8 @@ def training_page() -> str:
 
 def _value_kind(param: Any) -> str:
     """What an option or argument takes, in words: never a library's own name for it."""
+    if not hasattr(param, "type"):
+        return _typed_kind(param)
     t = param.type
     name = type(t).__name__
     if "Choice" in name:
@@ -605,6 +608,40 @@ def _value_kind(param: Any) -> str:
             kind = "path"
     else:
         kind = "text"
+    if low is not None and high is not None:
+        kind += f", {number(low)} to {number(high)}"
+    elif low is not None:
+        kind += f", {number(low)} or more"
+    return kind
+
+
+def _typed_kind(param: Any) -> str:
+    """The same, from Typer 0.29 and later, whose parameters keep their annotation and settings
+    rather than a Click type."""
+    annotation = param.type_descriptor.annotation
+    info = param.type_descriptor.parameter_info
+    while typing.get_origin(annotation) in (list, tuple, typing.Union, types.UnionType):
+        annotation = next(a for a in typing.get_args(annotation) if a is not type(None))
+    if typing.get_origin(annotation) is typing.Literal:
+        return either([f"`{c}`" for c in typing.get_args(annotation)])
+    if isinstance(annotation, type) and issubclass(annotation, enum.Enum):
+        return either([f"`{c.value}`" for c in annotation])
+    if annotation is bool:
+        return ""
+    if annotation is int:
+        kind = "integer"
+    elif annotation is float:
+        kind = "number"
+    elif isinstance(annotation, type) and issubclass(annotation, Path):
+        if getattr(info, "dir_okay", True) is False:
+            kind = "file"
+        elif getattr(info, "file_okay", True) is False:
+            kind = "folder"
+        else:
+            kind = "path"
+    else:
+        kind = "text"
+    low, high = getattr(param, "min", None), getattr(param, "max", None)
     if low is not None and high is not None:
         kind += f", {number(low)} to {number(high)}"
     elif low is not None:
