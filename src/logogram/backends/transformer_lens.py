@@ -629,6 +629,51 @@ def unit_sites(checks: ModelChecks) -> tuple[tuple[str, ...], dict[str, str]]:
     return tuple(kinds), notes
 
 
+_CONTINUE_TAG = "CONTINUE_FINAL_MESSAGE_TAG "
+
+
+def _render_compiled(
+    compiled: Any,
+    template: str,
+    messages: list[dict[str, str]],
+    *,
+    add_generation_prompt: bool,
+    continue_final_message: bool,
+    context: dict[str, Any],
+) -> str:
+    """A chat template rendered as transformers' apply_chat_template renders it (without
+    tokenizing), with ``context`` passed to the template as it is."""
+    chat = [dict(m) for m in messages]
+    final = ""
+    if continue_final_message:
+        # As apply_chat_template does: mark the end of the reply, render, cut at the mark.
+        final = chat[-1]["content"]
+        if "content" not in template:
+            raise ValueError(
+                'continue_final_message is set to "content" but this is not an accepted field in '
+                "the chat_template"
+            )
+        chat[-1]["content"] = final + _CONTINUE_TAG
+    text = compiled.render(
+        messages=chat,
+        tools=None,
+        documents=None,
+        add_generation_prompt=add_generation_prompt,
+        **context,
+    )
+    if continue_final_message:
+        if final.strip() not in text or _CONTINUE_TAG.strip() not in text:
+            raise ValueError(
+                "continue_final_message is set but the final message does not appear in the chat "
+                "after applying the chat template"
+            )
+        at = text.rindex(_CONTINUE_TAG.strip())
+        text = (
+            text[:at] if text[at : at + len(_CONTINUE_TAG)] == _CONTINUE_TAG else text[:at].rstrip()
+        )
+    return str(text)
+
+
 class TransformerLensBackend(ModelBackend):
     def __init__(self, bridge: Any, info: ModelInfo) -> None:
         super().__init__()
@@ -855,15 +900,32 @@ class TransformerLensBackend(ModelBackend):
         # No clock: a template that writes today's date uses its own fallback, or can't run, so
         # the same spec reads the same text on any day (see logogram.chat).
         context["strftime_now"] = jinja2.Undefined(name="strftime_now")
-        text = self.tokenizer.apply_chat_template(
+        try:
+            from transformers.utils.chat_template_utils import _compile_jinja_template
+        except ImportError:  # transformers before the compiled template had a function of its own
+            _compile_jinja_template = None
+        if _compile_jinja_template is None:
+            text = self.tokenizer.apply_chat_template(
+                messages,
+                chat_template=self._chat_template,
+                tokenize=False,
+                add_generation_prompt=add_generation_prompt,
+                continue_final_message=continue_final_message,
+                **context,
+            )
+            return str(text)
+        # transformers 5.22 and later rebuild everything passed to a template out of plain JSON
+        # types, which turns an undefined value into an error, so the template is rendered here:
+        # compiled by transformers (the same sandbox and settings as apply_chat_template), with
+        # the reply continued the way apply_chat_template continues it.
+        return _render_compiled(
+            _compile_jinja_template(self._chat_template),
+            self._chat_template,
             messages,
-            chat_template=self._chat_template,
-            tokenize=False,
             add_generation_prompt=add_generation_prompt,
             continue_final_message=continue_final_message,
-            **context,
+            context=context,
         )
-        return str(text)
 
     def single_token_id(self, text: str) -> int | None:
         ids = self.tokenizer(text, add_special_tokens=False)["input_ids"]

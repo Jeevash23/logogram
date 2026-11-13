@@ -59,8 +59,14 @@ def test_every_spec_field_is_described(pages):
         for cls in vars(spec).values()
         if inspect.isclass(cls) and issubclass(cls, BaseModel) and cls.__module__ == spec.__name__
     ]
-    # Private helpers (the base class, a chat template read on its own) aren't fields of a spec.
-    reachable = [cls for cls in models if not cls.__name__.startswith("_")]
+    # Private helpers (the base class, a chat template read on its own) aren't fields of a spec,
+    # and neither is the parametrized generic a helper subclasses (pydantic 2.14 and later put
+    # `RootModel[...]` in the module that names it).
+    reachable = [
+        cls
+        for cls in models
+        if not cls.__name__.startswith("_") and cls.__pydantic_generic_metadata__["origin"] is None
+    ]
     for cls in reachable:
         for name, info in cls.model_fields.items():
             assert f"| `{name}`" in page, f"{cls.__name__}.{name} is missing from the spec page"
