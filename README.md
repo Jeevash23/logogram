@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/banner-dark.jpg">
+  <img src=".github/banner-light.jpg" alt="Logogram, a local workbench for causal experiments inside language models" width="100%">
+</picture>
+
 # Logogram
 
 A local workbench for mechanistic interpretability: causal experiments inside language models,
