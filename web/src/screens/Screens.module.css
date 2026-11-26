@@ -24,10 +24,10 @@
 }
 
 .wordmark {
-  font-weight: 680;
+  font-weight: 400;
   font-size: var(--text-xl);
-  font-stretch: var(--display-stretch);
-  letter-spacing: -0.01em;
+  font-family: var(--display);
+  letter-spacing: -0.005em;
 }
 
 .version {
@@ -35,44 +35,16 @@
   font-size: var(--text-xs);
 }
 
-/* Ink dropped into colored water: three soft blooms under the glyph. In a short window the stage
-   gives way first: it takes only the height left over, and the glyph and its blooms shrink to fit
-   it, so the tagline and Start here below stay whole. */
+/* The glyph, in the open page above the tagline. In a short window the stage gives way first: it
+   takes only the height left over, and the glyph shrinks to fit it, so the tagline and Start here
+   below stay whole. */
 .stage {
   position: relative;
   display: grid;
-  place-items: center;
+  place-items: center start;
   flex: 1 1 0;
   min-height: 0;
   container-type: size;
-}
-
-.stage > span {
-  position: absolute;
-  width: min(46cqw, 64cqh);
-  aspect-ratio: 1;
-  border-radius: 50%;
-  filter: blur(42px);
-  opacity: 0.55;
-}
-
-:root[data-theme="dark"] .stage > span {
-  opacity: 0.42;
-}
-
-.bloomExplore {
-  background: var(--explore);
-  transform: translate(-34%, -22%);
-}
-
-.bloomExperiment {
-  background: var(--experiment);
-  transform: translate(32%, -8%);
-}
-
-.bloomEvidence {
-  background: var(--evidence);
-  transform: translate(-4%, 32%);
 }
 
 .heroGlyph {
@@ -86,9 +58,6 @@
   .heroGlyph {
     animation: ink 1600ms cubic-bezier(0.16, 1, 0.3, 1) both;
   }
-  .stage > span {
-    animation: bloom 2200ms cubic-bezier(0.16, 1, 0.3, 1) both;
-  }
   @keyframes ink {
     from {
       opacity: 0;
@@ -101,18 +70,42 @@
       filter: none;
     }
   }
-  @keyframes bloom {
-    from {
-      opacity: 0;
-    }
+}
+
+/* A painted observatory along the foot of the panel: the one picture in the app. It blends into
+   the page (its sky is the page's own white, or the night theme's ink), and the text stays in
+   the sky above it. A short panel leaves it out. */
+.painting {
+  flex: none;
+  height: min(38cqw, 30cqh);
+  margin: 0 -44px -44px;
+  background: url("../assets/paint-observatory.webp") right bottom / auto 185% no-repeat;
+  mix-blend-mode: multiply;
+}
+
+:root[data-theme="dark"] .painting {
+  background-image: url("../assets/night-observatory.webp");
+  mix-blend-mode: lighten;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) .painting {
+    background-image: url("../assets/night-observatory.webp");
+    mix-blend-mode: lighten;
+  }
+}
+
+@container hero (max-height: 700px) {
+  .painting {
+    display: none;
   }
 }
 
 .tagline {
   font-size: 34px;
-  font-weight: 640;
-  font-stretch: var(--display-stretch);
-  letter-spacing: -0.022em;
+  font-weight: 400;
+  font-family: var(--display);
+  letter-spacing: -0.005em;
   line-height: 1.08;
   max-width: 520px;
 }
@@ -153,12 +146,12 @@
   text-wrap: pretty;
 }
 
+/* The three workspaces, named in the tagline: a hairline under each. */
 .word {
   text-decoration-line: underline;
   text-decoration-color: var(--word);
-  text-decoration-thickness: 0.14em;
-  text-underline-offset: 0.12em;
-  text-decoration-skip-ink: none;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.16em;
 }
 
 .paper {
@@ -212,8 +205,8 @@
     min-height: 56px;
     height: 56px;
   }
-  .stage > span {
-    filter: blur(14px);
+  .painting {
+    display: none;
   }
   .heroGlyph {
     width: 44px;

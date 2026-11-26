@@ -258,7 +258,7 @@ export const Heatmap = memo(function Heatmap({
       ctx.strokeRect(left + hoverC * cell - 1.5, top + hoverR * cellH - 1.5, cell - gap + 3, cellH - gap + 3);
     }
     if (selectedR >= 0 && selectedR < rows.length && selectedC >= 0 && selectedC < cols.length) {
-      inkRing(ctx, left + selectedC * cell, top + selectedR * cellH, cell - gap, cellH - gap, colors.text, colors.surface);
+      inkRing(ctx, left + selectedC * cell, top + selectedR * cellH, cell - gap, cellH - gap, colors.signal, colors.surface);
     }
   }, [layout, colors, hoverR, hoverC, selectedR, selectedC, rows.length, cols.length]);
 

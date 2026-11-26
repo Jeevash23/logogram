@@ -1,7 +1,8 @@
-/* Design tokens. Pure white and deep black, with color that means something: three workspace
-   colors (green for exploring, signal orange for experimenting, pink for evidence), green for a
-   live model, and the effect scale (lib/color.ts), which is reserved for data. No grey washes,
-   no drop shadows on the page: things are separated by space and hairlines. */
+/* Design tokens. White paper and ink, with one signal red: red marks what an intervention changes
+   and what is chosen to be changed, as on the pages the results are written up on. Green means a
+   loaded model, and the effect scale (lib/color.ts) is reserved for data. No grey washes, no drop
+   shadows on the page: things are separated by space and hairlines. The night theme is ink paper
+   with light type. */
 
 :root,
 :root[data-theme="light"] {
@@ -14,12 +15,12 @@
   /* The edge of a form control: the lightest hairline with 3:1 contrast against the page and the
      control's own fill (WCAG 1.4.11). */
   --control-line: #8a8a94;
-  --text: #0a0a0b;
+  --text: #0b0c0f;
   --muted: #5d5d66;
   --faint: #6f6f78;
   --hover: rgba(10, 10, 11, 0.045);
   --press: rgba(10, 10, 11, 0.085);
-  --mark: rgba(255, 46, 126, 0.18);
+  --mark: rgba(224, 50, 28, 0.16);
   /* An interval drawn in a chart: ink, faintly. */
   --band: rgba(10, 10, 11, 0.1);
   --scrim: rgba(10, 10, 11, 0.32);
@@ -30,49 +31,57 @@
   --on-ink: #ffffff;
 
   /* Color with a job. Text on these is ink. */
-  --explore: #00c389;
-  --experiment: #ff5a1f;
-  --evidence: #ff2e7e;
-  --live: #00c389;
-  --accent: #ff5a1f;
-  --accent-hover: #ff6f3c;
-  --on-accent: #0a0a0b;
-  --accent-text: #c2410c;
-  --accent-soft: rgba(255, 90, 31, 0.12);
+  /* The one signal: what an intervention changes, and what is chosen to be changed. */
+  --signal: #e0321c;
+  --signal-soft: #fbe3dd;
+  --cobalt: #2347d6;
+  /* The workspaces are named, not colored: where you are is marked in ink. */
+  --explore: var(--text);
+  --experiment: var(--text);
+  --evidence: var(--text);
+  --live: #1d7a46;
+  --accent: #e0321c;
+  --accent-hover: #c92a16;
+  --on-accent: #ffffff;
+  --accent-text: #c92a16;
+  --accent-soft: rgba(224, 50, 28, 0.1);
 
   color-scheme: light;
 }
 
 :root[data-theme="dark"] {
-  --bg: #000000;
-  --surface: #000000;
+  --bg: #0a0b0e;
+  --surface: #0a0b0e;
   --surface-2: #121215;
   --raised: #141417;
   --line: #26262c;
   --line-soft: #1a1a1f;
   --control-line: #64646c;
-  --text: #f5f5f7;
+  --text: #f2f1ec;
   --muted: #a3a3ad;
   --faint: #8e8e98;
   --hover: rgba(245, 245, 247, 0.06);
   --press: rgba(245, 245, 247, 0.11);
-  --mark: rgba(255, 46, 126, 0.32);
+  --mark: rgba(255, 91, 61, 0.3);
   --band: rgba(245, 245, 247, 0.16);
   --scrim: rgba(0, 0, 0, 0.62);
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 18px 44px rgba(0, 0, 0, 0.7);
   --sheet-shadow: none;
   --alert: #ff6b6b;
-  --on-ink: #000000;
+  --on-ink: #0a0b0e;
 
-  --explore: #19e0a3;
-  --experiment: #ff6a33;
-  --evidence: #ff4d93;
-  --live: #19e0a3;
-  --accent: #ff6a33;
-  --accent-hover: #ff8256;
+  --signal: #ff5b3d;
+  --signal-soft: #3a1710;
+  --cobalt: #8aa0ff;
+  --explore: var(--text);
+  --experiment: var(--text);
+  --evidence: var(--text);
+  --live: #5fd08e;
+  --accent: #ff5b3d;
+  --accent-hover: #ff7a61;
   --on-accent: #000000;
-  --accent-text: #ff8f63;
-  --accent-soft: rgba(255, 106, 51, 0.16);
+  --accent-text: #ff8f7a;
+  --accent-soft: rgba(255, 91, 61, 0.16);
 
   color-scheme: dark;
 }
@@ -82,35 +91,38 @@
    values the same as the black theme's above. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
-    --bg: #000000;
-    --surface: #000000;
+    --bg: #0a0b0e;
+    --surface: #0a0b0e;
     --surface-2: #121215;
     --raised: #141417;
     --line: #26262c;
     --line-soft: #1a1a1f;
     --control-line: #64646c;
-    --text: #f5f5f7;
+    --text: #f2f1ec;
     --muted: #a3a3ad;
     --faint: #8e8e98;
     --hover: rgba(245, 245, 247, 0.06);
     --press: rgba(245, 245, 247, 0.11);
-    --mark: rgba(255, 46, 126, 0.32);
+    --mark: rgba(255, 91, 61, 0.3);
     --band: rgba(245, 245, 247, 0.16);
     --scrim: rgba(0, 0, 0, 0.62);
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 18px 44px rgba(0, 0, 0, 0.7);
     --sheet-shadow: none;
     --alert: #ff6b6b;
-    --on-ink: #000000;
+    --on-ink: #0a0b0e;
 
-    --explore: #19e0a3;
-    --experiment: #ff6a33;
-    --evidence: #ff4d93;
-    --live: #19e0a3;
-    --accent: #ff6a33;
-    --accent-hover: #ff8256;
+    --signal: #ff5b3d;
+    --signal-soft: #3a1710;
+    --cobalt: #8aa0ff;
+    --explore: var(--text);
+    --experiment: var(--text);
+    --evidence: var(--text);
+    --live: #5fd08e;
+    --accent: #ff5b3d;
+    --accent-hover: #ff7a61;
     --on-accent: #000000;
-    --accent-text: #ff8f63;
-    --accent-soft: rgba(255, 106, 51, 0.16);
+    --accent-text: #ff8f7a;
+    --accent-soft: rgba(255, 91, 61, 0.16);
 
     color-scheme: dark;
   }
@@ -118,7 +130,9 @@
 
 :root {
   --font: "Instrument Sans Variable", "Instrument Sans", ui-sans-serif, system-ui, sans-serif;
-  --mono: ui-monospace, "SF Mono", "Cascadia Mono", "Segoe UI Mono", Menlo, Consolas,
+  /* Titles, questions and key numbers: a serif, as a paper sets its headings. */
+  --display: "Instrument Serif", "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", "Cascadia Mono", "Segoe UI Mono", Menlo, Consolas,
     "Liberation Mono", monospace;
 
   --text-2xs: 10.5px;
@@ -126,13 +140,14 @@
   --text-sm: 12.5px;
   --text-md: 13.5px;
   --text-lg: 15px;
-  --text-xl: 20px;
-  --text-2xl: 30px;
-  --text-3xl: 46px;
+  --text-xl: 22px;
+  --text-2xl: 36px;
+  --text-3xl: 56px;
 
   /* Instrument Sans has a narrow word space (0.2em); this brings it to a readable 0.27em. */
   --word-space: 0.07em;
-  /* Display type: condensed a little, like labels on an instrument. */
+  /* Sans display type (labels set in the text face): condensed a little, like labels on an
+     instrument. */
   --display-stretch: 88%;
 
   --space-1: 4px;

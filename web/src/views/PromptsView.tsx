@@ -456,7 +456,7 @@ function DatasetPrompts({ path, dataset, onSaved }: { path: string; dataset: Dat
     <div className={p.prompts} ref={top}>
       <div className={s.row} style={{ alignItems: "center" }}>
         <p className={s.faint}>
-          {dataset.path}
+          {isSnapshot(dataset.path) ? "The run's saved copy of its prompts" : dataset.path}
           {lengths.length > 0 && <> · {lengths.length === 1 ? `${lengths[0]} tokens each` : `${lengths[0]}–${lengths[lengths.length - 1]} tokens`}</>}
           {" · "}sha256 {dataset.sha256.slice(0, 12)}
         </p>

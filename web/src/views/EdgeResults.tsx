@@ -430,7 +430,7 @@ function EdgeGraph({
     if (selected >= 0) {
       emphasize(selected, colors.text);
       const mid = curvePoint(geometry.curves[selected], 0.5);
-      inkRing(ctx, mid.x - 6, mid.y - 6, 12, 12, colors.text, colors.bg);
+      inkRing(ctx, mid.x - 6, mid.y - 6, 12, 12, colors.signal, colors.bg);
     }
   }, [geometry, hover, selected, edges, color, colors]);
 

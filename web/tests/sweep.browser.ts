@@ -54,7 +54,7 @@ async function projectWithRun(page: Page): Promise<{ project: ProjectInfo; runId
     name: "Donors",
     notes: "",
     dataset: { path: "datasets/ioi.jsonl", sha256: null, limit: null },
-    experiment: { kind: "ablation", baseline: { kind: "resample", pool: "corrupt", donors: 2, seed: 0 } },
+    experiment: { kind: "ablation", baseline: { kind: "resample", pool: "corrupt", donors: 2, seed: 0, group: null } },
   };
   const started = await page.request.post("/api/runs", { data: { spec }, headers: scoped });
   expect(started.ok()).toBe(true);

@@ -455,7 +455,9 @@ export function buildSpec(
     if (!form.baseline) return { error: "Choose a baseline for the ablation. Logogram never assumes one." };
     if (form.baseline.kind === "scale" && !Number.isFinite(form.baseline.factor)) return { error: "The scale factor is a number, such as 0 or 2." };
     if (form.baseline.kind === "projection" && !form.baseline.direction.name) return { error: "Choose the saved direction to remove." };
-    experiment = { kind: "ablation", baseline: form.baseline };
+    // A resample baseline set before donors could be drawn by a field has no group: every prompt.
+    const baseline = form.baseline.kind === "resample" ? { ...form.baseline, group: form.baseline.group ?? null } : form.baseline;
+    experiment = { kind: "ablation", baseline };
   }
   // Methods that read one position of each prompt, and the sites a direction lives in.
   const reads = experiment.kind === "probe" || experiment.kind === "das";

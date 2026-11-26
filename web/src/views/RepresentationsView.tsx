@@ -638,7 +638,7 @@ function Scatter({
     }
     if (ringed !== null && points[ringed]) {
       const [px, py] = at(ringed);
-      inkRing(ctx, px - 5, py - 5, 10, 10, colors.text, colors.surface);
+      inkRing(ctx, px - 5, py - 5, 10, 10, colors.signal, colors.surface);
     }
   }, [hover, ringed, scale, points, xc, yc, width, height, colors]);
 

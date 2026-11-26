@@ -9,9 +9,9 @@
   border-radius: var(--radius-pill);
   background: transparent;
   font-size: var(--text-lg);
-  font-weight: 650;
+  font-weight: 600;
   font-stretch: var(--display-stretch);
-  letter-spacing: -0.01em;
+  letter-spacing: -0.005em;
   max-width: 300px;
   min-width: 0;
 }

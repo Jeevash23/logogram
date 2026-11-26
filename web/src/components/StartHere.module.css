@@ -16,7 +16,7 @@
 
 .title {
   font-size: var(--text-lg);
-  font-weight: 640;
+  font-weight: 600;
   font-stretch: var(--display-stretch);
   letter-spacing: -0.005em;
 }

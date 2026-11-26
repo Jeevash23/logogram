@@ -267,7 +267,7 @@
 
 .ring {
   fill: none;
-  stroke: currentColor;
+  stroke: var(--signal);
   stroke-width: 1.5;
 }
 

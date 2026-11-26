@@ -2,11 +2,12 @@
 
 What changed in each version of Logogram.
 
-## Unreleased
+## 0.8.0 (2026-11-26)
 
 Controls a result is read against: a gate on the baseline, random sets of the same size beside a
 set of sites, each site of a set alone, donors chosen by a field of the prompts, a bootstrap
-crossed over two fields, and Holm-adjusted p-values. Specs are version 5.
+crossed over two fields, and Holm-adjusted p-values. Specs are version 5. And a new look: white
+paper, ink and one signal red, with titles in a serif.
 
 ### Added
 
@@ -41,6 +42,20 @@ crossed over two fields, and Holm-adjusted p-values. Specs are version 5.
 
 ### Changed
 
+- **A new look: white paper, ink and one signal red.** The three workspace colors are gone. The
+  open workspace is filled in ink, and its tab, progress and choices are ink. One red marks what
+  an intervention changes and what you have chosen to change: the ring around a selected cell on
+  the map, a heatmap, a sweep or a chart, and the patched site in the guide's figures. Green
+  still means a loaded model, and the cobalt-to-amber scale still belongs to effects alone. The
+  night theme is ink paper with light type.
+- **Titles and key numbers are set in a serif**, Instrument Serif, as a paper sets its headings.
+  Everything else stays in Instrument Sans, and the spec view is in IBM Plex Mono. All three ship
+  with the app.
+- **The first screens end in a painting**, an observatory on a hill, with a night version. It
+  takes the place of the color bloom behind the glyph and is left out in a short window.
+- The experiment form lists its methods three across, so the whole list is in view sooner.
+- The Prompts view names a run's saved copy of its prompts in words, not by its file's
+  64-character name.
 - **Specs are version 5.** A version 5 spec states `gate`, `statistics.cross`, a site-sets
   scope's `singles` and `controls`, and a resample baseline's `group`. Version 4 specs still run
   and read with each of them off, which is what version 4 did. The bundled examples and the toy

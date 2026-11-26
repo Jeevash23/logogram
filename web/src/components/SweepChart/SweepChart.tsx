@@ -269,7 +269,7 @@ export const SweepChart = memo(function SweepChart({ values, sites, ordered, bou
       ctx.strokeRect(left + hoverValue * col + 2.5, top + hoverSite * TRACK + 3.5, col - 5, TRACK - 7);
     }
     if (ringSite >= 0 && ringValue >= 0) {
-      inkRing(ctx, left + ringValue * col + 4, top + ringSite * TRACK + 6, col - 8, TRACK - 12, colors.text, colors.surface);
+      inkRing(ctx, left + ringValue * col + 4, top + ringSite * TRACK + 6, col - 8, TRACK - 12, colors.signal, colors.surface);
     }
   }, [layout, colors, hoverSite, hoverValue, ringSite, ringValue]);
 
