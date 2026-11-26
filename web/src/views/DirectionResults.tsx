@@ -51,7 +51,7 @@ function SaveDirection({ runId, site, label, suggested, row }: { runId: string; 
   };
   if (!open) {
     return (
-      <Button size="small" variant="ghost" onClick={() => setOpen(true)} aria-label={state.saved ? `${label}: saved as ${state.saved}` : `Save ${label} as a direction`}>
+      <Button size="small" variant="ghost" onClick={() => setOpen(true)} aria-label={state.saved ? `Saved as ${state.saved}: ${label}` : `Save as direction: ${label}`}>
         {state.saved ? `Saved as ${state.saved}` : "Save as direction"}
       </Button>
     );

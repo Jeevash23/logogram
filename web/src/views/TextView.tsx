@@ -273,9 +273,9 @@ function Tokens({ report, onChoose, busy }: { report: LookReport; onChoose: (pos
               onClick={() => {
                 if (!busy) onChoose(i);
               }}
-              aria-label={`Token ${i}, ${visibleToken(token)}${report.chat_template && (i < first || i >= end) ? ", the chat template's" : ""}: next most likely ${visibleToken(next.token)}, ${pct(next.prob)}`}
+              aria-label={`${visibleToken(token) || "∅"} ${visibleToken(next.token)} ${pct(next.prob)}: token ${i}${report.chat_template && (i < first || i >= end) ? ", the chat template's" : ""}, then the next most likely token and its probability`}
             >
-              <span className={t.tokenText}>{visibleToken(token) || "∅"}</span>
+              <span className={t.tokenText}>{visibleToken(token) || "∅"}</span>{" "}
               <span className={t.prediction}>
                 {visibleToken(next.token)} <span className={t.prob}>{pct(next.prob)}</span>
               </span>

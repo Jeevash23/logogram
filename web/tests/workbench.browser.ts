@@ -190,10 +190,10 @@ test("project changes clear the other tab and reject its stale writes", async ({
   expect(response.status()).toBe(409);
   await page.getByRole("spinbutton", { name: "Prompts", exact: true }).fill("4");
   await page.getByRole("button", { name: "Generate 4 prompts", exact: true }).click();
-  await page.getByRole("button", { name: "Next step: Check the baseline", exact: true }).click();
+  await page.getByRole("button", { name: "Step 3 of 4 Check the baseline", exact: true }).click();
   await page.getByRole("button", { name: "Check the baseline", exact: true }).click();
   await expect(page.getByText("Clean logit diff", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Next step: Run the experiment", exact: true }).click();
+  await page.getByRole("button", { name: "Step 4 of 4 Run the experiment", exact: true }).click();
   await page.getByRole("button", { name: "Run", exact: true }).click();
   await expect(page.getByRole("button", { name: "Export", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /Saved prompts of this run/ })).toBeVisible();

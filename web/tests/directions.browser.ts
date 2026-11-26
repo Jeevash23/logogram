@@ -82,15 +82,15 @@ test("a probe's direction is saved from its results, then removed and patched al
   const probes = main.getByRole("table", { name: "Probes by site" });
   await expect(probes).toBeVisible({ timeout: 60_000 });
   await expect(main.getByText(/^The probes read which prompt it is \(clean or corrupt\): clean, corrupt\./)).toBeVisible();
-  const save = probes.getByRole("button", { name: /^Save .+ as a direction$/ }).first();
+  const save = probes.getByRole("button", { name: /^Save as direction: .+$/ }).first();
   await expect(save).toBeVisible({ timeout: 60_000 });
   await expectAccessible(page, "Results, linear probe");
-  const label = (await save.getAttribute("aria-label"))!.replace(/^Save | as a direction$/g, "");
+  const label = (await save.getAttribute("aria-label"))!.replace(/^Save as direction: /, "");
   await save.click();
   await page.getByRole("textbox", { name: `Name of the direction from ${label}` }).fill("which-prompt");
   await page.keyboard.press("Enter");
   await expect(page.getByText("Saved the direction which-prompt. Steering, directional ablation, subspace patching and readouts can use it.")).toBeVisible();
-  await expect(probes.getByRole("button", { name: `${label}: saved as which-prompt` })).toBeVisible();
+  await expect(probes.getByRole("button", { name: `Saved as which-prompt: ${label}` })).toBeVisible();
   await page.screenshot({ path: `${process.env.LOGOGRAM_TEST_OUTPUT ?? "test-results"}/probe-results.png`, fullPage: true });
 
   // The direction removed by directional ablation: offered by the form once saved.
@@ -137,7 +137,7 @@ test("a learned subspace is measured beside the whole site and a random subspace
   const subspaces = main.getByRole("table", { name: "Learned subspaces by site" });
   await expect(subspaces).toBeVisible({ timeout: 60_000 });
   await expect(subspaces.getByRole("columnheader", { name: "Random subspace" })).toBeVisible();
-  await expect(subspaces.getByRole("button", { name: /^Save the subspace at .+ as a direction$/ }).first()).toBeVisible({ timeout: 60_000 });
+  await expect(subspaces.getByRole("button", { name: /^Save as direction: the subspace at .+$/ }).first()).toBeVisible({ timeout: 60_000 });
   await expectAccessible(page, "Results, distributed alignment search");
   await page.screenshot({ path: `${process.env.LOGOGRAM_TEST_OUTPUT ?? "test-results"}/das-results.png`, fullPage: true });
   expect(errors).toEqual([]);
