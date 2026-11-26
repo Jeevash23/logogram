@@ -55,7 +55,7 @@ dev = [
     "pytest>=8",
     "pytest-cov>=7",
     "httpx2>=2.13",
-    "ruff==0.17.2",
+    "ruff==0.17.4",
 ]
 
 [tool.hatch.version]
