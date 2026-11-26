@@ -6,9 +6,10 @@ sites are not blurred by different resamples. A site's resampled means don't dep
 sites come after it (see resample_means).
 
 Resamples are drawn over prompts, or over clusters of prompts (all prompts from one template,
-say), since prompts that share a template aren't independent. A run with many sites also gets
-statistics that account for the number of sites: a simultaneous band per site (all sites' bands
-hold together with the run's confidence level) and Benjamini–Hochberg q-values.
+say), since prompts that share a template aren't independent, or over two crossed fields at once
+(names and places, say: see crossed_counts). A run with many sites also gets statistics that
+account for the number of sites: a simultaneous band per site (all sites' bands hold together with
+the run's confidence level), Benjamini–Hochberg q-values and Holm-adjusted p-values.
 """
 
 from __future__ import annotations
@@ -42,6 +43,40 @@ def cluster_counts(clusters: list[str], n_boot: int, seed: int) -> np.ndarray:
     member = np.array([names.index(c) for c in clusters], dtype=np.int64)
     draws = resample_counts(k, n_boot, seed)  # [n_boot, k]: how often each cluster was drawn
     return draws[:, member]
+
+
+# The second field of a crossed bootstrap draws from its own stream, named by this number beside
+# the seed.
+_CROSS_STREAM = 1
+
+
+def crossed_counts(first: list[str], second: list[str], n_boot: int, seed: int) -> np.ndarray:
+    """A [n_boot, n] matrix for a bootstrap over two crossed fields.
+
+    Prompts built from two lists (names and places, say) are tied two ways: a prompt shares its
+    name with some prompts and its place with others. Each resample draws the first field's
+    values with replacement and, independently, the second's; a prompt counts as often as its
+    two values' draws multiplied (the product-weight bootstrap for crossed designs: Owen 2007,
+    "The pigeonhole bootstrap"). Each field's draw is what cluster_counts makes for it alone: the
+    first from ``seed`` (so adding the second field keeps the first's draws), the second from a
+    stream of its own.
+
+    A resample can draw no prompt at all when few of the pairs of values occur. Those resamples
+    are returned as rows of zeros; :func:`check_crossed` refuses them.
+    """
+    a = cluster_counts(first, n_boot, seed)
+    names = sorted(set(second))
+    member = np.array([names.index(c) for c in second], dtype=np.int64)
+    raw = np.random.PCG64([seed, _CROSS_STREAM]).random_raw(n_boot * len(names))
+    idx = (raw % np.uint64(len(names))).astype(np.int64).reshape(n_boot, len(names))
+    draws = np.zeros((n_boot, len(names)), dtype=np.float64)
+    np.add.at(draws, (np.repeat(np.arange(n_boot), len(names)), idx.ravel()), 1.0)
+    return a * draws[:, member]
+
+
+def empty_resamples(counts: np.ndarray) -> int:
+    """How many resamples drew no prompt at all (a crossed bootstrap over a sparse design)."""
+    return int((counts.sum(axis=1) == 0).sum())
 
 
 def _quantiles(boot: np.ndarray, ci: float) -> tuple[np.ndarray, np.ndarray]:
@@ -118,6 +153,7 @@ class SiteStats:
     band_hi: np.ndarray | None = None
     band_level: float | None = None  # the two-sided tail kept per site
     q: np.ndarray | None = None
+    p_holm: np.ndarray | None = None
 
 
 def normalize(
@@ -217,7 +253,9 @@ def compute_site_stats(
     )
     if family and n >= 2:
         stats.band_lo, stats.band_hi, stats.band_level = simultaneous_band(effect_boot, ci)
-        stats.q = bh_qvalues(bootstrap_pvalues(effect_boot))
+        p = bootstrap_pvalues(effect_boot)
+        stats.q = bh_qvalues(p)
+        stats.p_holm = holm_pvalues(p)
     return stats
 
 
@@ -312,6 +350,7 @@ def _site_stats_in_chunks(
                 stats.band_lo[sl][finite], stats.band_hi[sl][finite] = lo, hi
             stats.band_level = level
         stats.q = bh_qvalues(np.concatenate(pvalues))
+        stats.p_holm = holm_pvalues(np.concatenate(pvalues))
     return stats
 
 
@@ -399,6 +438,31 @@ def bh_qvalues(p: np.ndarray) -> np.ndarray:
     out[order] = np.minimum(ranked, 1.0)
     q[ok] = out
     return q
+
+
+def holm_pvalues(p: np.ndarray) -> np.ndarray:
+    """Holm-adjusted p-values: the smallest chance of any false finding among the sites at which
+    each site still counts as a finding (the step-down Bonferroni method, which holds whatever
+    the dependence between sites). NaN p-values stay NaN and don't count as tests.
+
+    Stricter than a q-value: a q-value bounds the share of false findings among those reported,
+    a Holm-adjusted p-value the chance that any of them is false. A bootstrap p-value is never
+    below 2 / (resamples + 1), so with many sites it takes many resamples for any adjusted value
+    to fall below 0.05.
+    """
+    out = np.full(len(p), np.nan)
+    ok = np.isfinite(p)
+    m = int(ok.sum())
+    if not m:
+        return out
+    values = p[ok]
+    order = np.argsort(values, kind="mergesort")
+    stepped = values[order] * (m - np.arange(m))
+    stepped = np.minimum(np.maximum.accumulate(stepped), 1.0)
+    adjusted = np.empty(m)
+    adjusted[order] = stepped
+    out[ok] = adjusted
+    return out
 
 
 def paired_difference(

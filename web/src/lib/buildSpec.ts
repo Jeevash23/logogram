@@ -685,6 +685,41 @@ export function buildSpec(
       return { error: `Every prompt has the same ${form.cluster}, so there is one cluster and nothing to resample. Choose another field, or resample single prompts.` };
     }
   }
+  // A second field is read only beside a first.
+  const cross = form.cluster === null ? null : form.cross;
+  if (cross !== null) {
+    if (cross === form.cluster) return { error: `The bootstrap is already over ${cross}. Cross it with another field, or with none.` };
+    const field = facts?.fields.find((f) => f.field === cross);
+    if (!CLUSTER_KEY.test(cross) || (facts && !field)) {
+      return { error: `Not every prompt has “${cross}” in its meta, so the bootstrap can't be crossed over it. Choose another field, or none.` };
+    }
+    if (field && field.clusters < 2) {
+      return { error: `Every prompt has the same ${cross}, so there is nothing to resample in it. Cross the bootstrap with another field, or with none.` };
+    }
+  }
+  // The gate: a probe reads no output to check, so it has none.
+  const gate = form.kind === "probe" ? null : form.gate;
+  if (gate !== null) {
+    if (gate.min_correct === null && gate.min_gap === null) {
+      return { error: "The gate asks for nothing yet. Give it a share of the clean prompts or a gap, or turn it off." };
+    }
+    if (gate.min_correct !== null && !(gate.min_correct > 0 && gate.min_correct <= 1)) {
+      return { error: "The gate's share of clean prompts is above 0% and at most 100%." };
+    }
+    if (gate.min_gap !== null && !(gate.min_gap > 0)) return { error: "The gate's gap is a number above 0." };
+  }
+  if (scope.kind === "site_sets" && scope.controls) {
+    const { n, seed } = scope.controls;
+    if (!Number.isInteger(n) || n < 1 || n > 1000) return { error: "Draw from 1 to 1,000 random sets for each set." };
+    if (!isSeed(seed)) return { error: "The random sets' seed is a whole number from 0." };
+  }
+  if (experiment.kind === "ablation" && experiment.baseline.kind === "resample" && experiment.baseline.group) {
+    const group = experiment.baseline.group;
+    const field = facts?.fields.find((f) => f.field === group.field);
+    if (!CLUSTER_KEY.test(group.field) || (facts && !field)) {
+      return { error: `Not every prompt has “${group.field}” in its meta, so donors can't be chosen by it. Choose another field, or draw donors among every prompt.` };
+    }
+  }
   if (!Number.isInteger(form.batchSize) || form.batchSize < 1 || form.batchSize > 4096) return { error: "Use a batch size from 1 to 4,096." };
   const chatError = chatTemplateError(form, ctx.model);
   if (chatError) return { error: chatError };
@@ -736,17 +771,19 @@ export function buildSpec(
     return { error: "Only attribution patching estimates every SAE feature. Choose it, or patch chosen features." };
   }
   const spec: Spec = {
-    logogram_spec: 4,
+    logogram_spec: 5,
     name: form.name.trim() || suggestName({ experiment, scope }),
     notes: form.notes,
     model,
     dataset: { path: ctx.datasetPath, sha256: ctx.datasetSha, limit: form.limit },
     tokenization: formTokenization(form),
     experiment,
-    scope: scope.kind === "site_sets" ? { ...scope, sets: scope.sets.map((set) => ({ ...set, label: set.label.trim() })) } : scope,
+    // A scope set before sets had controls has neither field: it runs without them.
+    scope: scope.kind === "site_sets" ? { ...scope, sets: scope.sets.map((set) => ({ ...set, label: set.label.trim() })), singles: scope.singles ?? false, controls: scope.controls ?? null } : scope,
     metric,
-    statistics: { bootstrap: form.bootstrap, ci: form.ci, seed: form.statSeed, cluster: form.cluster },
+    statistics: { bootstrap: form.bootstrap, ci: form.ci, seed: form.statSeed, cluster: form.cluster, cross },
     execution: { batch_size: form.batchSize },
+    gate,
     predictions: form.predictions,
     ...(sae ? { sae } : {}),
   };

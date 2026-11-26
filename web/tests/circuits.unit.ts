@@ -59,7 +59,7 @@ test("a circuit is tested kept alone, removed, against everything replaced, and 
   // The form writes the sets as the server reads them.
   const out = build(form({ scope: { kind: "site_sets", universe: ["head"], sets } }));
   if ("error" in out) throw new Error(out.error);
-  expect(out.spec.scope).toEqual({ kind: "site_sets", universe: ["head"], sets });
+  expect(out.spec.scope).toEqual({ kind: "site_sets", universe: ["head"], sets, singles: false, controls: null });
   expect(out.spec.experiment).toEqual({ kind: "activation_patching", direction: "clean_to_corrupt" });
 });
 
@@ -101,7 +101,7 @@ test("two sites are checked alone and together", () => {
   ]);
   const out = build(form({ kind: "ablation", baseline: { kind: "zero" }, scope: { kind: "site_sets", universe: null, sets } }));
   if ("error" in out) throw new Error(out.error);
-  expect(out.spec.scope).toEqual({ kind: "site_sets", universe: null, sets });
+  expect(out.spec.scope).toEqual({ kind: "site_sets", universe: null, sets, singles: false, controls: null });
   // Sites read at long position labels still give labels the server accepts.
   const at = (label: string): SiteSpec["position"] => ({ kind: "label", label });
   const long = interactionSets(head(1, 0, at("x".repeat(70))), head(1, 1, at("x".repeat(70))));
@@ -131,7 +131,7 @@ test("sets are refused as the server refuses them, with what to change", () => {
   expect("error" in atp && atp.error).toContain("activation patching or ablation");
   // Labels are written trimmed.
   const trimmed = build(form({ scope: { kind: "site_sets", universe: null, sets: [{ ...ok, label: " A " }] } }));
-  expect("spec" in trimmed && trimmed.spec.scope).toEqual({ kind: "site_sets", universe: null, sets: [ok] });
+  expect("spec" in trimmed && trimmed.spec.scope).toEqual({ kind: "site_sets", universe: null, sets: [ok], singles: false, controls: null });
 });
 
 test("sites are typed as the map writes them", () => {

@@ -14,7 +14,14 @@ from logogram.engine import EngineResult
 from logogram.fileio import atomic_output
 from logogram.schema import Summary
 from logogram.spec import METRIC_LABELS, Spec, describe_experiment, describe_metric
-from logogram.stats import SiteStats, cluster_counts, compute_site_stats, resample_counts
+from logogram.stats import (
+    SiteStats,
+    cluster_counts,
+    compute_site_stats,
+    crossed_counts,
+    empty_resamples,
+    resample_counts,
+)
 
 SUMMARY_VERSION = 1
 
@@ -29,28 +36,48 @@ class StatsError(ValueError):
     pass
 
 
+def _field_values(result: EngineResult, key: str) -> list[str]:
+    """Each prompt's value of a field of its ``meta``, for a bootstrap over that field."""
+    values = []
+    for p in result.prompts:
+        meta = p.record.meta or {}
+        if key not in meta:
+            raise StatsError(
+                f"Prompt {p.index} has no {key!r} in its meta, so it can't be put in a "
+                "cluster. Choose a field every prompt has, or resample single prompts."
+            )
+        values.append(str(meta[key]))
+    if len(set(values)) < 2:
+        raise StatsError(
+            f"Every prompt has the same {key!r}, so there is one cluster and nothing to "
+            "resample. Choose another field, or resample single prompts."
+        )
+    return values
+
+
 def bootstrap_counts(spec: Spec, result: EngineResult) -> np.ndarray:
-    """The resamples a run's statistics use: over prompts, or over clusters of prompts that share
-    the value of ``statistics.cluster`` in their ``meta``."""
+    """The resamples a run's statistics use: over prompts, over clusters of prompts that share
+    the value of ``statistics.cluster`` in their ``meta``, or over that field and
+    ``statistics.cross`` at once."""
     n = len(result.prompts)
     stats = spec.statistics
     if stats.cluster is None:
         return resample_counts(n, stats.bootstrap, stats.seed)
-    clusters = []
-    for p in result.prompts:
-        meta = p.record.meta or {}
-        if stats.cluster not in meta:
-            raise StatsError(
-                f"Prompt {p.index} has no {stats.cluster!r} in its meta, so it can't be put in a "
-                "cluster. Choose a field every prompt has, or resample single prompts."
-            )
-        clusters.append(str(meta[stats.cluster]))
-    if len(set(clusters)) < 2:
+    clusters = _field_values(result, stats.cluster)
+    if stats.cross is None:
+        return cluster_counts(clusters, stats.bootstrap, stats.seed)
+    counts = crossed_counts(
+        clusters, _field_values(result, stats.cross), stats.bootstrap, stats.seed
+    )
+    empty = empty_resamples(counts)
+    if empty:
         raise StatsError(
-            f"Every prompt has the same {stats.cluster!r}, so there is one cluster and nothing to "
-            "resample. Choose another field, or resample single prompts."
+            f"{empty} of the {stats.bootstrap} resamples over {stats.cluster!r} and "
+            f"{stats.cross!r} drew no prompt at all: too few of the pairs of their values occur "
+            "among the prompts for a bootstrap crossed over both. Use prompts that combine more "
+            f"of the two fields' values, or resample {stats.cluster!r} alone."
         )
-    return cluster_counts(clusters, stats.bootstrap, stats.seed)
+    return counts
 
 
 def compute_stats(
@@ -94,7 +121,7 @@ def take_rows(stats: SiteStats, rows: list[int]) -> SiteStats:
         "effect", "effect_mean", "effect_sd", "effect_lo", "effect_hi", "delta", "delta_mean",
         "delta_sd", "delta_lo", "delta_hi", "patched_mean", "pref_mean", "prob_mean",
         "prob_delta_mean", "sign_flips", "opposite_sign", "effect_boot", "delta_boot", "band_lo",
-        "band_hi", "q",
+        "band_hi", "q", "p_holm",
     )  # fmt: skip
     arrays = {name: getattr(stats, name) for name in names}
     return SiteStats(
@@ -167,6 +194,7 @@ def site_payload(
                 "opposite_sign": int(stats.opposite_sign[i]),
                 "band": band,
                 "q": None if stats.q is None else _f(stats.q[i]),
+                "p_holm": None if stats.p_holm is None else _f(stats.p_holm[i]),
             }
         )
     return out
@@ -335,13 +363,22 @@ def build_summary(
         method = (
             f"percentile bootstrap over clusters of prompts with the same {spec.statistics.cluster}"
         )
-        clusters = _n_clusters(spec, result) or 0
-        if clusters < FEW_CLUSTERS:
-            warnings.append(
-                f"The bootstrap resamples only {clusters} clusters (prompts with the same "
-                f"{spec.statistics.cluster}), too few for reliable intervals. Use prompts from "
-                f"more {spec.statistics.cluster} values, or read the intervals as rough."
+        fields = [spec.statistics.cluster]
+        if spec.statistics.cross is not None:
+            fields.append(spec.statistics.cross)
+            method = (
+                f"percentile bootstrap crossed over the prompts' {spec.statistics.cluster} and "
+                f"{spec.statistics.cross}: each field's values are resampled on their own, and a "
+                "prompt counts as often as its two values' draws multiplied"
             )
+        for key in fields:
+            clusters = _n_values(key, result)
+            if clusters < FEW_CLUSTERS:
+                warnings.append(
+                    f"The bootstrap resamples only {clusters} clusters (prompts with the same "
+                    f"{key}), too few for reliable intervals. Use prompts from "
+                    f"more {key} values, or read the intervals as rough."
+                )
     summary = {
         "logogram_summary": SUMMARY_VERSION,
         "run_id": run_id,
@@ -370,11 +407,17 @@ def build_summary(
             "method": method,
             "cluster": spec.statistics.cluster,
             "clusters": _n_clusters(spec, result),
+            "cross": spec.statistics.cross,
+            "cross_clusters": (
+                None if spec.statistics.cross is None else _n_values(spec.statistics.cross, result)
+            ),
             "band_level": stats.band_level,
             "multiple_comparisons": (
                 f"Simultaneous bands hold for all {len(result.sites)} sites together with "
                 f"{spec.statistics.ci:.0%} confidence (max-rank percentile method); q-values are "
-                "Benjamini–Hochberg adjusted bootstrap p-values over the same sites."
+                "Benjamini–Hochberg adjusted bootstrap p-values over the same sites, and "
+                "Holm-adjusted p-values bound the chance that even one site reported is there "
+                "by chance."
                 if stats.band_level is not None
                 else None
             ),
@@ -410,11 +453,15 @@ def build_summary(
 FEW_CLUSTERS = 10
 
 
+def _n_values(key: str, result: EngineResult) -> int:
+    return len({str((p.record.meta or {}).get(key)) for p in result.prompts})
+
+
 def _n_clusters(spec: Spec, result: EngineResult) -> int | None:
     key = spec.statistics.cluster
     if key is None:
         return None
-    return len({str((p.record.meta or {}).get(key)) for p in result.prompts})
+    return _n_values(key, result)
 
 
 def results_table(

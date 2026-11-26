@@ -127,10 +127,161 @@ def check_sets(scope: SiteSetsScope, info: ModelInfo) -> None:
                     )
 
 
-def set_rows(scope: SiteSetsScope) -> tuple[list[ResolvedSite], dict[str, Any]]:
-    """One result row per set, and the layout that lists them."""
-    rows = []
+def _site_key(site: Site) -> str:
+    return site.model_dump_json()
+
+
+def single_sets(scope: SiteSetsScope) -> list[SiteSet]:
+    """Each site alone, for every set of two or more sites that intervenes on its sites: the sets
+    ``singles`` adds. A site the scope already has a set for, alone, isn't added again."""
+    if not scope.singles:
+        return []
+    have = {_site_key(s.sites[0]) for s in scope.sets if not s.complement and len(s.sites) == 1}
+    labels = {s.label for s in scope.sets}
+    out: list[SiteSet] = []
+    for s in scope.sets:
+        if s.complement or len(s.sites) < 2:
+            continue
+        for site in s.sites:
+            key = _site_key(site)
+            if key in have:
+                continue
+            have.add(key)
+            label = site_label(site)
+            while label in labels:
+                label += " alone"
+            labels.add(label)
+            out.append(SiteSet.model_construct(label=label, sites=[site], complement=False))
+    return out
+
+
+def _conflicts(sites: list[Site]) -> bool:
+    """Whether a set holds a component and what it is made of in one layer."""
+    kinds = {(site.kind, site.layer) for site in sites}
+    return any(
+        site.kind in parts and (whole, site.layer) in kinds
+        for site in sites
+        for whole, parts in _PARTS.items()
+    )
+
+
+def random_sets(scope: SiteSetsScope, info: ModelInfo) -> list[tuple[int, SiteSet]]:
+    """The random sets ``controls`` draws, each with the index of the set it stands beside.
+
+    A random set has one site for each of its set's, of the same kind and at the same position:
+    another head (or key/value head, or neuron) of the same layer, or, matched by model, any
+    component of that kind in any layer. No site of the set itself is drawn, and none twice in
+    one random set. Each set draws from its own stream (the raw PCG64 stream, stable across NumPy
+    versions), so adding a set doesn't change another's random sets.
+    """
+    controls = scope.controls
+    if controls is None:
+        return []
+    out: list[tuple[int, SiteSet]] = []
     for i, s in enumerate(scope.sets):
+        if not s.sites:
+            continue
+        own = {(site.kind, site.layer, site_unit(site)) for site in s.sites}
+        bitgen = np.random.PCG64([controls.seed, i])
+        for j in range(controls.n):
+            for _attempt in range(100):
+                # A component of the set, at however many positions, is one component of the
+                # random set: each is redrawn once.
+                redrawn: dict[tuple[str, int, int | None], tuple[str, int, int | None]] = {}
+                drawn: list[Site] = []
+                for site in s.sites:
+                    place = (site.kind, site.layer, site_unit(site))
+                    if place not in redrawn:
+                        units = unit_count(site.kind, info)
+                        layers = [site.layer] if controls.match == "layer" else range(info.n_layers)
+                        taken = set(redrawn.values())
+                        candidates = [
+                            (site.kind, layer, unit)
+                            for layer in layers
+                            for unit in (range(units) if units is not None else [None])
+                            if (site.kind, layer, unit) not in own
+                            and (site.kind, layer, unit) not in taken
+                        ]
+                        if not candidates:
+                            where = (
+                                f"layer {site.layer}" if controls.match == "layer" else "the model"
+                            )
+                            what = _PART_WORDS.get(site.kind, site.kind)
+                            raise ScopeError(
+                                f"The set {s.label!r} leaves no other {what} in {where} to draw "
+                                "a random set from. Match the random sets by model, use a "
+                                "smaller set, or run without random sets."
+                            )
+                        redrawn[place] = candidates[
+                            int(bitgen.random_raw() % np.uint64(len(candidates)))
+                        ]
+                    pick = redrawn[place]
+                    unit_field = (
+                        {"neuron": pick[2]}
+                        if site.kind == "neuron"
+                        else {"head": pick[2]}
+                        if pick[2] is not None
+                        else {}
+                    )
+                    drawn.append(site.model_copy(update={"layer": pick[1], **unit_field}))
+                if not _conflicts(drawn):
+                    break
+            else:  # pragma: no cover
+                raise ScopeError(
+                    f"No random set could be drawn for the set {s.label!r} without holding a "
+                    "component and its parts in one layer. Run without random sets."
+                )
+            out.append(
+                (
+                    i,
+                    SiteSet.model_construct(
+                        label=f"{s.label} · random {j + 1}", sites=drawn, complement=s.complement
+                    ),
+                )
+            )
+    return out
+
+
+def few_random_sets(scope: SiteSetsScope, rows: list[ResolvedSite]) -> list[str]:
+    """Warn about sets whose random sets are mostly the same few sets: a set that fills most of
+    its layer leaves few other sites to draw, so the draws repeat and their spread says little
+    about chance."""
+    drawn: dict[int, list[frozenset[str]]] = {}
+    for rs in rows:
+        of = (rs.variant or {}).get("control_of")
+        if of is not None and rs.site_set is not None:
+            drawn.setdefault(int(of), []).append(
+                frozenset(_site_key(site) for site in rs.site_set.sites)
+            )
+    out = []
+    for of, sets in drawn.items():
+        different = len(set(sets))
+        if different * 2 <= len(sets):
+            out.append(
+                f"The {len(sets)} random sets beside {scope.sets[of].label!r} are only {different} "
+                f"different set{'s' if different != 1 else ''}: there are few other sites to "
+                "draw from, so where the set lies among them says little. Match the random sets "
+                "by model, or read that column as a comparison with those few sets."
+            )
+    return out
+
+
+def set_rows(
+    scope: SiteSetsScope, info: ModelInfo | None = None
+) -> tuple[list[ResolvedSite], dict[str, Any]]:
+    """One result row per set, and the layout that lists them: the scope's sets, then each site
+    alone (``singles``), then each set's random sets (``controls``, which need the model's
+    shape)."""
+    every: list[tuple[SiteSet, dict[str, Any]]] = [(s, {}) for s in scope.sets]
+    every += [(s, {"single": True}) for s in single_sets(scope)]
+    if scope.controls is not None:
+        if info is None:
+            raise ScopeError("Random sets are drawn from the loaded model's components.")
+        # A random set is a control, as a steering run's random direction is: what the run is
+        # measured against, never its strongest effect.
+        every += [(s, {"control": True, "control_of": i}) for i, s in random_sets(scope, info)]
+    rows = []
+    for i, (s, what) in enumerate(every):
         placeholder = (
             s.sites[0] if s.sites else Site(kind="resid_pre", layer=0, position=ALL_POSITIONS)
         )
@@ -141,7 +292,7 @@ def set_rows(scope: SiteSetsScope) -> tuple[list[ResolvedSite], dict[str, Any]]:
                 row=i,
                 col=0,
                 label=s.label,
-                variant={"complement": s.complement, "size": len(s.sites)},
+                variant={"complement": s.complement, "size": len(s.sites), **what},
                 variant_key=s.label,
                 site_set=s,
             )
@@ -156,8 +307,9 @@ def set_rows(scope: SiteSetsScope) -> tuple[list[ResolvedSite], dict[str, Any]]:
                 "label": s.label,
                 "complement": s.complement,
                 "size": len(s.sites),
+                **what,
             }
-            for i, s in enumerate(scope.sets)
+            for i, (s, what) in enumerate(every)
         ],
         "cols": [{"key": "effect", "label": "effect"}],
         "universe": scope.universe,
@@ -294,7 +446,7 @@ def run_site_sets(
     info = backend.info
     batch_size = spec.execution.batch_size
     check_sets(scope, info)
-    sites, layout = set_rows(scope)
+    sites, layout = set_rows(scope, info)
     for s in scope.sets:  # every position must resolve in every prompt
         for site in s.sites:
             for prompt in prompts:
@@ -334,6 +486,7 @@ def run_site_sets(
     baselines = compute_baselines(backend, prompts, groups, batch_size, cancel, scorer)
     check_finite(baselines, info.dtype)
     warnings = check_gap(spec, baselines, prompts, receiver, reference)
+    warnings += few_random_sets(scope, sites)
 
     n = len(prompts)
     donors: list[list[int]] | None = None
@@ -341,7 +494,9 @@ def run_site_sets(
     if kind == "resample":
         assert isinstance(exp, Ablation) and isinstance(exp.baseline, ResampleBaseline)
         k = exp.baseline.donors
-        donors = draw_donors(prompts, groups, k, exp.baseline.seed, same_length=True)
+        donors = draw_donors(
+            prompts, groups, k, exp.baseline.seed, same_length=True, among=exp.baseline.group
+        )
     means = _Means(backend, groups, source, batch_size, cancel) if kind == "mean" else None
     if kind == "mean" and not scorer.single_position():
         raise EngineError(
@@ -656,16 +811,29 @@ def circuit_summary(result: EngineResult, stats: Any, ci: float) -> dict[str, An
       circuit is complete).
     * ``without``: for a set that keeps one site fewer than another keeping set, the faithfulness
       that site adds (the circuit's minimality, one site at a time).
-    * ``interaction``: for a set of two sites that are also intervened on alone, the effect of
-      both beyond the sum of the two.
+    * ``interaction``: for a set whose sites are each also intervened on alone, the effect of
+      them all at once beyond the sum of their effects alone.
+    * ``control``: for a set with random sets drawn beside it, where its effect lies among
+      theirs: their mean effects' mean, spread and range, and how many of them are at least as
+      far from zero as the set's own.
+
+    A row per set of the scope and per site added alone; random sets have no row of their own.
     """
     sites = result.sites
-    sets = {rs.index: rs.site_set for rs in sites}
-    assert all(s is not None for s in sets.values())
+    every = {rs.index: rs.site_set for rs in sites}
+    assert all(s is not None for s in every.values())
+    what = {rs.index: rs.variant or {} for rs in sites}
+    controls: dict[int, list[int]] = {}
+    for i, tag in what.items():
+        if tag.get("control_of") is not None:
+            controls.setdefault(int(tag["control_of"]), []).append(i)
+    # The scope's own sets, and the sites added alone: what the summary has a row for.
+    sets = {i: s for i, s in every.items() if what[i].get("control_of") is None}
+    declared = {i: s for i, s in sets.items() if not what[i].get("single")}
     keys = {i: frozenset(site.model_dump_json() for site in s.sites) for i, s in sets.items()}  # type: ignore[union-attr]
     named = {site.model_dump_json(): site for s in sets.values() for site in s.sites}  # type: ignore[union-attr]
     everything = next(
-        (i for i, s in sets.items() if s.complement and not s.sites),  # type: ignore[union-attr]
+        (i for i, s in declared.items() if s.complement and not s.sites),  # type: ignore[union-attr]
         None,
     )
     alone = {
@@ -695,6 +863,8 @@ def circuit_summary(result: EngineResult, stats: Any, ci: float) -> dict[str, An
             "faithfulness": None,
             "without": None,
             "interaction": None,
+            "control": None,
+            "single": bool(what[i].get("single")),
         }
         if everything is not None and boot is not None and i != everything:
             with np.errstate(divide="ignore", invalid="ignore"):
@@ -714,7 +884,7 @@ def circuit_summary(result: EngineResult, stats: Any, ci: float) -> dict[str, An
             larger = next(
                 (
                     j
-                    for j, o in sets.items()
+                    for j, o in declared.items()
                     if o.complement and keys[i] < keys[j] and len(keys[j] - keys[i]) == 1  # type: ignore[union-attr]
                 ),
                 None,
@@ -733,18 +903,38 @@ def circuit_summary(result: EngineResult, stats: Any, ci: float) -> dict[str, An
                         "site": site_label(named[missing]),
                         "drop": drop,
                     }
-        if not s.complement and len(s.sites) == 2 and effect_boot is not None:
-            a, b = (alone.get(k) for k in sorted(keys[i]))
-            if a is not None and b is not None:
-                effect = interval(
-                    effect_boot[i] - effect_boot[a] - effect_boot[b],
-                    stats.effect_mean[i] - stats.effect_mean[a] - stats.effect_mean[b],
-                )
-                if effect is not None:
+        if not s.complement and len(s.sites) >= 2 and effect_boot is not None:
+            parts = [alone.get(k) for k in sorted(keys[i])]
+            if all(part is not None for part in parts):
+                at = np.asarray(parts, dtype=np.int64)
+                total = effect_boot[at].sum(axis=0)
+                total_mean = float(stats.effect_mean[at].sum())
+                effect = interval(effect_boot[i] - total, stats.effect_mean[i] - total_mean)
+                summed = interval(total, total_mean)
+                if effect is not None and summed is not None:
+                    labels = [sets[part].label for part in parts]  # type: ignore[index,union-attr]
                     row["interaction"] = {
-                        "a": sets[a].label,  # type: ignore[union-attr]
-                        "b": sets[b].label,  # type: ignore[union-attr]
+                        "a": labels[0],
+                        "b": labels[1] if len(labels) == 2 else None,
+                        "parts": labels,
+                        "sum": summed,
                         "effect": effect,
                     }
+        drawn = controls.get(i)
+        if drawn:
+            values = np.asarray(stats.effect_mean, dtype=np.float64)[drawn]
+            own = float(stats.effect_mean[i])
+            if np.isfinite(values).all() and np.isfinite(own):
+                beyond = int((np.abs(values) >= abs(own)).sum())
+                lo, hi = (float(x) for x in np.quantile(values, [alpha, 1.0 - alpha]))
+                row["control"] = {
+                    "n": len(drawn),
+                    "mean": float(values.mean()),
+                    "sd": float(values.std(ddof=1)) if len(values) > 1 else 0.0,
+                    "lo": lo,
+                    "hi": hi,
+                    "beyond": beyond,
+                    "p": (beyond + 1.0) / (len(drawn) + 1.0),
+                }
         rows.append(row)
     return {"everything": everything, "rows": rows}

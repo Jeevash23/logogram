@@ -112,7 +112,7 @@ test("subspace patching, scaling and directional ablation name the saved directi
   };
   expect(refused(form({ kind: "ablation", baseline: { kind: "scale", factor: 0.5 }, scope: sets }))).toContain("scaling and removing a direction act on one site at a time");
   expect(refused({ ...subspace, subspace: toward, scope: sets })).toContain("act on one site at a time");
-  expect(built(form({ kind: "ablation", baseline: { kind: "zero" }, scope: sets })).scope).toEqual(sets);
+  expect(built(form({ kind: "ablation", baseline: { kind: "zero" }, scope: sets })).scope).toEqual({ ...sets, singles: false, controls: null });
 
   const steer = form({
     kind: "steering", steerApplyTo: "corrupt", steerDirection: "direction",

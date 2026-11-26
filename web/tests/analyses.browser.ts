@@ -81,7 +81,7 @@ test("choosing a metric and running names the run's values by it", async ({ page
   await metric.getByRole("radio", { name: /^Log-probability difference/ }).click();
   await page.getByRole("button", { name: "Preview spec", exact: true }).click();
   const spec = JSON.parse(await page.getByLabel("Spec JSON").innerText());
-  expect(spec).toMatchObject({ logogram_spec: 4, metric: { kind: "logprob_diff", normalization: "dataset_gap" }, statistics: { cluster: null } });
+  expect(spec).toMatchObject({ logogram_spec: 5, metric: { kind: "logprob_diff", normalization: "dataset_gap" }, statistics: { cluster: null } });
   // The baseline is measured with the form's metric.
   await page.getByRole("button", { name: "Baseline", exact: true }).click();
   const request = page.waitForRequest((r) => r.url().endsWith("/api/baseline"));
@@ -138,5 +138,56 @@ test("a circuit built from staged sites runs, and its faithfulness is read", asy
   await kept.getByRole("button", { name: "Circuit kept", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Against replacing everything" })).toBeVisible();
   await expect(page.getByText("Faithfulness", { exact: true }).last()).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("sets are read against random sets and their sites alone, and a gate stops a run the baseline fails", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await freshProject(page, "Controls");
+  await generateIOI(page, 8);
+  await page.getByRole("button", { name: "Explore", exact: true }).click();
+  await page.getByRole("radio", { name: "One layer", exact: true }).click();
+  for (const name of [/^L0 H0:/, /^L0 H2:/]) {
+    await page.getByRole("button", { name }).click();
+    await page.getByRole("button", { name: "Add to experiment", exact: true }).click();
+  }
+  const tray = page.getByRole("region", { name: "Experiment selection" });
+  await tray.getByRole("button", { name: "Test as a circuit", exact: true }).click();
+  await page.getByRole("dialog", { name: "Test 2 sites as a circuit" }).getByRole("button", { name: "Set up the test", exact: true }).click();
+  // The controls are off until chosen, and say what they add.
+  const alone = page.getByRole("checkbox", { name: /^Each site alone too/ });
+  const random = page.getByRole("checkbox", { name: /^Random sets of the same size/ });
+  await expect(alone).not.toBeChecked();
+  await expect(random).not.toBeChecked();
+  await alone.check();
+  await random.check();
+  await page.getByLabel("Random sets for each set").fill("3");
+  await expect(page.getByRole("radiogroup", { name: "Where each site of a random set is drawn from" }).getByRole("radio", { name: "Within its layer" })).toHaveAttribute("aria-checked", "true");
+  await page.getByRole("button", { name: "Preview spec", exact: true }).click();
+  const spec = JSON.parse(await page.getByLabel("Spec JSON").innerText());
+  expect(spec).toMatchObject({ logogram_spec: 5, gate: null, scope: { singles: true, controls: { n: 3, seed: 0, match: "layer" } } });
+  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  // Five sets, the two sites alone, and three random sets for each of the four sets with sites.
+  await expect(page.getByText("each site alone and the random sets included")).toBeVisible();
+  await page.getByRole("button", { name: "Run", exact: true }).click();
+  await expect(page.getByRole("columnheader", { name: "Random sets of its size" })).toBeVisible({ timeout: 60_000 });
+  const removed = page.getByRole("row").filter({ has: page.getByRole("button", { name: "Circuit removed", exact: true }) });
+  await expect(removed.getByRole("cell").nth(4)).toContainText(/of 3 as strong/);
+  // A random set has no row of its own; a site added alone does, and says so.
+  await expect(page.getByRole("button", { name: /· random 1$/ })).toHaveCount(0);
+  await expect(page.getByRole("row").filter({ hasText: "one site of a set, alone" })).toHaveCount(2);
+  await expect(page.getByRole("region", { name: "How sites interact" })).toContainText("beyond the sum of each alone");
+
+  // A gate no baseline can pass stops the run before anything is intervened on.
+  await page.getByRole("button", { name: "Experiment", exact: true }).click();
+  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  await page.getByRole("checkbox", { name: "Stop the run unless the model shows the behavior" }).check();
+  await page.getByLabel("Clean prompts answered, at least (%)").fill("");
+  await page.getByLabel("Mean clean–corrupt gap, at least").fill("1000");
+  await expect(page.getByText("The run stops before any intervention unless it finds a mean clean–corrupt gap of at least 1000.")).toBeVisible();
+  await page.getByRole("button", { name: "Run", exact: true }).click();
+  // (The traceback, folded away below the message, says it too.)
+  await expect(page.getByText(/The gate stopped this run before anything was intervened on/).filter({ visible: true }).first()).toBeVisible({ timeout: 20_000 });
   expect(errors).toEqual([]);
 });

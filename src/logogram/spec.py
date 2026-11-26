@@ -12,7 +12,11 @@ steered continuations; a version 2 spec reads as version 3 with each of them off
 version 2 did. Version 4 (Logogram 0.7) added methods that find and use directions in the model
 (probes, learned subspaces, directional ablation, readouts), automated circuit discovery, and SAEs
 and lenses trained in the project; a version 3 spec reads as version 4 with those off (the SAE it
-names is a published one, its layer predictions read the logit lens).
+names is a published one, its layer predictions read the logit lens). Version 5 (Logogram 0.8) added
+controls a result is read against: a gate the baseline must pass before anything is intervened on,
+random sets of the same size beside each set of sites, each site of a set alone beside the set,
+donors drawn within or across a group of prompts, and a bootstrap crossed over two fields; a
+version 4 spec reads as version 5 with each of them off, which is what version 4 did.
 
 Specs refer to abstract sites (``resid_pre``, ``attn_out``, ``head``, ...). Backend-specific hook
 names never appear in a spec.
@@ -33,7 +37,7 @@ from logogram.fileio import JSON_LIMIT, read_limited
 
 NAME_MAX = 200
 
-SPEC_VERSION = 4
+SPEC_VERSION = 5
 
 # Seeds are drawn into 32-bit generators on some paths: keep every seed in that range.
 SEED_MAX = 2**32
@@ -316,6 +320,8 @@ UniverseKind = Literal["head", "attn_out", "mlp_out", "q", "k", "v", "neuron"]
 # stream itself before or after a layer (between attention and MLP it isn't a single hook, so not
 # in a set).
 SET_SITE_KINDS = ("head", "attn_out", "mlp_out", "resid_pre", "resid_post", "q", "k", "v", "neuron")
+# The kinds a layer has several of: a head, a query, key or value head, a neuron.
+UNIT_SITE_KINDS = ("head", "q", "k", "v", "neuron")
 # A component and what it is made of can't both be in a universe: the attention output is the sum
 # of its heads' outputs, each head's output is made from its query, key and value, and the MLP
 # output from its neurons.
@@ -361,6 +367,27 @@ class SiteSet(_Strict):
         return self
 
 
+class RandomSets(_Strict):
+    """Random sets beside each set of sites: what a set of that size does when its sites are
+    chosen by chance.
+
+    For every set that has sites, ``n`` random sets are drawn and intervened on like it. A random
+    set has one site for each of the set's, of the same kind and at the same position, and keeps
+    or replaces its sites as the set does. With ``match`` ``layer`` each site is redrawn among the
+    other heads (or key/value heads, or neurons) of its own layer, so the random set has as many
+    sites in each layer as the set; with ``model`` it is redrawn among every layer's. No site of
+    the set itself is drawn, and no site twice in one random set. The results say where the set's
+    effect lies among its random sets'.
+    """
+
+    n: int = Field(ge=1, le=1000)
+    """How many random sets are drawn for each set."""
+    seed: Seed
+    """The seed of the draw."""
+    match: Literal["layer", "model"]
+    """Redraw each site within its own layer (layer), or among every layer (model)."""
+
+
 class SiteSetsScope(_Strict):
     """Sets of sites, each intervened on at once: one result per set.
 
@@ -375,6 +402,12 @@ class SiteSetsScope(_Strict):
     complement sets; null when no set is one."""
     sets: list[SiteSet] = Field(min_length=1, max_length=64)
     """The sets, each intervened on at once: one result per set."""
+    singles: bool
+    """Also intervene on each site alone, for every set of two or more sites that intervenes on
+    its sites (not a complement): the results then say what the set does beyond the sum of its
+    sites alone."""
+    controls: RandomSets | None
+    """Random sets of the same size, drawn for each set that has sites; null for none."""
 
     @model_validator(mode="after")
     def _consistent(self) -> SiteSetsScope:
@@ -408,6 +441,15 @@ class SiteSetsScope(_Strict):
                     raise ValueError(
                         f"the set {s.label!r} keeps a {site.kind} site, which isn't part of the "
                         "universe it replaces"
+                    )
+        if self.controls is not None and self.controls.match == "layer":
+            for s in self.sets:
+                whole = next((x for x in s.sites if x.kind not in UNIT_SITE_KINDS), None)
+                if whole is not None:
+                    raise ValueError(
+                        f"the set {s.label!r} has a {whole.kind} site, and a layer has only one: "
+                        "random sets matched by layer redraw heads, queries, keys, values and "
+                        "neurons. Match the random sets by model, or leave such sites out"
                     )
         return self
 
@@ -654,6 +696,30 @@ class MeanBaseline(_Strict):
     """The prompts the mean is taken over: the dataset's clean or corrupt prompts."""
 
 
+_META_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,63}$")
+
+
+class DonorGroup(_Strict):
+    """Which prompts may be a prompt's donors, by a field of the prompts' ``meta``.
+
+    What a donor shares with the prompt it is patched into decides what resample ablation removes:
+    donors from the same template keep the template and vary the rest; donors with a different
+    subject remove the subject and whatever follows from it.
+    """
+
+    field: str
+    """A field of the prompts' meta, such as ``template``."""
+    match: Literal["same", "different"]
+    """Draw donors among the prompts with the same value of the field as the prompt (same), or
+    among those with a different value (different)."""
+
+    @model_validator(mode="after")
+    def _field_key(self) -> DonorGroup:
+        if not _META_KEY.match(self.field):
+            raise ValueError("a donor group's field must name a field of the prompts' meta")
+        return self
+
+
 class ResampleBaseline(_Strict):
     """Replace the activation with the same activation from other prompts (donors).
 
@@ -668,6 +734,9 @@ class ResampleBaseline(_Strict):
     """How many donors each prompt draws."""
     seed: Seed
     """The seed of the draw."""
+    group: DonorGroup | None
+    """Draw each prompt's donors only among prompts that share, or differ in, a field of the
+    prompts' meta; null draws them among every prompt of the pool."""
 
 
 class ScaleBaseline(_Strict):
@@ -1549,11 +1618,55 @@ class Statistics(_Strict):
     """Seeds the bootstrap, and Python, NumPy and PyTorch for the whole run."""
     cluster: str | None
     """A field of the prompts' meta whose values group them, or null to resample prompts."""
+    cross: str | None
+    """A second field of the prompts' meta, crossed with ``cluster``: prompts built from two
+    lists (names and places, say) share a name with some prompts and a place with others, and a
+    bootstrap over one of the two is too narrow. Each field's values are resampled on their own,
+    and a prompt counts as often as its two values' draws multiplied. Null for one field or
+    none."""
 
     @model_validator(mode="after")
     def _cluster_key(self) -> Statistics:
         if self.cluster is not None and not CLUSTER_KEY.match(self.cluster):
             raise ValueError("statistics.cluster must name a field of the prompts' meta")
+        if self.cross is not None:
+            if self.cluster is None:
+                raise ValueError(
+                    "statistics.cross is a second field beside statistics.cluster: name the "
+                    "first field there, or set cross to null"
+                )
+            if not CLUSTER_KEY.match(self.cross):
+                raise ValueError("statistics.cross must name a field of the prompts' meta")
+            if self.cross == self.cluster:
+                raise ValueError(
+                    "statistics.cross must be another field than statistics.cluster: one field "
+                    "crossed with itself is a bootstrap over that field"
+                )
+        return self
+
+
+class Gate(_Strict):
+    """What the model must do on the prompts before anything is intervened on.
+
+    An effect describes how a behavior is computed only if the model shows the behavior. The
+    baseline is measured first; a run whose baseline falls short of the gate stops there, before
+    any intervention, and says what it measured. A gate is part of the spec, so it is set before
+    the results are seen.
+    """
+
+    min_correct: float | None = Field(gt=0, le=1)
+    """The least share of the clean prompts on which the model must prefer the answer to the
+    distractor (log P(answer) > log P(distractor)), such as 0.9; null for no such bar."""
+    min_gap: float | None = Field(gt=0)
+    """The least gap between the clean and the corrupt prompts in the metric, as the size of its
+    mean over prompts; null for no such bar."""
+
+    @model_validator(mode="after")
+    def _asks_something(self) -> Gate:
+        if self.min_correct is None and self.min_gap is None:
+            raise ValueError(
+                "a gate needs min_correct or min_gap: set one of them, or set the gate to null"
+            )
         return self
 
 
@@ -1603,8 +1716,8 @@ class PredictionSettings(_Strict):
 class Spec(_Strict):
     """An experiment: what runs, on which model and prompts, and how its numbers are measured."""
 
-    logogram_spec: Literal[4]
-    """The spec's version. Version 1, 2 and 3 specs are read too, as version 4."""
+    logogram_spec: Literal[5]
+    """The spec's version. Version 1, 2, 3 and 4 specs are read too, as version 5."""
     name: str = Field(min_length=1, max_length=NAME_MAX)
     """What the experiment is called, in the history and the results."""
     notes: str = ""
@@ -1626,6 +1739,8 @@ class Spec(_Strict):
     """The intervals' bootstrap, confidence level and seed."""
     execution: Execution
     """How the work is batched."""
+    gate: Gate | None
+    """What the baseline must show before anything is intervened on; null for no gate."""
     predictions: PredictionSettings | None = None
     """An optional logit lens saved beside the results; it never changes an intervention."""
     # The SAE (or transcoder) whose features sae_feature sites and the features scope refer to.
@@ -1646,6 +1761,8 @@ class Spec(_Strict):
             data = upgrade_v2(data)
         if isinstance(data, dict) and data.get("logogram_spec") == 3:
             data = upgrade_v3(data)
+        if isinstance(data, dict) and data.get("logogram_spec") == 4:
+            data = upgrade_v4(data)
         spec = handler(data)
         if filled:
             spec._upgraded = filled
@@ -1726,6 +1843,11 @@ class Spec(_Strict):
             )
         if kind not in NO_METRIC_KINDS and self.metric is None:
             raise ValueError("this method reads the model's output: the spec needs a metric")
+        if self.gate is not None and self.metric is None:
+            raise ValueError(
+                "a gate is checked on the model's output, which a probe doesn't read: set gate "
+                "to null"
+            )
         metric = self.metric
         if isinstance(metric, ReadoutMetric):
             if kind not in READOUT_KINDS:
@@ -1914,6 +2036,33 @@ def upgrade_v3(data: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
+# ---------------------------------------------------------------------------------------------
+# Version 4 specs
+
+
+def upgrade_v4(data: dict[str, Any]) -> dict[str, Any]:
+    """A version 4 spec as version 5. Version 5 added controls that are off when a spec doesn't
+    name them: no gate, a bootstrap over one field or none, sets of sites without their sites
+    alone or random sets beside them, donors drawn among every prompt of the pool. These didn't
+    exist to be chosen, so they aren't listed as filled."""
+    data = copy.deepcopy(data)
+    data["logogram_spec"] = 5
+    data.setdefault("gate", None)
+    statistics = data.get("statistics")
+    if isinstance(statistics, dict):
+        statistics.setdefault("cross", None)
+    scope = data.get("scope")
+    if isinstance(scope, dict) and scope.get("kind") == "site_sets":
+        scope.setdefault("singles", False)
+        scope.setdefault("controls", None)
+    experiment = data.get("experiment")
+    if isinstance(experiment, dict) and experiment.get("kind") == "ablation":
+        baseline = experiment.get("baseline")
+        if isinstance(baseline, dict) and baseline.get("kind") == "resample":
+            baseline.setdefault("group", None)
+    return data
+
+
 def _show(value: Any) -> str:
     return json.dumps(value)
 
@@ -2033,7 +2182,26 @@ def describe_intervention(
     if isinstance(b, ProjectionBaseline):
         to = "removed" if b.reference is None else f"set to its {b.reference} mean"
         return f"Ablate the direction {b.direction.name} ({to})"
-    return f"Resample-ablate ({b.donors} {b.pool} donors, seed {b.seed})"
+    among = "" if b.group is None else f" with {donor_group_text(b.group)}"
+    return f"Resample-ablate ({b.donors} {b.pool} donors{among}, seed {b.seed})"
+
+
+def donor_group_text(group: DonorGroup) -> str:
+    """A donor group in a few words, for example 'the same template'."""
+    return f"{'the same' if group.match == 'same' else 'a different'} {group.field}"
+
+
+def gate_text(gate: Gate) -> str:
+    """A gate in a few words, for example 'the answer preferred on at least 90% of the clean
+    prompts'."""
+    parts = []
+    if gate.min_correct is not None:
+        parts.append(
+            f"the answer preferred on at least {gate.min_correct:.0%} of the clean prompts"
+        )
+    if gate.min_gap is not None:
+        parts.append(f"a mean clean–corrupt gap of at least {gate.min_gap:g}")
+    return " and ".join(parts)
 
 
 def layers_text(layers: list[int]) -> str:
@@ -2080,6 +2248,12 @@ def describe_experiment(spec: Spec) -> str:
     elif isinstance(scope, SiteSetsScope):
         n = len(scope.sets)
         where = f"{n} set{'s' if n != 1 else ''} of sites, each at once"
+        if scope.singles:
+            where += ", and their sites alone"
+        if scope.controls is not None:
+            c = scope.controls
+            among = "its layers" if c.match == "layer" else "the model"
+            where += f", against {c.n} random set{'s' if c.n != 1 else ''} each from {among}"
     elif isinstance(scope, HeadInputsScope):
         inputs = {"q": "every head's query", "k": "every key", "v": "every value"}[scope.input]
         where = f"{inputs}, {describe_position(scope.position)}"
@@ -2108,4 +2282,5 @@ def describe_experiment(spec: Spec) -> str:
         if chat.kind == "user_turn"
         else " · in the chat template, as the start of the reply"
     )
-    return f"{what} · {where}{metric}{wrapped}"
+    gated = "" if spec.gate is None else f" · gate: {gate_text(spec.gate)}"
+    return f"{what} · {where}{metric}{wrapped}{gated}"

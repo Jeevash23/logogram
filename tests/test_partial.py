@@ -86,7 +86,7 @@ def _same_rows(kept: list[dict[str, Any]], full: list[dict[str, Any]]) -> None:
 
 
 def _without_corrections(site: dict[str, Any]) -> dict[str, Any]:
-    return {k: v for k, v in site.items() if k not in ("band", "q")}
+    return {k: v for k, v in site.items() if k not in ("band", "q", "p_holm")}
 
 
 # -- sweeps that go layer by layer -------------------------------------------------------------

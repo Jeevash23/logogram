@@ -18,6 +18,7 @@ import { DirectionPicker } from "./DirectionPicker";
 import { DASSettings, ProbeSettings } from "./ProbeSettings";
 import { MetricSettings } from "./MetricSettings";
 import { ClusterChooser } from "./StatisticsSettings";
+import { GateSettings } from "./GateSettings";
 import { SiteSetsEditor } from "./SiteSetsEditor";
 import { RunSummary } from "./RunSummary";
 import s from "./views.module.css";
@@ -180,7 +181,7 @@ export function ExperimentView() {
               // Pairs of different lengths are matched at the last token or a label only.
               setForm({ kind, scope: uneven.length && carriedBy({ ...form, kind }) ? lastInstead(scope) : scope });
             }}
-            columns={2}
+            columns={3}
             options={METHODS}
           />
           {form.kind === "steering" ? (
@@ -249,7 +250,7 @@ export function ExperimentView() {
               {form.kind === "attribution_patching" && <AttributionSettings form={form} onChange={setForm} features={usesFeatures(form.scope)} uneven={uneven} />}
             </div>
           ) : (
-            <BaselineChooser baseline={form.baseline} onChange={(baseline) => setForm({ baseline })} width={model.info?.d_model} />
+            <BaselineChooser baseline={form.baseline} onChange={(baseline) => setForm({ baseline })} width={model.info?.d_model} fields={facts?.fields ?? []} />
           )}
         </section>
 
@@ -284,6 +285,13 @@ export function ExperimentView() {
           )}
         </section>
 
+        {form.kind !== "probe" && (
+          <section className={e.section}>
+            <h2 className={e.sectionTitle}>Gate</h2>
+            <GateSettings gate={form.gate} onChange={(gate) => setForm({ gate })} />
+          </section>
+        )}
+
         <section className={e.section}>
           <h2 className={e.sectionTitle}>Statistics and execution</h2>
           <div className={s.grid4}>
@@ -304,7 +312,7 @@ export function ExperimentView() {
               <Input type="number" min={1} max={4096} value={form.batchSize} onChange={(ev) => setForm({ batchSize: Number(ev.target.value) })} />
             </Field>
           </div>
-          <ClusterChooser cluster={form.cluster} facts={facts} onChange={(cluster) => setForm({ cluster })} />
+          <ClusterChooser cluster={form.cluster} cross={form.cross} facts={facts} onChange={(cluster) => setForm({ cluster, ...(cluster === null || cluster === form.cross ? { cross: null } : {}) })} onCross={(cross) => setForm({ cross })} />
         </section>
 
         <section className={e.section}>
@@ -940,7 +948,18 @@ function SteeringSettings({ form, onChange, sae }: { form: FormState; onChange: 
   );
 }
 
-function BaselineChooser({ baseline, onChange, width }: { baseline: BaselineSpec | null; onChange: (b: BaselineSpec) => void; width?: number }) {
+function BaselineChooser({
+  baseline,
+  onChange,
+  width,
+  fields,
+}: {
+  baseline: BaselineSpec | null;
+  onChange: (b: BaselineSpec) => void;
+  width?: number;
+  /** Fields of the meta every used prompt has: what donors can be chosen by. */
+  fields: { field: string; clusters: number }[];
+}) {
   return (
     <div className={e.stack}>
       <Choices
@@ -951,7 +970,7 @@ function BaselineChooser({ baseline, onChange, width }: { baseline: BaselineSpec
           else if (kind === "mean") onChange({ kind: "mean", reference: "corrupt" });
           else if (kind === "scale") onChange({ kind: "scale", factor: 0 });
           else if (kind === "projection") onChange({ kind: "projection", direction: { name: "", sha256: null }, reference: null });
-          else onChange({ kind: "resample", pool: "corrupt", donors: 10, seed: 0 });
+          else onChange({ kind: "resample", pool: "corrupt", donors: 10, seed: 0, group: null });
         }}
         columns={3}
         options={[
@@ -1013,6 +1032,31 @@ function BaselineChooser({ baseline, onChange, width }: { baseline: BaselineSpec
           </Field>
           <Field label="Donor seed">
             <Input type="number" value={baseline.seed} onChange={(ev) => onChange({ ...baseline, seed: Number(ev.target.value) })} />
+          </Field>
+          <Field
+            label="Donors come from"
+            help="What a donor shares with its prompt decides what the ablation removes: donors with the same template keep the template and vary the rest."
+          >
+            <Select
+              value={baseline.group ? `${baseline.group.match}:${baseline.group.field}` : ""}
+              onChange={(ev) => {
+                const [match, ...rest] = ev.target.value.split(":");
+                onChange({ ...baseline, group: ev.target.value === "" ? null : { field: rest.join(":"), match: match as "same" | "different" } });
+              }}
+            >
+              <option value="">Any other prompt of the pool</option>
+              {fields
+                .filter((f) => f.clusters >= 2)
+                .flatMap((f) => [
+                  <option key={`same:${f.field}`} value={`same:${f.field}`}>Prompts with the same {f.field}</option>,
+                  <option key={`different:${f.field}`} value={`different:${f.field}`}>Prompts with a different {f.field}</option>,
+                ])}
+              {baseline.group && !fields.some((f) => f.field === baseline.group?.field && f.clusters >= 2) && (
+                <option value={`${baseline.group.match}:${baseline.group.field}`}>
+                  Prompts with {baseline.group.match === "same" ? "the same" : "a different"} {baseline.group.field} (not in every prompt)
+                </option>
+              )}
+            </Select>
           </Field>
         </div>
       )}
@@ -1093,12 +1137,12 @@ function firstSets(scope: ScopeSpec, lined: boolean): ScopeSpec {
   if (scope.kind === "sites") {
     const sites = scope.sites.filter((x) => SET_SITE_KINDS.includes(x.kind));
     if (sites.length) {
-      const sets: ScopeSpec = { kind: "site_sets", universe: null, sets: [{ label: sites.length === 1 ? siteText(sites[0]) : "Chosen sites", sites, complement: false }] };
+      const sets: ScopeSpec = { kind: "site_sets", universe: null, sets: [{ label: sites.length === 1 ? siteText(sites[0]) : "Chosen sites", sites, complement: false }], singles: false, controls: null };
       return lined ? sets : lastInstead(sets);
     }
   }
-  if (!lined) return { kind: "site_sets", universe: null, sets: [{ label: "Set 1", sites: [], complement: false }] };
-  return { kind: "site_sets", universe: ["head"], sets: [{ label: EVERYTHING, sites: [], complement: true }] };
+  if (!lined) return { kind: "site_sets", universe: null, sets: [{ label: "Set 1", sites: [], complement: false }], singles: false, controls: null };
+  return { kind: "site_sets", universe: ["head"], sets: [{ label: EVERYTHING, sites: [], complement: true }], singles: false, controls: null };
 }
 
 /** Which prompts choose the strongest features, and which report them: the same prompts, or a

@@ -109,7 +109,7 @@ function variant(
     case "mean":
       return { kind: "ablation", baseline: { kind: "mean", reference: params.reference } };
     case "resample": {
-      const b: BaselineSpec = { kind: "resample", pool: params.pool, donors: params.donors, seed: params.seed };
+      const b: BaselineSpec = { kind: "resample", pool: params.pool, donors: params.donors, seed: params.seed, group: null };
       return { kind: "ablation", baseline: b };
     }
     case "donors":

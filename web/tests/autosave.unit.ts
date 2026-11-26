@@ -21,7 +21,7 @@ const DETAILED: FormState = {
   name: "Which heads move names?",
   nameEdited: true,
   kind: "ablation",
-  baseline: { kind: "resample", pool: "corrupt", donors: 4, seed: 3 },
+  baseline: { kind: "resample", pool: "corrupt", donors: 4, seed: 3, group: { field: "template", match: "same" } },
   scope: { kind: "sites", sites: [{ kind: "head", layer: 9, head: 6, position: { kind: "index", index: -1 } }, { kind: "resid_post", layer: 3, head: null, position: { kind: "label", label: "S2" } }] },
   pathReceivers: [{ kind: "head", layer: 10, head: 7, input: "q" }, { kind: "logits" }],
   predictions: { method: "final_norm_logit_lens", lens: null, prompt_index: 2, which: "clean", position: { kind: "index", index: 4 }, top_k: 5 },
@@ -135,6 +135,31 @@ test("a form stored before the metric, clusters, integrated gradients, local mod
   const half = olderForm();
   (half.form as Record<string, unknown>).scope = { kind: "features", position: { kind: "last" }, top: 50, seed: 3 };
   expect(parseStoredForm(JSON.stringify(half))).toBeNull();
+});
+
+test("a form stored before the controls existed has no gate, one field in its bootstrap, donors from every prompt and sets without controls", () => {
+  const data = JSON.parse(serializeForm(DETAILED, 1));
+  delete data.form.gate;
+  delete data.form.cross;
+  delete data.form.baseline.group;
+  data.form.scope = { kind: "site_sets", universe: null, sets: [{ label: "a", sites: [], complement: false }] };
+  expect(parseStoredForm(JSON.stringify(data))?.form).toEqual({
+    ...DETAILED,
+    gate: null,
+    cross: null,
+    baseline: { kind: "resample", pool: "corrupt", donors: 4, seed: 3, group: null },
+    scope: { kind: "site_sets", universe: null, sets: [{ label: "a", sites: [], complement: false }], singles: false, controls: null },
+  });
+  // What is stored of them must be well formed.
+  for (const change of [
+    (form: Record<string, unknown>) => { form.gate = { min_correct: "most", min_gap: null }; },
+    (form: Record<string, unknown>) => { form.baseline = { kind: "resample", pool: "corrupt", donors: 4, seed: 3, group: { field: "template", match: "near" } }; },
+    (form: Record<string, unknown>) => { form.scope = { kind: "site_sets", universe: null, sets: [], singles: false, controls: { n: 3, seed: 0, match: "anywhere" } }; },
+  ]) {
+    const broken = JSON.parse(serializeForm(DETAILED, 1));
+    change(broken.form);
+    expect(parseStoredForm(JSON.stringify(broken))).toBeNull();
+  }
 });
 
 test("a form stored before SAEs and lenses were trained in the project names a published SAE and reads the logit lens", () => {

@@ -2,6 +2,54 @@
 
 What changed in each version of Logogram.
 
+## Unreleased
+
+Controls a result is read against: a gate on the baseline, random sets of the same size beside a
+set of sites, each site of a set alone, donors chosen by a field of the prompts, a bootstrap
+crossed over two fields, and Holm-adjusted p-values. Specs are version 5.
+
+### Added
+
+- **A gate on the baseline.** A spec's `gate` says what the model must do on the prompts before
+  anything is intervened on: prefer the answer on at least a stated share of the clean prompts
+  (`min_correct`), show at least a stated mean clean–corrupt gap in the metric (`min_gap`), or
+  both. The baseline is measured first, and a run that falls short stops there and says what it
+  measured, where before it warned and went on. The experiment form has a **Gate** section, and
+  the summary beside **Run** says what the gate asks.
+- **Random sets beside a set of sites.** With a site-sets scope's `controls`, each set gets `n`
+  random sets of the same size, intervened on like it: one site for each of the set's, of the
+  same kind and at the same position, redrawn within its own layer or among every layer, never a
+  site of the set itself. The results say where the set's effect lies among theirs, as their
+  mean, the range holding the run's confidence level of them, how many are at least as strong,
+  and that count as a p-value. Each set draws from its own stream of the seed.
+- **Each site alone.** With `singles`, each site of a set of two or more is also intervened on
+  alone, and the results give the set's effect beyond the sum of its sites' effects alone, with
+  an interval from the same resamples. This was reported for sets of two whose sites were also
+  listed alone, and now covers sets of any size.
+- **Donors chosen by a field.** A resample baseline's `group` draws each prompt's donors only
+  among prompts with the same value of a field of their `meta`, or only among those with a
+  different value. The form offers the fields every prompt has.
+- **A bootstrap crossed over two fields.** `statistics.cross` names a second field beside
+  `statistics.cluster`, for prompts built from two lists such as names and places. Both fields'
+  values are resampled at once, and a prompt counts as often as its two values' draws multiplied.
+  A design too sparse for it is refused with the number of resamples that drew no prompt.
+- **Holm-adjusted p-values.** Every finished sweep reports each site's Holm-adjusted p-value
+  beside its q-value and simultaneous band. It bounds the chance that even one reported site is
+  there by chance. The inspector and the guide show it.
+- A new documentation page, [Controls](docs/concepts/controls.md), describes each of these and
+  when to use it.
+
+### Changed
+
+- **Specs are version 5.** A version 5 spec states `gate`, `statistics.cross`, a site-sets
+  scope's `singles` and `controls`, and a resample baseline's `group`. Version 4 specs still run
+  and read with each of them off, which is what version 4 did. The bundled examples and the toy
+  models' specs are version 5.
+- The methods paragraph says a run's gate, its donors' group, a crossed bootstrap, and the
+  singles and random sets of a run over sets.
+- The memory estimate and the count of forward passes beside **Run** include the sites alone and
+  the random sets.
+
 ## 0.7.2 (2026-11-26)
 
 Start here and the guide in moving figures, what Logogram can find out on the first screens, and a

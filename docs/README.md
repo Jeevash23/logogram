@@ -49,6 +49,7 @@ method comes from.
 | [SAE features and transcoders](concepts/sae-features.md) | Finding a published SAE by name, sparse autoencoders, transcoders, patching features, what a feature writes |
 | [Training an SAE](concepts/sae-training.md) | A TopK SAE trained in the project on a corpus, deterministically: every choice, what is measured on held-out text, where it can mislead |
 | [Circuits](concepts/circuits.md) | Sets of sites intervened on at once: faithfulness, completeness, minimality, interactions |
+| [Controls](concepts/controls.md) | What a result is read against: a gate on the baseline, random sets of the same size, each site alone, donors chosen by a field, a bootstrap crossed over two fields |
 | [Corpora and representations](concepts/corpora-and-representations.md) | Plain texts in the project, where a neuron, an SAE feature, a direction or a head is most active in them, principal components and mean differences of activations, directions, and exported activations |
 | [The logit lens and the model checks](concepts/logit-lens-and-model-checks.md) | Reading each layer's prediction, and what Logogram measures about a model when it loads |
 | [The tuned lens](concepts/tuned-lens.md) | An affine translator per layer, trained in the project to read each layer's prediction more faithfully than the logit lens |

@@ -1,4 +1,4 @@
-import { Choices, Field } from "../components/ui";
+import { Choices, Field, Select } from "../components/ui";
 import type { DatasetFacts } from "../lib/buildSpec";
 import { count } from "../lib/format";
 
@@ -11,12 +11,17 @@ const NONE = "";
  */
 export function ClusterChooser({
   cluster,
+  cross,
   facts,
   onChange,
+  onCross,
 }: {
   cluster: string | null;
+  /** A second field crossed with the first, read only when there is a first. */
+  cross: string | null;
   facts: DatasetFacts | null;
   onChange: (cluster: string | null) => void;
+  onCross: (cross: string | null) => void;
 }) {
   const fields = facts?.fields ?? [];
   const known = cluster === null || fields.some((f) => f.field === cluster);
@@ -31,7 +36,10 @@ export function ClusterChooser({
     // A choice the current prompts can't make stays visible, so it can be changed.
     ...(known || cluster === null ? [] : [{ value: cluster, title: `Prompts with the same ${cluster}`, detail: facts ? "Not every prompt has this field." : "Choose prompts to check this field." }]),
   ];
+  const others = fields.filter((f) => f.field !== cluster && (f.clusters >= 2 || f.field === cross));
+  const crossKnown = cross === null || others.some((f) => f.field === cross);
   return (
+    <>
     <Field
       label="Resample"
       help={
@@ -48,5 +56,22 @@ export function ClusterChooser({
         options={options}
       />
     </Field>
+    {cluster !== null && (others.length > 0 || cross !== null) && (
+      <Field
+        label="Crossed with"
+        help={`For prompts built from two lists, such as names and places: a prompt shares its ${cluster} with some prompts and the second field with others, and a bootstrap over one of the two is too narrow. Each field's values are resampled on their own, and a prompt counts as often as its two values' draws multiplied.`}
+      >
+        <Select value={cross ?? NONE} onChange={(ev) => onCross(ev.target.value === NONE ? null : ev.target.value)}>
+          <option value={NONE}>Nothing: resample {cluster} alone</option>
+          {others.map((f) => (
+            <option key={f.field} value={f.field}>
+              {f.field} ({count(f.clusters)} values)
+            </option>
+          ))}
+          {!crossKnown && cross !== null && <option value={cross}>{cross} (not in every prompt)</option>}
+        </Select>
+      </Field>
+    )}
+    </>
   );
 }

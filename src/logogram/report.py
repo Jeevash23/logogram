@@ -34,6 +34,7 @@ from logogram.spec import (
     ProjectionBaseline,
     SavedDirection,
     ScaleBaseline,
+    SiteSetsScope,
     Spec,
     Steering,
     SubspacePatching,
@@ -41,6 +42,8 @@ from logogram.spec import (
     describe_experiment,
     describe_metric,
     describe_sae_site,
+    donor_group_text,
+    gate_text,
     labels_text,
     receiver_text,
 )
@@ -76,9 +79,10 @@ def _baseline(b: Any) -> str:
         )
     if isinstance(b, MeanBaseline):
         return f"the activation's mean over the {b.reference} prompts"
+    among = "" if b.group is None else f" with {donor_group_text(b.group)} as the prompt's"
     return (
-        f"the same activation in {b.donors} other {b.pool} prompts drawn without replacement "
-        f"(seed {b.seed}), averaged over donors"
+        f"the same activation in {b.donors} other {b.pool} prompts{among} drawn without "
+        f"replacement (seed {b.seed}), averaged over donors"
     )
 
 
@@ -388,7 +392,15 @@ def _steering_method(spec: Spec, e: Steering, summary: dict[str, Any] | None) ->
 def _statistics(spec: Spec, summary: dict[str, Any] | None) -> str:
     st = spec.statistics
     stats = (summary or {}).get("statistics") or {}
-    if st.cluster:
+    if st.cluster and st.cross:
+        counts = [stats.get("clusters"), stats.get("cross_clusters")]
+        first, second = (f" ({c} values)" if c else "" for c in counts)
+        over = (
+            f"crossed over the prompts' {st.cluster}{first} and {st.cross}{second}, each "
+            "field's values resampled on their own and a prompt counted as often as its two "
+            "values' draws multiplied,"
+        )
+    elif st.cluster:
         clusters = stats.get("clusters")
         counted = f" ({clusters} clusters)" if clusters else ""
         over = f"over clusters of prompts with the same {st.cluster}{counted}"
@@ -494,6 +506,31 @@ def methods_text(
         f"Prompts ran in batches of {spec.execution.batch_size}. {_statistics(spec, summary)}",
         _method(spec, summary),
     ]
+    if spec.gate is not None:
+        paragraphs.append(
+            "The spec set a gate, checked on the baseline before anything was intervened on: "
+            f"{gate_text(spec.gate)}. The run passed it."
+        )
+    if isinstance(spec.scope, SiteSetsScope):
+        if spec.scope.singles:
+            paragraphs.append(
+                "Each site of a set of two or more was also intervened on alone, and the set's "
+                "effect is compared with the sum of its sites' effects alone, from the same "
+                "resamples."
+            )
+        if spec.scope.controls is not None:
+            c = spec.scope.controls
+            among = (
+                "the other components of its kind in its own layer"
+                if c.match == "layer"
+                else "the components of its kind in every layer"
+            )
+            paragraphs.append(
+                f"Beside each set, {c.n} random set{'s' if c.n != 1 else ''} of the same size "
+                f"{'were' if c.n != 1 else 'was'} drawn (seed {c.seed}) and intervened on like "
+                f"it: each site redrawn among {among}, at the same position, never a site of "
+                "the set itself."
+            )
     # The saved directions it used, as the run pinned them.
     used = []
     for d in manifest.get("directions") or []:

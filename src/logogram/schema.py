@@ -81,10 +81,11 @@ class SiteSummary(SiteRef):
     answer_prob_delta: float | None
     sign_flips: int
     opposite_sign: int
-    # Corrected for the number of sites: a band that holds for all sites together, and the
-    # Benjamini-Hochberg q-value. Only in a finished run's summary.
+    # Corrected for the number of sites: a band that holds for all sites together, the
+    # Benjamini-Hochberg q-value and the Holm-adjusted p-value. Only in a finished run's summary.
     band: Band | None = None
     q: float | None = None
+    p_holm: float | None = None
 
 
 class LayoutAxis(BaseModel):
@@ -163,6 +164,9 @@ class StatisticsInfo(_Model):
     method: str
     cluster: str | None = None
     clusters: int | None = None
+    # The second field of a bootstrap crossed over two, and how many values it has.
+    cross: str | None = None
+    cross_clusters: int | None = None
     # The two-sided tail each site's simultaneous band keeps, and what the bands and q-values mean.
     band_level: float | None = None
     multiple_comparisons: str | None = None
@@ -287,12 +291,27 @@ class CircuitWithout(_Model):
 
 
 class CircuitInteraction(_Model):
-    """A set of two sites, each also intervened on alone: what intervening on both does beyond
-    the sum of the two, normalized like the effects."""
+    """A set of sites, each also intervened on alone: what intervening on them all at once does
+    beyond the sum of their effects alone, normalized like the effects."""
 
-    a: str  # the sets holding each site alone
-    b: str
-    effect: Stat  # effect(both) - effect(a) - effect(b)
+    a: str  # the sets holding each site alone: the first two (b is null beyond two sites)
+    b: str | None
+    # Every set holding one of the sites alone, and the sum of their effects (runs since 0.8).
+    parts: list[str] | None = None
+    sum: Stat | None = None
+    effect: Stat  # effect(all at once) - the sum of the effects alone
+
+
+class CircuitControl(_Model):
+    """Where a set's effect lies among the random sets drawn beside it."""
+
+    n: int  # how many random sets
+    mean: float  # of the random sets' mean effects
+    sd: float
+    lo: float  # the range holding the run's confidence level of them
+    hi: float
+    beyond: int  # how many are at least as far from zero as the set's own effect
+    p: float  # (beyond + 1) / (n + 1)
 
 
 class CircuitRow(_Model):
@@ -308,6 +327,9 @@ class CircuitRow(_Model):
     faithfulness: Stat | None = None
     without: CircuitWithout | None = None
     interaction: CircuitInteraction | None = None
+    control: CircuitControl | None = None
+    # A site added alone by the scope's ``singles``, not one of the scope's own sets.
+    single: bool = False
 
 
 class CircuitInfo(_Model):

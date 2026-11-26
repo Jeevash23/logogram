@@ -39,6 +39,40 @@ export function positionText(p: PositionSpec): string {
   }
 }
 
+/** A gate in a few words, such as "the answer preferred on at least 90% of the clean prompts". */
+export function gateText(gate: { min_correct: number | null; min_gap: number | null }): string {
+  const parts: string[] = [];
+  if (gate.min_correct !== null) parts.push(`the answer preferred on at least ${Math.round(gate.min_correct * 100)}% of the clean prompts`);
+  if (gate.min_gap !== null) parts.push(`a mean clean–corrupt gap of at least ${gate.min_gap}`);
+  return parts.join(" and ");
+}
+
+/** A donor group in a few words, such as "the same template". */
+export function donorGroupText(group: { field: string; match: "same" | "different" }): string {
+  return `${group.match === "same" ? "the same" : "a different"} ${group.field}`;
+}
+
+/** How many sets a site_sets scope intervenes on: its own, each site alone where `singles` adds
+ * one, and the random sets drawn beside each set that has sites. */
+export function setRowCount(scope: Extract<ScopeSpec, { kind: "site_sets" }>): number {
+  let singles = 0;
+  if (scope.singles) {
+    const alone = new Set(scope.sets.filter((set) => !set.complement && set.sites.length === 1).map((set) => JSON.stringify(set.sites[0])));
+    for (const set of scope.sets) {
+      if (set.complement || set.sites.length < 2) continue;
+      for (const site of set.sites) {
+        const key = JSON.stringify(site);
+        if (!alone.has(key)) {
+          alone.add(key);
+          singles += 1;
+        }
+      }
+    }
+  }
+  const random = scope.controls ? scope.controls.n * scope.sets.filter((set) => set.sites.length > 0).length : 0;
+  return scope.sets.length + singles + random;
+}
+
 export function baselineText(b: BaselineSpec): string {
   switch (b.kind) {
     case "zero":
@@ -46,7 +80,7 @@ export function baselineText(b: BaselineSpec): string {
     case "mean":
       return `mean over ${b.reference} prompts`;
     case "resample":
-      return `resample from ${b.donors} ${b.pool} donor${b.donors === 1 ? "" : "s"}, seed ${b.seed}`;
+      return `resample from ${b.donors} ${b.pool} donor${b.donors === 1 ? "" : "s"}${b.group ? ` with ${donorGroupText(b.group)}` : ""}, seed ${b.seed}`;
     case "scale":
       return `scale by ${String(b.factor).replace("-", "−")}`;
     case "projection":
@@ -211,7 +245,7 @@ export function experimentText(e: ExperimentSpec): string {
     case "mean":
       return `Mean-ablate (${e.baseline.reference} mean)`;
     case "resample":
-      return `Resample-ablate (${e.baseline.donors} ${e.baseline.pool} donors, seed ${e.baseline.seed})`;
+      return `Resample-ablate (${e.baseline.donors} ${e.baseline.pool} donors${e.baseline.group ? ` with ${donorGroupText(e.baseline.group)}` : ""}, seed ${e.baseline.seed})`;
     case "scale":
       return `Scale by ${String(e.baseline.factor).replace("-", "−")}`;
     case "projection":
@@ -371,7 +405,9 @@ export function scopeText(s: ScopeSpec): string {
         s.choose_on !== null ? ` chosen on ${Math.round(s.choose_on * 100)}% of the prompts (seed ${s.seed}) and reported on the rest` : ""
       }`;
     case "site_sets":
-      return `${s.sets.length} set${s.sets.length === 1 ? "" : "s"} of sites, each at once`;
+      return `${s.sets.length} set${s.sets.length === 1 ? "" : "s"} of sites, each at once${s.singles ? ", and their sites alone" : ""}${
+        s.controls ? `, against ${s.controls.n} random set${s.controls.n === 1 ? "" : "s"} each from ${s.controls.match === "layer" ? "its layers" : "the model"}` : ""
+      }`;
     case "head_inputs":
       return `${s.input === "q" ? "every head's query" : s.input === "k" ? "every key" : "every value"}, ${positionText(s.position)}`;
     case "neurons":
@@ -553,7 +589,7 @@ export function workload(
   else if (s.kind === "neurons") sites = s.layers.length * dMlp;
   else if (s.kind === "layer_components") sites = nLayers * s.components.length;
   else if (s.kind === "sites") sites = s.sites.length;
-  else if (s.kind === "site_sets") sites = s.sets.length;
+  else if (s.kind === "site_sets") sites = setRowCount(s);
   else if (s.kind === "features") return n; // only attribution patching sweeps every feature
   else if (s.positions === "each") {
     if (nPositions === null) return null;
@@ -594,7 +630,10 @@ export function workloadText(spec: Spec, rows: number): string {
     return `That is ${count(rows)} paths, each edge on each prompt alone, four forward passes each.`;
   }
   if (e.kind === "path_patching") return `That is ${count(rows)} paths, three forward passes each (fewer when senders come after the receivers).`;
-  if (spec.scope.kind === "site_sets") return `That is ${count(rows)} patched forward passes, every site of a set at once.`;
+  if (spec.scope.kind === "site_sets") {
+    const extra = [spec.scope.singles ? "each site alone" : "", spec.scope.controls ? "the random sets" : ""].filter(Boolean).join(" and ");
+    return `That is ${count(rows)} patched forward passes, every site of a set at once${extra ? `, ${extra} included` : ""}.`;
+  }
   return `That is ${count(rows)} patched forward passes.`;
 }
 

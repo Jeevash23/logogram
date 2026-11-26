@@ -71,7 +71,7 @@ export function CircuitDialog({
 
   const setUp = () => {
     if (error) return;
-    configureSets({ kind: "site_sets", universe, sets }, top ? { runId } : { staged: true });
+    configureSets({ kind: "site_sets", universe, sets, singles: false, controls: null }, top ? { runId } : { staged: true });
     onOpenChange(false);
   };
 
