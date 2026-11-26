@@ -56,6 +56,8 @@ paper, ink and one signal red, with titles in a serif.
 - The experiment form lists its methods three across, so the whole list is in view sooner.
 - The Prompts view names a run's saved copy of its prompts in words, not by its file's
   64-character name.
+- The documentation's pictures of the results and of the methods show the new look. Its
+  pictures of a probe, representations, ACDC and a sweep still show the earlier colors.
 - **Specs are version 5.** A version 5 spec states `gate`, `statistics.cross`, a site-sets
   scope's `singles` and `controls`, and a resample baseline's `group`. Version 4 specs still run
   and read with each of them off, which is what version 4 did. The bundled examples and the toy
