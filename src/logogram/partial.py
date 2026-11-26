@@ -228,6 +228,10 @@ def _by_sites(spec: Spec, result: EngineResult, kept: list[int], status: str) ->
         left_out.append(
             "Minimality and interactions are kept only where every set they compare finished."
         )
+        if any((rs.variant or {}).get("control_of") is not None for rs in sites):
+            left_out.append(
+                "A set is read against its random sets only where all of them finished."
+            )
     if layout.get("kind") == "steering":
         left_out.append("The comparison with the random control covers the sites that finished.")
     return {
