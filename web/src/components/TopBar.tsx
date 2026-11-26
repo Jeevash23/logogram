@@ -84,10 +84,10 @@ export function TopBar({
             type="button"
             className={s.tool}
             onClick={() => useStore.setState({ paletteOpen: true })}
-            aria-label="Open the command palette"
+            aria-label={`Commands ${MOD} K`}
           >
             <Icon name="search" size={16} />
-            <span className={s.label}>Commands</span>
+            <span className={s.label}>Commands</span>{" "}
             <kbd className={s.kbd}>{MOD} K</kbd>
           </button>
         </Tip>

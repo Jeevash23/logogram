@@ -57,8 +57,8 @@ test("your text can be read in the chat template too", async ({ page }) => {
   const tokens = page.getByRole("group", { name: /^Tokens of the text/ });
   // The template's beginning and " Hello" before the eight words, "." and " world" after them.
   await expect(tokens.getByRole("button")).toHaveCount(12);
-  await expect(tokens.getByRole("button").first()).toHaveAccessibleName(/^Token 0, .*the chat template's/);
-  await expect(tokens.getByRole("button").nth(2)).toHaveAccessibleName(/^Token 2, ·When: next/);
+  await expect(tokens.getByRole("button").first()).toHaveAccessibleName(/: token 0, the chat template's/);
+  await expect(tokens.getByRole("button").nth(2)).toHaveAccessibleName(/^·When .*: token 2, then the next/);
   await expect(page.getByRole("heading", { name: "What each layer would predict at token 11" })).toBeVisible();
   // A feature is added from the text's own first token on, not from the template's.
   const writes = page.getByRole("region", { name: "What the model writes next" });

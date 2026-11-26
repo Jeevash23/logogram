@@ -2,7 +2,7 @@
 
 What changed in each version of Logogram.
 
-## 0.7.2 (2026-11-13)
+## 0.7.2 (2026-11-26)
 
 Start here and the guide in moving figures, what Logogram can find out on the first screens, and a
 walkthrough that notices what you do.
@@ -52,6 +52,10 @@ walkthrough that notices what you do.
 - A run's own copy of its prompts is named as the dataset chip names it, the saved prompts of the
   run, not by its file in `datasets/snapshots/`, a 64-character hash, in the baseline and the
   experiment form.
+- Four kinds of button are named by what they show, so someone who speaks a control's label to
+  press it can press them: **Commands**, the next of the first four steps, a token of Your text
+  and **Save as direction** in a probe's or a learned subspace's results. Each name now begins
+  with the button's own words and goes on to say the rest.
 - With transformers 5.22 or later, every model's chat template was refused as one that writes
   today's date, and runs with a chat template failed: transformers now rebuilds what a template is
   given out of plain values, and the markers Logogram gives it for no clock and for special tokens
@@ -61,8 +65,10 @@ walkthrough that notices what you do.
 ### Development
 
 - The dependencies are brought up to date (fastapi, pydantic, transformer-lens 4.4, transformers,
-  huggingface-hub, pyarrow, filelock, setuptools, certifi and others, and the GitHub Actions),
-  which also clears the known vulnerabilities in filelock, setuptools and certifi. ruff is 0.17.2.
+  torch 2.15, huggingface-hub, pyarrow, filelock, setuptools, certifi, opentelemetry-api and
+  others, the web app's packages and the GitHub Actions), which also clears the known
+  vulnerabilities in filelock, setuptools, certifi and opentelemetry-api. ruff is 0.17.4, and the
+  accessibility scan is axe-core 4.14.
 - The reference pages are written the same way with Typer 0.29, whose options no longer carry a
   Click type, and the check that every spec model is described skips the generic class pydantic
   2.14 adds to the spec's module.

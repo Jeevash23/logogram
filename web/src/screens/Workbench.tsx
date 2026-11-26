@@ -139,9 +139,9 @@ function NextStep() {
   const step = model.state !== "ready" ? 0 : !dataset ? 1 : !baseline ? 2 : 3;
   const go = () =>
     step === 0 ? useStore.setState({ modelDialogOpen: true }) : useStore.getState().setView(step === 1 ? "prompts" : step === 2 ? "baseline" : "experiment");
-  return <Tip text="Your first experiment, in four steps" side="bottom"><button type="button" className={s.next} onClick={go} aria-label={`Next step: ${STEPS[step]}`}>
+  return <Tip text="Your first experiment, in four steps" side="bottom"><button type="button" className={s.next} onClick={go} aria-label={`Step ${step + 1} of 4 ${STEPS[step]}`}>
     <span className={s.nextDots} aria-hidden="true">{STEPS.map((label, i) => <span key={label} data-state={i < step ? "done" : i === step ? "now" : "todo"} data-workspace={i > 0 ? "experiment" : undefined} />)}</span>
-    <span className={s.nextText}><span className={s.nextCount}>Step {step + 1} of 4</span>{STEPS[step]}</span>
+    <span className={s.nextText}><span className={s.nextCount}>Step {step + 1} of 4</span>{" "}{STEPS[step]}</span>
     <Icon name="arrowRight" size={14} />
   </button></Tip>;
 }
