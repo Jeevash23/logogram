@@ -83,8 +83,8 @@
 .cardTitle {
   margin: 2px 0 4px;
   font-size: var(--text-xl);
-  font-weight: 560;
-  font-stretch: var(--display-stretch);
+  font-weight: 400;
+  font-family: var(--display);
   letter-spacing: inherit;
   line-height: inherit;
   overflow-wrap: anywhere;

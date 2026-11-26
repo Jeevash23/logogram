@@ -42,6 +42,7 @@ from logogram.spec import (
     DirectionReadout,
     DirectLogitAttribution,
     DistributedAlignmentSearch,
+    DonorGroup,
     EdgeAttribution,
     FeatureReadout,
     FeaturesScope,
@@ -58,6 +59,7 @@ from logogram.spec import (
     Steering,
     SubspacePatching,
     ZeroBaseline,
+    donor_group_text,
 )
 
 
@@ -406,14 +408,65 @@ def check_values(values: np.ndarray, what: str, dtype: str) -> list[str]:
     ]
 
 
+class GateError(EngineError):
+    """The baseline fell short of the spec's gate: nothing was intervened on."""
+
+
+def check_gate(spec: Spec, baselines: Baselines) -> None:
+    """Stop a run whose baseline falls short of the spec's gate, saying what was measured."""
+    gate = spec.gate
+    if gate is None:
+        return
+    short = []
+    if gate.min_correct is not None:
+        pref = baselines.clean_pref
+        if not len(pref) or not np.isfinite(pref).all():
+            raise GateError(
+                "The gate asks on how many clean prompts the model prefers the answer, and "
+                "log P(answer) − log P(distractor) isn't a finite number on every clean prompt, "
+                "so it can't be checked. Run the baseline check, or set the gate's min_correct "
+                "to null."
+            )
+        correct = int((pref > 0).sum())
+        share = correct / len(pref)
+        if share < gate.min_correct:
+            short.append(
+                f"the model prefers the answer on {correct} of the {len(pref)} clean prompts "
+                f"({share:.0%}), and the gate asks for at least {gate.min_correct:.0%}"
+            )
+    if gate.min_gap is not None:
+        what = METRIC_LABELS[spec.scored.kind]
+        gap = float(np.abs((baselines.clean - baselines.corrupt).mean()))
+        if not np.isfinite(gap) or gap < gate.min_gap:
+            short.append(
+                f"the mean clean–corrupt gap in the {what} is {gap:.3f}, and the gate asks for "
+                f"at least {gate.min_gap:g}"
+            )
+    if short:
+        raise GateError(
+            "The gate stopped this run before anything was intervened on: "
+            + "; ".join(short)
+            + ". The model doesn't show the behavior on these prompts to the standard the spec "
+            "set, so effects measured here would describe something else. Use prompts the model "
+            "solves, or another model; the gate is part of the spec, and lowering it after "
+            "seeing this is a choice to report."
+        )
+
+
 def check_gap(
     spec: Spec,
     baselines: Baselines,
     prompts: list[PreparedPrompt],
     receiver: str,
     reference: str,
+    *,
+    gate: bool = True,
 ) -> list[str]:
-    """Refuse a normalization the gap can't support, and warn when it is unreliable."""
+    """Refuse a baseline that falls short of the spec's gate and a normalization the gap can't
+    support, and warn when the gap is unreliable. Without ``gate``, the gate isn't checked: for
+    a part of the prompts measured again after the run's own baseline passed it."""
+    if gate:
+        check_gate(spec, baselines)
     warnings: list[str] = behavior_warnings(baselines)
     n = len(prompts)
     what = METRIC_LABELS[spec.scored.kind]
@@ -462,19 +515,39 @@ def draw_donors(
     k: int,
     seed: int,
     same_length: bool,
+    among: DonorGroup | None = None,
 ) -> list[list[int]]:
     """For each prompt, ``k`` distinct donors drawn without replacement, never the prompt itself.
+
+    With ``among``, a prompt's donors are drawn only from the prompts whose ``meta`` has the same
+    value of a field as its own, or a different one.
 
     Uses the raw PCG64 stream (stable across NumPy versions) and a partial Fisher-Yates shuffle.
     """
     bitgen = np.random.PCG64(seed)
     group_of = {i: g for g in groups for i in g.members}
+    value: list[str] = []
+    if among is not None:
+        for p in prompts:
+            meta = p.record.meta or {}
+            if among.field not in meta:
+                raise EngineError(
+                    f"Prompt {p.index} has no {among.field!r} in its meta, so its donors can't "
+                    "be chosen by it. Choose a field every prompt has, or draw donors among "
+                    "every prompt."
+                )
+            value.append(str(meta[among.field]))
     donors: list[list[int]] = []
     for i in range(len(prompts)):
         pool = group_of[i].members if same_length else list(range(len(prompts)))
         candidates = [j for j in pool if j != i]
+        if among is not None:
+            same = among.match == "same"
+            candidates = [j for j in candidates if (value[j] == value[i]) == same]
         if len(candidates) < k:
             where = "of the same length " if same_length else ""
+            if among is not None:
+                where += f"with {donor_group_text(among)} "
             raise EngineError(
                 f"Resampling needs {k} donor prompts {where}for prompt {i}, but only "
                 f"{len(candidates)} are available. Lower the donor count, use more prompts, or "
@@ -790,7 +863,7 @@ def run_engine(
         assert isinstance(exp, Ablation) and isinstance(exp.baseline, ResampleBaseline)
         k = exp.baseline.donors
         same_length = any(isinstance(s.site.position, AllPositions) for s in sites)
-        donors = draw_donors(prompts, groups, k, exp.baseline.seed, same_length)
+        donors = draw_donors(prompts, groups, k, exp.baseline.seed, same_length, exp.baseline.group)
     if baseline_kind == "mean" or mean_side is not None:
         check_mean_continuations(
             scorer, any(isinstance(s.site.position, AllPositions) for s in sites)

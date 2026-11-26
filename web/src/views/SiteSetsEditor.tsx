@@ -138,6 +138,40 @@ export function SiteSetsEditor({
         </span>
       </div>
       {error && <p className={s.small} role="note">{error}</p>}
+      <Field
+        label="Controls"
+        help="What a set's effect is read against. Each adds forward passes: the summary beside Run counts them."
+      >
+        <div className={c.controls}>
+          <Checkbox checked={scope.singles} onChange={(singles) => onChange({ ...scope, singles })}>
+            Each site alone too, for sets of two or more: what the set does beyond the sum of its sites
+          </Checkbox>
+          <Checkbox checked={scope.controls !== null} onChange={(on) => onChange({ ...scope, controls: on ? { n: 20, seed: 0, match: "layer" } : null })}>
+            Random sets of the same size beside each set: what a set that size does by chance
+          </Checkbox>
+          {scope.controls !== null && (
+            <div className={s.grid3}>
+              <Field label="Random sets for each set" help="1 to 1,000.">
+                <Input type="number" min={1} max={1000} step={1} value={scope.controls.n} onChange={(ev) => scope.controls && onChange({ ...scope, controls: { ...scope.controls, n: Number(ev.target.value) } })} />
+              </Field>
+              <Field label="Seed of the draw">
+                <Input type="number" min={0} step={1} value={scope.controls.seed} onChange={(ev) => scope.controls && onChange({ ...scope, controls: { ...scope.controls, seed: Number(ev.target.value) } })} />
+              </Field>
+              <Field label="Each site is redrawn" help="Within its layer, a random set has as many sites in each layer as the set. A layer has one attention and one MLP output, so those are redrawn among every layer.">
+                <Segmented
+                  label="Where each site of a random set is drawn from"
+                  value={scope.controls.match}
+                  onChange={(match) => scope.controls && onChange({ ...scope, controls: { ...scope.controls, match } })}
+                  options={[
+                    { value: "layer", label: "Within its layer" },
+                    { value: "model", label: "Among every layer" },
+                  ]}
+                />
+              </Field>
+            </div>
+          )}
+        </div>
+      </Field>
     </div>
   );
 }

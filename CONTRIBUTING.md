@@ -80,9 +80,11 @@ The same spec on the same machine gives bit-identical results. The sanity tests 
 `tests/test_sanity.py` must keep passing, and a model is checked when it loads rather than
 trusted to be what its architecture's name says.
 
-**Design.** White and black, with color that means something: one color for each workspace,
-green for a loaded model, and the cobalt-to-amber effect scale for effects only. Regions are
-separated by space and hairlines. One typeface, sentence case, plain verbs that say what
+**Design.** White paper and ink, with color that means something: one signal red for what an
+intervention changes and what is chosen to be changed, green for a loaded model, and the
+cobalt-to-amber effect scale for effects only. Regions are separated by space and hairlines. A
+serif for titles and key numbers and a sans for everything else, sentence case, plain verbs that
+say what
 happens, and errors that say how to fix them. The model map and heatmaps are drawn on canvas;
 menus, dialogs, tooltips and popovers are Radix primitives; state lives in Zustand; there are no
 component kits or chart libraries. Every view works with the keyboard, in both themes, down to an

@@ -4,12 +4,12 @@ import type { RunDetail, Spec, Summary } from "../src/api/types";
 import { exportFigure } from "../src/lib/export";
 
 const spec: Spec = {
-  logogram_spec: 4, name: "Chat heads", notes: "",
+  logogram_spec: 5, name: "Chat heads", notes: "",
   model: { id: "my-chat-model", source: "local", revision: null, sha256: "a".repeat(64), device: "auto", dtype: "float32", process_weights: true },
   dataset: { path: "datasets/ioi.jsonl", sha256: "abc", limit: null },
   tokenization: { prepend_bos: false, chat_template: { kind: "user_turn", system: null } },
   experiment: { kind: "activation_patching", direction: "clean_to_corrupt" }, scope: { kind: "heads", position: { kind: "all" } },
-  metric: { kind: "logit_diff", normalization: "dataset_gap" }, statistics: { bootstrap: 1000, seed: 0, ci: 0.95, cluster: null }, execution: { batch_size: 64 },
+  metric: { kind: "logit_diff", normalization: "dataset_gap" }, statistics: { bootstrap: 1000, seed: 0, ci: 0.95, cluster: null, cross: null }, execution: { batch_size: 64 }, gate: null,
 };
 
 const site = (layer: number, head: number) => ({

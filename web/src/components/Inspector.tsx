@@ -612,6 +612,14 @@ function Evidence({
             </dd>
           </>
         )}
+        {site.p_holm !== null && site.p_holm !== undefined && (
+          <>
+            <dt>Holm p-value</dt>
+            <dd>
+              {qText(site.p_holm)} <span className={s.muted}>the chance that any of the {unit} reported this strong is a false finding</span>
+            </dd>
+          </>
+        )}
         {control && (
           <>
             <dt>Against the random control</dt>
@@ -629,7 +637,7 @@ function Evidence({
             `${count(stats.bootstrap)} resamples`,
             `seed ${stats.seed}`,
           ].filter(Boolean).join(", ")}.
-          {site.band && ` The band holds for all ${count(nSites)} ${unit} at once, with ${ciLevel}% confidence; the q-value is Benjamini–Hochberg's.`}
+          {site.band && ` The band holds for all ${count(nSites)} ${unit} at once, with ${ciLevel}% confidence; the q-value is Benjamini–Hochberg's${site.p_holm !== null && site.p_holm !== undefined ? ", and the Holm p-value is the stricter of the two" : ""}.`}
           {control && ` Against the control: |effect| along the direction − |effect| along a random direction of the same length, at the same strength.`}
         </p>
       )}

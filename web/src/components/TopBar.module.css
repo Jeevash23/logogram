@@ -71,7 +71,7 @@
 }
 
 .workspace[aria-current="page"] {
-  color: #0a0a0b;
+  color: var(--on-ink);
 }
 
 .workspace[data-workspace="explore"][aria-current="page"] {

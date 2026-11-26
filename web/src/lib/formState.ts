@@ -8,6 +8,7 @@ import type {
   ChatTemplateSpec,
   DirectionRefSpec,
   ExperimentKind,
+  GateSpec,
   MetricKind,
   Normalization,
   PathReceiverSpec,
@@ -112,6 +113,10 @@ export interface FormState {
   /** A field of the prompts' meta whose values group them for the bootstrap; null resamples single
    * prompts. */
   cluster: string | null;
+  /** A second field crossed with `cluster`: the bootstrap resamples both at once. */
+  cross: string | null;
+  /** What the baseline must show before anything is intervened on, or null for no gate. */
+  gate: GateSpec | null;
   batchSize: number;
   limit: number | null;
   /** Whether prompts begin with the beginning-of-sequence token. A chat template writes the
@@ -185,6 +190,8 @@ export const DEFAULT_FORM: FormState = {
   ci: 0.95,
   statSeed: 0,
   cluster: null,
+  cross: null,
+  gate: null,
   batchSize: 64,
   limit: null,
   prependBos: true,
@@ -269,6 +276,8 @@ export function formFromSpec(spec: Spec): FormState {
     ci: spec.statistics.ci,
     statSeed: spec.statistics.seed,
     cluster: spec.statistics.cluster ?? null,
+    cross: spec.statistics.cross ?? null,
+    gate: spec.gate ?? null,
     batchSize: spec.execution.batch_size,
     limit: spec.dataset.limit,
     // A spec with a chat template says false; without one again, prompts begin with BOS.

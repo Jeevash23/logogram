@@ -12,6 +12,9 @@ from logogram.stats import (
     bootstrap_pvalues,
     cluster_counts,
     compute_site_stats,
+    crossed_counts,
+    empty_resamples,
+    holm_pvalues,
     paired_difference,
     resample_counts,
     simultaneous_band,
@@ -141,6 +144,101 @@ def test_benjamini_hochberg_q_values():
     np.testing.assert_allclose(q[:4], [0.04, 0.04 * 4 / 3, 0.04 * 4 / 3, 0.20])
     assert np.isnan(q[4])
     assert (bh_qvalues(np.array([0.5, 0.9])) <= 1).all()
+
+
+def test_holm_adjusted_p_values():
+    p = np.array([0.01, 0.04, 0.03, 0.20, np.nan])
+    adjusted = holm_pvalues(p)
+    # Sorted p: 0.01, 0.03, 0.04, 0.20 (m = 4), times 4, 3, 2, 1, and never falling.
+    np.testing.assert_allclose(adjusted[:4], [0.04, 0.09, 0.09, 0.20])
+    assert np.isnan(adjusted[4])
+    # Never below the p-value or the q-value, and never above 1.
+    assert (adjusted[:4] >= p[:4]).all() and (adjusted[:4] >= bh_qvalues(p)[:4] - 1e-12).all()
+    assert (holm_pvalues(np.array([0.5, 0.9])) <= 1).all()
+    assert len(holm_pvalues(np.array([]))) == 0
+    # A run's sites carry them beside their q-values.
+    rng = np.random.default_rng(0)
+    effects = rng.normal(size=(6, 40)) + np.array([[3.0], [0.0], [0.0], [0.0], [0.0], [0.0]])
+    stats = _stats(effects, resample_counts(40, 500, seed=0))
+    assert stats.p_holm is not None and stats.q is not None
+    assert (stats.p_holm >= stats.q - 1e-12).all()
+    assert stats.p_holm[0] < 0.05 < stats.p_holm[1:].min()
+
+
+def test_a_crossed_bootstrap_resamples_two_fields_at_once():
+    names = ["a", "a", "a", "b", "b", "b", "c", "c", "c"]
+    places = ["x", "y", "z", "x", "y", "z", "x", "y", "z"]
+    counts = crossed_counts(names, places, 400, seed=0)
+    assert counts.shape == (400, 9)
+    # The first field is drawn as a bootstrap over it alone draws it.
+    by_name = cluster_counts(names, 400, seed=0)
+    by_place = counts / np.where(by_name == 0, 1, by_name)
+    # A prompt counts as often as its two values' draws multiplied: what is left once the name's
+    # draws are divided out is one draw per place, the same for every name.
+    for b in range(400):
+        drawn = by_name[b] > 0
+        table = by_place[b].reshape(3, 3)[drawn.reshape(3, 3)[:, 0]]
+        assert (table == table[0]).all() and table[0].sum() == 3
+    # Each prompt is drawn once on average, and the same seed draws the same resamples.
+    assert counts.mean() == pytest.approx(1.0, abs=0.08)
+    np.testing.assert_array_equal(counts, crossed_counts(names, places, 400, seed=0))
+    assert empty_resamples(counts) == 0
+    # Prompts that differ by name and by place get wider intervals than a bootstrap over either.
+    rng = np.random.default_rng(1)
+    name_effect = {"a": -1.0, "b": 0.0, "c": 1.0}
+    place_effect = {"x": -1.0, "y": 0.0, "z": 1.0}
+    values = np.array(
+        [[name_effect[n] + place_effect[p] for n, p in zip(names, places, strict=True)]]
+    )
+    values = values + rng.normal(scale=0.01, size=values.shape) + 5.0
+
+    def width(c):
+        stats = _stats(values, c)
+        return float(stats.delta_hi[0] - stats.delta_lo[0])
+
+    crossed = width(crossed_counts(names, places, 2000, seed=0))
+    assert crossed > width(cluster_counts(names, 2000, seed=0)) * 1.2
+    assert crossed > width(cluster_counts(places, 2000, seed=0)) * 1.2
+    # A design where each name has its own place can draw no prompt at all.
+    sparse = crossed_counts(["a", "b", "c"], ["x", "y", "z"], 400, seed=0)
+    assert empty_resamples(sparse) > 0
+
+
+def test_a_run_can_resample_two_crossed_fields(tiny_backend, project, spec_factory):
+    spec = spec_factory(
+        statistics={"bootstrap": 200, "seed": 0, "cluster": "template", "cross": "pattern"}
+    )
+    outcome = run_spec(spec, project, backend=tiny_backend)
+    assert outcome.status == "finished", outcome.manifest.get("error")
+    stats = outcome.summary["statistics"]
+    assert (stats["cluster"], stats["clusters"]) == ("template", 3)
+    assert (stats["cross"], stats["cross_clusters"]) == ("pattern", 2)
+    assert "crossed over the prompts' template and pattern" in stats["method"]
+    assert outcome.summary["sites"][0]["p_holm"] is not None
+    assert "Holm-adjusted" in stats["multiple_comparisons"]
+    # The effects are the same as with any other bootstrap; only the intervals differ.
+    plain = run_spec(
+        spec_factory(statistics={"bootstrap": 200, "seed": 0, "cluster": "template"}),
+        project,
+        backend=tiny_backend,
+    )
+    assert [s["effect"]["mean"] for s in plain.summary["sites"]] == [
+        s["effect"]["mean"] for s in outcome.summary["sites"]
+    ]
+    assert plain.summary["statistics"]["cross"] is None
+
+    for statistics, message in (
+        ({"cluster": None, "cross": "pattern"}, "second field beside statistics.cluster"),
+        ({"cluster": "pattern", "cross": "pattern"}, "another field than"),
+        ({"cluster": "pattern", "cross": "a b"}, "must name a field"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            spec_factory(statistics={"bootstrap": 200, "seed": 0, **statistics})
+    missing = spec_factory(
+        statistics={"bootstrap": 200, "seed": 0, "cluster": "template", "cross": "nothing"}
+    )
+    failed = run_spec(missing, project, backend=tiny_backend)
+    assert failed.status == "failed" and "has no 'nothing' in its meta" in failed.manifest["error"]
 
 
 def test_paired_differences_use_shared_resamples():

@@ -6,9 +6,10 @@ logogram at the left), the three workspaces, and the tools: **History**, **Comma
 dataset in use, and **Inspector**. The status line at the bottom shows the job in progress and
 the connection to Logogram.
 
-Each workspace has a color, which marks its tab, its progress and its choices: green for
-Explore, orange for Experiment, pink for Evidence. Green also means a loaded model. Effects use
-a diverging cobalt to amber scale, always with its legend, and nothing else does.
+The open workspace is filled in ink, and its tab is underlined in ink. One red, the signal, marks
+what an intervention changes and the cell you have chosen to change, as a figure in a paper
+would. Green means a loaded model. Effects use a diverging cobalt to amber scale, always with its
+legend, and nothing else does.
 
 ## Explore: look inside the model
 

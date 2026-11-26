@@ -61,6 +61,7 @@ export function parseForm(value: unknown): FormState | null {
     form[key] = value[key];
   }
   form.scope = upgradeScope(form.scope as Record<string, unknown>);
+  form.baseline = upgradeBaseline(form.baseline as Record<string, unknown> | null);
   form.modelRef = upgradeModelRef(form.modelRef as Record<string, unknown> | null);
   form.saeRef = upgradeSaeRef(form.saeRef as Record<string, unknown> | null);
   form.predictions = upgradePredictions(form.predictions as Record<string, unknown> | null);
@@ -90,6 +91,8 @@ function upgradeModelRef(ref: Record<string, unknown> | null): Record<string, un
  * steering had a direction steered along the mean difference, without continuations, and one
  * stored before chat templates read prompts as plain text. */
 const ADDED = new Set<keyof FormState>([
+  "cross",
+  "gate",
   "atpMethod",
   "atpSteps",
   "metric",
@@ -132,7 +135,14 @@ const ADDED = new Set<keyof FormState>([
  * features on every prompt. */
 function upgradeScope(scope: Record<string, unknown>): Record<string, unknown> {
   if (scope.kind === "features" && !("choose_on" in scope)) return { ...scope, choose_on: null, seed: null };
+  if (scope.kind === "site_sets" && !("singles" in scope && "controls" in scope)) return { singles: false, controls: null, ...scope };
   return scope;
+}
+
+/** Donors stored before they could be drawn by a field of the meta were drawn among every prompt. */
+function upgradeBaseline(baseline: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!baseline || baseline.kind !== "resample" || "group" in baseline) return baseline;
+  return { ...baseline, group: null };
 }
 
 export function readStoredForm(projectPath: string): StoredForm | null {
@@ -199,6 +209,10 @@ const isSite: Check = (v) =>
 
 const isSiteSet: Check = (v) => isObject(v) && isString(v.label) && listOf(isSite)(v.sites) && isBoolean(v.complement);
 
+const isRandomSets: Check = (v) => isObject(v) && isNumber(v.n) && isNumber(v.seed) && oneOf("layer", "model")(v.match);
+const isDonorGroup: Check = (v) => isObject(v) && isString(v.field) && oneOf("same", "different")(v.match);
+const isGate: Check = (v) => isObject(v) && orNull(isNumber)(v.min_correct) && orNull(isNumber)(v.min_gap);
+
 const isScope: Check = (v) => {
   if (!isObject(v)) return false;
   switch (v.kind) {
@@ -215,7 +229,9 @@ const isScope: Check = (v) => {
       return isPosition(v.position) && isNumber(v.top) &&
         (("choose_on" in v) ? orNull(isNumber)(v.choose_on) && orNull(isNumber)(v.seed) : !("seed" in v));
     case "site_sets":
-      return orNull(listOf(oneOf("head", "attn_out", "mlp_out", "q", "k", "v", "neuron")))(v.universe) && listOf(isSiteSet)(v.sets);
+      // Stored before sets had controls, it has neither field (see upgradeScope).
+      return orNull(listOf(oneOf("head", "attn_out", "mlp_out", "q", "k", "v", "neuron")))(v.universe) && listOf(isSiteSet)(v.sets) &&
+        (!("singles" in v) || isBoolean(v.singles)) && (!("controls" in v) || orNull(isRandomSets)(v.controls));
     case "head_inputs":
       return oneOf("q", "k", "v")(v.input) && isPosition(v.position);
     case "neurons":
@@ -235,7 +251,8 @@ const isBaseline: Check = (v) => {
   if (!isObject(v)) return false;
   if (v.kind === "zero") return true;
   if (v.kind === "mean") return SIDES(v.reference);
-  if (v.kind === "resample") return SIDES(v.pool) && isNumber(v.donors) && isNumber(v.seed);
+  // Stored before donors could be drawn by a field, it has no group (see upgradeBaseline).
+  if (v.kind === "resample") return SIDES(v.pool) && isNumber(v.donors) && isNumber(v.seed) && (!("group" in v) || orNull(isDonorGroup)(v.group));
   if (v.kind === "scale") return isNumber(v.factor);
   if (v.kind === "projection") return isDirectionRef(v.direction) && orNull(SIDES)(v.reference);
   return false;
@@ -364,6 +381,8 @@ const FIELDS: { [K in keyof FormState]-?: Check } = {
   ci: isNumber,
   statSeed: isNumber,
   cluster: orNull(isString),
+  cross: orNull(isString),
+  gate: orNull(isGate),
   batchSize: isNumber,
   limit: orNull(isNumber),
   prependBos: isBoolean,

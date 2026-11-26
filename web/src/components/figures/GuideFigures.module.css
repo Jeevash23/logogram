@@ -68,8 +68,8 @@
 
 .big {
   font-size: 28px;
-  font-weight: 680;
-  font-stretch: var(--display-stretch);
+  font-weight: 400;
+  font-family: var(--display);
   font-variant-numeric: tabular-nums;
 }
 

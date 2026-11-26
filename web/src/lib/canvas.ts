@@ -10,6 +10,8 @@ export interface ChromeColors {
   line: string;
   lineSoft: string;
   text: string;
+  /* What is chosen to be intervened on: the ring around a selected cell. */
+  signal: string;
   muted: string;
   faint: string;
   /** An interval drawn in a chart: ink, faintly. */
@@ -27,6 +29,7 @@ function readColors(): ChromeColors {
     line: v("--line"),
     lineSoft: v("--line-soft"),
     text: v("--text"),
+    signal: v("--signal"),
     muted: v("--muted"),
     faint: v("--faint"),
     band: v("--band"),
@@ -146,7 +149,7 @@ export function cornerFlag(
 const inkRings = new Map<string, Path2D>();
 
 /**
- * Circle a cell in ink, like marking a printout: a thin hand-drawn ring around the rectangle,
+ * Circle a cell, like marking a printout in red pen: a thin hand-drawn ring around the rectangle,
  * cut out of its surroundings by a band of ``gapColor`` so it reads over any data color.
  */
 export function inkRing(

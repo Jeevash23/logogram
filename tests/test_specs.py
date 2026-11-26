@@ -47,7 +47,7 @@ V1_MINIMAL = {
 
 def test_version_1_specs_list_what_they_left_out():
     spec = Spec.model_validate(V1_MINIMAL)
-    assert spec.logogram_spec == 4
+    assert spec.logogram_spec == 5
     filled = "\n".join(spec.upgraded_fields)
     for expected in (
         'model.dtype = "float32"',
@@ -83,7 +83,7 @@ def test_version_2_specs_read_as_the_current_version_with_its_additions_off():
     }
     for experiment in (v2["experiment"], steering):
         spec = Spec.model_validate({**v2, "experiment": experiment})
-        assert spec.logogram_spec == 4 and spec.upgraded_fields == []
+        assert spec.logogram_spec == 5 and spec.upgraded_fields == []
         assert spec.tokenization.chat_template is None
         assert (spec.model.source, spec.model.sha256) == ("hub", None)
     assert spec.experiment.model_dump() == {
@@ -110,7 +110,7 @@ def test_version_3_specs_read_with_a_published_sae_and_the_logit_lens():
     before = json.loads(json.dumps(v3))
     spec = Spec.model_validate(v3)
     assert v3 == before  # the input is left as it was
-    assert spec.logogram_spec == 4 and spec.upgraded_fields == []
+    assert spec.logogram_spec == 5 and spec.upgraded_fields == []
     assert spec.sae is not None and (spec.sae.source, spec.sae.sha256) == ("hub", None)
     assert spec.predictions is not None and spec.predictions.lens is None
     # Version 4 states them.
@@ -173,14 +173,41 @@ def test_specs_must_state_every_choice():
         ({"sae": {**PROJECT_SAE, "repo": "../x", "path": "saes/../x"}}, "letters, digits"),
         ({"metric": {"kind": "kl", "normalization": "dataset_gap"}}, "target"),
         (
-            {"statistics": {"bootstrap": 200, "ci": 0.95, "seed": -1, "cluster": None}},
+            {
+                "statistics": {
+                    "bootstrap": 200,
+                    "ci": 0.95,
+                    "seed": -1,
+                    "cluster": None,
+                    "cross": None,
+                }
+            },
             "greater than or equal",
         ),
         (
-            {"statistics": {"bootstrap": 200, "ci": 0.95, "seed": 2**40, "cluster": None}},
+            {
+                "statistics": {
+                    "bootstrap": 200,
+                    "ci": 0.95,
+                    "seed": 2**40,
+                    "cluster": None,
+                    "cross": None,
+                }
+            },
             "less than",
         ),
-        ({"statistics": {"bootstrap": 200, "ci": 0.95, "seed": 0, "cluster": "a b"}}, "meta"),
+        (
+            {
+                "statistics": {
+                    "bootstrap": 200,
+                    "ci": 0.95,
+                    "seed": 0,
+                    "cluster": "a b",
+                    "cross": None,
+                }
+            },
+            "meta",
+        ),
         ({"model": {**MODEL, "device": "cuda:x"}}, "cuda:N"),
         ({"model": {**MODEL, "device": "gpu"}}, "cuda:N"),
         ({"model": {**MODEL, "sha256": "0" * 64}}, "pinned by its revision"),
@@ -258,7 +285,7 @@ def test_a_version_1_run_says_what_it_assumed(tiny_backend, project):
     assert "This spec is version 1" in outcome.summary["warnings"][0]
     assert "statistics.seed = 0" in outcome.summary["warnings"][0]
     saved = json.loads((outcome.folder / "spec.json").read_text(encoding="utf-8"))
-    assert saved["logogram_spec"] == 4 and saved["statistics"]["cluster"] is None
+    assert saved["logogram_spec"] == 5 and saved["statistics"]["cluster"] is None
 
 
 def test_upgrading_never_changes_the_input():

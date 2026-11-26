@@ -281,6 +281,13 @@
 }
 
 .ring {
-  fill: var(--text);
+  fill: var(--signal);
   stroke: var(--bg);
+}
+
+/* The controls a set is read against: one choice under the other. */
+.controls {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
 }

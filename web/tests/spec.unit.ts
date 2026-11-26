@@ -8,7 +8,7 @@ import { analysisContext, sameModel, tokenizationKey } from "../src/lib/analysis
 import { buildSpec, carriedBy, datasetFacts, lastInstead, metricOf, savedDifferences, unevenPairsText, unlinedReason } from "../src/lib/buildSpec";
 import { DEFAULT_FORM, formFromSpec, type FormState } from "../src/lib/formState";
 import { gapCheck, METRIC_KINDS, metricWords } from "../src/lib/metrics";
-import { measureWords, saeWritesText, sameDevice, scopeFor, splitCount, steerSiteOf, workload, workloadText } from "../src/lib/spec";
+import { experimentText, gateText, measureWords, saeWritesText, sameDevice, scopeFor, scopeText, setRowCount, splitCount, steerSiteOf, workload, workloadText } from "../src/lib/spec";
 import { useStore } from "../src/store/app";
 
 const model: ModelStatus = {
@@ -42,7 +42,7 @@ const dataset = (records: PromptRecord[], continuations?: number[]): DatasetDeta
 test("the default form builds a version 3 spec that states every choice", () => {
   const spec = built(form());
   expect(spec).toEqual({
-    logogram_spec: 4,
+    logogram_spec: 5,
     name: "Patch clean→corrupt · layer × head",
     notes: "",
     model: { id: "tiny-gpt2", source: "hub", revision: "test", sha256: null, dtype: "float32", device: "cpu", process_weights: true },
@@ -51,8 +51,9 @@ test("the default form builds a version 3 spec that states every choice", () => 
     experiment: { kind: "activation_patching", direction: "clean_to_corrupt" },
     scope: { kind: "heads", position: { kind: "all" } },
     metric: { kind: "logit_diff", normalization: "dataset_gap" },
-    statistics: { bootstrap: 1000, ci: 0.95, seed: 0, cluster: null },
+    statistics: { bootstrap: 1000, ci: 0.95, seed: 0, cluster: null, cross: null },
     execution: { batch_size: 64 },
+    gate: null,
     predictions: null,
   });
   // A saved spec fills the form, and the form builds the same spec again.
@@ -108,11 +109,71 @@ test("the bootstrap resamples clusters only of a field every prompt has", () => 
   ];
   const facts = datasetFacts(dataset(records), null);
   expect(facts?.fields).toEqual([{ field: "template", clusters: 2 }, { field: "pattern", clusters: 2 }]);
-  expect(built(form({ cluster: "template" }), { facts }).statistics).toEqual({ bootstrap: 1000, ci: 0.95, seed: 0, cluster: "template" });
+  expect(built(form({ cluster: "template" }), { facts }).statistics).toEqual({ bootstrap: 1000, ci: 0.95, seed: 0, cluster: "template", cross: null });
   expect(refused(form({ cluster: "only" }), { facts })).toContain("Not every prompt has “only”");
   // The first two prompts share one template: one cluster, nothing to resample.
   expect(refused(form({ cluster: "template", limit: 2 }), { facts: datasetFacts(dataset(records), 2) })).toContain("there is one cluster");
   expect(formFromSpec(built(form({ cluster: "pattern" }), { facts })).cluster).toBe("pattern");
+});
+
+test("the controls are stated in the spec: a gate, a crossed bootstrap, donors by a field, sites alone and random sets", () => {
+  const records = [
+    record({ meta: { template: "went", pattern: "ABBA", only: 1 } }),
+    record({ meta: { template: "went", pattern: "BABA" } }),
+    record({ meta: { template: "got", pattern: "ABBA" } }),
+  ];
+  const facts = datasetFacts(dataset(records), null);
+  // Nothing is on until it is chosen.
+  const plain = built(form(), { facts });
+  expect(plain.gate).toBeNull();
+  expect(plain.statistics.cross).toBeNull();
+
+  // A gate asks for something, within its bounds; a probe reads no output to check.
+  const gate = { min_correct: 0.9, min_gap: null };
+  expect(built(form({ gate }), { facts }).gate).toEqual(gate);
+  expect(formFromSpec(built(form({ gate }), { facts })).gate).toEqual(gate);
+  expect(refused(form({ gate: { min_correct: null, min_gap: null } }), { facts })).toContain("asks for nothing yet");
+  expect(refused(form({ gate: { min_correct: 1.2, min_gap: null } }), { facts })).toContain("at most 100%");
+  expect(refused(form({ gate: { min_correct: null, min_gap: 0 } }), { facts })).toContain("above 0");
+  expect(gateText({ min_correct: 0.9, min_gap: 1.5 })).toBe("the answer preferred on at least 90% of the clean prompts and a mean clean–corrupt gap of at least 1.5");
+
+  // A second field is crossed with the first, and read only beside one.
+  const crossed = built(form({ cluster: "template", cross: "pattern" }), { facts });
+  expect(crossed.statistics).toEqual({ bootstrap: 1000, ci: 0.95, seed: 0, cluster: "template", cross: "pattern" });
+  expect(formFromSpec(crossed).cross).toBe("pattern");
+  expect(built(form({ cluster: null, cross: "pattern" }), { facts }).statistics.cross).toBeNull();
+  expect(refused(form({ cluster: "template", cross: "template" }), { facts })).toContain("already over template");
+  expect(refused(form({ cluster: "template", cross: "only" }), { facts })).toContain("Not every prompt has “only”");
+
+  // Donors drawn by a field every prompt has.
+  const baseline = { kind: "resample" as const, pool: "corrupt" as const, donors: 1, seed: 0, group: { field: "pattern", match: "same" as const } };
+  const resampled = built(form({ kind: "ablation", baseline }), { facts });
+  expect(resampled.experiment).toEqual({ kind: "ablation", baseline });
+  expect(experimentText(resampled.experiment)).toBe("Resample-ablate (1 corrupt donors with the same pattern, seed 0)");
+  expect(refused(form({ kind: "ablation", baseline: { ...baseline, group: { field: "only", match: "different" } } }), { facts })).toContain("donors can't be chosen by it");
+
+  // Sets of sites: each site alone, and random sets, counted in what the run costs.
+  const head = (layer: number, h: number) => ({ kind: "head" as const, layer, head: h, position: { kind: "all" as const } });
+  const scope = {
+    kind: "site_sets" as const,
+    universe: null,
+    sets: [
+      { label: "three", sites: [head(0, 1), head(1, 2), head(1, 0)], complement: false },
+      { label: "one", sites: [head(0, 1)], complement: false },
+      { label: "kept", sites: [head(0, 1), head(1, 2)], complement: true },
+      { label: "everything", sites: [], complement: true },
+    ],
+    singles: true,
+    controls: { n: 10, seed: 0, match: "layer" as const },
+  };
+  // Four sets, two sites alone (the third already has a set), and ten random sets for each of the
+  // three sets that have sites.
+  expect(setRowCount(scope)).toBe(4 + 2 + 30);
+  expect(setRowCount({ ...scope, singles: false, controls: null })).toBe(4);
+  expect(scopeText(scope)).toBe("4 sets of sites, each at once, and their sites alone, against 10 random sets each from its layers");
+  const sets = built(form({ kind: "ablation", baseline: { kind: "zero" }, scope: { ...scope, universe: ["head"] } }), { facts });
+  expect(sets.scope).toMatchObject({ singles: true, controls: { n: 10, seed: 0, match: "layer" } });
+  expect(refused(form({ kind: "ablation", baseline: { kind: "zero" }, scope: { ...scope, universe: ["head"], controls: { n: 0, seed: 0, match: "layer" } } }), { facts })).toContain("1 to 1,000 random sets");
 });
 
 test("attribution patching estimates with one gradient or with integrated gradients over 2 to 64 steps", () => {
@@ -428,13 +489,13 @@ test("pairs of different lengths are offered only the positions that are matched
   expect(refused(ig, { facts })).toContain("Integrated gradients run on inputs between the two prompts' embeddings");
   const keep: FormState["scope"] = { kind: "site_sets", universe: ["head"], sets: [{ label: "rest", sites: [], complement: true }] };
   expect(refused(form({ scope: keep }), { facts })).toContain("The set “rest” keeps its sites and patches every other position");
-  expect(built(form({ kind: "ablation", baseline: { kind: "zero" }, scope: keep }), { facts }).scope).toEqual(keep);
+  expect(built(form({ kind: "ablation", baseline: { kind: "zero" }, scope: keep }), { facts }).scope).toEqual({ ...keep, singles: false, controls: null });
   const labelled: FormState["scope"] = {
     kind: "site_sets",
     universe: null,
     sets: [{ label: "S2", sites: [{ kind: "attn_out", layer: 0, head: null, position: { kind: "label", label: "S2" } }], complement: false }],
   };
-  expect(built(form({ scope: labelled }), { facts }).scope).toEqual(labelled);
+  expect(built(form({ scope: labelled }), { facts }).scope).toEqual({ ...labelled, singles: false, controls: null });
   const meanSets = form({ kind: "ablation", baseline: { kind: "mean", reference: "corrupt" }, scope: labelled });
   expect(refused(meanSets, { facts })).toContain("Mean ablation of a set replaces whole activations");
 

@@ -4,7 +4,7 @@
 
 Every experiment is a `spec.json`: the single description of an experiment, which the app, `logogram run` and the Python API all run the same way. Nothing that can change a number is left implicit. A spec states every such field, and a spec that leaves one out is refused with the field's name. This page lists every field, from the models in [`src/logogram/spec.py`](https://github.com/Jeevash23/logogram/blob/main/src/logogram/spec.py).
 
-This is version 4. Version 1 specs (Logogram 0.1) still run: each choice one leaves out takes the value version 1 gave it, the run's first warning lists those values, and `logogram validate SPEC.json` shows them without running anything. Version 2 specs (Logogram 0.2 to 0.4) read with what version 3 added turned off, which is what they did: no chat template, a model from Hugging Face, and steering along the mean difference without continuations. Version 3 specs (Logogram 0.5 and 0.6) read as version 4 with what version 4 adds turned off: the SAE a spec names is a published one, and the layer predictions read the logit lens. Version 4 also adds methods and sources that a version 3 spec can't name.
+This is version 5. Version 1 specs (Logogram 0.1) still run: each choice one leaves out takes the value version 1 gave it, the run's first warning lists those values, and `logogram validate SPEC.json` shows them without running anything. Version 2 specs (Logogram 0.2 to 0.4) read with what version 3 added turned off, which is what they did: no chat template, a model from Hugging Face, and steering along the mean difference without continuations. Version 3 specs (Logogram 0.5 and 0.6) read as version 4 with what version 4 adds turned off: the SAE a spec names is a published one, and the layer predictions read the logit lens. Version 4 also adds methods and sources that a version 3 spec can't name.
 
 Objects that come in several kinds (an experiment, a scope, a position, ...) say which with their `kind`, and each kind has fields of its own.
 
@@ -12,7 +12,7 @@ The bundled IOI example's spec:
 
 ```json
 {
-  "logogram_spec": 4,
+  "logogram_spec": 5,
   "name": "Which heads restore the answer?",
   "notes": "Run each corrupt prompt (the subject is replaced by the indirect object, so the model should prefer the other name) and patch in one head's output from the clean prompt at every position. A normalized effect of 1 means that head alone restores the clean behavior; negative values mean the head works against the answer.",
   "model": {
@@ -51,11 +51,13 @@ The bundled IOI example's spec:
     "bootstrap": 1000,
     "ci": 0.95,
     "seed": 0,
-    "cluster": null
+    "cluster": null,
+    "cross": null
   },
   "execution": {
     "batch_size": 64
   },
+  "gate": null,
   "predictions": null,
   "sae": null
 }
@@ -67,7 +69,7 @@ An experiment: what runs, on which model and prompts, and how its numbers are me
 
 | Field | Type | Allowed values | Description |
 |---|---|---|---|
-| `logogram_spec` | integer | `4` | The spec's version. Version 1, 2 and 3 specs are read too, as version 4. |
+| `logogram_spec` | integer | `5` | The spec's version. Version 1, 2, 3 and 4 specs are read too, as version 5. |
 | `name` | string | 1 to 200 characters | What the experiment is called, in the history and the results. |
 | `notes` (optional, default `""`) | string | any | What you expect and why, saved with the spec and shown beside the results. |
 | `model` | object | [Model](#model) | The model, exactly: its files, precision, device and weight processing. |
@@ -78,6 +80,7 @@ An experiment: what runs, on which model and prompts, and how its numbers are me
 | `metric` | object or null | one of [`logit_diff`](#metric-logit_diff), [`logprob_diff`](#metric-logprob_diff), [`logprob`](#metric-logprob), [`prob`](#metric-prob), [`prob_diff`](#metric-prob_diff), [`kl`](#metric-kl) or [`readout`](#metric-readout) ([Metric](#metric)), or `null` | What is read from the model's output (or, as a readout, from inside it), and how effects are normalized; `null` for probes, which read activations instead. |
 | `statistics` | object | [Statistics](#statistics) | The intervals' bootstrap, confidence level and seed. |
 | `execution` | object | [Execution](#execution) | How the work is batched. |
+| `gate` | object or null | [Gate](#gate), or `null` | What the baseline must show before anything is intervened on; `null` for no gate. |
 | `predictions` (optional, default `null`) | object or null | [Prediction settings](#prediction-settings), or `null` | An optional logit lens saved beside the results; it never changes an intervention. |
 | `sae` (optional, default `null`) | object or null | [SAE](#sae), or `null` | The SAE or transcoder that feature sites, the features scope and steering along a feature refer to; `null` otherwise. |
 
@@ -424,6 +427,8 @@ a share of the set that replaces the whole universe, when the scope has one.
 | `kind` | string | `"site_sets"` | Which scope this is: always `site_sets` here. |
 | `universe` | list of strings or null | each `"head"`, `"attn_out"`, `"mlp_out"`, `"q"`, `"k"`, `"v"` or `"neuron"`, or `null` | The components, at every layer and position, that make up the rest of the model for complement sets; `null` when no set is one. |
 | `sets` | list of objects | 1 to 64 items; each [Site set](#site-set) | The sets, each intervened on at once: one result per set. |
+| `singles` | boolean | `true` or `false` | Also intervene on each site alone, for every set of two or more sites that intervenes on its sites (not a complement): the results then say what the set does beyond the sum of its sites alone. |
+| `controls` | object or null | [Random sets](#random-sets), or `null` | Random sets of the same size, drawn for each set that has sites; `null` for none. |
 
 ### Scope: head_inputs
 
@@ -579,6 +584,7 @@ prompts, since prompts from one template aren't independent.
 | `ci` | number | more than 0.5 and less than 1 | The confidence level of the intervals and simultaneous bands, such as 0.95. |
 | `seed` | integer | 0 to 4,294,967,295 | Seeds the bootstrap, and Python, NumPy and PyTorch for the whole run. |
 | `cluster` | string or null | any | A field of the prompts' meta whose values group them, or `null` to resample prompts. |
+| `cross` | string or null | any | A second field of the prompts' meta, crossed with `cluster`: prompts built from two lists (names and places, say) share a name with some prompts and a place with others, and a bootstrap over one of the two is too narrow. Each field's values are resampled on their own, and a prompt counts as often as its two values' draws multiplied. Null for one field or none. |
 
 ## Execution
 
@@ -589,6 +595,22 @@ How the work is batched.
 | Field | Type | Allowed values | Description |
 |---|---|---|---|
 | `batch_size` | integer | 1 to 4,096 | Rows per forward pass. Part of the spec because batch shape can change floating-point results in the last digits. |
+
+## Gate
+
+In a spec at `gate`.
+
+What the model must do on the prompts before anything is intervened on.
+
+An effect describes how a behavior is computed only if the model shows the behavior. The
+baseline is measured first; a run whose baseline falls short of the gate stops there, before
+any intervention, and says what it measured. A gate is part of the spec, so it is set before
+the results are seen.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `min_correct` | number or null | more than 0 and at most 1, or `null` | The least share of the clean prompts on which the model must prefer the answer to the distractor (log P(answer) > log P(distractor)), such as 0.9; `null` for no such bar. |
+| `min_gap` | number or null | more than 0, or `null` | The least gap between the clean and the corrupt prompts in the metric, as the size of its mean over prompts; `null` for no such bar. |
 
 ## Prediction settings
 
@@ -689,6 +711,7 @@ Each prompt draws `donors` donors from the pool without replacement, never itsel
 | `pool` | string | `"clean"` or `"corrupt"` | The prompts donors are drawn from: the dataset's clean or corrupt prompts. |
 | `donors` | integer | 1 to 1,000 | How many donors each prompt draws. |
 | `seed` | integer | 0 to 4,294,967,295 | The seed of the draw. |
+| `group` | object or null | [Donor group](#donor-group), or `null` | Draw each prompt's donors only among prompts that share, or differ in, a field of the prompts' meta; `null` draws them among every prompt of the pool. |
 
 ### Baseline: scale
 
@@ -931,6 +954,27 @@ replaced with the rest. A complement set with no sites replaces the whole univer
 | `sites` | list of objects | at most 4,096 items; each [Site](#site) | The sites intervened on together, or, with complement, the sites kept. |
 | `complement` | boolean | `true` or `false` | Intervene on every component of the scope's universe except these sites. |
 
+## Random sets
+
+In a spec at `scope.controls` (scope `site_sets`).
+
+Random sets beside each set of sites: what a set of that size does when its sites are
+chosen by chance.
+
+For every set that has sites, `n` random sets are drawn and intervened on like it. A random
+set has one site for each of the set's, of the same kind and at the same position, and keeps
+or replaces its sites as the set does. With `match` `layer` each site is redrawn among the
+other heads (or key/value heads, or neurons) of its own layer, so the random set has as many
+sites in each layer as the set; with `model` it is redrawn among every layer's. No site of
+the set itself is drawn, and no site twice in one random set. The results say where the set's
+effect lies among its random sets'.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `n` | integer | 1 to 1,000 | How many random sets are drawn for each set. |
+| `seed` | integer | 0 to 4,294,967,295 | The seed of the draw. |
+| `match` | string | `"layer"` or `"model"` | Redraw each site within its own layer (layer), or among every layer (model). |
+
 ## Edge
 
 In a spec at `scope.edges[]` (scope `edges`).
@@ -992,6 +1036,21 @@ translators' file, lens.safetensors, when a run starts.
 |---|---|---|---|
 | `name` | string | any | The lens's name in the project's lenses folder. |
 | `sha256` | string or null | any | The hash of its lens.safetensors; `null` uses the lens as it is when a run starts, and the run's spec pins it. |
+
+## Donor group
+
+In a spec at `experiment.baseline.group` (experiment `ablation`; baseline `resample`).
+
+Which prompts may be a prompt's donors, by a field of the prompts' `meta`.
+
+What a donor shares with the prompt it is patched into decides what resample ablation removes:
+donors from the same template keep the template and vary the rest; donors with a different
+subject remove the subject and whatever follows from it.
+
+| Field | Type | Allowed values | Description |
+|---|---|---|---|
+| `field` | string | any | A field of the prompts' meta, such as `template`. |
+| `match` | string | `"same"` or `"different"` | Draw donors among the prompts with the same value of the field as the prompt (same), or among those with a different value (different). |
 
 ## Random edges
 

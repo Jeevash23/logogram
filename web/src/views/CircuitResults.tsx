@@ -21,7 +21,9 @@ interface SetRow {
 /**
  * The results of a run over sets of sites: each set's effect with its interval, its share of
  * replacing everything, the faithfulness of the sets that keep their sites (also against their
- * size), what each site adds to a circuit, and how pairs of sites interact.
+ * size), where it lies among the random sets drawn beside it, what each site adds to a circuit,
+ * and what a set does beyond the sum of its sites alone. A random set has no row of its own: it
+ * is counted in its set's row.
  */
 export function CircuitResults({
   sites,
@@ -45,6 +47,7 @@ export function CircuitResults({
   const rows: SetRow[] = useMemo(() => {
     const byIndex = new Map(circuit?.rows.map((r) => [r.index, r]) ?? []);
     return [...sites]
+      .filter((site) => site.variant?.control_of === undefined || site.variant?.control_of === null)
       .sort((a, b) => a.index - b.index)
       .map((site) => ({
         site,
@@ -64,6 +67,13 @@ export function CircuitResults({
   const without = rows.filter((r) => r.row?.without);
   const interactions = rows.filter((r) => r.row?.interaction);
   const curve = rows.filter((r) => r.row?.faithfulness && r.complement && r.size > 0);
+  // Random sets, counted per set while the run streams and summarized when it has finished.
+  const drawn = new Map<number, number>();
+  for (const site of sites) {
+    const of = site.variant?.control_of;
+    if (of !== undefined && of !== null) drawn.set(of, (drawn.get(of) ?? 0) + 1);
+  }
+  const controlled = drawn.size > 0 || rows.some((r) => r.row?.control);
 
   return (
     <div className={c.results}>
@@ -76,6 +86,7 @@ export function CircuitResults({
             <th>{effectLabel} · {ciLevel}% CI</th>
             <th className={s.num}>Share of everything</th>
             <th className={s.num}>Faithfulness</th>
+            {controlled && <th className={s.num}>Random sets of its size</th>}
           </tr>
         </thead>
         <tbody>
@@ -86,8 +97,8 @@ export function CircuitResults({
                   <span className={c.setName}>{site.label}</span>
                 </button>
                 <span className={c.setWhat} title={(site.members ?? []).map(siteText).join(", ")}>
-                  {setWhat(complement, size, universe)}
-                  {site.members && site.members.length > 0 && site.members.length <= 4 ? `: ${site.members.map(siteText).join(", ")}` : ""}
+                  {site.variant?.single || row?.single ? "one site of a set, alone" : setWhat(complement, size, universe)}
+                  {!(site.variant?.single || row?.single) && site.members && site.members.length > 0 && site.members.length <= 4 ? `: ${site.members.map(siteText).join(", ")}` : ""}
                 </span>
               </td>
               <td>
@@ -108,6 +119,23 @@ export function CircuitResults({
               </td>
               <td className={s.num}>{site.index === everything ? <span className={c.faint}>everything</span> : <StatCell stat={row?.share} finished={finished} />}</td>
               <td className={s.num}>{complement && size > 0 ? <StatCell stat={row?.faithfulness} finished={finished} /> : <span className={c.faint}>—</span>}</td>
+              {controlled && (
+                <td className={s.num}>
+                  {row?.control ? (
+                    <span title={`The ${count(row.control.n)} random sets' mean effects: mean ${signed(row.control.mean, 3)}, SD ${num(row.control.sd, 3)}, ${ciLevel}% of them within ${ci(row.control.lo, row.control.hi, 3)}`}>
+                      {signed(row.control.mean, 2)} <span className={c.faint}>[{ci(row.control.lo, row.control.hi)}]</span>
+                      <br />
+                      <span className={c.faint}>
+                        {row.control.beyond === 0 ? "none" : count(row.control.beyond)} of {count(row.control.n)} as strong
+                      </span>
+                    </span>
+                  ) : drawn.has(site.index) ? (
+                    <span className={c.faint}>{finished ? "undefined" : `${count(drawn.get(site.index) ?? 0)} drawn, when finished`}</span>
+                  ) : (
+                    <span className={c.faint}>—</span>
+                  )}
+                </td>
+              )}
             </tr>
           ))}
         </tbody>
@@ -118,6 +146,14 @@ export function CircuitResults({
           sites: 1 − share, the part of the behavior they carry alone. 1 means keeping them alone loses nothing; 0 means
           it does no better than replacing everything. Intervals come from the same resamples as the effects.
         </p>
+        {controlled && (
+          <p className={s.small}>
+            Random sets: each has one site for every site of its set, of the same kind and at the same position, drawn by
+            chance. The column gives their mean effects' mean and the range holding {ciLevel}% of them, then how many are
+            at least as far from zero as the set's own effect. A set that does no more than most of its random sets shows
+            what any set of that size does, not what these sites do.
+          </p>
+        )}
         {finished && everything === null && (
           <p className={s.small}>
             Shares and faithfulness are read against a set that keeps nothing and replaces the whole rest of the model. Add one
@@ -150,13 +186,22 @@ export function CircuitResults({
             const clear = (it.effect.lo ?? 0) > 0 || (it.effect.hi ?? 0) < 0;
             return (
               <p key={site.index} className={c.note}>
-                <strong>{it.a}</strong> and <strong>{it.b}</strong> together: {signed(it.effect.mean, 2)} beyond the sum of each
-                alone <span className={c.faint}>({ci(it.effect.lo, it.effect.hi)})</span>
+                {it.parts && it.parts.length > 2 ? (
+                  <>
+                    <strong>{site.label}</strong>, its {count(it.parts.length)} sites at once
+                  </>
+                ) : (
+                  <>
+                    <strong>{it.a}</strong> and <strong>{it.b}</strong> together
+                  </>
+                )}
+                : {signed(it.effect.mean, 2)} beyond the sum of each alone{it.sum ? ` (${signed(it.sum.mean, 2)})` : ""}{" "}
+                <span className={c.faint}>({ci(it.effect.lo, it.effect.hi)})</span>
                 {clear ? ((it.effect.mean ?? 0) > 0 ? ", more than the sum." : ", less than the sum.") : ", no clear interaction."}
               </p>
             );
           })}
-          <p className={s.small}>Effect of both − effect of the first − effect of the second, normalized like the effects.</p>
+          <p className={s.small}>Effect of the sites at once − the sum of the effects of each alone, normalized like the effects.</p>
         </section>
       )}
     </div>

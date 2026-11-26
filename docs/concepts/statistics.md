@@ -37,10 +37,15 @@ miss zero even if no head mattered. So every sweep also reports, for each site:
 * a **q-value** (Benjamini and Hochberg, 1995): the smallest false discovery rate at which the
   site would count as a finding, from bootstrap p-values. A two-sided p-value is twice the
   smaller share of resamples on either side of zero, so p < α exactly when the interval at level
-  1 − α excludes zero.
+  1 − α excludes zero;
+* a **Holm-adjusted p-value** (Holm, 1979): the smallest chance of even one chance finding among
+  the sites at which this site still counts as one. It is stricter than a q-value, which bounds
+  the share of chance findings among those reported, and it holds whatever the dependence between
+  sites. A bootstrap p-value is never below 2 / (resamples + 1), so with many sites it takes many
+  resamples before any adjusted value can fall below 0.05: 144 sites need more than 5,760.
 
 A site whose band excludes zero, or whose q-value is small, is a finding that survives the number
-of sites tested. The inspector shows both beside the interval.
+of sites tested. The inspector shows all three beside the interval.
 
 ## Clusters of prompts
 
@@ -50,6 +55,14 @@ of the prompts' `meta`, such as `template`, and the bootstrap then resamples who
 prompts that share its value (Field and Welsh, 2007), which widens the intervals honestly. With
 fewer than 10 clusters, the run warns that its intervals are rough: there are too few clusters to
 resample. The task generators record each prompt's template in `meta`.
+
+Prompts built from two lists, such as names and places, are tied two ways, and a bootstrap over
+one of the two fields is still too narrow. `statistics.cross` names a second field. Each resample
+then draws the first field's values with replacement and, independently, the second's, and a
+prompt counts as often as its two values' draws multiplied (the product-weight bootstrap for
+crossed designs, Owen 2007). The first field's draws are those a bootstrap over it alone makes
+with the same seed. When too few pairs of values occur among the prompts, some resamples draw no
+prompt at all, and the run refuses the crossed bootstrap and says so.
 
 ## Comparing runs
 
@@ -87,3 +100,6 @@ recomputed from it.
   Press.
 * Field and Welsh (2007). *Bootstrapping clustered data.* Journal of the Royal Statistical
   Society, Series B.
+* Holm (1979). *A simple sequentially rejective multiple test procedure.* Scandinavian Journal of
+  Statistics.
+* Owen (2007). *The pigeonhole bootstrap.* Annals of Applied Statistics.

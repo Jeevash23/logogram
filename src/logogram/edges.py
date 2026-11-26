@@ -827,7 +827,7 @@ def run_edge_attribution(
         prompts gives them (without the curve, which runs after every prompt)."""
         chosen = [prompts[i] for i in at]
         base = baselines.subset(at)
-        notes = check_gap(spec, base, chosen, receiver, reference)
+        notes = check_gap(spec, base, chosen, receiver, reference, gate=False)
         return _result(
             sites,
             layout,

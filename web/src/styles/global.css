@@ -1,5 +1,8 @@
 /* Weight 400–700 and width 75–100%: condensed widths set titles and figures. */
 @import "@fontsource-variable/instrument-sans/standard.css";
+/* Titles and key numbers, and the spec's own monospace. Both ship with the app. */
+@import "@fontsource/instrument-serif/latin-400.css";
+@import "@fontsource/ibm-plex-mono/latin-400.css";
 @import "./tokens.css";
 
 *,
@@ -39,9 +42,9 @@ p {
 
 h1 {
   font-size: var(--text-2xl);
-  font-weight: 600;
-  font-stretch: var(--display-stretch);
-  letter-spacing: -0.02em;
+  font-weight: 400;
+  font-family: var(--display);
+  letter-spacing: -0.005em;
   line-height: 1.08;
 }
 
@@ -49,7 +52,7 @@ h2 {
   font-size: var(--text-xl);
   font-weight: 600;
   font-stretch: var(--display-stretch);
-  letter-spacing: -0.012em;
+  letter-spacing: -0.005em;
   line-height: 1.15;
 }
 
@@ -151,10 +154,10 @@ pre {
 
 /* Big figures: condensed, tabular. */
 .figure {
-  font-stretch: 82%;
-  font-weight: 620;
-  letter-spacing: -0.01em;
-  font-variant-numeric: tabular-nums;
+  font-family: var(--display);
+  font-weight: 400;
+  letter-spacing: 0;
+  font-variant-numeric: lining-nums;
 }
 
 .faint {

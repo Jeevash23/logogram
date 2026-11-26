@@ -8,7 +8,7 @@ import { openGuide, useHelp } from "../store/help";
 import s from "./Screens.module.css";
 
 /**
- * The first screens: the logogram over a bloom of the three workspace colors, what each workspace
+ * The first screens: the logogram, a painted observatory along the foot of the panel, what each workspace
  * is for, in its color, and what Logogram finds, plainly. Under it, Start here opens the guide at
  * its first page: the first thing the keyboard reaches, it stays in view while the work beside it
  * scrolls, and it is the solid ink button until the walkthrough of the example has been finished
@@ -43,9 +43,6 @@ export function Welcome({ children }: { children: ReactNode }) {
           <span className={s.version}>{version}</span>
         </div>
         <div className={s.stage} aria-hidden="true">
-          <span className={s.bloomExplore} />
-          <span className={s.bloomExperiment} />
-          <span className={s.bloomEvidence} />
           <Logogram seed={BRAND_SEED} size={280} detail={1} weight={1.05} haze={false} className={s.heroGlyph} />
         </div>
         <p className={s.tagline}>
@@ -70,6 +67,7 @@ export function Welcome({ children }: { children: ReactNode }) {
             {START_NOTE}
           </p>
         </div>
+        <div className={s.painting} aria-hidden="true" />
       </aside>
       <main className={s.paper}>{children}</main>
     </div>

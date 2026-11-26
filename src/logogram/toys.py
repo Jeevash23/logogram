@@ -1122,6 +1122,8 @@ def _circuit(toy: Toy) -> tuple[dict[str, Any], dict[str, float], dict[str, floa
             {"label": "only the planted heads kept", "sites": planted, "complement": True},
             {"label": "only the other heads kept", "sites": others, "complement": True},
         ],
+        "singles": False,
+        "controls": None,
     }
     expect = {"every head replaced": 1.0, "only the other heads kept": 1.0}
     faithful = {"only the planted heads kept": 1.0, "only the other heads kept": 0.0}
@@ -1454,7 +1456,7 @@ def spec_of(name: str, experiment: ToyExperiment, dataset_sha256: str | None = N
 
     return Spec.model_validate(
         {
-            "logogram_spec": 4,
+            "logogram_spec": 5,
             "name": experiment.name,
             "notes": experiment.notes,
             "model": model_ref(name),
@@ -1467,8 +1469,15 @@ def spec_of(name: str, experiment: ToyExperiment, dataset_sha256: str | None = N
             "experiment": experiment.experiment,
             "scope": experiment.scope,
             "metric": {"kind": "logit_diff", "normalization": "dataset_gap"},
-            "statistics": {"bootstrap": 1000, "ci": 0.95, "seed": 0, "cluster": None},
+            "statistics": {
+                "bootstrap": 1000,
+                "ci": 0.95,
+                "seed": 0,
+                "cluster": None,
+                "cross": None,
+            },
             "execution": {"batch_size": 32},
+            "gate": None,
         }
     )
 

@@ -454,9 +454,9 @@
 
 .emptyTitle {
   font-size: var(--text-xl);
-  font-weight: 600;
-  font-stretch: var(--display-stretch);
-  letter-spacing: -0.01em;
+  font-weight: 400;
+  font-family: var(--display);
+  letter-spacing: -0.005em;
 }
 
 .emptyText {
@@ -575,9 +575,9 @@
 
 .dialogTitle {
   font-size: var(--text-xl);
-  font-weight: 600;
-  font-stretch: var(--display-stretch);
-  letter-spacing: -0.01em;
+  font-weight: 400;
+  font-family: var(--display);
+  letter-spacing: -0.005em;
 }
 
 .dialogDescription {

@@ -7,7 +7,7 @@ clash with Logogram's modules: ``load_spec``, not ``spec``.)
 
 from typing import Any
 
-__version__ = "0.7.2"
+__version__ = "0.8.0"
 # The release date of this version: after a few months the app suggests looking for a newer one
 # (no network needed). Set it with every release.
 __released__ = "2026-11-26"

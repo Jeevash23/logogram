@@ -329,7 +329,7 @@ def run_attribution_patching(
         prompts gives them: their own gap normalizes them, and is checked as a run's is."""
         chosen = [prompts[i] for i in at]
         base = baselines.subset(at)
-        notes = check_gap(spec, base, chosen, receiver, reference)
+        notes = check_gap(spec, base, chosen, receiver, reference, gate=False)
         return _estimates(
             exp,
             sites,

@@ -61,7 +61,9 @@ paper describes would.
   alone, for a curve of faithfulness against the number of sites kept.
 
 The results of a run over sets show each set's faithfulness or share, what each site adds and how
-sites interact, beside a chart of faithfulness against the number of sites kept.
+sites interact, beside a chart of faithfulness against the number of sites kept. With
+[random sets](controls.md#random-sets-beside-a-set-of-sites) they also show where each set lies
+among sets of its size chosen by chance.
 
 ## When to use it
 
@@ -88,9 +90,15 @@ circuit looks like.
       {"kind": "head", "layer": 9, "head": 9, "position": {"kind": "all"}},
       {"kind": "head", "layer": 10, "head": 0, "position": {"kind": "all"}}
     ]}
-  ]
+  ],
+  "singles": true,
+  "controls": {"n": 100, "seed": 0, "match": "layer"}
 }
 ```
+
+`singles` also intervenes on each site of a set alone, and `controls` draws random sets of the
+same size beside each set. Both are described in [controls](controls.md). Set `singles` to false
+and `controls` to null to run the sets alone.
 
 See [the spec reference](../reference/spec.md#scope-site_sets).
 

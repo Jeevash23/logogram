@@ -85,7 +85,7 @@ export const GUIDE_FIGURES: Record<"workbench" | "map" | "logogram" | "interval"
   workbench: {
     label: "The workbench, part by part",
     stages: [
-      { title: "Workspaces", text: "Explore, Experiment and Evidence, across the top, each in its color." },
+      { title: "Workspaces", text: "Explore, Experiment and Evidence, across the top. The open one is filled in ink." },
       { title: "Views", text: "The open workspace's views, as tabs. The number keys open them." },
       { title: "Model and prompts", text: "The loaded model, and the prompts the views read, beside the tabs." },
       { title: "The view", text: "What the open view shows: the map, the experiment form or a run's results." },

@@ -30,12 +30,14 @@ averaged over the dataset or taken per prompt, as the spec's
   length; at one position, at each reference prompt's own resolved position. It keeps what all
   prompts share and removes what is particular to each. Wang et al. (2022) mean-ablated heads over
   prompts with three unrelated names, which keep the sentence and remove which name repeats.
-* **Resample** (`{"kind": "resample", "pool": …, "donors": 10, "seed": 0}`) replaces it with the
-  same activation from other prompts, its donors: each prompt draws `donors` of them from the pool
-  without replacement, never itself, with the stated seed. The result is averaged over the
-  donors, and the same donors serve every site. Each replacement is something the model really
-  computes, on another input; resampling is the replacement causal scrubbing uses (Chan et al.,
-  2022).
+* **Resample** (`{"kind": "resample", "pool": …, "donors": 10, "seed": 0, "group": null}`)
+  replaces it with the same activation from other prompts, its donors: each prompt draws `donors`
+  of them from the pool without replacement, never itself, with the stated seed. The result is
+  averaged over the donors, and the same donors serve every site. Each replacement is something
+  the model really computes, on another input; resampling is the replacement causal scrubbing uses
+  (Chan et al., 2022). With a `group`, a prompt's donors are drawn only among prompts that share
+  a field of their `meta` with it, or only among those that differ in it. See
+  [controls](controls.md#donors-chosen-by-a-field).
 * **Scale** (`{"kind": "scale", "factor": 0.5}`) multiplies the activation by a factor: 0 removes
   it, as zero ablation does; 0.5 halves it; 2 doubles it; −1 turns it around. It asks how the
   behavior grows or shrinks with the component, rather than whether it is needed.
@@ -75,7 +77,7 @@ better-controlled question.
 ```json
 "experiment": {
   "kind": "ablation",
-  "baseline": {"kind": "resample", "pool": "corrupt", "donors": 10, "seed": 0}
+  "baseline": {"kind": "resample", "pool": "corrupt", "donors": 10, "seed": 0, "group": null}
 }
 ```
 

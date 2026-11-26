@@ -303,7 +303,7 @@ export function ModelMap({ prominent = false, structureOnly = false }: { promine
       ctx.lineWidth = 1;
       ctx.strokeRect(hovered.x - 1.5, hovered.y - 1.5, cell + 3, cell + 3);
     }
-    if (chosen) inkRing(ctx, chosen.x, chosen.y, cell, cell, colors.text, colors.surface);
+    if (chosen) inkRing(ctx, chosen.x, chosen.y, cell, cell, colors.signal, colors.surface);
   }, [geo, arch, colors, hoverLayer, hoverPart, hoverHead, selectedLayer, selectedPart, selectedHead]);
 
   const hit = useCallback(

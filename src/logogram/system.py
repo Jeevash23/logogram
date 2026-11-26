@@ -648,7 +648,15 @@ def scope_footprint(
         neurons = sum(1 for kinds in by_layer.values() if "neuron" in kinds)
         return ScopeFootprint(len(scope.sites), width, neurons)
     if kind == "site_sets":
-        return ScopeFootprint(len(scope.sets), 0, 0)
+        from logogram.circuits import single_sets
+
+        # The scope's sets, each site added alone, and the random sets beside each set with sites.
+        drawn = (
+            0
+            if scope.controls is None
+            else scope.controls.n * sum(1 for s in scope.sets if s.sites)
+        )
+        return ScopeFootprint(len(scope.sets) + len(single_sets(scope)) + drawn, 0, 0)
     if kind == "features":
         return ScopeFootprint(int(scope.top), 0, 0)
     return ScopeFootprint(0, 0, 0)

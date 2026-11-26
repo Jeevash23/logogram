@@ -703,6 +703,14 @@ export interface SiteSetSpec {
   complement: boolean;
 }
 
+/** Random sets beside each set of sites: `n` for each, redrawn within each site's own layer or
+ * among every layer. */
+export interface RandomSetsSpec {
+  n: number;
+  seed: number;
+  match: "layer" | "model";
+}
+
 export type ScopeSpec =
   | { kind: "heads"; position: PositionSpec }
   | { kind: "layer_position"; site: StreamKind; positions: "each" | "labels" }
@@ -711,8 +719,10 @@ export type ScopeSpec =
   /** Every feature of the spec's SAE; attribution patching keeps the top ones. With `choose_on`, a
    * seeded share of the prompts chooses them and the rest report them (both null: every prompt). */
   | { kind: "features"; position: PositionSpec; top: number; choose_on: number | null; seed: number | null }
-  /** Sets of sites, each intervened on at once: one result per set (1 to 64 sets). */
-  | { kind: "site_sets"; universe: UniverseKind[] | null; sets: SiteSetSpec[] }
+  /** Sets of sites, each intervened on at once: one result per set (1 to 64 sets). With `singles`,
+   * each site of a set of two or more is also intervened on alone; with `controls`, random sets
+   * of the same size are drawn beside each set. */
+  | { kind: "site_sets"; universe: UniverseKind[] | null; sets: SiteSetSpec[]; singles: boolean; controls: RandomSetsSpec | null }
   /** Every head's query, or every key/value head's key or value, at one position. */
   | { kind: "head_inputs"; input: HeadInputKind; position: PositionSpec }
   /** Every neuron of the MLPs of the chosen layers, at one position. */
@@ -730,10 +740,24 @@ export interface DirectionRefSpec {
   sha256: string | null;
 }
 
+export interface DonorGroupSpec {
+  field: string;
+  match: "same" | "different";
+}
+
+/** What the baseline must show before anything is intervened on: a least share of the clean
+ * prompts on which the model prefers the answer, a least mean clean–corrupt gap, or both. */
+export interface GateSpec {
+  min_correct: number | null;
+  min_gap: number | null;
+}
+
 export type BaselineSpec =
   | { kind: "zero" }
   | { kind: "mean"; reference: "clean" | "corrupt" }
-  | { kind: "resample"; pool: "clean" | "corrupt"; donors: number; seed: number }
+  /** With `group`, a prompt's donors are drawn only among the prompts with the same value of a
+   * field of their meta, or a different one. */
+  | { kind: "resample"; pool: "clean" | "corrupt"; donors: number; seed: number; group: DonorGroupSpec | null }
   /** Multiply the activation by a factor (0 removes it, 2 doubles it). */
   | { kind: "scale"; factor: number }
   /** Remove the activation's component along a saved direction, or set it to the reference
@@ -888,9 +912,9 @@ export type ChatTemplateSpec =
   | { kind: "user_turn"; system: string | null }
   | { kind: "assistant_prefix"; system: string | null; user: string };
 
-/** A version 4 spec: every choice that can change a number is stated. A probe has no metric. */
+/** A version 5 spec: every choice that can change a number is stated. A probe has no metric. */
 export interface Spec {
-  logogram_spec: 4;
+  logogram_spec: 5;
   name: string;
   notes: string;
   model: ModelRef;
@@ -899,9 +923,11 @@ export interface Spec {
   experiment: ExperimentSpec;
   scope: ScopeSpec;
   metric: MetricSpec | null;
-  /** Percentile bootstrap; with `cluster`, over groups of prompts sharing that field of their meta. */
-  statistics: { bootstrap: number; ci: number; seed: number; cluster: string | null };
+  /** Percentile bootstrap; with `cluster`, over groups of prompts sharing that field of their
+   * meta; with `cross` too, over both fields at once. */
+  statistics: { bootstrap: number; ci: number; seed: number; cluster: string | null; cross: string | null };
   execution: { batch_size: number };
+  gate: GateSpec | null;
   predictions?: PredictionSettings | null;
   sae?: SAERef | null;
 }
@@ -990,7 +1016,17 @@ export interface SiteBase {
   label: string;
   /** One of several measurements of the same site, such as a steering strength or its control,
    * or a set of sites (whether it keeps its sites, and how many). */
-  variant?: { coefficient?: number; control?: boolean; complement?: boolean; size?: number; subspace?: "learned" | "full" | "random" } | null;
+  variant?: {
+    coefficient?: number;
+    control?: boolean;
+    complement?: boolean;
+    size?: number;
+    subspace?: "learned" | "full" | "random";
+    /** A site intervened on alone because its set asked for its sites alone (`singles`). */
+    single?: boolean;
+    /** A random set: the index of the set it was drawn beside (`controls`). */
+    control_of?: number;
+  } | null;
   variant_key?: string | null;
   /** The sites of a set intervened on together (kind site_set). */
   members?: SiteSpec[] | null;
@@ -1014,6 +1050,8 @@ export interface SiteResult extends SiteBase {
    * together, and the Benjamini–Hochberg q-value. */
   band?: { lo: number; hi: number } | null;
   q?: number | null;
+  /** The Holm-adjusted p-value over the run's sites (runs since 0.8). */
+  p_holm?: number | null;
 }
 
 export interface LayoutAxis {
@@ -1293,6 +1331,9 @@ export interface SummaryStatistics {
   /** The meta field whose values group prompts into clusters, and how many clusters there were. */
   cluster?: string | null;
   clusters?: number | null;
+  /** The second field of a bootstrap crossed over two, and how many values it has. */
+  cross?: string | null;
+  cross_clusters?: number | null;
   /** The two-sided tail each site's simultaneous band keeps, and what the bands and q-values mean. */
   band_level?: number | null;
   multiple_comparisons?: string | null;
@@ -1408,6 +1449,17 @@ export interface ControlComparison {
   beats_control: boolean;
 }
 
+export interface CircuitControl {
+  n: number;
+  mean: number;
+  sd: number;
+  lo: number;
+  hi: number;
+  /** How many random sets are at least as far from zero as the set's own effect. */
+  beyond: number;
+  p: number;
+}
+
 export interface CircuitRow {
   index: number;
   label: string;
@@ -1420,7 +1472,13 @@ export interface CircuitRow {
   /** For a keeping set one site short of another: how much faithfulness that site adds. */
   without?: { of: string; site: string; drop: Stat } | null;
   /** For a set of two sites also run alone: effect(both) − effect(a) − effect(b). */
-  interaction?: { a: string; b: string; effect: Stat } | null;
+  /** What the set does beyond the sum of its sites alone. `parts` and `sum` list every site and
+   * their effects' sum (runs since 0.8; before, a set of two with `a` and `b`). */
+  interaction?: { a: string; b: string | null; parts?: string[] | null; sum?: Stat | null; effect: Stat } | null;
+  /** Where the set's effect lies among the random sets drawn beside it. */
+  control?: CircuitControl | null;
+  /** A site added alone by the scope's `singles`, not one of the scope's own sets. */
+  single?: boolean;
 }
 
 export interface CircuitInfo {

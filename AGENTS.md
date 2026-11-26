@@ -59,27 +59,36 @@ traceability come before features.
 
 ## Design rules
 
-* White and black, with color that means something. The page is pure white (or pure black); regions
-  are separated by space and hairlines, never grey washes or drop shadows (only menus, dialogs and
-  tooltips float). Navigation runs across the top; there is no sidebar.
+* White paper and ink, with one signal red. The page is white (or, at night, ink paper with light
+  type); regions are separated by space and hairlines, never grey washes or drop shadows (only
+  menus, dialogs and tooltips float). Navigation runs across the top; there is no sidebar.
 * Color has jobs (tokens in `web/src/styles/tokens.css`):
-  * each workspace has one: green Explore (`--explore`), orange Experiment (`--experiment`), pink
-    Evidence (`--evidence`). The open workspace's pill, its tab underline, its progress and its
-    radio marks use it (`--ws` holds the current one);
+  * signal red (`--signal`) marks what an intervention changes and what is chosen to be changed:
+    the ring around a selected cell, the patched site in a figure. Nothing else is red. Results
+    are written up on pages that use red the same way, so a figure reads the same in the app and
+    in a paper;
+  * the workspaces are named, not colored: the open workspace's pill, its tab underline, its
+    progress and its radio marks are ink (`--ws` holds the current one's token, and all three
+    are ink);
   * green (`--live`) means a loaded model;
   * effects use the diverging cobalt–neutral–amber scale, symmetric around zero, always with a
     legend, and nothing else uses those hues. Attention uses the single-hue ink ramp.
-  * Primary buttons are solid ink (white in the dark theme), not colored.
-* Selection is circled in ink (`inkRing` in `web/src/lib/canvas.ts`), not a new color.
+  * Primary buttons are solid ink (white at night), not colored.
+* Selection is circled in signal red (`inkRing` in `web/src/lib/canvas.ts`), drawn by hand like a
+  mark in red pen on a printout, and cut out of the data's colors by a band of the page.
 * Logograms (`web/src/lib/logogram.ts`) are data, not decoration. A run's glyph is written by its
   results: layers clockwise from the top, the ink swelling outward where a layer's strongest
   effect is positive and inward where it is negative, bleeding in the effect colors. Glyphs from
-  a seed alone mark identity only: the brand (`BRAND_SEED`), projects, empty states. The welcome
-  screens' color bloom behind the brand glyph is the one decorative use of color.
-* One typeface, Instrument Sans (weight and width axes): condensed widths for titles and big
-  figures (`--display-stretch`, `.figure`), tabular figures for numbers. Its word space is
-  narrow, so body text widens it (`--word-space`). Monospace appears only in the spec view.
-  Sentence case everywhere; no all-caps labels.
+  a seed alone mark identity only: the brand (`BRAND_SEED`), projects, empty states.
+* One picture: the painted observatory along the foot of the first screens
+  (`web/src/assets/`, with a night version). It blends into the page, text stays in its sky, and
+  a short window leaves it out. It is the one decorative image; don't add others inside the
+  workbench.
+* Two typefaces with jobs, both bundled. Instrument Serif (`--display`) sets titles, questions
+  and key numbers, as a paper sets its headings; it has one weight, so never bold it. Instrument
+  Sans (weight and width axes) sets everything else, with tabular figures for numbers in tables.
+  Its word space is narrow, so body text widens it (`--word-space`). IBM Plex Mono appears only
+  in the spec view. Sentence case everywhere; no all-caps labels.
 * Motion only explains state changes, such as cells filling as results stream in, a glyph
   appearing, or panels opening, and, in the guide's figures (`web/src/components/figures/`), how
   a method works, stage by stage. A figure plays only while it is in view, can be paused and

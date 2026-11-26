@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from logogram.spec import NAME_MAX, Spec, describe_intervention
+from logogram.spec import NAME_MAX, Spec, describe_intervention, upgrade_v4
 
 SUFFIX = " · robustness"
 
@@ -60,7 +60,10 @@ def robustness_spec(
         # The same run in another precision: what rounding changed.
         data["model"]["dtype"] = dtype
     else:
+        # An experiment written for a version 4 spec leaves out what version 5 added (a resample
+        # baseline's donor group): it reads with that off, as a version 4 spec does.
         data["experiment"] = experiment
+        data = upgrade_v4(data)
     data["name"] = original.name[: NAME_MAX - len(SUFFIX)].rstrip() + SUFFIX
     variant = Spec.model_validate(data)
     if variant.model_dump(mode="json") == original.model_dump(mode="json") | {"name": variant.name}:

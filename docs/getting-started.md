@@ -54,8 +54,8 @@ toward Mary by about a sixth of the gap, which is head 9.9's effect](images/acti
 
 ## Run it
 
-The workbench has three workspaces across the top: **Explore** (green) looks inside the model,
-**Experiment** (orange) sets up an experiment, and **Evidence** (pink) reads results. Until your
+The workbench has three workspaces across the top: **Explore** looks inside the model,
+**Experiment** sets up an experiment, and **Evidence** reads results. Until your
 first run finishes, a button beside the tabs names the next of four steps.
 
 1. **Experiment → Prompts** shows each pair token by token, with the tokens that differ marked.

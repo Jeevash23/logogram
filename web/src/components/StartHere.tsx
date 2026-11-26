@@ -93,8 +93,9 @@ export function StartHere({ inWorkbench, go, toExamples }: { inWorkbench: boolea
   );
 }
 
-/** Where each step of the first hour happens, by the color with that job: a loaded model is green,
- * and the steps in a workspace take its color. The first step opens the example. */
+/** Where each step of the first hour happens: a loaded model is green, and the steps in a
+ * workspace take its token (ink, as the workspaces are named, not colored). The first step opens
+ * the example. */
 const STEP_COLORS = ["text", "live", "experiment", "experiment", "evidence", "evidence"];
 
 function Figure({ section }: { section: StartSection }) {

@@ -25,9 +25,9 @@
 
 .title {
   font-size: 34px;
-  font-weight: 600;
-  font-stretch: var(--display-stretch);
-  letter-spacing: -0.022em;
+  font-weight: 400;
+  font-family: var(--display);
+  letter-spacing: -0.005em;
   line-height: 1.05;
   text-wrap: balance;
 }

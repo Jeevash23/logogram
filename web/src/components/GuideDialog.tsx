@@ -272,6 +272,7 @@ function PageText({ page }: { page: GuidePageId }) {
             the number of sites tested.
           </Row>
           <Row term="q-value">The false discovery rate at which the site counts as a finding.</Row>
+          <Row term="Holm p-value">The chance that any site reported this strong is a false finding: stricter than a q-value.</Row>
           <Row term="Flips">
             The prompts whose preference for the answer changed sign. Opposite sign counts those whose effect goes against
             the mean.

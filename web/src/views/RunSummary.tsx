@@ -10,7 +10,7 @@ import { bytes, count, duration, plural, roughDuration } from "../lib/format";
 import type { EdgePlanState } from "../lib/edgePlan";
 import { modelName, useAnalysisContext } from "../lib/hooks";
 import { metricWords } from "../lib/metrics";
-import { experimentText, scopeText, workloadText } from "../lib/spec";
+import { experimentText, gateText, scopeText, workloadText } from "../lib/spec";
 import { behaviorPresent, PRESENT_GAP } from "../lib/thresholds";
 import { runnerName, runWouldQueue, useStore } from "../store/app";
 import e from "./ExperimentView.module.css";
@@ -92,6 +92,14 @@ export function RunSummary({
         <dd>
           <BaselineState />
         </dd>
+        {spec?.gate && (
+          <>
+            <dt>Gate</dt>
+            <dd>
+              <span>The run stops before any intervention unless it finds {gateText(spec.gate)}.</span>
+            </dd>
+          </>
+        )}
         {chat && (
           <>
             <dt>Prompt format</dt>
